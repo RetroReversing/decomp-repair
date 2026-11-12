@@ -1,8 +1,8 @@
 """Bounded hypotheses from captured matches; no source spelling supplies a match verdict."""
 import re
 
-from ..forks.csource import _blank
 from .call_lifetime_repairs import block_path
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, locals_for, split_args, view
 from .local_flow import analyze
 from .pattern_repairs import close

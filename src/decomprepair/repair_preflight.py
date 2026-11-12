@@ -6,7 +6,7 @@ Only an unambiguous plain prototype can rule out a direct call's argument count.
 import re
 from functools import lru_cache
 
-from ..forks.csource import _COMMENT_OR_STRING, find
+from .csource import _COMMENT_OR_STRING, find
 
 MAX_CACHED_HEADER_CHARS = 1024*1024
 _IDENT = r'[A-Za-z_]\w*'

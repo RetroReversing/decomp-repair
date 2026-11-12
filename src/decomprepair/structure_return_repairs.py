@@ -5,7 +5,7 @@ No shared declaration or record layout is invented, and the ordinary byte judge 
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .integer_repair_support import IDENT, edit, view
 from .pattern_repairs import close
 

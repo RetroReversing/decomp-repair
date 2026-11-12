@@ -1,7 +1,7 @@
 """Separate an invariant pointer field argument from the pointer's later lifetime."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .integer_repair_support import IDENT, edit
 
 FAMILIES = ('constant_pointer_capture_timing',)

@@ -1,7 +1,7 @@
 """Bounded hypotheses for narrowing call results at their comparison instead of in locals."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 

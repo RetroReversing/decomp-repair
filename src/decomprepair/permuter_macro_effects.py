@@ -6,7 +6,7 @@ local through an otherwise ordinary memory alias.
 """
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT
 
 DEFINE = re.compile(rf'(?m)^[ \t]*#[ \t]*define[ \t]+({IDENT})(\([^\n)]*\))?[ \t]*([^\n]*)')

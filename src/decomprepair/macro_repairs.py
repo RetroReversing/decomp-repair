@@ -2,7 +2,7 @@
 import difflib
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 
 IDENT = r'[A-Za-z_]\w*'
 

@@ -1,10 +1,10 @@
 """Repair target-backed live link-register placeholders and entry-caller workarounds."""
 import re
 
-from ..arch.mips_live_return_address import stores
-from ..forks.csource import _blank
 from . import constant_initializer_staging, integer_abi
+from .csource import _blank
 from .integer_repair_support import IDENT, INTEGER, edit, view
+from .mips_live_return_address import stores
 
 FAMILY = 'live_return_address'
 BUNDLE = 'live_return_address_initializers'

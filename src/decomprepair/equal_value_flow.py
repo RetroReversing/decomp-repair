@@ -6,8 +6,8 @@ locals. Unknown writes kill facts; no alias, memory or path-condition inference 
 import re
 from collections import deque
 
-from ..forks.csource import _blank
 from . import local_flow
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, refs
 
 FAMILIES = ('cfg_equal_value_increment', 'cfg_equal_value_alias')

@@ -6,7 +6,7 @@ available; a mapped line is an association, not a proof that it causes a mismatc
 import difflib
 import hashlib
 
-from ..forks.csource import _blank
+from .csource import _blank
 
 LIMIT = 4
 # These generators change standalone call statements or independent numeric operands.

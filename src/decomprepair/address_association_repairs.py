@@ -5,7 +5,7 @@ function calls or updates. Pointer bounds/types remain the game's responsibility
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .integer_repair_support import IDENT, NUMBER, edit
 from .pattern_repairs import close
 from .register_repairs import unwrap

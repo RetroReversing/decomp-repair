@@ -5,9 +5,9 @@ Only direct C32 builds and expression-only visible macros are eligible.
 """
 import re
 
-from ..forks.csource import _blank
 from . import local_flow
 from .allocator_call_guards import dominators
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, split_args, view
 from .pattern_repairs import close
 from .permuter_macro_effects import DEFINE

@@ -6,7 +6,7 @@ must still accept them. Shared headers and the callee's source are never edited.
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .integer_repair_support import IDENT, calls, edit, split_args, view
 
 FAMILY = 'matched_integer_prototype'

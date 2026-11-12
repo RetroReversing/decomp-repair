@@ -2,8 +2,8 @@
 
 import re
 
-from ..forks.csource import _blank, find
 from . import narrow_chains
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 LIMIT = 6

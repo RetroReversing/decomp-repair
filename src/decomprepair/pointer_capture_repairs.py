@@ -6,8 +6,8 @@ independent captures recover it. CFG liveness, not textual ordering, protects th
 import itertools
 import re
 
-from ..forks.csource import _blank
 from . import local_flow, pointer_pair_repairs
+from .csource import _blank
 from .integer_repair_support import IDENT, INTEGER, edit, locals_for, refs
 
 FAMILY = 'pointer_capture_reuse'

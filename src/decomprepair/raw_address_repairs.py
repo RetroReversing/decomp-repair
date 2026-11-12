@@ -5,8 +5,8 @@ These are hypotheses only: the ordinary linked-byte judge remains authoritative.
 import re
 from itertools import combinations
 
-from ..arch.mips_addresses import addresses
 from .integer_repair_support import edit, integer, view
+from .mips_addresses import addresses
 
 FAMILIES = ('raw_address_correction', 'raw_address_pair')
 NUMBER = r'0[xX][0-9A-Fa-f]{8}[uUlL]*'

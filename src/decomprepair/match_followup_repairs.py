@@ -1,9 +1,9 @@
 """Bounded same-width zero-test and declared pointer-call lifetime hypotheses; exact judge required."""
 import re
 
-from ..m2cfix import _split_top_level
 from .call_lifetime_repairs import block_path
 from .integer_repair_support import IDENT, edit, locals_for, refs, view
+from .m2cfix import _split_top_level
 from .pattern_repairs import close
 
 WORD = {'int', 'unsigned int', 'signed int', 's32', 'u32'}
@@ -82,5 +82,5 @@ def variants(source, name, header=''):
 
 
 def find_definition(source, name):
-    from ..forks.csource import find
+    from .csource import find
     return find(source,name) is not None

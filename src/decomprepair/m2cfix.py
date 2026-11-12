@@ -81,7 +81,7 @@ def expand_macros(source: str, header: str = '') -> str:
 
 def _field_macros(source: str, header: str) -> str:
     """Expand only a declared byte-field F macro, never an unrelated function with that name."""
-    from .forks.csource import _blank
+    from .csource import _blank
     if re.search(r'^\s*#\s*undef\s+F\b', header+'\n'+source, re.M):
         return source
     pattern = r'^\s*#\s*define\s+F\(\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*\)\s+([^\n]+)'
@@ -187,7 +187,7 @@ def _byte_field_loads(source: str, name: str, asm: str) -> str:
     Only direct incoming argument addresses before control flow are witnesses. Keep the original draft as the
     other candidate: this corrects a possible m2c memory interpretation, not an equivalent C expression.
     """
-    from .forks.csource import _blank, find
+    from .csource import _blank, find
     span = find(source, name)
     if span is None or re.search(r'^\s*#\s*define\s+M2C_FIELD\b', source, re.M):
         return source
@@ -256,7 +256,7 @@ def overlay_call_aliases(source: str, asm: str) -> str:
     for old in set(re.findall(r'\bfunc_[0-9A-Fa-f]+_(?:ovl_\d+|overlay_\d+)\b',source)):
         matches=[t for t in targets if t.split('_')[1].lower()==old.split('_')[1].lower()]
         if len(matches)==1:aliases[old]=matches[0]
-    from .forks.csource import _blank
+    from .csource import _blank
     clean=_blank(source)
     for hit in reversed(list(re.finditer(r'\bfunc_[0-9A-Fa-f]+_(?:ovl_\d+|overlay_\d+)\b',clean))):
         if hit[0] in aliases:source=source[:hit.start()]+aliases[hit[0]]+source[hit.end():]
@@ -268,7 +268,7 @@ def refine_draft(draft: str, name: str, asm: str) -> str | None:
     GCC games. Still uses m2c's macros for what it can't write plainly: the caller puts seeds.M2C_MACROS before it.
     None when the function's header can't be read."""
     body = _byte_field_loads(overlay_call_aliases(draft,asm), name, asm)
-    from .app.hardware_operation_repairs import variants as hardware_variants
+    from .hardware_operation_repairs import variants as hardware_variants
     if hardware := hardware_variants(body,name,"mips",asm):
         body = hardware[0][1]
     globals_: dict[str, str] = {}
@@ -320,7 +320,7 @@ def static_helpers(source: str) -> str:
     """`source` with its `inline` functions made `static inline`, so the compiler writes no copy of them out: a
     global helper (the permuter moves code into one named inline_fn) would be defined again by every function that
     got one, and the project would not link."""
-    from .forks.csource import _blank
+    from .csource import _blank
 
     clean = _blank(source)
     insertions = []
@@ -338,7 +338,7 @@ def stack_array(draft: str, name: str, canonical=False) -> str | None:
     Never infer length from an arbitrary stack offset or grow an escaped scalar without a bounded loop.
     The caller keeps this as an alternative and still compiles/links it with the normal judge.
     """
-    from .forks.csource import _blank, find
+    from .csource import _blank, find
 
     span = find(draft,name)
     if not span:

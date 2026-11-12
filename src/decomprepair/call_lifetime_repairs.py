@@ -4,7 +4,7 @@ No inline helpers, inferred pointer types or moved side effects. Unsupported C s
 """
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, edit, locals_for, split_args, view
 from .pattern_repairs import close
 

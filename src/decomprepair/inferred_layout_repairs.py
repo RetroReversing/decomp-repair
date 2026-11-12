@@ -6,8 +6,8 @@ The normal linked/object judge is the only acceptance path.
 """
 import re
 
-from ..forks.csource import find
 from .compiler_shape_repairs import NUMBER, SCALARS, number
+from .csource import find
 from .integer_repair_support import IDENT, edit, view
 from .pattern_repairs import close
 

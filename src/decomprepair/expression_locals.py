@@ -4,8 +4,8 @@ These are scheduling hypotheses, never equivalence claims; the ordinary exact ju
 """
 import re
 
-from .. import m2cfix
-from ..forks.csource import _blank, find
+from . import m2cfix
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 

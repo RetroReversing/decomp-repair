@@ -1,7 +1,7 @@
 """Small, bounded source hypotheses from repair captures, accepted only by the ordinary judge."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .pattern_repairs import close
 
 ID = r'[A-Za-z_]\w*'

@@ -5,7 +5,7 @@ return width. Unknown, conditional, variadic and indirect declarations remain wi
 """
 import re
 
-from ..forks.csource import find
+from .csource import find
 from .integer_repair_support import INTEGER, calls, edit, split_args, view
 from .repair_preflight import _PROTO
 

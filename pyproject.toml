@@ -1,0 +1,48 @@
+[project]
+name = "decomprepair"
+version = "0.1.0"
+description = "Targeted C rewrites that move a near-matching decompiled function closer to its original bytes. Proposes only; your compiler and judge decide."
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "LICENSE-decomp.wtf"]
+authors = [
+    { name = "sam wolfs", email = "appelsiensam@gmail.com" },  # decomp.wtf, where some of the readers began
+    { name = "NDelic" },  # decompdecomp
+    { name = "RetroReversing" },
+]
+requires-python = ">=3.12"
+dependencies = [
+    "capstone>=5.0.9",
+    "rabbitizer>=1.16.2",
+]
+
+[project.optional-dependencies]
+# guarded_call_repairs reads C with pycparser when it is there, and skips that check when it isn't
+parse = ["pycparser>=2.22"]
+
+[project.urls]
+Homepage = "https://github.com/RetroReversing/decomp-repair"
+Source = "https://github.com/RetroReversing/decomp-repair"
+
+[project.scripts]
+decomprepair = "decomprepair.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff==0.14.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["F", "I", "E9", "B006", "B008", "B023"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["decomprepair"]

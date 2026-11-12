@@ -6,7 +6,7 @@ Only simple unsigned bindings and braced bodies without control transfers qualif
 """
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, view
 from .pattern_repairs import close
 

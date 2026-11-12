@@ -1,7 +1,7 @@
 """Bounded index, scalar-lifetime and alias-load hypotheses; only exact judges accept them."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 ID=r'[A-Za-z_]\w*'
 NUM=r'(?:0x[0-9A-Fa-f]+|[0-9]+)'

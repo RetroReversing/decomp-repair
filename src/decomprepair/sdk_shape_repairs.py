@@ -1,7 +1,7 @@
 """Bounded SDK-style word setters using the candidate's declared record and payload types."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .integer_repair_support import IDENT, edit, view
 
 

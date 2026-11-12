@@ -26,7 +26,7 @@ def variants(source,name,arch,asm,header=''):
     if arch!='mips':return []
     part=view(source,name)
     if not part:return []
-    from ..forks.csource import _blank, find
+    from .csource import _blank, find
     context=_blank(header+'\n'+source[:part.opening]);proof=addresses(asm);out=[]
     for decl in re.finditer(r'\bextern\s+(?:const\s+)?(?:u8|s8|char|unsigned\s+char|signed\s+char)\s+(D_([89][0-9a-fA-F]{7}))\s*\[\s*\d*\s*\]\s*;',context):
         symbol,encoded=decl.groups();address=int(encoded,16)

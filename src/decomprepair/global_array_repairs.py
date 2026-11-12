@@ -15,7 +15,7 @@ These are the rewrites agents made by hand for float, byte and scalar globals in
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .integer_repair_support import edit
 from .pattern_repairs import close
 

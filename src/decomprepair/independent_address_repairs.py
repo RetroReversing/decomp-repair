@@ -5,11 +5,11 @@ no data, headers or symbol-table entries are changed, and the normal judge remai
 """
 import re
 
-from ..arch.mips_materializations import addresses
-from ..forks.csource import find
-from ..rom.symbols import SymbolTable
+from .csource import find
 from .equal_value_flow import macros_safe
 from .integer_repair_support import IDENT, NUMBER, edit, integer, view
+from .mips_materializations import addresses
+from .symbols import SymbolTable
 
 FAMILIES = ('independent_address_materialization',)
 LIMIT = 2

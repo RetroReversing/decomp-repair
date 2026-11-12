@@ -5,7 +5,7 @@ pass the ordinary compiler and linked/object judge. The shared draft pass reache
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 SCALAR = r'(?:s8|u8|s16|u16|s32|u32|s64|u64|f32|f64|char|short|int|long|float|double|unsigned\s+(?:char|short|int|long)|signed\s+(?:char|short|int|long))'

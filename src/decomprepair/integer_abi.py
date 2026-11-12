@@ -1,7 +1,7 @@
 """Resolve conservative scalar widths for the app's supported 32-bit repair targets."""
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 
 ARCHES = {'mips', 'ppc', 'x86', 'arm', 'thumb'}
 

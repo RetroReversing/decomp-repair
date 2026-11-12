@@ -1,10 +1,10 @@
 """Inline a real decrement/call/returned-count phase with its existing ANSI call contract."""
 import re
 
-from ..forks.csource import find
 from . import branch_call_support as support
 from . import integer_abi
 from .call_lifetime_repairs import block_path
+from .csource import find
 from .integer_repair_support import IDENT, edit
 
 FAMILY = 'inline_call_count'

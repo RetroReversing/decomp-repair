@@ -1,7 +1,7 @@
 """Local views for narrow repairs that can leave unconditional macro definitions opaque."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .integer_repair_support import View, view
 from .pattern_repairs import close
 

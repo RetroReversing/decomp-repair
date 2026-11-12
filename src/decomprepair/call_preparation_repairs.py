@@ -8,9 +8,9 @@ import itertools
 import re
 from collections import Counter
 
-from ..forks.csource import _blank, find
 from . import branch_call_support as support
 from . import integer_abi, local_flow
+from .csource import _blank, find
 from .integer_repair_support import IDENT, edit, view
 
 FAMILIES = ('aggregate_pointer_dispatch', 'call_preparation_bundle', 'aggregate_call_preparation', 'direct_field_call_preparation', 'effectful_dispatch_specialization')

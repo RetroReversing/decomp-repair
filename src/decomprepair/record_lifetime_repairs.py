@@ -5,8 +5,8 @@ at the boundary; address taking, calls, macros and unknown field types prevent a
 """
 import re
 
-from ..forks.csource import _blank
 from . import local_flow
+from .csource import _blank
 from .integer_repair_support import IDENT, INTEGER, NUMBER, edit, locals_for, refs, view
 from .pattern_repairs import close
 

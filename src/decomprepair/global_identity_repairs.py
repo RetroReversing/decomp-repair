@@ -5,8 +5,8 @@ macros stay opaque. This changes compiler alias information, not a verdict of eq
 """
 import re
 
-from ..arch.mips_addresses import addresses
 from .integer_repair_support import edit, view
+from .mips_addresses import addresses
 
 TYPE = r'(?:struct\s+)?[A-Za-z_]\w*'
 CELL = re.compile(r'\(\s*\*\s*\(\s*(?P<type>'+TYPE+r')\s*\*\s*\*\s*\)\s*'
@@ -57,7 +57,7 @@ def variants(source, name, arch, asm='', header=''):
         edits = [(a,b,symbol) for a,b in set(spans)]
         if not existing:
             # Place before the definition, not inside its parameter list or shared header.
-            from ..forks.csource import find
+            from .csource import find
             start = find(source,name)[0]
             edits.append((start,start,declaration+'\n'))
         candidate = edit(source,edits)

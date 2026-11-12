@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .pattern_repairs import close
 
 IDENT = r'[A-Za-z_]\w*'

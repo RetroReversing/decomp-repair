@@ -6,8 +6,8 @@ header changes are proposed; the ordinary compiler/link judge still decides matc
 """
 import re
 
-from ..forks.csource import _blank
 from . import integer_abi, local_flow
+from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, edit, locals_for, view
 from .pattern_repairs import close
 

@@ -7,8 +7,8 @@ from assigning a binary expression straight back to the array. The judge decides
 import itertools
 import re
 
-from ..forks.csource import _blank
 from . import integer_abi
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, locals_for, view
 
 FAMILY = 'loaded_byte_compound'

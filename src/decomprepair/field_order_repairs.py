@@ -1,7 +1,7 @@
 """Bounded field store order proposals with declared record and conversion guards."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .integer_repair_support import IDENT, NUMBER, edit, locals_for, view
 from .pointer_pair_repairs import qualified_types
 

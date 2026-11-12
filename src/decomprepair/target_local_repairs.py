@@ -5,7 +5,7 @@ hypotheses, not proofs of C equivalence; the ordinary destination judge must acc
 """
 import re
 
-from ..forks.csource import find
+from .csource import find
 from .inferred_layout_repairs import accesses
 from .integer_repair_support import IDENT, edit, integer, locals_for, view
 from .pattern_repairs import close

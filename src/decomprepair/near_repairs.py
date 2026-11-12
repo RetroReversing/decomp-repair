@@ -2,8 +2,8 @@
 
 import re
 
-from ..arch.mips_addresses import addresses
-from ..forks.csource import _blank, find
+from .csource import _blank, find
+from .mips_addresses import addresses
 
 
 def variants(source, name, arch, asm=''):

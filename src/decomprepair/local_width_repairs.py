@@ -5,7 +5,7 @@ an ordinary scalar declaration; the exact judge, not the cast alone, decides whe
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 

@@ -1,7 +1,7 @@
 """Bounded normalization/lifetime hypotheses; only the ordinary judge accepts candidates."""
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for, refs, view
 
 FAMILIES = ('call_return_normalization', 'split_narrow_lifetime', 'spill_normalization', 'halfword_store_normalization')

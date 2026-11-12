@@ -5,7 +5,7 @@ No SDK source is bundled or fetched. These rules apply to ordinary C on every pr
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .pattern_repairs import close
 
 FAMILIES = ('condition_assignment', 'conditional_output', 'switch_flag_loop', 'shared_tail_copy', 'scalar_initialization_placement', 'scalar_declaration_order', 'scalar_initialization_order', 'formatter_bundle')

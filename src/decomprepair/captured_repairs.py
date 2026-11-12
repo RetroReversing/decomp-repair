@@ -1,8 +1,8 @@
 """Small coordinated hypotheses from captured successes; the exact judge decides each candidate."""
 import re
 
-from .. import m2cfix
-from ..forks.csource import _blank, find
+from . import m2cfix
+from .csource import _blank, find
 from .pattern_repairs import close
 
 ID = r'[A-Za-z_]\w*'

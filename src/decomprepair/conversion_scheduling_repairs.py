@@ -5,10 +5,10 @@ only the normal compiler/link judge may retain an improvement.
 """
 import re
 
-from ..forks.csource import _code_only
 from . import branch_call_support as support
 from . import integer_abi
 from .call_lifetime_repairs import block_path
+from .csource import _code_only
 from .integer_repair_support import IDENT, INTEGER, edit, integer, locals_for, refs, view
 
 FAMILIES = ('debug_conversion_tail', 'delayed_narrow_capture', 'shared_shift_mask')

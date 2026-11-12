@@ -2,7 +2,7 @@
 import re
 from collections import Counter
 
-from ..rom.symbols import SymbolTable
+from .symbols import SymbolTable
 
 REG = r'(\$\w+)'
 IMM = r'(-?(?:0[xX][0-9a-fA-F]+|\d+))'

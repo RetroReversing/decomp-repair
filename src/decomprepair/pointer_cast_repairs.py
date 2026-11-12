@@ -5,7 +5,7 @@ inlining choice provisional: only the ordinary exact judge can accept the result
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 

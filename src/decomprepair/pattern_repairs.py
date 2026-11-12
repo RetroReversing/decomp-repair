@@ -2,9 +2,8 @@
 
 import re
 
-from .. import m2cfix
-from ..forks.csource import _blank, find
-from . import call_result_repairs, expression_locals, loop_repairs, temporary_repairs, value_repairs
+from . import call_result_repairs, expression_locals, loop_repairs, m2cfix, temporary_repairs, value_repairs
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 TYPE = r'(?:void\s*\*|[su](?:8|16|32)|unsigned\s+(?:char|short|int)|char|short|int)'

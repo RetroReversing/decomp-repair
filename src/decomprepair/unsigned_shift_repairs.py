@@ -5,7 +5,7 @@ Only unescaped ordinary unsigned-int locals with visible declarations qualify.
 """
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, edit, view
 from .pattern_repairs import close
 

@@ -2,7 +2,7 @@
 import re
 from dataclasses import dataclass
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, integer, split_args
 
 OPS = r'(?:<<|>>|[+\-&|^])'

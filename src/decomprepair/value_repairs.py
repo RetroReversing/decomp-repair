@@ -1,7 +1,7 @@
 """Small type/lifetime and addition hypotheses isolated from repair suggestions."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 
 def close(text, start):

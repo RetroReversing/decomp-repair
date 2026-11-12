@@ -6,7 +6,7 @@ are supported. Unknown preprocessing and multiline invocations stay untouched.
 import re
 from collections import Counter
 
-from .forks.csource import _blank
+from .csource import _blank
 
 _IDENT = r'[A-Za-z_]\w*'
 _DEFINE = re.compile(r'^[^\S\n]*#[^\S\n]*define[^\S\n]+('+_IDENT+r')\(([^()\n]*)\)[^\S\n]+([^\n]+)', re.M)

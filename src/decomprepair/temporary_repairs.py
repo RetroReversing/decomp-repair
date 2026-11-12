@@ -1,7 +1,7 @@
 """Small typed-expression hypotheses; only the exact judge can accept their scheduling effects."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 INTEGER = r'(?:s32|u32|int|unsigned\s+int)'

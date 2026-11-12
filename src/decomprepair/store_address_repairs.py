@@ -5,7 +5,7 @@ These bounded source hypotheses still need the ordinary linked/object judge to a
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .register_repairs import unwrap
 
 IDENT = r'[A-Za-z_]\w*'

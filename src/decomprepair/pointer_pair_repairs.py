@@ -1,9 +1,9 @@
 """Typed pointer lifetime hypotheses and small declaration-order bridges, judged normally."""
 import re
 
-from ..forks.csource import _blank
 from . import local_flow
 from .call_lifetime_repairs import block_path
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, locals_for, refs, split_args, view
 from .pattern_repairs import close
 

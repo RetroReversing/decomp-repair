@@ -7,8 +7,8 @@ requires the helper to disappear; the ordinary judge still decides exactness.
 """
 import re
 
-from ..forks.csource import _blank, find
 from . import branch_call_support, integer_abi, local_flow
+from .csource import _blank, find
 from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for, view
 from .pattern_repairs import close
 

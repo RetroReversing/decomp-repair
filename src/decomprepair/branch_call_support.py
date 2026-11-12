@@ -4,8 +4,8 @@ These readers never infer missing prototypes or evaluate macros. Unknown syntax 
 """
 import re
 
-from ..forks.csource import _blank
 from . import integer_abi, local_flow
+from .csource import _blank
 from .integer_repair_support import IDENT, INTEGER, split_args, view
 from .pattern_repairs import close
 

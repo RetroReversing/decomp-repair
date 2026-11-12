@@ -6,10 +6,10 @@ scalar values may be discarded; no shared declarations or callee bodies change.
 """
 import re
 
-from ..forks.csource import _blank, find
 from . import local_flow, matched_prototype_repairs
 from .allocator_call_guards import dominators
 from .call_lifetime_repairs import block_path
+from .csource import _blank, find
 from .integer_repair_support import IDENT, NUMBER, calls, edit, locals_for, refs, split_args, view
 
 CALL = 'matched_zero_argument_call'

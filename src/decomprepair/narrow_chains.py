@@ -1,7 +1,7 @@
 """Coupled byte-value lifetime hypotheses, accepted only by the ordinary exact judge."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 

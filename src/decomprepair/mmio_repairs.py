@@ -1,7 +1,7 @@
 """Explicit lvalues for named volatile hardware registers, never scalar-value-to-address rewrites."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 # m2c writes a register access as `*(s32 *)0xA4040010`. The original source read and wrote it through a
 # volatile type, often the unsigned one; without volatile the compiler may drop, merge or reorder the access.

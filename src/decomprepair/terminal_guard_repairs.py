@@ -5,7 +5,7 @@ Every proposal still needs the ordinary compiler and exact byte judge.
 """
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, locals_for, view
 from .pattern_repairs import close
 

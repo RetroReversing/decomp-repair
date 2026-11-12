@@ -5,9 +5,9 @@ observable calls; ordinary compilation still decides whether a proposal helps.
 """
 import re
 
-from ..forks.csource import _blank
 from . import integer_abi
 from .call_lifetime_repairs import block_path
+from .csource import _blank
 from .integer_repair_support import IDENT, INTEGER, edit, locals_for
 from .pattern_repairs import close
 from .repair_source_view import read

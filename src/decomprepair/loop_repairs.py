@@ -1,7 +1,7 @@
 """Bounded induction-variable alternatives, with no loop condition inversion or speculative trip count."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 IDENT=r'[A-Za-z_]\w*'
 TYPE=r'(?:f32|f64|s32|u32|s16|u16|s8|u8|float|double|int|char)'

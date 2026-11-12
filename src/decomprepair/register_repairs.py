@@ -1,7 +1,7 @@
 """Bounded register-allocation hypotheses; only the ordinary exact judge can accept them."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .pattern_repairs import close
 
 IDENT = r'[A-Za-z_]\w*'

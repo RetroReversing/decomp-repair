@@ -1,9 +1,9 @@
 """Bounded hypotheses from verified repair examples; every candidate still needs the ordinary byte judge."""
 import re
 
-from ..arch.mips import prepared_call_arguments
-from ..forks.csource import _blank, find
-from ..m2cfix import _split_top_level
+from .csource import _blank, find
+from .m2cfix import _split_top_level
+from .mips import prepared_call_arguments
 from .pattern_repairs import close
 
 ID = r'[A-Za-z_]\w*'

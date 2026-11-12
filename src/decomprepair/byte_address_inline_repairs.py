@@ -6,9 +6,9 @@ Unknown C and preprocessing give no proposal, never an inferred ABI or qualifier
 """
 import re
 
-from ..forks.csource import _blank, find
 from . import byte_increment_repairs as expressions
 from . import debug_boundary_repairs, integer_abi, pointer_pair_repairs
+from .csource import _blank, find
 from .integer_repair_support import IDENT, edit, view
 from .pattern_repairs import close
 

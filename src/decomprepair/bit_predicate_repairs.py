@@ -5,8 +5,8 @@ unknown widths or macro operands are extracted. These are compiler hypotheses on
 """
 import re
 
-from ..forks.csource import _blank, find
 from . import integer_abi
+from .csource import _blank, find
 from .integer_repair_support import IDENT, INTEGER, edit, view
 
 FAMILIES = ('inline_bit_predicate', 'staged_bit_predicate')

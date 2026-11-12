@@ -23,7 +23,7 @@ _DECLARATION = re.compile(r'^[ \t]*(?:extern[ \t]+)?((?:struct[ \t]+)?[A-Za-z_]\
 
 
 def _blank(text: str) -> str:
-    from .forks.csource import _blank as blank
+    from .csource import _blank as blank
     return blank(text)
 
 
@@ -147,7 +147,7 @@ def _width(text: str, at: int, end: int, scalars: dict[str, str]) -> str:
 
 def typed_dereferences(source: str, name: str) -> str:
     """`source` with each dereference of an integer given the pointer type its access implies."""
-    from .forks.csource import find
+    from .csource import find
     span = find(source, name)
     if not span:
         return source

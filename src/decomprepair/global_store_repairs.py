@@ -1,7 +1,7 @@
 """Scalar-address lifetimes and split bitmask stores, proposed to the ordinary exact judge."""
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, INTEGER, NUMBER, edit, refs, view
 from .pattern_repairs import close
 

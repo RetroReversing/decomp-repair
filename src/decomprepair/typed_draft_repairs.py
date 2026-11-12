@@ -1,8 +1,8 @@
 """Translate supplied raw field macros only through an unambiguous existing record layout."""
 import re
 
-from ..forks.csource import _blank
 from .compiler_shape_repairs import SCALARS, fields
+from .csource import _blank
 
 ID=r'[A-Za-z_]\w*'
 

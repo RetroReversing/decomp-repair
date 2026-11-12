@@ -1,7 +1,7 @@
 """One mismatched external callee may be a copied overlay name; judge every hypothesis."""
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'target_callee_name'

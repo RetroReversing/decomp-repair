@@ -6,7 +6,7 @@ call, memory access or control edge; the destination judge still decides matches
 import itertools
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, edit, view
 from .pattern_repairs import close
 

@@ -9,7 +9,7 @@ in one N64 game's object tables.
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 from .integer_repair_support import edit
 from .pattern_repairs import close
 

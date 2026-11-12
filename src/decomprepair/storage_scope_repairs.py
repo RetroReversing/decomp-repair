@@ -5,7 +5,7 @@ alone is neutral or worse. Keep the bundle small; the normal linked/object judge
 """
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 IDENT = r'[A-Za-z_]\w*'
 

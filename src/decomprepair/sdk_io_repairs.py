@@ -1,7 +1,7 @@
 """Target-supported I/O source hypotheses. No guessed addresses, fields or match verdicts."""
 import re
 
-from ..forks.csource import _blank
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, view
 
 FAMILIES=('proven_mmio_forms','io_local_storage','byte_record_copy')

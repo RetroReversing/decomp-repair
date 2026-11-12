@@ -1,8 +1,8 @@
 """Expose one proven byte-load macro address without expanding opaque macro effects."""
 import re
 
-from ..forks.csource import _blank, find
 from . import integer_abi
+from .csource import _blank, find
 from .integer_repair_support import IDENT, NUMBER, split_args
 from .pattern_repairs import close
 

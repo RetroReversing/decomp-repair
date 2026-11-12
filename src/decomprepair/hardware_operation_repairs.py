@@ -1,7 +1,7 @@
 """Recognize a fixed supported hardware operation, never infer arbitrary instruction streams."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 FAMILY = 'mips_debug_break'
 FAMILIES = (FAMILY,)

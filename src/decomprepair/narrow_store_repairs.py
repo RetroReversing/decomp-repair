@@ -5,11 +5,11 @@ These are ordinary-judge proposals. No field layout, integer width or dead value
 import ast
 import re
 
-from ..forks.csource import _blank
 from . import branch_call_support as support
 from . import integer_abi, local_flow
 from .call_lifetime_repairs import block_path
 from .compiler_shape_repairs import fields
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, view
 
 FAMILIES = ('dead_assignment_narrow_capture', 'narrow_field_update_fold', 'narrow_store_sequence')

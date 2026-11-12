@@ -1,7 +1,7 @@
 """Bounded operand-order hypotheses; every candidate still needs the ordinary exact judge."""
 import re
 
-from ..forks.csource import find
+from .csource import find
 from .integer_repair_support import IDENT, edit, view
 
 # Only simple reads: no calls, increments, dereferences of computed expressions or nested indices.

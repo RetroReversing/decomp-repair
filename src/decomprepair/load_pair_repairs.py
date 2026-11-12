@@ -1,7 +1,7 @@
 """Bounded paired volatile-load scheduling hypotheses, accepted only by the exact judge."""
 import re
 
-from ..forks.csource import _blank, find
+from .csource import _blank, find
 
 
 def variants(source,name):
