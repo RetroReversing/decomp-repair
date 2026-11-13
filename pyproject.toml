@@ -1,6 +1,6 @@
 [project]
 name = "decomprepair"
-version = "0.2.0"
+version = "0.2.1"
 description = "Targeted C rewrites that move a near-matching decompiled function closer to its original bytes. Proposes only; your compiler and judge decide."
 readme = "README.md"
 license = "AGPL-3.0-only"

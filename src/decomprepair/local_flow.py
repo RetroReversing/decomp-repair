@@ -32,7 +32,10 @@ class Flow:
             raise ValueError('too many locals')
         self.names = {d['name'] for d in self.locals}
         self.nodes, self.labels, self.gotos = [], {}, []
-        self.entry = self.sequence(part.opening+1, close(part.clean, part.opening, '{', '}')-1, None, None, None, None)
+        end = close(part.clean, part.opening, '{', '}')
+        if end is None:
+            raise ValueError('unclosed function body')
+        self.entry = self.sequence(part.opening+1, end-1, None, None, None, None)
         for index, label in self.gotos:
             if label not in self.labels:
                 raise ValueError('unknown label')
