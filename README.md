@@ -59,6 +59,13 @@ hints, never match verdicts. `mips_count`, `mips_compare`, `mips_status`, `mips_
 header a compiler puts before each file so they compile, and their `candidate(asm, name, registered)` proposes only
 when the caller says its compiler includes it.
 
+The permuter's rewrites are here too. `permuter` makes simple random rewrites (statement and declaration order,
+casts, `register`), `permuter_local` a few cheap ordering hypotheses, and `permuter_initialization` rejects variants
+that read a local before it's set. `permuter_gen.py` is a program, not a module: run it by path with
+[decomp-permuter](https://github.com/simonlindholm/decomp-permuter)'s Python and folder, and it writes that
+randomizer's variants, guarded by its helpers beside it (`permuter_capture`, `permuter_dependencies`,
+`permuter_formatting`). Running the candidates, compiling and scoring them is the caller's job.
+
 ## Develop
 
 ```bash
