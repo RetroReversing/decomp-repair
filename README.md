@@ -52,6 +52,13 @@ returns sources or `(label, source)` pairs. The other modules are the readers th
 text, `mips` and `mips_*` for MIPS code, `symbols` for symbol tables, `m2cfix` for m2c output. `propose.py` runs
 them all.
 
+The `mips_*` readers also give evidence about a byte difference that a repair can act on: argument and literal
+differences, frame sizes, return paths, control-flow regions, runtime helpers, small leaf templates. They are
+hints, never match verdicts. `mips_count`, `mips_compare`, `mips_status`, `mips_fcsr` and
+`mips_status_return_spacing` propose fixed CP0/FPU leaves that C can't express; `mips_debug_break.header()` is the
+header a compiler puts before each file so they compile, and their `candidate(asm, name, registered)` proposes only
+when the caller says its compiler includes it.
+
 ## Develop
 
 ```bash
