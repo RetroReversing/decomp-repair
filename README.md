@@ -66,6 +66,12 @@ that read a local before it's set. `permuter_gen.py` is a program, not a module:
 randomizer's variants, guarded by its helpers beside it (`permuter_capture`, `permuter_dependencies`,
 `permuter_formatting`). Running the candidates, compiling and scoring them is the caller's job.
 
+Also: `switch_tables` (case groups in the target's jump-table order), `switch_constant_dispatch`,
+`initializer_clusters`, `loop_storage_shapes`, `callee_contracts` (prototype mismatches), `layout_frontiers`
+(reapply an edit along a saved layout of the source), `expression_recipes` (templates from an edit that matched;
+storing them is the caller's), `repair_tokens` (lossless C tokens), and `ps1_gte`, the fixed PS1 GTE macros a
+compiler can put before each file.
+
 ## Develop
 
 ```bash
