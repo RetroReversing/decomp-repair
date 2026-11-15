@@ -72,6 +72,11 @@ Also: `switch_tables` (case groups in the target's jump-table order), `switch_co
 storing them is the caller's), `repair_tokens` (lossless C tokens), and `ps1_gte`, the fixed PS1 GTE macros a
 compiler can put before each file.
 
+From decompdecomp 1.0.10-alpha.2: `permuter_gen` reads MSVC's words (`__int64`, calling conventions,
+`__declspec`) and a C++ function's own C (`msvc_as_c`, `cxx_as_c`, `Restorer`), so PC and Xbox near misses reach
+decomp-permuter; `csource` reads conditional compilation (`surely_compiled`, `hidden_by`, `at_file_scope`); and
+`mips` says what's alignment padding (`is_padding`, `ends_in_delay_branch`).
+
 ## Develop
 
 ```bash
