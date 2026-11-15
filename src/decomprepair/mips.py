@@ -571,3 +571,19 @@ def edit_hint(target_text: str, compiled_text: str) -> tuple | None:
         unsigned = target.endswith('u') and target not in ('addu', 'subu', 'mult', 'div') or target in ('srl', 'srlv')
         return ('signed', not unsigned)
     return None
+
+
+def is_padding(code: bytes, big_endian: bool) -> bool:
+    """Alignment padding is MIPS nop = 0x00000000 (sll $zero): an all-zero block is padding (endian-agnostic)."""
+    return bool(code) and not any(code)
+
+
+def ends_in_delay_branch(code: bytes, big_endian: bool) -> bool:
+    """Whether `code`'s last instruction has a delay slot, so the word after it belongs to this function: a
+    trailing nop right after a jump is the branch's delay slot, not alignment padding."""
+    import rabbitizer
+
+    if not code or len(code) % 4:
+        return False
+    order = "big" if big_endian else "little"
+    return bool(rabbitizer.Instruction(int.from_bytes(code[-4:], order)).hasDelaySlot())
