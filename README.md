@@ -77,6 +77,20 @@ From decompdecomp 1.0.10-alpha.2: `permuter_gen` reads MSVC's words (`__int64`, 
 decomp-permuter; `csource` reads conditional compilation (`surely_compiled`, `hidden_by`, `at_file_scope`); and
 `mips` says what's alignment padding (`is_padding`, `ends_in_delay_branch`).
 
+## Indexed record copies
+
+`indexed_record_repairs` proposes bounded compositions for repeated indexed-record copies.
+It uses existing record layouts, pure subscripts and raw MIPS base evidence to try subarray
+anchors, retained word loads, explicit conversion lifetimes, byte-store order, byte decodes
+and narrow index carriers. Unrelated ordinary fields remain eligible beside a volatile word;
+existing volatile access order is preserved. Candidate-owned word/counter qualification is
+an explicit target-supported hypothesis, never a shared-header change.
+
+At most 64 complete recipe candidates are generated. There is no 512-instruction body cutoff
+for this lane; source size, record counts and component choices remain bounded. Unknown
+layouts, effectful indices, qualified byte stores, ambiguous roots, observable line macros
+and unsupported conversion macros decline. The library never compiles or accepts a result.
+
 ## Develop
 
 ```bash
