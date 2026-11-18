@@ -58,3 +58,24 @@ def test_implicit_byte_forms_and_supported_architectures():
                     source.replace('u8 *p = global;', 'u8 *p = global, *other;'),
                     source.replace('p + 30', 'p + offset')):
         assert not repair.variants(invalid, 'f', 'mips')
+
+
+def test_m2c_field_macros_form_a_record():
+    # m2c writes every field access as M2C_FIELD: an N64 function needed `temp_a0` as a record (gcc 2.7.2 lets a
+    # global's load pass a store through a struct member, not through a cast pointer).
+    from decomprepair import inferred_layout_repairs as layouts
+    source = '''void f(void *temp_a0, u8 x) {
+    if (M2C_FIELD(temp_a0, u16 *, 2) == 0) {
+        M2C_FIELD(temp_a0, u16 *, 2) = 1U;
+        M2C_FIELD(temp_a0, u8 *, 1) = 0xFF;
+        M2C_FIELD(temp_a0, u8 *, 0) = x;
+    }
+}
+'''
+    (family, out), = layouts.variants(source, 'f', 'mips')
+    assert family == 'inferred_record_layout'
+    assert ('typedef struct { unsigned char field_0; unsigned char field_1; unsigned short field_2; } '
+            '__repair_record_temp_a0;') in out
+    assert '((__repair_record_temp_a0*)temp_a0)->field_2 = 1U;' in out and 'M2C_FIELD' not in out
+    # overlapping fields stay as they are
+    assert layouts.variants(source.replace('M2C_FIELD(temp_a0, u8 *, 1)', 'M2C_FIELD(temp_a0, s32 *, 0)'), 'f', 'mips') == []
