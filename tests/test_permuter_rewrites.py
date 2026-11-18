@@ -51,3 +51,12 @@ def test_the_generator_is_a_program_beside_its_helpers():
     run = subprocess.run([sys.executable, '-I', '-c', 'import ast,sys; ast.parse(open(sys.argv[1]).read())',
                           str(folder / 'permuter_gen.py')], capture_output=True)
     assert run.returncode == 0
+
+
+def test_rewrites_name_only_declared_typedefs():
+    # An N64 function's C with no zlib in sight: `(uInt)arg0` made nearly every rewrite fail to compile.
+    source = 'int f(int a) {\n    int x;\n    x = a + 1;\n    return x;\n}\n'
+    outs = {mutate(source, random.Random(seed)) for seed in range(400)}
+    assert not any(t in (v or '') for v in outs for t in ('uInt', 'uLong', 's32', 'u32'))
+    with_header = {mutate(source, random.Random(seed), header='typedef int s32;') for seed in range(400)}
+    assert any('s32' in (v or '') for v in with_header) and not any('uInt' in (v or '') for v in with_header)
