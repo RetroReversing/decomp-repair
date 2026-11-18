@@ -19,7 +19,9 @@ from .csource import _blank, find
 from .integer_repair_support import IDENT, split_args
 from .pattern_repairs import close
 
-FAMILY = 'float_bit_arguments'
+# The label observed_repairs' narrower version uses (fixed constants, `s32`/`int` prototypes only), so ranking that
+# learned to prefer it applies here too.
+FAMILY = 'float_argument_bits'
 FAMILIES = (FAMILY,)
 LIMIT = 4
 INTEGER_PARAMETER = re.compile(r'\s*(?:(?:signed|unsigned|const)\s+)*(?:s32|u32|int|long|M2C_UNK|M2C_UNK32|unsigned)'

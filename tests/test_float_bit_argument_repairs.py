@@ -24,7 +24,7 @@ def test_float_text_is_short_and_exact():
 def test_bits_become_a_float_literal_and_an_f32_parameter():
     # An N64 game (gcc 2.7.2 -O2): only `250.0f` to an f32 parameter scheduled its `lui $a1` first.
     outs = [out for family, out in fba.variants(SOURCE, 'f', '', 'mips', O32)]
-    assert all(family == 'float_bit_arguments' for family, _ in fba.variants(SOURCE, 'f', '', 'mips', O32))
+    assert all(family == 'float_argument_bits' for family, _ in fba.variants(SOURCE, 'f', '', 'mips', O32))
     together, only_g, only_h = outs
     assert 's32 g(s32, f32, f32, void *);' in together and 's32 h(void *, s32, f32, s32);' in together
     assert 'h(arg0, arg1, 0.5f, 1);' in together and 'g(0, 250.0f, 2.0f, arg0);' in together
