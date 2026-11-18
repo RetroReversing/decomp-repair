@@ -63,3 +63,78 @@ def test_changes_meaning_are_left_alone():
 
 def test_ternary_in_the_rest_is_not_mistaken_for_a_label():
     assert shape.variants(EARLY.replace('(s32)(b', 'b ? 1 : (s32)(b'), 'f')
+
+
+GUARDED = '''s32 func_80018318(void *arg0) {
+    if (arg0 != NULL) {
+        return func_80018364(*(s32 *)((s8 *)arg0 + 0x18), *(u16 *)((s8 *)arg0 + 0x1C), func_80018030(*(u16 *)((s8 *)arg0 + 0x1E)) & 0xFFFF);
+    }
+    return 0;
+}
+'''
+
+
+def test_two_returns_become_one_exit_through_a_local():
+    # An N64 game built with gcc 2.7.2 -O2: `j` over the zero arm with an empty delay slot, the zero arm laid out
+    # last, is one return through a local; two returns put the zero in the delay slot instead.
+    outs = [out for _, out in shape.variants(GUARDED, 'func_80018318') if 'return ret;' in out]
+    assert len(outs) == 2
+    first, flipped = outs
+    assert '''s32 func_80018318(void *arg0) {
+    s32 ret;
+    if (arg0 != NULL) {
+        ret = func_80018364(''' in first
+    assert '''    } else {
+        ret = 0;
+    }
+    return ret;
+}''' in first
+    assert '''    if (arg0 == NULL) {
+        ret = 0;
+    } else {
+        ret = func_80018364(''' in flipped
+    assert all(out.count('return') == 1 for out in outs)
+
+
+def test_single_exit_keeps_the_rest_and_the_arm_statements():
+    source = '''u8 *g(u8 *p, s32 n) {
+    s32 i;
+
+    if (p == NULL) {
+        n = 0;
+        return NULL;
+    }
+    i = n + 1;
+    p[i] = 2;
+    return p + i;
+}
+'''
+    out = next(out for _, out in shape.variants(source, 'g') if 'return ret;' in out)
+    assert '''u8 *g(u8 *p, s32 n) {
+    u8 *ret;
+    s32 i;''' in out
+    assert '''    if (p == NULL) {
+        n = 0;
+        ret = NULL;
+    } else {
+        i = n + 1;
+        p[i] = 2;
+        ret = p + i;
+    }
+    return ret;''' in out
+
+
+def test_single_exit_left_alone_where_it_would_change_meaning():
+    def none(source, name='func_80018318'):
+        return not any('return ret' in out for _, out in shape.variants(source, name))
+    assert none(GUARDED.replace('s32 func_80018318', 'void func_80018318').replace('return 0;', 'return;'))
+    # another return in the rest, a goto, an else already there
+    assert none(GUARDED.replace('    return 0;\n', '    if (arg0) return 1;\n    return 0;\n'))
+    assert none(GUARDED.replace('    return 0;\n', '    goto x;\nx:\n    return 0;\n'))
+    assert none(GUARDED.replace('    }\n    return 0;', '    } else {\n        return 0;\n    }'))
+
+
+def test_single_exit_local_does_not_clash():
+    out = next(out for _, out in shape.variants(GUARDED.replace('(void *arg0)', '(void *ret)').replace('arg0', 'ret'),
+                                                'func_80018318') if 'return ret2;' in out)
+    assert 's32 ret2;' in out

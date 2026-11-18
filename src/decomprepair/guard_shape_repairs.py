@@ -1,11 +1,15 @@
 """Guard shapes m2c writes from the branch layout, where the original source stated them the other way round.
 
-Two rewrites, both exact in meaning, so the compiler's own output is the only thing that changes:
+Rewrites exact in meaning, so the compiler's own output is the only thing that changes:
 - `if (p == NULL) { return V; } do { ... } while (p != NULL); return V;` is `while (p != NULL) { ... }`: m2c
   puts the loop's entry test in front of a bottom-tested loop, the source had one top-tested loop.
 - a void function's leading `if (c) { A; return; } REST` is `if (!c) { REST } else { A }`: m2c turns the else
   into an early return.
-Both are repairs agents made by hand in an N64 game built with gcc 2.7.2; the compiler decides, as for every family.
+- `if (c) { A; return X; } REST; return Y;` is `T r; if (c) { A; r = X; } else { REST; r = Y; } return r;` (and
+  with the arms the other way round): the source returned once, through a local. gcc 2.7.2 then lays the else arm
+  after the then arm, jumping over it with `j` and an empty delay slot; m2c's `if (c) { return X; } return Y;` gives
+  `bnez` and a `j` with the zero in its delay slot instead.
+All are repairs agents made by hand in an N64 game built with gcc 2.7.2; the compiler decides, as for every family.
 """
 import re
 
@@ -111,6 +115,70 @@ def _value_returns(source, part):
     return result
 
 
+def _return_type(part):
+    """The function's return type, or None for void, a pointer to function or anything unusual."""
+    head = part.clean[:part.opening]
+    head = re.sub(r'(?m)^[ \t]*#.*$', '', head)
+    comment = head.rfind('*/')
+    head = head[max(head.rfind(';'), head.rfind('}'), comment + 1 if comment >= 0 else -1) + 1:]
+    found = re.fullmatch(r'\s*((?:\w+\s+)*?\w+[\s*]*?)\s*\b\w+\s*\([^()]*\)\s*', head, re.S)
+    if not found:
+        return None
+    kind = re.sub(r'\b(?:static|inline|extern|__inline__|__inline)\b', '', found[1])
+    stars = kind.count('*')
+    kind = ' '.join(kind.replace('*', ' ').split())
+    # (as a declaration's prefix: `u8 *` for `u8 *ret`, `s32 ` for `s32 ret`)
+    return None if not kind or kind == 'void' and not stars else kind + (' ' + '*' * stars if stars else ' ')
+
+
+def _fresh(clean, base='ret'):
+    name, n = base, 1
+    while re.search(r'\b' + name + r'\b', clean):
+        n += 1
+        name = f'{base}{n}'
+    return name
+
+
+def _assigning(text, local, value, deeper):
+    """An arm's statements with its `return value;` as `local = value;`, one level in when `deeper`."""
+    lines = text.strip('\n').splitlines()
+    if deeper:
+        lines = ['    ' + line if line.strip() else line for line in lines]
+    body = '\n'.join(line for line in lines if line.strip()).rstrip()
+    return (body + '\n' if body else '') + f'        {local} = {value};'
+
+
+def _single_exits(source, part):
+    """`if (c) { A; return X; } REST; return Y;` returning once through a local, either arm first."""
+    clean = part.clean
+    kind = _return_type(part)
+    stop = clean.rfind('}', 0, part.end)
+    if not kind:
+        return []
+    exits = re.compile(r'\breturn\s+([^;{}]+?)\s*;\s*$', re.S)
+    result = []
+    for start, condition, opening, after in _guards(part):
+        inverse = opposite(condition)
+        arm, rest = clean[opening+1:after-1], clean[after:stop]
+        arm_exit, rest_exit = exits.search(arm), exits.search(rest)
+        if not inverse or not arm_exit or not rest_exit or re.match(r'\s*else\b', rest):
+            continue
+        # One return in each arm, its last statement; a goto or label could enter either from outside.
+        if len(re.findall(r'\breturn\b', arm + rest)) != 2 or \
+                re.search(r'\bgoto\b|(?m:^\s*(?!case\b|default\b)\w+\s*:(?!:))', arm + rest):
+            continue
+        local = _fresh(clean)
+        then = _assigning(source[opening+1:opening+1+arm_exit.start()], local,
+                          source[opening+1+arm_exit.start(1):opening+1+arm_exit.end(1)], False)
+        other = _assigning(source[after:after+rest_exit.start()], local,
+                           source[after+rest_exit.start(1):after+rest_exit.end(1)], True)
+        declaration = (part.opening + 1, part.opening + 1, f'\n    {kind}{local};')
+        for test, first, second in ((condition.strip(), then, other), (inverse, other, then)):
+            text = f'if ({test}) {{\n{first}\n    }} else {{\n{second}\n    }}\n    return {local};\n'
+            result.append(edit(source, [declaration, (start, stop, text)]))
+    return result
+
+
 def variants(source, name):
     part = view(source, name)
     if not part or part.opening < 0:
@@ -119,4 +187,5 @@ def variants(source, name):
     for rewrite in (_entry_tests, _early_returns, _value_returns):
         for start, stop, text in rewrite(source, part):
             result.append((FAMILY, edit(source, [(start, stop, text)])))
-    return result[:4]
+    # Single exits come with both arm orders and need their own room: the cap kept only the first guards' shapes.
+    return result[:4] + [(FAMILY, text) for text in _single_exits(source, part)][:4]
