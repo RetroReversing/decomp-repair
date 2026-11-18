@@ -24,9 +24,21 @@ def strip_outer(text):
     return text
 
 
-def accesses(body, implicit_bases=()):
-    """Read only complete cast-and-byte-offset dereferences, including m2c's extra parentheses."""
+def field_macros(body):
+    """m2c's own `M2C_FIELD(base, T *, offset)` on a plain variable: the same byte-offset access, an lvalue too.
+    m2c writes every field this way, so a record never formed from a draft: an N64 function needed one, its
+    struct member accesses being what let gcc 2.7.2 schedule a global's load across a store through the pointer."""
     found = []
+    for hit in re.finditer(rf'\bM2C_FIELD\(\s*({IDENT})\s*,\s*({TYPE})\s*\*\s*,\s*({NUMBER})\s*\)', body):
+        typ = ' '.join(hit[2].split())
+        found.append((hit.start(), hit.end(), hit[1], CANONICAL.get(typ, typ), number(hit[3])))
+    return found
+
+
+def accesses(body, implicit_bases=()):
+    """Read only complete cast-and-byte-offset dereferences, including m2c's extra parentheses and its
+    `M2C_FIELD` macro."""
+    found = field_macros(body)
     for star in re.finditer(r'\*', body):
         for wrappers in range(3):
             pos = star.end()

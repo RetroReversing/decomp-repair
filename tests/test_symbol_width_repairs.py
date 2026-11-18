@@ -1,0 +1,36 @@
+"""A `char` symbol's accesses at the width the target's own instructions use."""
+from decomprepair import symbol_width_repairs as w
+
+SOURCE = '''extern char D_8010D784[];
+extern char D_8010D7E1[];
+
+void f(s32 arg0, s32 off) {
+    *(D_8010D784 + off) = arg0;
+    *(D_8010D7E1 + off) = 0;
+}
+'''
+ASM = '''/* 9A1FC 800995FC AC30D784 */  sw         $s0, %lo(D_8010D784)($at)
+/* 9A2F0 800996F0 A020D7E1 */  sb         $zero, %lo(D_8010D7E1)($at)
+'''
+
+
+def test_word_store_from_the_target():
+    # An N64 function stored a word where m2c's char array gave `sb`.
+    (family, out), = w.variants(SOURCE, 'f', ASM)
+    assert family == 'symbol_access_width'
+    assert '*(s32 *)(D_8010D784 + off) = arg0;' in out and '*(D_8010D7E1 + off) = 0;' in out
+
+
+def test_widths():
+    assert w.widths('lhu $v0, %lo(D_1)($v0)\nsh $v0, %lo(D_1)($at)', 'D_1') == {'u16', 's16'}
+    out = w.variants(SOURCE, 'f', 'lhu $v0, %lo(D_8010D784)($v0)\nsh $v0, %lo(D_8010D784)($at)')[0][1]
+    assert '*(u16 *)(D_8010D784 + off)' in out
+
+
+def test_left_alone():
+    assert w.variants(SOURCE, 'f', '') == []
+    # mixed widths, or bytes too: no single answer
+    assert w.variants(SOURCE, 'f', ASM.replace('sb         $zero, %lo(D_8010D7E1)', 'sb  $zero, %lo(D_8010D784)')) == []
+    assert w.variants(SOURCE, 'f', ASM + 'lh $v0, %lo(D_8010D784)($v0)\n') == []
+    # a symbol of known type is not touched
+    assert w.variants(SOURCE.replace('extern char D_8010D784[];', 'extern s32 D_8010D784;'), 'f', ASM) == []
