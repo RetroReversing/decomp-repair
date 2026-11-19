@@ -52,8 +52,9 @@ def variants(source, name, asm):
     if not missing or len(missing) != len(extra) or len(missing) > 8:
         return []
     result = []
-    # in the order each appears, and smallest with smallest: a loop's step and bound swap places when scheduled
-    for pairs in (dict(zip(missing, extra)), dict(zip(sorted(missing), sorted(extra)))):
+    # smallest with smallest first, then in the order each appears: a loop's step and bound swap places when
+    # scheduled, and a deep pass keeps the first pairing that improves, after which nothing is missing to pair again
+    for pairs in (dict(zip(sorted(missing), sorted(extra))), dict(zip(missing, extra))):
         text = source
         for m in reversed(literals):
             value = int(m[1], 0)
