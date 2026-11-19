@@ -71,3 +71,58 @@ def test_the_counted_call_loop():
 def test_left_alone_otherwise():
     assert loops.variants(LOOP.replace('    return 2;', '    return var_a0;'), 'g') == []  # the copy is used after
     assert loops.variants(LOOP.replace('>= 4U', '>= 4U || var_s0 == 2'), 'g') == []
+
+
+def test_a_two_test_guard_nested():
+    from decomprepair import nested_guard_repairs as guards
+    source = '''s32 f(s32 slot, s32 arg1) {
+    if ((slot != -1) && (slot >= 0)) {
+        g(slot);
+        return 1;
+    }
+    return 0;
+}
+'''
+    (family, out), = guards.variants(source, 'f')
+    assert family == 'nested_guard'
+    assert '''    if ((slot != -1)) {
+        if ((slot >= 0)) {
+            g(slot);
+            return 1;
+        }
+    }
+    return 0;''' in out
+    assert guards.variants(source.replace('    return 0;', '    else { return 2; }\n    return 0;').replace(
+        '        return 1;\n    }\n', '        return 1;\n    }'), 'f') == []  # an else arm
+    assert guards.variants(source.replace('&& (slot >= 0)', '&& (slot >= 0) && (slot < 9)'), 'f') == []
+
+
+def test_from_the_forms_a_deep_pass_keeps():
+    # A deep pass stores goto_backward_loop's form of the loop and this family's all-through form when they score
+    # better; both repairs must start from those too.
+    loop = LOOP.replace('''loop_2:
+        var_s0 += 1;
+        if (f(var_a0, arg0) == 0) {
+            var_a0 = var_s0 & 0xFFFF;
+            if ((u32) (var_s0 & 0xFFFF) >= 4U) {
+                return 0;
+            }
+            goto loop_2;
+        }
+        return 1;''', '''        for (;;) {
+            var_s0 += 1;
+            if (f(var_a0, arg0) != 0) {
+                break;
+            }
+            var_a0 = var_s0 & 0xFFFF;
+            if ((u32) (var_s0 & 0xFFFF) >= 4U) {
+                return 0;
+            }
+        }
+        return 1;''')
+    (_, out), = loops.variants(loop, 'g')
+    assert 'for (var_s0 = 0; var_s0 < 4; var_s0++) {' in out and 'var_a0' not in out
+    through = [t for _, t in bases.variants(GLOBAL, 'f') if 'M2C_FIELD((*__base_D_800B5B14)' in t][0]
+    texts = [t for _, t in bases.variants(through, 'f')]
+    assert texts and all(t.count('void **__base_D_800B5B14;') == 1 for t in texts)
+    assert any('M2C_FIELD(D_800B5B14, s32 *, 0x60)' in t and '(*__base_D_800B5B14) = NULL;' in t for t in texts)

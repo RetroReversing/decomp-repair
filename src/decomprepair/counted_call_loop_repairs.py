@@ -42,6 +42,19 @@ SHAPE = re.compile(
     r'[ \t]*\}[ \t]*\n'
     r'[ \t]*return (?P<found>[^;\n]+);[ \t]*\n')
 
+# the same loop after goto_backward_loop (a deep pass keeps that form when it scores better)
+LOOP_FORM = re.compile(
+    r'(?m)^(?P<indent>[ \t]*)(?P<i>' + IDENT + r') = 0;[ \t]*\n'
+    r'[ \t]*(?P<arg>' + IDENT + r') = 0 & 0x(?P<mask>FFFF|FF);[ \t]*\n'
+    r'[ \t]*for \(;;\) \{[ \t]*\n'
+    r'[ \t]*(?P=i) \+= 1;[ \t]*\n'
+    r'[ \t]*if \((?P<call>[^\n]*?) != 0\) \{[ \t]*\n[ \t]*break;[ \t]*\n[ \t]*\}[ \t]*\n'
+    r'[ \t]*(?P=arg) = (?P=i) & 0x(?P=mask);[ \t]*\n'
+    r'[ \t]*if \(\(u32\) \((?P=i) & 0x(?P=mask)\) >= (?P<limit>0x[0-9A-Fa-f]+|\d+)U?\) \{[ \t]*\n'
+    r'[ \t]*return (?P<left>[^;\n]+);[ \t]*\n[ \t]*\}[ \t]*\n'
+    r'[ \t]*\}[ \t]*\n'
+    r'[ \t]*return (?P<found>[^;\n]+);[ \t]*\n')
+
 
 def variants(source, name):
     span = find(source, name)
@@ -53,7 +66,8 @@ def variants(source, name):
     if not end:
         return []
     result = []
-    for hit in SHAPE.finditer(clean, opening, end):
+    hits = list(SHAPE.finditer(clean, opening, end)) + list(LOOP_FORM.finditer(clean, opening, end))
+    for hit in hits:
         i, arg = hit['i'], hit['arg']
         body = clean[opening:end]
         # the counter and its copy are used nowhere else, and only this loop jumps to the label
@@ -61,7 +75,7 @@ def variants(source, name):
         declarations = r'(?m)^[ \t]*(?![ \t])(?!(?:return|goto|break|continue)\b)[\w ]+?[\s*]+\w+\s*;[ \t]*$'
         if re.search(r'\b(?:' + i + '|' + arg + r')\b', re.sub(declarations, '', rest)):
             continue
-        if len(re.findall(r'\bgoto\s+' + hit['loop'] + r'\s*;', body)) != 1:
+        if 'loop' in hit.groupdict() and len(re.findall(r'\bgoto\s+' + hit['loop'] + r'\s*;', body)) != 1:
             continue
         call = source[hit.start('call'):hit.end('call')]
         if len(re.findall(r'\b' + arg + r'\b', call)) != 1 or re.search(r'\b' + i + r'\b', call):

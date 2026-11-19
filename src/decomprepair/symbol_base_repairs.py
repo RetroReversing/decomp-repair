@@ -78,6 +78,8 @@ def variants(source, name):
         elif not any(m['amp'] for m in uses) and len(uses) < 2:
             continue  # a scalar named once: nothing to share
         local = '__base_' + symbol
+        if re.search(r'\b' + local + r'\b', body):
+            continue  # (already held in its pointer: declaring it again doesn't compile)
         kind = ' '.join(kind.replace('*', ' * ').split()).replace('* *', '**')
         pointer = f'{kind} *' if not kind.endswith('*') else f'{kind}*'
         address = symbol if array else '&' + symbol
@@ -121,4 +123,17 @@ def variants(source, name):
                 result.append((FAMILY, text))
         if len(result) >= 8:
             break
+    return result + _kept_reads(source, clean, opening, end)
+
+
+def _kept_reads(source, clean, opening, end):
+    """This family's own all-through form, with the reads through the pointer's value naming the global again (a
+    deep pass keeps the all-through form when it scores better, and the exact form is one step from it)."""
+    result = []
+    for m in re.finditer(r'\b__base_(' + IDENT + r')\b', clean[opening:end]):
+        symbol = m[1]
+        through = re.compile(r'(\bM2C_FIELD\s*\(\s*)\(\*__base_' + re.escape(symbol) + r'\)')
+        text = source[:opening] + through.sub(lambda h, s=symbol: h[1] + s, source[opening:end]) + source[end:]
+        if text != source and text not in [t for _, t in result]:
+            result.append((FAMILY, text))
     return result
