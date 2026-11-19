@@ -39,3 +39,49 @@ def test_a_missing_constant_is_passed_and_an_unset_one_dropped():
 
 def test_left_alone_without_the_targets_calls():
     assert t.variants(SOURCE, 'f', '') == []
+
+
+CONSUMED = '''void put(void);
+void pick(s32);
+extern u8 D_X;
+extern u8 D_Y;
+
+void f(void) {
+    D_Y = D_X;
+    put(D_X);
+    pick(D_X);
+}
+'''
+CONSUMED_ASM = '''/* 0 */  lui        $a0, %hi(D_X)
+/* 4 */  lbu        $a0, %lo(D_X)($a0)
+/* 8 */  lui        $at, %hi(D_Y)
+/* c */  sb         $a0, %lo(D_Y)($at)
+/* 10 */  jal        put
+/* 14 */  nop
+/* 18 */  lui        $a0, %hi(D_X)
+/* 1c */  lbu        $a0, %lo(D_X)($a0)
+/* 20 */  addiu      $v0, $zero, 0x3
+/* 24 */  beq        $a0, $v0, .L1
+/* 28 */  nop
+/* 2c */  jal        pick
+/* 30 */  nop
+.L1:
+'''
+
+
+def test_a_value_stored_or_compared_before_a_call_may_be_a_leftover():
+    # Three N64 functions passed m2c's leftover $a0 (a byte just stored, a switch's selector) to a callee that took
+    # fewer arguments; dropping it was exact.
+    assert t.calls(CONSUMED_ASM)[0][1] == {'a0': 'D_X'}
+    assert t.calls(CONSUMED_ASM, consumed=True) == [('put', {}), ('pick', {})]
+    texts = [text for _, text in t.variants(CONSUMED, 'f', CONSUMED_ASM)]
+    assert any('    put();' in x for x in texts) and any('    pick();' in x for x in texts)
+
+
+def test_a_store_through_an_argument_keeps_it_an_argument():
+    asm = '''/* 0 */  lw         $a0, 0x6C($s0)
+/* 4 */  sw         $v0, 0xC($a0)
+/* 8 */  jal        put
+/* c */  nop
+'''
+    assert t.calls(asm, consumed=True) == [('put', {'a0': None})]
