@@ -29,9 +29,15 @@ def _instructions(asm):
             yield m['op'], m['args'].strip()
 
 
-def calls(asm):
+def calls(asm, consumed=False):
     """[(callee, {register: constant or None})] for each `jal`, in order: the argument registers written since the
-    previous call or branch target, and in the delay slot."""
+    previous call or branch target, and in the delay slot.
+
+    With `consumed`, an argument register whose value was stored (`sb $a0, D`) or compared by a branch (`beq $a0,
+    $v0`) before the call counts as not set up for it: a value m2c saw left in `$a0` and passed on. Three N64
+    functions passed such a leftover (a byte just stored, a switch's selector, a word copied through `$a1`) to a
+    callee that takes fewer arguments, and each was exact without it. A value can be both used and passed, so this
+    is only an alternative reading, offered beside the ordinary one."""
     found = []
     written = {}
     pending = None
@@ -54,13 +60,22 @@ def calls(asm):
             pending = args.split('+')[0].strip()
             continue
         store = op.startswith(('sw', 'sh', 'sb', 'sd', 'swc1', 'sdc1'))
+        if consumed:
+            operands = re.findall(r'\$(\w+)', args)
+            if store and operands and op not in ('swc1', 'sdc1'):
+                written.pop(operands[0], None)  # (the stored value; the base register stays an argument)
+            elif op.startswith('b') and op not in ('b',):
+                for read in operands[:2]:
+                    written.pop(read, None)
         # (an argument register read into a register that isn't one is a temporary, not an argument: an N64
         # function's `mfhi $a2` then `subu $v1, $a2, $v1` divided by three, and its calls took one argument)
         if dest and not store and dest[1] not in ARGREG and not op.startswith(('b', 'j')):
             for read in re.findall(r'\$(\w+)', args)[1:]:
                 if read in ARGREG and read != dest[1]:
                     written.pop(read, None)
-        if dest and dest[1] in ARGREG and not store:
+        if dest and dest[1] in ARGREG and not store and not (consumed and op.startswith(('b', 'j'))):
+            # (a branch reads its first register, never writes it; the ordinary reading keeps counting it, as the
+            # family always did, so only the alternative one changes)
             written[dest[1]] = _constant(op, args, bases)
     return found
 
@@ -91,7 +106,14 @@ def variants(source, name, asm):
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
         return []
-    jals = calls(asm)
+    result = _variants(source, name, asm, clean, opening, end, calls(asm))
+    for text in _variants(source, name, asm, clean, opening, end, calls(asm, consumed=True)):
+        if text not in result:
+            result.append(text)
+    return result[:6]
+
+
+def _variants(source, name, asm, clean, opening, end, jals):
     targets = {}
     for callee, regs in jals:
         targets.setdefault(callee, []).append(regs)
@@ -148,7 +170,7 @@ def variants(source, name, asm):
                     for _, both in symbol_base_repairs.variants(text, name)[:3]:
                         if both not in [t for _, t in result]:
                             result.append((FAMILY, both))
-    return result[:6]
+    return result
 
 
 def _number(value):
