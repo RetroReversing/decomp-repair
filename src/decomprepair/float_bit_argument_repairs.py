@@ -89,7 +89,9 @@ def variants(source, name, header='', arch='mips', flags=()):
             calls.append(args)
         if not calls or any(len(args) != len(params) for args in calls):
             continue
-        for index in range(1, len(params)):
+        # (a float first argument goes in $f12 and moves the later ones; alone, it moves nothing: an N64 function
+        # called `f(0x3F800000)` where the game passed 1.0f in $f12, 94.8% until the prototype said `f32`)
+        for index in range(0 if len(params) == 1 else 1, len(params)):
             if not INTEGER_PARAMETER.fullmatch(texts[index]):
                 continue
             changes, useful = [], False

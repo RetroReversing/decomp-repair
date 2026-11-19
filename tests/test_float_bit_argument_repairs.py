@@ -55,3 +55,12 @@ def test_propose_finds_the_family():
     from decomprepair.propose import propose
     report = propose(SOURCE, 'f', arch='mips', flags=O32, header='')
     assert any(p.module == 'float_bit_argument_repairs' and 'g(0, 250.0f' in p.source for p in report.proposals)
+
+
+def test_a_sole_float_parameter():
+    """An N64 function called f(0x3F800000) where the game passed 1.0f in $f12: alone, a float first argument moves
+    nothing else."""
+    from decomprepair import float_bit_argument_repairs as fb
+    source = 'f32 g(M2C_UNK);\nvoid f(void) {\n    D = g(0x3F800000) + 0.25f;\n}\n'
+    (_, out), = fb.variants(source, 'f', '', 'mips', ['-mgp32'])
+    assert 'f32 g(f32);' in out and 'g(1.0f)' in out
