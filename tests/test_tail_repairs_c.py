@@ -60,3 +60,59 @@ def test_a_divisions_scratch_register_is_not_an_argument():
     assert arity.calls(DIVIDE_ASM) == [('g', {'a0': 0})]
     (family, out), = arity.variants('s32 g(s32, s32);\n' + DIVIDE, 'f', DIVIDE_ASM)
     assert family == 'target_call_arity' and '    g(0);' in out and 's32 g(s32);' in out
+
+
+SEARCH = '''s32 f(s32 arg0, s32 arg1) {
+    s32 var_s0;
+
+    var_s0 = arg0;
+    if (var_s0 > 0x77) {
+        var_s0 = 0x76;
+    }
+    if (arg1 < 0) {
+loop_5:
+        if (!(g(var_s0) & 0xFFFF)) {
+            var_s0 -= 1;
+            if (var_s0 <= 0) {
+                var_s0 = 0x77;
+            }
+            goto loop_5;
+        }
+    } else {
+loop_8:
+        if (!(g(var_s0) & 0xFFFF)) {
+            var_s0 += 1;
+            if (var_s0 >= 0x77) {
+                var_s0 = 0;
+            }
+            goto loop_8;
+        }
+    }
+    return var_s0;
+}
+'''
+
+
+def test_a_wrapping_counter_is_tested_before_its_step():
+    # An N64 function's two search loops: 63.4%; tested first, the limit in a local, then as loops: exact.
+    from decomprepair import wrapped_counter_repairs as w
+    (family, tested), (_, held) = w.variants(SEARCH, 'f')
+    assert family == 'wrapped_counter_step'
+    assert '''            if (var_s0 > 0) {
+                var_s0 -= 1;
+            } else {
+                var_s0 = 0x77;
+            }''' in tested
+    assert '''            if (var_s0 < 0x77) {
+                var_s0 += 1;
+            } else {
+                var_s0 = 0;
+            }''' in tested
+    assert '{\n    s32 __repair_limit;\n    s32 var_s0;\n\n    __repair_limit = 0x77;\n    var_s0 = arg0;' in held
+    assert '0x77' not in held.replace('__repair_limit = 0x77;', '')
+
+
+def test_a_counter_that_does_not_wrap_is_left_alone():
+    from decomprepair import wrapped_counter_repairs as w
+    assert w.variants(SEARCH.replace('var_s0 -= 1;\n', 'var_s0 -= 2;\n').replace('var_s0 += 1;\n', 'var_s0 += 2;\n'),
+                      'f') == []
