@@ -93,7 +93,18 @@ def store_widths(source, name, asm):
             text = text[:opening + m.start()] + f'*({kind} *)' + text[opening + m.end():]
         if text != source:
             result.append((STORE_FAMILY, text))
-    return result
+    # The other way: m2c's `*p = (s32) e;` through a pointer it typed narrower, where the target stores a word at
+    # offset 0. m2c's own cast says so: a branch stored `lbu`'s value with `sw` (93.6% -> exact as `*(s32 *) p = e;`).
+    if re.search(r'\bsw\s+\$\w+\s*,\s*0x0\(', asm):
+        narrow_ptrs = set(re.findall(r'(?m)^[ \t]*(?:s8|u8|s16|u16|char|short)\s*\*\s*(' + IDENT + r')\s*;', clean[opening:end]))
+        for m in re.finditer(r'(?m)^(?P<ind>[ \t]*)\*(?P<p>' + IDENT + r')\s*=\s*\(\s*s32\s*\)\s*', clean[opening:end]):
+            if m['p'] not in narrow_ptrs:
+                continue
+            at = opening + m.start()
+            text = source[:at] + f"{m['ind']}*(s32 *) {m['p']} = " + source[opening + m.end():]
+            if text not in [t for _, t in result]:
+                result.append((STORE_FAMILY, text))
+    return result[:6]
 
 
 def variants(source, name, asm):
