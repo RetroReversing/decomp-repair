@@ -4,7 +4,8 @@ A draft that declares a symbol of unknown type as `extern char D_8010D784[];` (d
 that m2c's byte offsets add up) reads and writes `*(D_8010D784 + offset)` as one byte. The target's own instructions
 say how wide the accesses really are: an N64 function stored a word, `sw $s0, %lo(D_8010D784)($at)`, where the draft
 had `sb`. When every instruction naming the symbol in the target's assembly has one width wider than a byte, each
-`*(D + E)` becomes `*(s32 *)(D + E)` (`lw`/`sw`), `*(u16 *)` (`lhu`) or `*(s16 *)` (`lh`/`sh`).
+`*(D + E)` becomes `*(s32 *)(D + E)` (`lw`/`sw`), `*(u16 *)` (`lhu`) or `*(s16 *)` (`lh`/`sh`). m2c's word casts
+on a symbol of unknown type, `*((M2C_UNK *)((s8 *)&D + E))`, get the same treatment (`_unknown_casts`).
 """
 import re
 
@@ -66,4 +67,39 @@ def variants(source, name, asm):
     if len(groups) > 1:
         result.append((FAMILY, apply(groups)))
     result.extend((FAMILY, apply([g])) for g in groups)
-    return result[:4]
+    return (result + _unknown_casts(source, clean, opening, end, asm))[:6]
+
+
+def _accesses(asm, symbol):
+    """Each `%lo(symbol)` load or store's C type, in the target's order."""
+    return [WIDTHS[hit[1]] for hit in re.finditer(r'\b(lw|sw|lwu|lh|lhu|sh|lb|lbu|sb)\s+\$\w+\s*,\s*%lo\(\s*'
+                                                  + re.escape(symbol) + r'\s*\)', asm)]
+
+
+def _unknown_casts(source, clean, opening, end, asm):
+    """m2c's reads of a symbol of unknown type, `*((M2C_UNK *)((s8 *)&D + i))`, are words; the target's own loads say
+    how wide each is. An N64 sine table read with `lh`, and `lhu` where its value was negated, was 92% as words and
+    exact with each read typed as the target's: in the target's order when the counts agree, else all as the most
+    common width."""
+    casts = list(re.finditer(r'\(\s*M2C_UNK\s*\*\s*\)\s*\(\s*\(\s*s8\s*\*\s*\)\s*&\s*(' + IDENT + r')\b',
+                             clean[opening:end]))
+    result = []
+    for symbol in dict.fromkeys(m[1] for m in casts):
+        mine = [m for m in casts if m[1] == symbol]
+        found = _accesses(asm, symbol)
+        if not found or set(found) <= {'s32'}:
+            continue
+        choices = []
+        if len(found) == len(mine):
+            choices.append(found)
+        common = max(set(found), key=found.count)
+        choices.append([common] * len(mine))
+        for kinds in choices:
+            text = source
+            for m, kind in sorted(zip(mine, kinds), key=lambda p: -p[0].start()):
+                at = opening + m.start()
+                cast = clean.find('M2C_UNK', at)
+                text = text[:cast] + kind + text[cast + len('M2C_UNK'):]
+            if text != source and text not in [t for _, t in result]:
+                result.append((FAMILY, text))
+    return result
