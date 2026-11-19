@@ -25,6 +25,12 @@ TYPE_CAST = re.compile(r'\(\s*' + INTEGER_CASTS + r'\s*\)\s*(char|short|int|long
 # a 16-bit cast the permuter put on a variable that is an operand of arithmetic: m2c writes s16/u16, never these
 # spellings, and `(unsigned short)flags | 1` kept only the low half of a word the game ORed whole (0.5.19)
 VARIABLE_CUT = re.compile(r'\(\s*(?:unsigned\s+short|short)\s*\)\s*(?=[A-Za-z_]\w*\s*(?:[|&^+\-*/%]|<<|>>)(?!=))')
+# the same cast on a compared variable: `(unsigned short)arg0 != 0x20` compared only the low half of a `u32`, which
+# also kept m2c's compare tree from reading as a `switch` (0.5.23)
+COMPARED_CUT = re.compile(r'\(\s*(?:unsigned\s+short|short)\s*\)\s*(?=[A-Za-z_]\w*\s*(?:[!=]=|<=|>=|<(?!<)|>(?!>)))')
+# a random cast of `(int)` on a literal that already is an int (it fits): nothing changes but the text, which kept
+# m2c's compare tree from reading as one (0.5.23)
+INT_LITERAL = re.compile(r'\(\s*int\s*\)\s*(0[xX][0-9a-fA-F]+|\d+)\b(?![uUlL.])')
 # a narrowing cast on a hex literal that doesn't fit the type (nobody writes `(u16)0xDA380003` for 3)
 LITERAL_CAST = re.compile(r'\(\s*(unsigned\s+short|unsigned\s+char|short|s16|u16|s8|u8)\s*\)\s*(0[xX][0-9a-fA-F]+)[uU]?\b')
 WIDTH = {'unsigned short': 0xFFFF, 'short': 0xFFFF, 's16': 0xFFFF, 'u16': 0xFFFF, 'unsigned char': 0xFF, 's8': 0xFF,
@@ -291,6 +297,8 @@ def clean(source: str | None) -> str | None:
     text = _read_before_set(text)
     text = POINTER_SPLIT.sub(lambda m: f"{m['q']} = (char *)({m['b']}) + {m['k']};", text)
     text = VARIABLE_CUT.sub('', text)
+    text = COMPARED_CUT.sub('', text)
+    text = INT_LITERAL.sub(lambda m: m[1] if int(m[1], 0) <= 0x7FFFFFFF else m[0], text)
     text = LITERAL_CAST.sub(lambda m: m[0] if int(m[2], 16) <= WIDTH[' '.join(m[1].split())] else m[2], text)
     text = _scaffolding(text)
     return text if text != source else None

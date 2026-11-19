@@ -69,7 +69,7 @@ def _leaves(source, clean, start, stop, facts, out):
     return _leaves(source, clean, then_close, stop, facts + [negated], out)
 
 
-def variants(source, name):
+def _variants(source, name):
     span = find(source, name)
     if not span:
         return []
@@ -124,3 +124,32 @@ def variants(source, name):
         if text not in [t for _, t in result]:
             result.append((FAMILY, text))
     return result
+
+
+# a leaf that carries its constant through m2c's variable: `v = K; if (c) { return D; } return v;` (after its duplicate-
+# return comment), or plainly `v = K; return v;`
+CARRIED = re.compile(r'(?m)^(?P<i>[ \t]*)(?P<v>' + IDENT + r') = (?P<k>-?' + NUMBER + r');[ \t]*\n'
+                     r'(?P<guard>[ \t]*if \([^\n]*\) \{[ \t]*\n[ \t]*return [^;\n]+;[ \t]*\n[ \t]*\}[ \t]*\n)?'
+                     r'(?:[ \t]*/\*[^\n]*\*/[ \t]*\n)?[ \t]*return (?P=v);')
+
+
+def _direct(source):
+    """Such leaves as direct returns, and the variable's declaration gone when nothing else names it."""
+    text = CARRIED.sub(lambda m: (m['guard'] or '') + m['i'] + 'return ' + m['k'] + ';', source)
+    if text == source:
+        return source
+    for var in {m['v'] for m in CARRIED.finditer(source)}:
+        if len(re.findall(r'\b' + var + r'\b', _blank(text))) == 1:
+            text = re.sub(r'(?m)^[ \t]*[\w ]+?\s+' + var + r'\s*;[ \t]*\n', '', text, count=1)
+    return text
+
+
+def variants(source, name):
+    """m2c's compare tree as a `switch`; leaves that carry their constant through a variable read as direct returns (an
+    N64 function's tree, `var_v0 = 4; if (arg0 != 0x10) { return 0; } return var_v0;`, was exact as a `switch` that
+    returns 4, at 18.6% as m2c wrote it)."""
+    found = _variants(source, name)
+    direct = _direct(source)
+    if direct != source:
+        found += [(f, t) for f, t in _variants(direct, name) if t not in [x for _, x in found]]
+    return found
