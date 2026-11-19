@@ -34,6 +34,20 @@ def declaration_prefix(text):
     return bool(re.match(r'\s*(?:(?:const|volatile|unsigned|signed|struct)\s+)*[A-Za-z_]\w*(?:\s+(?:\*\s*)*|\s*\*+\s*)[A-Za-z_]\w*\s*(?:\[[^]]*\])?\s*=',text))
 
 
+def _sum_operands(text, start, end):
+    """(start, end) of each top-level operand of a sum in text[start:end]; [] when it isn't a sum at top level."""
+    parts, depth, begin = [], 0, start
+    for i in range(start, end):
+        ch = text[i]
+        depth += (ch in '([') - (ch in ')]')
+        if depth == 0 and ch == '+' and text[i+1:i+2] not in '+=' and text[i-1:i] != '+':
+            parts.append((begin, i))
+            begin = i+1
+    if not parts or depth:
+        return []
+    return parts + [(begin, end)]
+
+
 def variants(source, name):
     span = find(source,name)
     if not span:
@@ -41,7 +55,7 @@ def variants(source, name):
     clean = _blank(source)
     opening = clean.find('{',*span)
     body = clean[opening:span[1]]
-    if '#' in body or re.search(r'\bvolatile\b|__repair_(?:addr|literal|cmp)',clean):
+    if '#' in body or re.search(r'\bvolatile\b|__repair_(?:addr|literal|cmp|operand)',clean):
         return []
     result = []
 
@@ -85,6 +99,34 @@ def variants(source, name):
                 edits.append((at,at,f'\n__repair_addr = (char *)({expr});\n'))
             add('address_temporary',edits)
         if sum(f=='address_temporary' for f,_ in result)>=6:
+            break
+
+    # A load that is one operand of a sum, in a statement of its own first. address_temporary splits a field's whole
+    # address; here the base pointer chain is only part of it: `p = (i * 0x18) + M2C_FIELD(M2C_FIELD(o, void **,
+    # 0x6C), s32 *, 4);` scheduled the index between the two loads, where an N64 game loaded the chain first.
+    for m in list(re.finditer(r'(?m)^[ \t]*(?P<lhs>'+IDENT+r')\s*=(?!=)\s*',body))[:24]:
+        stop=body.find(';',m.end())
+        if stop<0 or re.search(r'[{}]',body[m.end():stop]):
+            continue
+        # the assignment is the whole statement (a plain `x = ...;`, not a declaration or a loop's step)
+        if body[statement_start(body,m.start('lhs')):m.start('lhs')].strip():
+            continue
+        for start,end in _sum_operands(body,m.end(),stop):
+            operand=body[start:end].strip()
+            if not re.match(r'M2C_FIELD\s*\(',operand) or close(operand,operand.find('('))!=len(operand):
+                continue
+            args=m2cfix._split_top_level(operand[operand.find('(')+1:-1])
+            typed=re.fullmatch(r'\s*(?P<t>'+IDENT+r'(?:\s*\*)*)\s*\*\s*',args[1]) if len(args)==3 else None
+            calls=re.findall(r'\b('+IDENT+r')\s*\(',operand)
+            if not typed or any(c!='M2C_FIELD' for c in calls) or re.search(r'\+\+|--|[=;{}]',operand):
+                continue
+            kind=' '.join(typed['t'].split())
+            lead=len(body[start:end])-len(body[start:end].lstrip())
+            add('operand_temporary',[(1,1,f'\n{kind} __repair_operand;\n'),
+                                     (m.start('lhs'),m.start('lhs'),f'__repair_operand = {raw(start+lead,start+lead+len(operand))};\n'
+                                      +re.match(r'[ \t]*',body[m.start():])[0]),
+                                     (start+lead,start+lead+len(operand),'__repair_operand')])
+        if sum(f=='operand_temporary' for f,_ in result)>=4:
             break
 
     # Plain casts in imported sources deserve the same address experiment as m2c macros.
