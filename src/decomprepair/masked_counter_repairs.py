@@ -160,6 +160,65 @@ def counter_loops(source, name):
     return result
 
 
+def unguarded_loops(source, name):
+    """The same counter when it starts at a constant below a constant limit: gcc drops the entry test, and m2c writes
+    `var = K; copy = K & 0xFF; do { ... } while ((u32) (var & 0xFF) < N);` with no guard. An N64 search loop over
+    0x1E slots from 1 was 80% so after its loop was put right side out, and exact as `for (var = 1; var < 0x1E; ...)`."""
+    found = _body(source, name)
+    if not found:
+        return []
+    span, clean, opening, end = found
+    result = []
+    for do in re.finditer(r'\bdo\s*{', clean[opening:end]):
+        start = opening + do.end() - 1
+        stop = close(clean, start, '{', '}')
+        tail = re.match(r'\s*while\s*\((.*?)\)\s*;', clean[stop:end], re.S) if stop else None
+        if not tail:
+            continue
+        cond = re.fullmatch(r'\s*(?:\(\s*u32\s*\)\s*)?\(\s*(' + IDENT + r')\s*&\s*(' + MASK + r')\s*\)\s*<\s*'
+                            r'(0[xX][0-9a-fA-F]+|\d+)[uU]?\s*', tail[1], re.S)
+        if not cond:
+            continue
+        var, mask, limit = cond[1], cond[2], int(cond[3], 0)
+        narrow = MASKS[mask.lower() if mask.lower() in MASKS else mask]
+        inner = clean[start+1:stop-1]
+        step = re.search(r'\n[ \t]*' + var + r'\s*(?:\+=\s*1|\+\+)\s*;(?:\s*\n[ \t]*(' + IDENT + r')\s*=\s*' + var
+                         + r'\s*&\s*' + MASK + r'\s*;)?\s*$', inner)
+        if not step:
+            continue
+        copy = step[1]
+        # `var = K;` (and `copy = K & MASK;`) right before the loop, K a constant below the limit
+        setup = re.search(r'\n([ \t]*)' + var + r'\s*=\s*(0[xX][0-9a-fA-F]+|\d+)\s*;[ \t]*\n'
+                          + (r'[ \t]*' + copy + r'\s*=\s*(?:0[xX][0-9a-fA-F]+|\d+)(?:\s*&\s*' + MASK + r')?\s*;[ \t]*\n'
+                             if copy else '') + r'[ \t]*$', clean[:opening + do.start()])
+        if not setup or not 0 <= int(setup[2], 0) < limit:
+            continue
+        outside = clean[opening+1:setup.start()] + clean[stop + tail.end():end]
+        names = [var] + ([copy] if copy else [])
+        if any(re.search(r'(?<![\w.>])' + n + r'\b(?!\s+' + IDENT + r')',
+                         re.sub(r'\b' + IDENT + r'\s+\**' + n + r'\s*;', '', outside)) for n in names):
+            continue
+        body = source[start+1:start+1+step.start()]
+        if copy:
+            body = re.sub(r'(?<![\w.>])' + copy + r'\b', var, body)
+        body = re.sub(r'\(\s*' + var + r'\s*&\s*' + MASK + r'\s*\)', var, body)
+        indent = setup[1]
+        limit_text = source[stop + tail.start(1) + cond.start(3):stop + tail.start(1) + cond.end(3)]
+        loop = (f'{indent}for ({var} = {setup[2]}; {var} < {limit_text}; {var}++) {{{body.rstrip()}\n{indent}}}')
+        edits = [(setup.start() + 1, stop + tail.end(), loop)]
+        decl = re.search(r'(?m)^([ \t]*)(?:s32|u32|int|unsigned int|s16|u16)\s+(' + var + r')\s*;', clean[opening:setup.start()])
+        if not decl:
+            continue
+        edits.append((opening + decl.start(), opening + decl.end(), f'{decl[1]}{narrow} {var};'))
+        if copy:
+            copy_decl = re.search(r'(?m)^[ \t]*(?:s32|u32|int|unsigned int|s16|u16|u8)\s+' + copy + r'\s*;[ \t]*\n',
+                                  clean[opening:setup.start()])
+            if copy_decl:
+                edits.append((opening + copy_decl.start(), opening + copy_decl.end(), ''))
+        result.append(('masked_counter_loop', _apply(source, edits)))
+    return result
+
+
 def _dedent(body):
     """The do-while body was two levels deeper than the for loop that replaces the guard: one level out."""
     return '\n'.join(line[4:] if line.startswith('    ') else line for line in body.rstrip().split('\n'))
@@ -167,6 +226,6 @@ def _dedent(body):
 
 def variants(source, name):
     params = byte_parameters(source, name)
-    loops = counter_loops(source, name)
-    both = [out for _, first in params for _, out in counter_loops(first, name)]
+    loops = counter_loops(source, name) + unguarded_loops(source, name)
+    both = [out for _, first in params for _, out in counter_loops(first, name) + unguarded_loops(first, name)]
     return ([('masked_counter_loop', out) for out in both] + loops + params)[:4]

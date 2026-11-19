@@ -40,6 +40,14 @@ def variants(source, name, asm):
         pointee = m['type'] + (' *' * (len(m['stars']) - 1))
         if pointee in SIZES:
             pointers[m['name']] = SIZES[pointee]
+    # (a global pointer the function steps, `extern u16 *D;` ... `D += 0xC;`: an N64 list walk stepped 0xC bytes where
+    # the draft stepped 0x18; exact as `D += 6;`)
+    outside = clean[:span[0]] + clean[span[1]:]
+    for m in re.finditer(r'(?m)^[ \t]*extern\s+(?:const\s+)?(?P<type>[A-Za-z_]\w*)\s*(?P<stars>\*+)\s*(?P<name>' + IDENT
+                         + r')\s*;', outside):
+        pointee = m['type'] + (' *' * (len(m['stars']) - 1))
+        if pointee in SIZES and m['name'] not in pointers:
+            pointers[m['name']] = SIZES[pointee]
     result = []
     for local, size in pointers.items():
         for step in re.finditer(r'\b' + local + r'\s*(?P<op>[-+])=\s*(?P<n>0x[0-9a-fA-F]+|\d+)\s*;', body):
@@ -56,7 +64,6 @@ def variants(source, name, asm):
             result.append((FAMILY, source[:at] + '(s8 *) ' + source[at:]))
     # `*((i * 4) + &D)` on a symbol of a 4-byte type scales the index again: an N64 function stored at `i * 16`
     # where the game stored at `i * 4`, exact as `(&D)[i]`
-    outside = clean[:span[0]] + clean[span[1]:]
     for use in re.finditer(r'\*\s*\(\s*\(\s*(?P<i>' + IDENT + r')\s*\*\s*(?P<k>0x[0-9a-fA-F]+|\d+)\s*\)\s*\+\s*&\s*(?P<d>'
                            + IDENT + r')\s*\)', body):
         declared = re.search(r'(?m)^[ \t]*extern\s+(?P<t>[A-Za-z_]\w*)\s+' + use['d'] + r'\s*;', outside)
