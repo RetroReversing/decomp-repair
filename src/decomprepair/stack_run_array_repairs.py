@@ -38,7 +38,7 @@ def _runs(decls, escaped):
     return runs
 
 
-def variants(source, name):
+def variants(source, name, asm=''):
     span = find(source, name)
     if not span:
         return []
@@ -52,6 +52,13 @@ def variants(source, name):
     if len(decls) < 2:
         return []
     escaped = {int(m[1], 16) for m in re.finditer(r'&\s*sp([0-9A-Fa-f]+)\b', body)}
+    # (with the target's code: a run the game keeps in memory, read and written at its stack slots, though m2c's C
+    # never takes its address; a function's three blend weights at sp40..sp48 were reloaded after every call)
+    if asm:
+        slots = {int(m[1], 16) for m in re.finditer(r'\b(?:lwc1|swc1|lw|sw)\s+\$\w+\s*,\s*(0x[0-9A-Fa-f]+)\(\$sp\)', asm)}
+        for off, typ, _ in decls:
+            if off in slots and off + SIZES[typ] in slots and off - SIZES[typ] not in {o for o, *_ in decls}:
+                escaped.add(off)
     result = []
     runs = _runs(decls, escaped)
     for chosen in ([*runs], *([r] for r in runs)) if len(runs) > 1 else ([*runs],):

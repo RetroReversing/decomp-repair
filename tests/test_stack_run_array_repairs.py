@@ -39,3 +39,13 @@ def test_left_alone_without_an_escaping_address_or_a_run():
 def test_propose_finds_it():
     from decomprepair.propose import propose
     assert any(p.module == 'stack_run_array_repairs' for p in propose(SOURCE, 'f').proposals)
+
+
+def test_a_run_the_target_keeps_in_memory_counts_without_an_address():
+    # Three blend weights at sp40..sp48 the game stores and reloads at their slots; m2c's C never takes an address.
+    source = SOURCE.replace('    f32 sp40;\n', '    f32 sp40;\n    f32 sp44;\n    f32 sp48;\n').replace(
+        '    sp40 = w;\n', '    sp40 = w;\n    sp44 = w;\n    sp48 = w;\n')
+    asm = 'swc1 $f0, 0x40($sp)\nswc1 $f2, 0x44($sp)\nlwc1 $f4, 0x48($sp)\n'
+    outs = [t for _, t in r.variants(source, 'f', asm)]
+    assert any('    f32 sp40[3];\n' in t and 'sp40[2] = w;' in t for t in outs)
+    assert not any('f32 sp40[3];' in t for _, t in r.variants(source, 'f'))  # no evidence without the asm
