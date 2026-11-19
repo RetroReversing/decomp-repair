@@ -12,7 +12,11 @@ CASTS = ["(int)", "(unsigned)", "(s32)", "(u32)", "(uInt)", "(uLong)", "(short)"
 # Typedef names: only offered when the source or its header declares them. zlib's uInt/uLong made 9,970 of 10,000
 # rewrites of an N64 function fail to compile, crowding out everything else the pass could have tried.
 _TYPEDEFS = {"s32", "u32", "uInt", "uLong"}
-_DECL = re.compile(r"^(\s+)(register\s+)?((?:unsigned\s+|signed\s+)?\w+)(\s*\**\s*)(\w+)(\s*(?:=[^;]*)?;)\s*$")
+# (the type and the name are separate words: with `\s*` between them `D_80102ED4 = 0;` read as type `D_80102ED`
+# and name `4`, and _toggle_register made a store to a global into `register D_80102ED4 = 0;`, a new local; 35
+# functions of an N64 game kept that as their best C because dropping the store raised the byte score)
+_DECL = re.compile(r"^(\s+)(register\s+)?((?:unsigned\s+|signed\s+)?(?!(?:return|goto|case|else|do|sizeof)\b)\w+)"
+                   r"(\s+\**\s*|\s*\*+\s*)(\w+)(\s*(?:=[^;]*)?;)\s*$")
 _STMT = re.compile(r"^\s+[^\s{}#][^{}]*;\s*$")
 # statements that transfer control (or open blocks) are never moved; one-line `if (c) x;` statements may be
 _CONTROL = re.compile(r"\b(return|break|continue|goto|case|default)\b|^\s*(else|for|while|do|switch)\b")
