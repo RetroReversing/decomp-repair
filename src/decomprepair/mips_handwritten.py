@@ -10,6 +10,10 @@ Three cases, each one a fact about how compiled code is built, not a guess from 
 - A callee-saved register (`$s0`-`$s8`) written in the entry block before it is saved on the stack. C's calling
   convention keeps those registers for the caller, so compiled code saves one before its first write. An N64
   library routine kept its return address in `$s2` (`addu $s2, $ra, $zero`) without saving `$s2`.
+- A leaf function that starts its work in `$t0`-`$t5`, `$t8` or `$t9` and never writes `$v0`/`$v1`. GCC's allocators
+  (KMC, SN, the EE's) take `$v0`/`$v1` and the argument registers first, IDO takes `$t6` first; an N64 SDK's
+  `guMtxIdentF` and `guTranslateF` began `lui $t0, 0x3F80`, and a list insert of an N64 library used `$t9` down to
+  `$t6`.
 """
 from .mips import SPECIAL, _mips_branch, _mips_uses, fields
 
@@ -22,6 +26,31 @@ SP = 29
 
 def _name(r):
     return f"s{r - 16}" if 16 <= r <= 23 else "s8" if r == 30 else f"r{r}"
+
+
+FIRST_HAND = set(range(8, 14)) | {24, 25}  # t0-t5, t8, t9
+RESULTS = {2, 3}  # v0, v1
+
+
+def _hand_registers(words: list[int]) -> str | None:
+    first = None
+    for w in words:
+        op, rs, rt, rd, funct = fields(w)
+        if op == 0x03 or (op == SPECIAL and funct == 0x09):  # jal / jalr: not a leaf
+            return None
+        uses = _mips_uses(w)
+        if uses is None:
+            return None
+        written = uses[1] - {0, 29, 31}
+        if written & RESULTS:
+            return None
+        if first is None and written:
+            first = min(written)
+    if first in FIRST_HAND:
+        name = f"t{first - 8}" if first < 16 else f"t{first - 16}"
+        return (f"a leaf function that starts in ${name} and never writes $v0/$v1: compilers take $v0/$v1 and the "
+                "argument registers first (IDO $t6), so this is hand-written assembly")
+    return None
 
 
 def reason(words: list[int]) -> str | None:
@@ -52,5 +81,5 @@ def reason(words: list[int]) -> str | None:
                     "registers for its caller and saves one before its first write")
         if _mips_branch(w):
             break  # only the entry block, its delay slot not included: later blocks may be reached otherwise
-    return None
+    return _hand_registers(words)
 
