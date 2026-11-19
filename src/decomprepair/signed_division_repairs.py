@@ -37,7 +37,7 @@ SHAPE = re.compile(
 
 ADDEND = re.compile(
     r'(?m)^(?P<indent>[ \t]*)(?P<v>' + IDENT + r')\s*=\s*(?P<x>' + IDENT + r')\s*(?:\+\s*(?P<a>' + NUMBER + r'))?\s*;[ \t]*\n'
-    r'(?P<between>(?:[ \t]*[^\n;{}]*;[ \t]*\n)*?)'
+    r'(?P<between>(?:[^\n;{}]*;[ \t]*\n){0,8}?)'
     r'[ \t]*if\s*\(\s*(?P=v)\s*<\s*0\s*\)\s*\{\s*\n'
     r'[ \t]*(?P=v)\s*=\s*(?P=x)\s*\+\s*(?P<b>' + NUMBER + r')\s*;\s*\n'
     r'[ \t]*\}[ \t]*\n'
