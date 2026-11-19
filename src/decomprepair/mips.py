@@ -363,6 +363,9 @@ def asm_reason(code: bytes, big_endian: bool, *, eabi: bool = False, cop2: str =
         body.pop()
     if not any(_mips_transfer(w) for w in body[-2:]):
         return None  # an incomplete target is not evidence of handwritten assembly
+    from .mips_handwritten import reason as handwritten  # (trapping arithmetic, self-clears, unsaved s registers)
+    if why := handwritten(body):
+        return why
     names = {1: "at", 2: "v0", 3: "v1", 24: "t8", 25: "t9", 26: "k0", 27: "k1"}
     temps = _MIPS_TEMPS - EABI_ARGUMENTS if eabi else _MIPS_TEMPS
     args = "a0-a3 and t0-t3" if eabi else "a0-a3"
