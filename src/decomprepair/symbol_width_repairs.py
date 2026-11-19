@@ -16,13 +16,13 @@ from .pattern_repairs import close
 FAMILY = 'symbol_access_width'
 FAMILIES = (FAMILY,)
 WIDTHS = {'lw': 's32', 'sw': 's32', 'lwu': 'u32', 'lh': 's16', 'lhu': 'u16', 'sh': 's16',
-          'lb': 's8', 'lbu': 'u8', 'sb': 's8'}
+          'lb': 's8', 'lbu': 'u8', 'sb': 's8', 'lwc1': 'f32', 'swc1': 'f32', 'ldc1': 'f64', 'sdc1': 'f64'}
 
 
 def widths(asm, symbol):
     """The C types the target's accesses to `symbol` imply, from each `%lo(symbol)` load or store."""
     found = set()
-    for hit in re.finditer(r'\b(lw|sw|lwu|lh|lhu|sh|lb|lbu|sb)\s+\$\w+\s*,\s*%lo\(\s*' + re.escape(symbol) + r'\s*\)', asm):
+    for hit in re.finditer(r'\b(lw|sw|lwu|lh|lhu|sh|lb|lbu|sb|lwc1|swc1|ldc1|sdc1)\s+\$\w+\s*,\s*%lo\(\s*' + re.escape(symbol) + r'\s*\)', asm):
         found.add(WIDTHS[hit[1]])
     return found
 
@@ -72,7 +72,7 @@ def variants(source, name, asm):
 
 def _accesses(asm, symbol):
     """Each `%lo(symbol)` load or store's C type, in the target's order."""
-    return [WIDTHS[hit[1]] for hit in re.finditer(r'\b(lw|sw|lwu|lh|lhu|sh|lb|lbu|sb)\s+\$\w+\s*,\s*%lo\(\s*'
+    return [WIDTHS[hit[1]] for hit in re.finditer(r'\b(lw|sw|lwu|lh|lhu|sh|lb|lbu|sb|lwc1|swc1|ldc1|sdc1)\s+\$\w+\s*,\s*%lo\(\s*'
                                                   + re.escape(symbol) + r'\s*\)', asm)]
 
 
@@ -80,7 +80,7 @@ def _unknown_casts(source, clean, opening, end, asm):
     """m2c's reads of a symbol of unknown type, `*((M2C_UNK *)((s8 *)&D + i))`, are words; the target's own loads say
     how wide each is. An N64 sine table read with `lh`, and `lhu` where its value was negated, was 92% as words and
     exact with each read typed as the target's: in the target's order when the counts agree, else all as the most
-    common width."""
+    common width. A float table read with `lwc1` was converted from an integer until read as `f32` (95.3% -> exact)."""
     casts = list(re.finditer(r'\(\s*M2C_UNK\s*\*\s*\)\s*\(\s*\(\s*s8\s*\*\s*\)\s*&\s*(' + IDENT + r')\b',
                              clean[opening:end]))
     result = []
