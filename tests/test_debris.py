@@ -30,3 +30,11 @@ def test_a_narrowed_hex_literal_loses_its_cast():
     source = 'void f(u32 *p) {\n    p[0] = (unsigned short)0xDA380003;\n    p[1] = (u16)0x8000;\n}\n'
     out = debris.clean(source)
     assert 'p[0] = 0xDA380003;' in out and 'p[1] = (u16)0x8000;' in out
+
+
+def test_a_16_bit_cast_on_a_variable_in_arithmetic_goes():
+    from decomprepair import debris
+    out = debris.clean('void f(s32 *p) {\n    s32 v;\n\n    v = (unsigned short)p[0];\n    p[1] = (unsigned short)v | 1;\n}\n')
+    assert 'p[1] = v | 1;' in out
+    assert 'v = (unsigned short)p[0];' in out  # (not an operand of arithmetic: left alone)
+    assert debris.clean('s16 f(s32 x) {\n    return (s16)x + 1;\n}\n') is None  # (m2c's own spelling)
