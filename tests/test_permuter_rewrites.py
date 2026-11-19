@@ -74,3 +74,17 @@ def test_register_is_never_added_to_an_assignment():
         assert out is not None
         assert out[3] == '    D_80102ED4 = 0;' and out[4] == '    v = g();' and out[5] == '    return v;'
         assert out[1] in ('    s32 v;', '    register s32 v;')
+
+
+def test_a_cast_never_cuts_a_pointer():
+    """The operand of a pointer cast once became `(unsigned short)D_80109698`: an address cut to 16 bits."""
+    from decomprepair import permuter
+    lines = ['void f(void) {', '    s32 v;', '',
+             '    (*(s32 *)((char *)(D_80109698) + 0xFC)) = v;', '    temp = (void *) p;', '    v = w + 1;', '}']
+    seen = set()
+    for seed in range(300):
+        out = permuter._add_cast(list(lines), random.Random(seed))
+        assert out is not None
+        assert '((char *)(D_80109698) +' in out[3] and out[4] == lines[4]
+        seen.add(out[5])
+    assert any(line != lines[5] for line in seen)
