@@ -50,3 +50,29 @@ def test_m2cs_word_store_through_a_narrow_pointer():
             if f == 'raw_store_width']
     assert any('        *(s32 *) temp_a0 = M2C_FIELD(p, u8 *, 0x16);' in t and '*temp_a0 = (s8)' in t for t in outs)
     assert not [t for f, t in v.variants(WIDE, 'f', 'sb         $v0, 0x0($a0)\n') if '*(s32 *) temp_a0' in t]
+
+
+from decomprepair import global_record_copy_repairs as g  # noqa: E402
+
+COPY = '''void *f(void *arg0) {
+    D_8011F108 = (s32) ((__repair_record_arg0*)arg0)->field_0;
+    D_8011F10C = (s32) ((__repair_record_arg0*)arg0)->field_4;
+    D_8011F110 = (s32) ((__repair_record_arg0*)arg0)->field_8;
+    return arg0;
+}
+'''
+ASM = 'addiu      $a2, $a2, %lo(D_8011F108)\nsw         $v1, 0x0($a2)\n'
+
+
+def test_consecutive_globals_from_consecutive_fields_are_one_record_copy():
+    # An N64 function at 90.3%: exact as one 12-byte copy.
+    (family, out), = g.variants(COPY, 'f', ASM)
+    assert family == 'global_record_copy'
+    assert 'typedef struct { s32 w[3]; } __repair_record_copy_3;' in out
+    assert '    *(__repair_record_copy_3 *) &D_8011F108 = *(__repair_record_copy_3 *) arg0;\n    return arg0;' in out
+
+
+def test_left_alone_otherwise():
+    assert g.variants(COPY, 'f', 'lui        $at, %hi(D_8011F108)\n') == []  # each global addressed on its own
+    assert g.variants(COPY.replace('field_8', 'field_C'), 'f', ASM)[0][1].count('w[2]') == 1  # offsets break the run
+    assert g.variants(COPY.replace('D_8011F10C', 'D_8011F200'), 'f', ASM) == []  # not consecutive addresses
