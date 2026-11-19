@@ -24,6 +24,10 @@ VARIABLE_CUT = re.compile(r'\(\s*(?:unsigned\s+short|short)\s*\)\s*(?=[A-Za-z_]\
 LITERAL_CAST = re.compile(r'\(\s*(unsigned\s+short|unsigned\s+char|short|s16|u16|s8|u8)\s*\)\s*(0[xX][0-9a-fA-F]+)[uU]?\b')
 WIDTH = {'unsigned short': 0xFFFF, 'short': 0xFFFF, 's16': 0xFFFF, 'u16': 0xFFFF, 'unsigned char': 0xFF, 's8': 0xFF,
          'u8': 0xFF}
+# value_repairs' pointer split, `q = (char *)(b); q += (s32)(K);`: one sum written as two (0.5.16 stopped it adding K
+# times the element size; the split left in saved C still keeps gcc from treating `q` as `b`'s field address)
+POINTER_SPLIT = re.compile(r'(?P<q>[A-Za-z_]\w*)\s*=\s*\(\s*char\s*\*\s*\)\s*\((?P<b>[^;()]*)\)\s*;\s*'
+                           r'(?P=q)\s*\+=\s*\(\s*s32\s*\)\s*\((?P<k>[^;()]*)\)\s*;')
 UNTYPED_REGISTER = re.compile(r'(?<![\w.])register\s+(?=[A-Za-z_]\w*\s*=(?!=))')
 
 
@@ -33,6 +37,7 @@ def clean(source: str | None) -> str | None:
     text = POINTER_CUT.sub(lambda m: f'{m[1]}{m[2]})', source)
     text = TYPE_CAST.sub(lambda m: f'{m[1]}{m[2]}', text)
     text = UNTYPED_REGISTER.sub('', text)
+    text = POINTER_SPLIT.sub(lambda m: f"{m['q']} = (char *)({m['b']}) + {m['k']};", text)
     text = VARIABLE_CUT.sub('', text)
     text = LITERAL_CAST.sub(lambda m: m[0] if int(m[2], 16) <= WIDTH[' '.join(m[1].split())] else m[2], text)
     return text if text != source else None
