@@ -25,14 +25,35 @@ FAMILY = 'u16_counter_loop'
 FAMILIES = (FAMILY,)
 
 IDENT = r'[A-Za-z_]\w*'
-LOOP = re.compile(
-    r'(?m)^(?:(?P<indent>[ \t]*)(?P<init>' + IDENT + r') = 0;[ \t]*\n)?'
-    r'(?P<indent2>[ \t]*)(?P<copy>' + IDENT + r') = 0 & (?P<mask>0xFFFF|0xFF);[ \t]*\n'
-    r'[ \t]*do \{[ \t]*\n'
-    r'(?P<body>(?:(?![ \t]*\} while).*\n)*?)'
-    r'[ \t]*(?P=copy) = (?P<count>' + IDENT + r') & (?P=mask);[ \t]*\n'
-    r'[ \t]*(?:\+\+(?P=count)|(?P=count)\+\+|(?P=count) \+= 1);[ \t]*\n'
-    r'[ \t]*\} while \(\(u32\) \((?P=count) & (?P=mask)\) < (?P<limit>0x[0-9a-fA-F]+|\d+)U?\);[ \t]*\n')
+WHILE = re.compile(r'\}\s*while\s*\(\s*\(u32\)\s*\((?P<count>' + IDENT + r') & (?P<mask>0xFFFF|0xFF)\)\s*<\s*'
+                   r'(?P<limit>0x[0-9a-fA-F]+|\d+)U?\s*\)\s*;|\}\s*while\s*\(\s*\((?P<count2>' + IDENT + r') & '
+                   r'(?P<mask2>0xFFFF|0xFF)\)\s*<\s*(?P<limit2>0x[0-9a-fA-F]+|\d+)U?\s*\)\s*;')
+STEP = r'(?:\+\+{v}|{v}\+\+|{v} \+= 1|{v} = {v} \+ 1)\s*;'
+
+
+def _assigned(var, text):
+    return re.search(r'(?<![\w.>])' + var + r'\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|(?:\+\+|--)\s*' + var + r'\b|\b' + var
+                     + r'\s*(?:\+\+|--)', text)
+
+
+def _loops(clean, opening, end):
+    """(do_start, body_start, body_end, while_end, count, mask, limit) for each `do { } while ((u32)(c & M) < N);`."""
+    for do in re.finditer(r'\bdo\s*\{', clean[opening:end]):
+        start = opening + do.start()
+        brace = opening + do.end() - 1
+        closing = close(clean, brace, '{', '}')
+        if not closing:
+            continue
+        hit = WHILE.match(clean, closing - 1)
+        if not hit:
+            continue
+        count, mask, limit = (hit['count'], hit['mask'], hit['limit']) if hit['count'] else \
+            (hit['count2'], hit['mask2'], hit['limit2'])
+        yield start, brace + 1, closing - 1, hit.end(), count, mask, limit
+
+
+def _line_start(text, at):
+    return text.rfind('\n', 0, at) + 1
 
 
 def variants(source, name):
@@ -45,31 +66,77 @@ def variants(source, name):
     if not end:
         return []
     result = []
-    for hit in LOOP.finditer(clean, opening, end):
-        copy, count = hit['copy'], hit['count']
-        if hit['init'] not in (None, count):
+    for start, body_start, body_end, while_end, count, mask, limit in _loops(clean, opening, end):
+        body = clean[body_start:body_end]
+        kind = 'u16' if mask == '0xFFFF' else 'u8'
+        # the counter starts at 0: its last store before the loop
+        stores = re.findall(r'(?<![\w.>])' + count + r'\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)\s*([^;]*);', clean[opening:start])
+        if not stores or stores[-1].strip() != '0':
             continue
-        # (the counter starts at 0: zeroed on the line before, or earlier with nothing changing it on the way)
-        before = clean[opening:hit.start()]
-        stores = re.findall(r'(?<![\w.>])' + count + r'\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)\s*([^;]*);', before)
-        if hit['init'] is None and (not stores or stores[-1].strip() != '0'):
+        steps = list(re.finditer(r'(?m)^[ \t]*' + STEP.format(v=count) + r'[ \t]*\n', body))
+        if len(steps) != 1:
             continue
-        body = source[hit.start('body'):hit.end('body')]
-        if re.search(r'\b' + count + r'\b', body) or re.search(r'(?<![\w.>])' + copy + r'\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)',
-                                                               body):
-            continue  # the counter itself is used, or the copy changes: not this shape
-        kind = 'u16' if hit['mask'] == '0xFFFF' else 'u8'
-        indent = hit['indent'] if hit['init'] is not None else hit['indent2']
-        inner = re.sub(r'(?<![\w.>])' + copy + r'\b', '__repair_i', body)
-        loop = (f'{indent}{{\n{indent}    {kind} __repair_i;\n'
-                f'{indent}    for (__repair_i = 0; __repair_i < {hit["limit"]}; __repair_i++) {{\n'
-                + ''.join(f'{indent}        {line.strip()}\n' for line in inner.splitlines() if line.strip())
-                + f'{indent}    }}\n{indent}}}\n')
-        text = source[:hit.start()] + loop + source[hit.end():]
+        rest = body[:steps[0].start()] + body[steps[0].end():]
+        # the copy one step behind (`x = 0 & M;` before the loop, `x = count & M;` in it), if m2c made one
+        copy = None
+        before_line = clean[_line_start(clean, start - 1) if start else 0:start]
+        prior = re.search(r'(?m)^[ \t]*(' + IDENT + r') = 0 & ' + mask + r';[ \t]*\n[ \t]*$', clean[opening:start])
+        if prior:
+            update = re.search(r'(?m)^[ \t]*' + prior[1] + r' = ' + count + ' & ' + mask + r';[ \t]*\n', rest)
+            if update:
+                copy = prior[1]
+                rest = rest[:update.start()] + rest[update.end():]
+                if _assigned(copy, rest):
+                    continue
+        # every other use of the counter is its masked value
+        masked = r'\(?\s*' + count + r' & ' + mask + r'\s*\)?'
+        plain = re.sub(r'\(\s*' + count + r' & ' + mask + r'\s*\)|' + count + r' & ' + mask, '__repair_i', rest)
+        if re.search(r'\b' + count + r'\b', plain) or _assigned('__repair_i', plain):
+            continue
+        del masked, before_line
+        if copy:
+            plain = re.sub(r'(?<![\w.>])' + copy + r'\b', '__repair_i', plain)
+        # rebuild from the source text with the same edits, keeping its spelling
+        raw = source[body_start:body_end]
+        raw_rest = raw[:steps[0].start()] + raw[steps[0].end():]
+        if copy:
+            update = re.search(r'(?m)^[ \t]*' + copy + r' = ' + count + ' & ' + mask + r';[ \t]*\n', raw_rest)
+            raw_rest = raw_rest[:update.start()] + raw_rest[update.end():]
+        raw_rest = re.sub(r'\(\s*' + count + r' & ' + mask + r'\s*\)|' + count + r' & ' + mask, '__repair_i', raw_rest)
+        if copy:
+            raw_rest = re.sub(r'(?<![\w.>])' + copy + r'\b', '__repair_i', raw_rest)
+        indent = re.match(r'[ \t]*', clean[_line_start(clean, start):])[0]
+        loop = (f'{{\n{indent}    {kind} __repair_i;\n'
+                f'{indent}    for (__repair_i = 0; __repair_i < {limit}; __repair_i++) {{\n'
+                + ''.join(f'{indent}        {line.strip()}\n' for line in raw_rest.splitlines() if line.strip())
+                + f'{indent}    }}\n{indent}}}')
+        text = source[:start] + loop + source[while_end:]
+        if copy:  # m2c's `x = 0 & M;` before the loop goes with it
+            text = re.sub(r'(?m)^[ \t]*' + copy + r' = 0 & ' + mask + r';[ \t]*\n(?=[ \t]*\{\n[ \t]*' + kind
+                          + r' __repair_i;)', '', text, count=1)
+        text = _drop_dead_counter(text, name, count)
         result.append((FAMILY, text))
         if (dropped := _drop_unset_arguments(text, name)) is not None:
             result.append((FAMILY, dropped))
-    return result[:4]
+        if len(result) >= 4:
+            break
+    return result
+
+
+def _drop_dead_counter(source, name, count):
+    """m2c's counter, when only its zeroing is left: the store and its declaration go."""
+    span = find(source, name)
+    clean = _blank(source)
+    body = clean[span[0]:span[1]]
+    mentions = re.findall(r'(?<![\w.>])' + count + r'\b', body)
+    stores = re.findall(r'(?m)^[ \t]*' + count + r' = 0;[ \t]*\n', body)
+    declared = re.findall(r'(?m)^[ \t]*(?:register\s+)?(?:unsigned\s+|signed\s+)?\w+[\s*]+' + count + r'\s*;[ \t]*\n', body)
+    if len(mentions) != len(stores) + len(declared):
+        return source
+    text = source[:span[0]] + re.sub(r'(?m)^[ \t]*' + count + r' = 0;[ \t]*\n', '', source[span[0]:span[1]]) + source[span[1]:]
+    span = find(text, name)
+    return text[:span[0]] + re.sub(r'(?m)^[ \t]*(?:register\s+)?(?:unsigned\s+|signed\s+)?\w+[\s*]+' + count
+                                   + r'\s*;[ \t]*\n', '', text[span[0]:span[1]], count=1) + text[span[1]:]
 
 
 def _drop_unset_arguments(source, name):

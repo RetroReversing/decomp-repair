@@ -39,4 +39,25 @@ def test_a_counter_zeroed_earlier_and_left_alone_otherwise():
     earlier = SOURCE.replace('    var_s0 = 0;\n    var_a0', '    var_s0 = 0;\n    k();\n    var_a0')
     assert c.variants(earlier, 'f')
     assert c.variants(SOURCE.replace('    var_s0 = 0;\n', '    var_s0 = 1;\n'), 'f') == []
-    assert c.variants(SOURCE.replace('g(var_a0, 0);', 'g(var_a0, var_s0);'), 'f') == []  # uses the counter itself
+
+
+
+SINGLE = '''void f(void) {
+    s32 temp_v1;
+    s32 var_a0;
+
+    var_a0 = 0;
+    do {
+        temp_v1 = (var_a0 & 0xFFFF) * 2;
+        *(temp_v1 + &D_800E097E) = 0;
+        var_a0 += 1;
+    } while ((u32) (var_a0 & 0xFFFF) < 4U);
+}
+'''
+
+
+def test_a_single_masked_counter():
+    (_, out), = c.variants(SINGLE, 'f')
+    assert 'temp_v1 = __repair_i * 2;' in out and 'for (__repair_i = 0; __repair_i < 4; __repair_i++) {' in out
+    assert 'var_a0' not in out
+    assert c.variants(SINGLE.replace('*(temp_v1 + &D_800E097E) = 0;', 'g(var_a0);'), 'f') == []  # used unmasked
