@@ -12,6 +12,8 @@ CASTS = ["(int)", "(unsigned)", "(s32)", "(u32)", "(uInt)", "(uLong)", "(short)"
 # Typedef names: only offered when the source or its header declares them. zlib's uInt/uLong made 9,970 of 10,000
 # rewrites of an N64 function fail to compile, crowding out everything else the pass could have tried.
 _TYPEDEFS = {"s32", "u32", "uInt", "uLong"}
+_TYPE_WORDS = {"char", "short", "int", "long", "unsigned", "signed", "float", "double", "void", "const", "volatile",
+               "struct", "union", "enum", "sizeof", "return"}
 # (the type and the name are separate words: with `\s*` between them `D_80102ED4 = 0;` read as type `D_80102ED`
 # and name `4`, and _toggle_register made a store to a global into `register D_80102ED4 = 0;`, a new local; 35
 # functions of an N64 game kept that as their best C because dropping the store raised the byte score)
@@ -114,10 +116,16 @@ def _rewrite(lines, rng, known=None):
 
 def _add_cast(lines, rng, known=frozenset(_TYPEDEFS)):
     lo, hi = _body_bounds(lines)
+    # (pointers are never cast to an integer type here: in `(char *)(D_80109698) + 0xFC` the operand of the pointer
+    # cast once became `(unsigned short)D_80109698`, an address cut to 16 bits, kept because it raised the byte score)
+    pointers = {m.group(1) for line in lines for m in re.finditer(r"\*\s*(\w+)\s*[;=,)]", line)}
     cands = [(i, m) for i in range(lo, hi) if not _DECL.match(lines[i]) and "=" in lines[i]
              # rvalues only: never cast an assignment target, a call, or the base of a member/array access
-             for m in re.finditer(r"(?<=[=(,+\-*/&|^ ])(\w+)\b(?!\s*(?:\(|=(?!=)|\+\+|--|\[|\.|->|[-+*/&|^]=))",
-                                  lines[i]) if not m.group(1).isdigit()]
+             # (nor a type name: `(char *)` became `((unsigned)char *)`)
+             for m in re.finditer(r"(?<=[=(,+\-*/&|^ ])(\w+)\b(?!\s*(?:\(|=(?!=)|\+\+|--|\[|\.|->|[-+*/&|^]=|\*+\s*\)))",
+                                  lines[i]) if not m.group(1).isdigit() and m.group(1) not in pointers
+             and m.group(1) not in _TYPE_WORDS
+             and not re.search(r"\*\s*\)\s*\(?\s*$", lines[i][:m.start()])]
     if not cands:
         return None
     i, m = rng.choice(cands)
