@@ -345,6 +345,14 @@ def _continuation(source, trail):
     return rest
 
 
+def _breakable(trail):
+    """The innermost loop or switch a trail's statement is in (what its `break` leaves), or None."""
+    for _, _, owner in reversed(trail):
+        if owner is not None and owner.kind in LOOPS:
+            return owner
+    return None
+
+
 def _tail_variants(source, function):
     found = []
     trails = {id(st): trail for st, trail in _paths(function)}
@@ -353,12 +361,26 @@ def _tail_variants(source, function):
             continue
         stmts, k, _ = trail[-1]
         tail = stmts[k + 1:]
+        # (in a switch the case labels share the list: the tail is the label's own case, up to its `break;` or `return`)
+        cut = next((n for n, st in enumerate(tail)
+                    if (st.kind == 'jump' and source[st.start:st.end].lstrip().startswith('break')
+                        or st.kind == 'simple' and re.match(r'return\b', source[st.start:st.end].lstrip()))
+                    and (n + 1 == len(tail) or tail[n + 1].kind == 'case')), None)
+        if cut is not None and _breakable(trail) is not None and _breakable(trail).kind == 'switch':
+            tail = tail[:cut + 1]
         gotos = _gotos(function, label.parts['name'])
-        # (copying statements binds no break or continue, so a goto inside a switch or loop may take a copy)
+        # (copying statements binds no break or continue, so a goto inside a switch or loop may take a copy; a tail
+        # ending in `break;` may be copied too where every goto leaves the same loop or switch as the label: m2c's
+        # `case A: v = x * 2; L: r = v + K; break; case B: v = y * 2; goto L;` was a switch whose cases each ended so,
+        # gcc having merged the copies; written out again an N64 function was exact)
+        breaks = bool(tail) and tail[-1].kind == 'jump' and source[tail[-1].start:tail[-1].end].lstrip().startswith('break')
+        body = tail[:-1] if breaks else tail
         if not tail or not gotos or _labels(tail) \
-                or any(st.kind in ('case', 'goto', 'jump') or st.kind in LOOPS for st, _ in walk(tail)):
+                or any(st.kind in ('case', 'goto', 'jump') or st.kind in LOOPS for st, _ in walk(body)):
             continue
-        ends = tail[-1].kind == 'simple' and re.match(r'return\b', source[tail[-1].start:tail[-1].end])
+        if breaks and any(_breakable(trails[id(goto)]) is not _breakable(trail) for goto, _ in gotos):
+            continue
+        ends = breaks or tail[-1].kind == 'simple' and re.match(r'return\b', source[tail[-1].start:tail[-1].end])
         # without a return, each goto must continue as the tail's end does: the same statements follow, level by
         # level, out to the same enclosing loop or switch (or the function's end)
         after_tail = _continuation(source, trail[:-1] + ((stmts, len(stmts) - 1, None),))
