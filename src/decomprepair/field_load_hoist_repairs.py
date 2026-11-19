@@ -3,7 +3,9 @@
 m2c puts each load where its value is first used. The game read a structure's pointer field before testing another
 field (`lw $a1, 0x6C($a0)` next to `lw $v1, 0x60($a0)`, then the branch): an N64 function was 87.3% with the read
 inside the `if` and exact with it in a local before the test. Offered for a pointer field of a parameter read in an
-`if`'s block whose base the function never assigns.
+`if`'s block whose base the function never assigns, and for one read in the condition after a store the condition
+makes (m2c's `(c) || (p->n = v, …, M2C_FIELD(M2C_FIELD(arg0, void **, 0x20), …))`): gcc 2.7.2 won't move that load
+above the store, where the game read it first (96.0% -> exact).
 """
 import re
 
@@ -34,16 +36,24 @@ def variants(source, name):
         if block < 0 or clean[cond_end:block].strip():
             continue
         block_end = close(clean, block, '{', '}')
-        for load in re.finditer(r'M2C_FIELD\(\s*(?P<base>' + I + r')\s*,\s*(?P<type>[\w ]+\*\s*\*)\s*,\s*(?P<off>0x[0-9a-fA-F]+|\d+)\s*\)',
-                                clean[block:block_end]):
+        cond_open = opening + cond.end() - 1
+        regions = [(block, block_end)]
+        if re.search(r'(?<![=!<>])=(?!=)', clean[cond_open:cond_end]):  # the condition stores before it reads
+            regions.insert(0, (cond_open, cond_end))
+        loads = [(at, m) for at, stop in regions
+                 for m in re.finditer(r'M2C_FIELD\(\s*(?P<base>' + I + r')\s*,\s*(?P<type>[\w ]+\*\s*\*)\s*,\s*(?P<off>0x[0-9a-fA-F]+|\d+)\s*\)',
+                                      clean[at:stop])]
+        for at, load in loads:
+            if at != block and not re.search(r'(?<![=!<>])=(?!=)', clean[cond_open:at + load.start()]):
+                continue  # (in the condition, only a load after its store)
             base = load['base']
             if base not in params or re.search(r'(?<![=!<>])\b' + base + r'\s*=(?!=)', clean[opening:end]):
                 continue
             pointee = load['type'].strip()[:-1].strip()
-            expr = source[block + load.start():block + load.end()]
+            expr = source[at + load.start():at + load.end()]
             ind = cond['ind']
-            text = (source[:start] + f'{ind}__repair_hoisted = {expr};\n' + source[start:block + load.start()]
-                    + '__repair_hoisted' + source[block + load.end():])
+            text = (source[:start] + f'{ind}__repair_hoisted = {expr};\n' + source[start:at + load.start()]
+                    + '__repair_hoisted' + source[at + load.end():])
             text = text[:opening + 1] + f'\n    {pointee} __repair_hoisted;\n' + text[opening + 1:]
             result.append((FAMILY, text))
             break
