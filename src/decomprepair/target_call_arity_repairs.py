@@ -35,11 +35,18 @@ def calls(asm):
     found = []
     written = {}
     pending = None
+    bases = {}  # register -> symbol whose address it holds (`addiu $s2, $s2, %lo(D)`), for loads through it
     for op, args in _instructions(asm):
         dest = re.match(r'\$(\w+)', args)
+        if dest and not op.startswith(('s', 'b', 'j')) or op == 'jal':
+            held = re.fullmatch(r'\$(\w+)\s*,\s*\$\1\s*,\s*%lo\(\s*(\w+)\s*\)', args) if op == 'addiu' else None
+            if held:
+                bases[held[1]] = held[2]
+            elif dest and op != 'lui':
+                bases.pop(dest[1], None)
         if pending is not None:  # the delay slot
             if dest and dest[1] in ARGREG and not op.startswith(('s', 'b', 'j')):
-                written[dest[1]] = _constant(op, args)
+                written[dest[1]] = _constant(op, args, bases)
             found.append((pending, written))
             pending, written = None, {}
             continue
@@ -54,11 +61,17 @@ def calls(asm):
                 if read in ARGREG and read != dest[1]:
                     written.pop(read, None)
         if dest and dest[1] in ARGREG and not store:
-            written[dest[1]] = _constant(op, args)
+            written[dest[1]] = _constant(op, args, bases)
     return found
 
 
-def _constant(op, args):
+def _constant(op, args, bases=None):
+    # (a global loaded straight into the argument, `lbu $a1, %lo(D)($a1)` or through a register holding its address:
+    # an N64 function passed `D_801002AD` as a second argument m2c left off, exact with it)
+    load = re.fullmatch(r'\$\w+\s*,\s*(?:%lo\(\s*(\w+)\s*\)|(?:0x0|0)?)\(\$(\w+)\)', args) \
+        if op in ('lb', 'lbu', 'lh', 'lhu', 'lw') else None
+    if load:
+        return load[1] or (bases or {}).get(load[2])
     m = re.fullmatch(r'\$\w+\s*,\s*\$zero\s*,\s*(-?(?:0x[0-9a-fA-F]+|\d+))', args)
     if op in ('addiu', 'ori', 'daddiu') and m:
         return int(m[1], 0)
@@ -125,10 +138,22 @@ def variants(source, name, asm):
             text = _prototype(text, callee, name, change, edits, clean, parens)
             if text and text != source and text not in [t for _, t in result]:
                 result.append((FAMILY, text))
-    return result[:4]
+                # (an added global the target reads through a register holding its address: alone it scored worse
+                # than the draft, 471 against 461, and only with the symbol held in a local too was it exact; offer
+                # both steps at once, since a pass keeps only steps that improve)
+                held = set(re.findall(r'\baddiu\s+\$(\w+)\s*,\s*\$\1\s*,\s*%lo\(\s*(\w+)\s*\)', asm))
+                symbols = {sym for _, sym in held}
+                if change == 'add' and any(sym in text_add for _, text_add in edits for sym in symbols):
+                    from . import symbol_base_repairs
+                    for _, both in symbol_base_repairs.variants(text, name)[:3]:
+                        if both not in [t for _, t in result]:
+                            result.append((FAMILY, both))
+    return result[:6]
 
 
 def _number(value):
+    if isinstance(value, str):
+        return value
     return f'0x{value:X}' if value > 9 else str(value)
 
 
