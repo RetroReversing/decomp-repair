@@ -1,5 +1,6 @@
 """The permuter's rewrites: they propose C only; nothing here compiles or judges."""
 import random
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -98,3 +99,14 @@ def test_a_cast_never_cuts_a_pointer():
         assert '((char *)(D_80109698) +' in out[3] and out[4] == lines[4]
         seen.add(out[5])
     assert any(line != lines[5] for line in seen)
+
+def test_a_cast_never_lands_on_a_literal():
+    """`(unsigned short)0xDA380003` truncated a display-list command to 3; only hex literals slipped past `isdigit`."""
+    import random
+
+    from decomprepair import permuter
+    lines = ['void f(void) {', '    s32 v;', '', '    v = 0xDA380003;', '    w = 12 + v;', '}']
+    for seed in range(300):
+        out = permuter._add_cast(list(lines), random.Random(seed))
+        assert out is not None
+        assert not re.search(r'\)\s*(?:0[xX][0-9A-Fa-f]+|\d+)\b', out[3] + out[4]), out

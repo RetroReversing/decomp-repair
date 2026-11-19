@@ -64,3 +64,30 @@ def test_a_sole_float_parameter():
     source = 'f32 g(M2C_UNK);\nvoid f(void) {\n    D = g(0x3F800000) + 0.25f;\n}\n'
     (_, out), = fb.variants(source, 'f', '', 'mips', ['-mgp32'])
     assert 'f32 g(f32);' in out and 'g(1.0f)' in out
+
+
+UNLISTED = '''f32 g();
+
+void f(f32 *p) {
+    p[0] = p[0] + g(0x3CA3D70A);
+    p[1] = p[1] + g(0x3CA3D70A);
+    p[2] = p[2] + g((short)0x3CA3D70A);
+}
+'''
+
+
+def test_an_unlisted_prototype_and_a_leftover_cast():
+    # An N64 function at 80.1%: m2c's `f32 g();` with the bits of 0.02f, one call carrying a permuter's
+    # `(short)` cast (which never reached the register: the target loads all 32 bits); 84.9% with `g(0.02f)`.
+    from decomprepair import float_bit_argument_repairs as fb
+    (family, out), = fb.variants(UNLISTED, 'f', flags=['-mgp32'])
+    assert 'f32 g(f32);' in out and out.count('g(0.02f)') == 3 and '0x3CA3D70A' not in out
+
+
+def test_an_unlisted_prototype_keeps_its_other_arguments_integer():
+    from decomprepair import float_bit_argument_repairs as fb
+    source = UNLISTED.replace('g(0x3CA3D70A)', 'g(1, 0x3CA3D70A)').replace('g((short)0x3CA3D70A)', 'g(2, 0x3CA3D70A)')
+    (family, out), = fb.variants(source, 'f', flags=['-mgp32'])
+    assert 'f32 g(s32, f32);' in out and 'g(2, 0.02f)' in out
+    # calls that disagree on how many arguments there are leave it alone
+    assert fb.variants(source.replace('g(2, 0x3CA3D70A)', 'g(0x3CA3D70A)'), 'f', flags=['-mgp32']) == []

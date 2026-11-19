@@ -123,7 +123,10 @@ def _add_cast(lines, rng, known=frozenset(_TYPEDEFS)):
              # rvalues only: never cast an assignment target, a call, or the base of a member/array access
              # (nor a type name: `(char *)` became `((unsigned)char *)`)
              for m in re.finditer(r"(?<=[=(,+\-*/&|^ ])(\w+)\b(?!\s*(?:\(|=(?!=)|\+\+|--|\[|\.|->|[-+*/&|^]=|\*+\s*\)))",
-                                  lines[i]) if not m.group(1).isdigit() and m.group(1) not in pointers
+                                  lines[i])
+             # (no literal: `(unsigned short)0xDA380003` stored 3 where an N64 function stored a display-list command,
+             # and the byte score rewarded it; `isdigit` let every hex literal through)
+             if not m.group(1)[0].isdigit() and m.group(1) not in pointers
              and m.group(1) not in _TYPE_WORDS
              and not re.search(r"\*\s*\)\s*\(?\s*$", lines[i][:m.start()])]
     if not cands:
