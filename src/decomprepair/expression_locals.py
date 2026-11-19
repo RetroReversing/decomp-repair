@@ -34,6 +34,10 @@ def declaration_prefix(text):
     return bool(re.match(r'\s*(?:(?:const|volatile|unsigned|signed|struct)\s+)*[A-Za-z_]\w*(?:\s+(?:\*\s*)*|\s*\*+\s*)[A-Za-z_]\w*\s*(?:\[[^]]*\])?\s*=',text))
 
 
+def _assigned_in(name, text):
+    return re.search(r'(?<![\w.>])'+name+r'\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|(?:\+\+|--)\s*'+name+r'\b|\b'+name+r'\s*(?:\+\+|--)|&\s*'+name+r'\b',text)
+
+
 def _sum_operands(text, start, end):
     """(start, end) of each top-level operand of a sum in text[start:end]; [] when it isn't a sum at top level."""
     parts, depth, begin = [], 0, start
@@ -104,6 +108,9 @@ def variants(source, name):
     # A load that is one operand of a sum, in a statement of its own first. address_temporary splits a field's whole
     # address; here the base pointer chain is only part of it: `p = (i * 0x18) + M2C_FIELD(M2C_FIELD(o, void **,
     # 0x6C), s32 *, 4);` scheduled the index between the two loads, where an N64 game loaded the chain first.
+    outside=clean[:span[0]]+clean[span[1]:]
+    globals_={g:' '.join(t.split()) for t,g in re.findall(r'(?m)^[ \t]*extern\s+((?:unsigned\s+|signed\s+)?'+IDENT+r'(?:\s*\*)*)\s*('+IDENT+r')\s*;',outside)
+              if t.split()[-1] not in ('M2C_UNK','void') and not _assigned_in(g,body)}
     for m in list(re.finditer(r'(?m)^[ \t]*(?P<lhs>'+IDENT+r')\s*=(?!=)\s*',body))[:24]:
         stop=body.find(';',m.end())
         if stop<0 or re.search(r'[{}]',body[m.end():stop]):
@@ -113,14 +120,19 @@ def variants(source, name):
             continue
         for start,end in _sum_operands(body,m.end(),stop):
             operand=body[start:end].strip()
-            if not re.match(r'M2C_FIELD\s*\(',operand) or close(operand,operand.find('('))!=len(operand):
-                continue
-            args=m2cfix._split_top_level(operand[operand.find('(')+1:-1])
-            typed=re.fullmatch(r'\s*(?P<t>'+IDENT+r'(?:\s*\*)*)\s*\*\s*',args[1]) if len(args)==3 else None
-            calls=re.findall(r'\b('+IDENT+r')\s*\(',operand)
-            if not typed or any(c!='M2C_FIELD' for c in calls) or re.search(r'\+\+|--|[=;{}]',operand):
-                continue
-            kind=' '.join(typed['t'].split())
+            # (a global the function doesn't change is a load too: an N64 function loaded `D_800E41DC` before
+            # computing `arg0 * 0x68` for the sum, exact with it in a statement first)
+            if operand in globals_:
+                kind=globals_[operand]
+            else:
+                if not re.match(r'M2C_FIELD\s*\(',operand) or close(operand,operand.find('('))!=len(operand):
+                    continue
+                args=m2cfix._split_top_level(operand[operand.find('(')+1:-1])
+                typed=re.fullmatch(r'\s*(?P<t>'+IDENT+r'(?:\s*\*)*)\s*\*\s*',args[1]) if len(args)==3 else None
+                calls=re.findall(r'\b('+IDENT+r')\s*\(',operand)
+                if not typed or any(c!='M2C_FIELD' for c in calls) or re.search(r'\+\+|--|[=;{}]',operand):
+                    continue
+                kind=' '.join(typed['t'].split())
             lead=len(body[start:end])-len(body[start:end].lstrip())
             add('operand_temporary',[(1,1,f'\n{kind} __repair_operand;\n'),
                                      (m.start('lhs'),m.start('lhs'),f'__repair_operand = {raw(start+lead,start+lead+len(operand))};\n'

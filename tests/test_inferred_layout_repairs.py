@@ -79,3 +79,39 @@ def test_m2c_field_macros_form_a_record():
     assert '((__repair_record_temp_a0*)temp_a0)->field_2 = 1U;' in out and 'M2C_FIELD' not in out
     # overlapping fields stay as they are
     assert layouts.variants(source.replace('M2C_FIELD(temp_a0, u8 *, 1)', 'M2C_FIELD(temp_a0, s32 *, 0)'), 'f', 'mips') == []
+
+
+def test_pointer_fields_and_two_stores_make_a_record():
+    # A list node's links, `void **` and `void ***`: as members, gcc 2.7.2 let a global's load pass the stores
+    # (an N64 function at 94.7%, exact); and a record stored only twice (another at 96.4%, exact).
+    links = '''void f(void *arg0) {
+    void *a;
+    void **b;
+
+    a = M2C_FIELD(arg0, void **, 0);
+    b = M2C_FIELD(arg0, void ***, 4);
+    M2C_FIELD(arg0, void **, 0) = NULL;
+    M2C_FIELD(arg0, void ***, 4) = NULL;
+    D -= 1;
+}
+'''
+    (_, out), = repair.variants(links, 'f', 'mips')
+    assert 'void * field_0; void * field_4;' in out and '((__repair_record_arg0*)arg0)->field_4 = NULL;' in out
+    twice = '''void f(void *p, s32 a, s16 b) {
+    M2C_FIELD(p, s32 *, 0) = a;
+    M2C_FIELD(p, s16 *, 4) = b;
+    g(*D);
+}
+'''
+    assert repair.variants(twice, 'f', 'mips')
+
+
+def test_parenthesised_and_integer_cast_bases():
+    source = '''void f(void *p) {
+    (*(s16 *)((char *)(p) + 0x78)) = 1;
+    (*(s16 *)((char *)(p) + 0x7A)) = 0;
+    (*(s32 *)((char *)((s32)p) + 0x5C)) = 2;
+}
+'''
+    (_, out), = repair.variants(source, 'f', 'mips')
+    assert out.count('((__repair_record_p*)p)->') == 3
