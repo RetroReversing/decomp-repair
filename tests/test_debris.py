@@ -23,3 +23,10 @@ def test_each_kind_goes():
 def test_nothing_to_take_out():
     assert debris.clean('void f(void) {\n    register s32 v = 0;\n    p = (u8 *)(q) + 1;\n}\n') is None
     assert debris.clean(None) is None
+
+
+def test_a_narrowed_hex_literal_loses_its_cast():
+    from decomprepair import debris
+    source = 'void f(u32 *p) {\n    p[0] = (unsigned short)0xDA380003;\n    p[1] = (u16)0x8000;\n}\n'
+    out = debris.clean(source)
+    assert 'p[0] = 0xDA380003;' in out and 'p[1] = (u16)0x8000;' in out
