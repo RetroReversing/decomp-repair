@@ -94,3 +94,36 @@ def test_masks_the_target_never_applies_are_dropped():
     assert family == 'parameter_mask_drop'
     assert '& 0xFFFF' not in out and 'g(arg1, arg5);' in out and 'if (arg1 != 0) {' in out
     assert masks.variants(MASKED, 'f', 'andi $a0, $s1, 0xffff\n' * 3) == []
+
+
+ARG = '''s32 g();
+extern u8 D_801002AD;
+extern u8 D_80100198[];
+extern char D_8010A488[];
+
+void f(void) {
+    u8 var_s1;
+
+    var_s1 = *(D_80100198 + (D_801002AD * 0x18));
+    h(var_s1);
+    g(D_8010A488);
+}
+'''
+ARG_ASM = '''lui        $s2, %hi(D_801002AD)
+addiu      $s2, $s2, %lo(D_801002AD)
+lbu        $v1, 0x0($s2)
+jal        h
+addu       $a0, $s1, $zero
+lbu        $a1, 0x0($s2)
+jal        g
+addu       $a0, $s0, $zero
+'''
+
+
+def test_a_global_argument_the_draft_left_off():
+    # An N64 function passed D_801002AD (read through a register holding its address) as g's second argument;
+    # alone that scored worse than the draft, and with the symbol in a local too it was exact
+    from decomprepair import target_call_arity_repairs as arity
+    texts = [t for _, t in arity.variants(ARG, 'f', ARG_ASM)]
+    assert any('g(D_8010A488, D_801002AD);' in t for t in texts)
+    assert any('&D_801002AD' in t and 'g(D_8010A488, ' in t and 'g(D_8010A488, D_801002AD)' not in t for t in texts)
