@@ -61,3 +61,22 @@ def test_the_sign_is_a_halfword():
 def test_the_pointer_split_is_one_sum_again():
     source = 'void f(void *b) {\n    char *q;\n\n    q = (char *)(b); q += (s32)(0x14);\n    g(q);\n}\n'
     assert 'q = (char *)(b) + 0x14;\n' in debris.clean(source)
+
+
+def test_a_read_before_the_first_assignment_is_swapped_back():
+    # An N64 function's best read `p` one line before setting it (a random statement swap); swapped back, and with the
+    # values computed before the stores, it was exact.
+    source = ('void f(void *a) {\n    void *p;\n    f32 t;\n    f32 u;\n\n'
+              '    t = *(f32 *)((char *)(p) + 0x7C);\n    p = D[g(a)];\n    u = *(f32 *)((char *)(p) + 0x78);\n'
+              '    h(t, u);\n}\n')
+    out = debris.clean(source)
+    assert '    p = D[g(a)];\n    t = *(f32 *)((char *)(p) + 0x7C);\n' in out
+    fine = source.replace('    t = *(f32 *)((char *)(p) + 0x7C);\n    p = D[g(a)];\n',
+                          '    p = D[g(a)];\n    t = *(f32 *)((char *)(p) + 0x7C);\n')
+    assert debris.clean(fine) is None
+
+
+def test_left_alone_when_a_call_may_set_it_through_an_address():
+    source = ('void f(void) {\n    f32 sp38;\n    f32 sp40;\n    f32 t;\n\n    g(&sp38);\n'
+              '    t = sp40 + 1.0f;\n    sp40 = t;\n    h(t);\n}\n')
+    assert debris.clean(source) is None
