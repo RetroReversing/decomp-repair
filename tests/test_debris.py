@@ -98,3 +98,39 @@ def test_the_phase_union_becomes_a_pointer():
     out = debris.clean(source)
     assert 'union' not in out and 'void *__repair_phase_pointer;' in out
     assert '__repair_phase_pointer = (i * 2) + t;' in out
+
+
+def test_value_blocks_inline_helpers_and_cached_pointers_go_back():
+    from decomprepair import debris
+    source = '''void *__repair_cached_pointer = D_800CA31C;
+static __inline__ int __repair_inline(s32 a, s32 b) { return a < b; }
+void f(s32 n) {
+    s32 var_s0;
+    s32 var_a1;
+
+    var_s0 = n;
+    var_a1 = 0;
+    do {
+        var_a1 += 1;
+    } while (__repair_inline(var_a1, 3));
+    { s32 __repair_value; __repair_value = var_s0 * 8; var_s0 = __repair_value; }
+    g(*(s32 *)((char *)(__repair_cached_pointer) + 4), var_s0);
+}
+'''
+    out = debris.clean(source)
+    assert '__repair' not in out
+    assert '} while ((var_a1 < 3));' in out
+    assert '    var_s0 = var_s0 * 8;' in out
+    assert 'g(*(s32 *)((char *)(D_800CA31C) + 4), var_s0);' in out
+
+
+def test_left_alone_where_meaning_could_change():
+    from decomprepair import debris
+    # the target has another type: the copy converts
+    assert debris.clean('void f(void) {\n    u8 x;\n    { s32 __repair_value; __repair_value = g(); x = __repair_value; }\n}\n') is None
+    # an argument with a call: evaluated once in the helper, maybe twice inline
+    helper = 'static __inline__ int __repair_inline(s32 a, s32 b) { return a < a + b; }\nvoid f(void) {\n    h(__repair_inline(g(), 3));\n}\n'
+    assert debris.clean(helper) is None
+    # the cached symbol is assigned later in the file: the copy holds the old value
+    cached = 'void *__repair_cached_pointer = D;\nvoid f(void) {\n    D = 0;\n    g(__repair_cached_pointer);\n}\n'
+    assert debris.clean(cached) is None

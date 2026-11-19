@@ -197,9 +197,59 @@ def _phase_union(text):
     return text.replace(decl.group(0), decl.group(0)[:decl.group(0).index('union')] + f'void *{local};', 1)
 
 
+VALUE_BLOCK = re.compile(r'\{\s*(?P<type>[A-Za-z_]\w*)\s+(?P<name>__repair_value\w*)\s*;\s*(?P=name)\s*=(?!=)\s*(?P<expr>[^;{}]*);'
+                         r'\s*(?P<target>[A-Za-z_]\w*)\s*=(?!=)\s*(?P=name)\s*;\s*\}')
+
+
+def _value_blocks(text):
+    """`{ s32 __repair_value; __repair_value = E; x = __repair_value; }` back to `x = E;`, when `x` has that type."""
+    def put(m):
+        declared = re.search(r'(?m)^[ \t]*' + m['type'] + r'\s+' + m['target'] + r'\s*;', text)
+        return f"{m['target']} = {m['expr'].strip()};" if declared else m[0]
+    return VALUE_BLOCK.sub(put, text)
+
+
+INLINE_HELPER = re.compile(r'(?m)^static\s+__inline__\s+[A-Za-z_]\w*\s+(?P<name>__repair_inline\w*)\s*\('
+                           r'(?P<params>[^)]*)\)\s*\{\s*return\s+(?P<body>[^;{}]*);\s*\}[ \t]*\n')
+
+
+def _inline_helpers(text):
+    """A one-line `static __inline__` helper an earlier rewrite made of an expression, written back at its calls (the
+    arguments plain names or numbers, so each is evaluated once either way)."""
+    for m in list(INLINE_HELPER.finditer(text)):
+        params = [re.search(r'([A-Za-z_]\w*)\s*$', p)[1] for p in m['params'].split(',') if p.strip()]
+        calls = list(re.finditer(r'\b' + m['name'] + r'\s*\(([^()]*)\)', text[m.end():]))
+        args = [[a.strip() for a in c[1].split(',')] for c in calls]
+        if not calls or any(len(a) != len(params) or not all(re.fullmatch(r'[A-Za-z_]\w*|-?\d+|0[xX][0-9a-fA-F]+', x)
+                                                            for x in a) for a in args):
+            continue
+        rest = text[m.end():]
+        for c, a in reversed(list(zip(calls, args))):
+            body = m['body']
+            for p, x in zip(params, a):
+                body = re.sub(r'\b' + p + r'\b', x, body)
+            rest = rest[:c.start()] + '(' + body + ')' + rest[c.end():]
+        return _inline_helpers(text[:m.start()] + rest)
+    return text
+
+
+CACHED_POINTER = re.compile(r'(?m)^(?:static\s+)?void\s*\*\s*(?P<name>__repair_cached\w*)\s*=\s*(?P<symbol>[A-Za-z_]\w*)\s*;'
+                            r'[ \t]*\n')
+
+
+def _cached_pointers(text):
+    """A file-scope `void *__repair_cached_pointer = D;` copy: its uses read `D` again, as the C did before."""
+    for m in list(CACHED_POINTER.finditer(text)):
+        rest = re.sub(r'\b' + m['name'] + r'\b', m['symbol'], text[m.end():])
+        if re.search(r'\b' + m['symbol'] + r'\s*=(?!=)', text[m.end():]) is None:
+            text = text[:m.start()] + rest
+    return text
+
+
 def _scaffolding(text):
     text = re.sub(r'/\*\s*__repair_\w*\s*\*/', '', text)
-    for step in (_rows_loops, _unwrap_do_zero, _literal_locals, _single_use_temporaries, _phase_union):
+    for step in (_rows_loops, _unwrap_do_zero, _literal_locals, _single_use_temporaries, _phase_union,
+                 _value_blocks, _inline_helpers, _cached_pointers):
         text = step(text)
     return text
 
