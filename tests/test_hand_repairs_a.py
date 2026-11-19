@@ -153,3 +153,38 @@ def test_the_store_at_each_of_its_sites():
 def test_left_alone_when_the_variable_is_used_again():
     from decomprepair import shared_constant_store_repairs as s
     assert s.variants(SHARED.replace('        h(arg0);\n        var_v0 = 2;', '        h(var_v0);\n        var_v0 = 2;'), 'f') == []
+
+
+CARRIER = '''f32 g(f32, void *);                     /* extern */
+
+void f(void *arg0, f32 arg1) {
+    f32 temp_ft3;
+    void *temp_s0;
+    void *var_a0;
+
+    var_a0 = arg0;
+    temp_s0 = var_a0;
+    if (temp_s0 != NULL) {
+        if ((D_A == 0) || (var_a0 = (void *)1, (D_B == 1))) {
+            h(temp_s0);
+        }
+        temp_ft3 = 1.0f / g(arg1 * 0.5f, var_a0);
+        k(temp_ft3);
+    }
+}
+'''
+
+
+def test_the_carried_register_value_is_dropped():
+    # An N64 function at 97.6%: exact without m2c's var_a0 and the extra argument it carried.
+    from decomprepair import register_carrier_repairs as r
+    (family, out), = r.variants(CARRIER, 'f')
+    assert family == 'register_carrier_argument'
+    assert 'f32 g(f32);' in out and 'g(arg1 * 0.5f)' in out
+    assert '    temp_s0 = arg0;\n' in out and '((D_A == 0) || ((D_B == 1)))' in out
+    assert 'var_a0' not in out
+
+
+def test_left_alone_when_the_value_is_really_used():
+    from decomprepair import register_carrier_repairs as r
+    assert r.variants(CARRIER.replace('            h(temp_s0);', '            h(var_a0);'), 'f') == []
