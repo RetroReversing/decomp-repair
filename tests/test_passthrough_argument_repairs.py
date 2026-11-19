@@ -35,3 +35,14 @@ def test_a_prototyped_callee_gains_the_parameter():
     assert any('f32 g(s32, u16 *);' in t and 'g(arg0, &sp10)' in t for t in texts)
     twice = source.replace('h(g(&sp10), arg0);', 'h(g(&sp10), g(&sp10));')
     assert not any('f32 g(s32, u16 *);' in t for _, t in p.variants(twice, 'f'))
+
+
+def test_a_callee_given_no_arguments_gets_all_of_the_callers_at_once():
+    # (an N64 function: `f()` 40 points off, exact as `f(arg0, arg1, arg2)`)
+    source = ('s32 func_8007A974();\n'
+              's32 func_8007AA40(void *arg0, s32 arg1, s32 *arg2) {\n'
+              '    func_8007A974();\n'
+              '    return *arg2;\n'
+              '}\n')
+    texts = [t for _, t in p.variants(source, 'func_8007AA40')]
+    assert any('func_8007A974(arg0, arg1, arg2);' in t for t in texts)
