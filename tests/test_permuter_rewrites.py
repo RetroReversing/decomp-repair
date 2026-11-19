@@ -60,3 +60,17 @@ def test_rewrites_name_only_declared_typedefs():
     assert not any(t in (v or '') for v in outs for t in ('uInt', 'uLong', 's32', 'u32'))
     with_header = {mutate(source, random.Random(seed), header='typedef int s32;') for seed in range(400)}
     assert any('s32' in (v or '') for v in with_header) and not any('uInt' in (v or '') for v in with_header)
+
+
+def test_register_is_never_added_to_an_assignment():
+    """`D_80102ED4 = 0;` once read as type `D_80102ED` and name `4`: the toggle declared a new local in place of the
+    global's store, and 35 functions of an N64 game kept that as their best C."""
+    import random
+
+    from decomprepair import permuter
+    lines = ['void f(void) {', '    s32 v;', '', '    D_80102ED4 = 0;', '    v = g();', '    return v;', '}']
+    for seed in range(200):
+        out = permuter._toggle_register(list(lines), random.Random(seed))
+        assert out is not None
+        assert out[3] == '    D_80102ED4 = 0;' and out[4] == '    v = g();' and out[5] == '    return v;'
+        assert out[1] in ('    s32 v;', '    register s32 v;')
