@@ -14,6 +14,9 @@ The source computed it once, after the `if`. Kept as m2c wrote it, the value liv
 register, and an N64 function differed in 83 of 91 instructions. Moving it after the `if` is exact in meaning when
 the value is plain arithmetic of variables that neither the condition nor the arm changes, and nothing but the
 arm's last statement mentions the variable before it.
+
+A comparison (`var_v0 = arg0 != 0`) is offered written where it's used as well, when that's once: carried in a
+variable it stayed one, in a saved register, where the game computed it in the condition.
 """
 import re
 
@@ -23,6 +26,8 @@ from .pattern_repairs import close
 
 FAMILY = 'delay_slot_duplicate'
 FAMILIES = (FAMILY,)
+# a value: no assignment (`=` alone) and no statement end; comparisons (`!=`, `==`, `<=`, `>=`) are values too
+VALUE = r'(?:[^;=!<>]|[!<>=]=|[<>]|!(?!=))+'
 
 
 def _assigned(name, text):
@@ -40,13 +45,13 @@ def variants(source, name):
     if not end:
         return []
     result = []
-    pattern = r'(?m)^([ \t]*)(' + IDENT + r')\s*=\s*([^;=]+);[ \t]*\n[ \t]*if\s*\('
+    pattern = r'(?m)^([ \t]*)(' + IDENT + r')\s*=(?!=)\s*(' + VALUE + r');[ \t]*\n[ \t]*if\s*\('
     for hit in re.finditer(pattern, clean[opening+1:end]):
         start = opening + 1 + hit.start()
         var, value = hit[2], hit[3].strip()
         # plain arithmetic of variables and numbers: no loads, calls or side effects
         if re.search(r'[*\[]\s*\(|->|\[|\(\s*\*|\b' + IDENT + r'\s*\(', value.replace(' * ', ' MUL ')) \
-                or not re.fullmatch(r'[\w\s()+\-*/%&|^<>~]+', value) or '++' in value or '--' in value:
+                or not re.fullmatch(r'[\w\s()+\-*/%&|^<>~!=]+', value) or '++' in value or '--' in value:
             continue
         cond_open = opening + 1 + hit.end() - 1
         cond_close = close(clean, cond_open)
@@ -58,7 +63,7 @@ def variants(source, name):
         if not block_close or re.match(r'\s*else\b', clean[block_close:end]):
             continue
         arm = clean[block_open+1:block_close-1]
-        last = re.search(r'\n([ \t]*)' + var + r'\s*=\s*([^;=]+);\s*$', arm)
+        last = re.search(r'\n([ \t]*)' + var + r'\s*=(?!=)\s*(' + VALUE + r');\s*$', arm)
         if not last or ' '.join(last[2].split()) != ' '.join(value.split()):
             continue
         before_last = arm[:last.start()]
@@ -74,4 +79,29 @@ def variants(source, name):
         text = (source[:start] + source[line_end:last_start] + source[last_end:block_close]
                 + '\n' + hit[1] + source[start + len(hit[1]):line_end - 1] + source[block_close:])
         result.append((FAMILY, text))
+        if re.search(r'[!=<>]=|(?<![<>])[<>](?![<>=])', value) and (inlined := _inlined(text, var, value, names, start + (last_start - line_end) + (block_close - last_end))):
+            result.append((FAMILY, inlined))
     return result[:4]
+
+
+def _inlined(text, var, value, names, at):
+    """The moved value written where it's used, when that's once: a comparison carried in a variable stayed one
+    (`andi v0,s0,1` on a saved register, an N64 function at 92%) where the game computed it in the condition."""
+    clean = _blank(text)
+    line = re.compile(r'\n[ \t]*' + var + r'\s*=(?!=)[^;]*;').match(clean, at)
+    if not line:
+        return None
+    rest = clean[line.end():]
+    uses = list(re.finditer(r'(?<![\w.>])' + var + r'\b', rest))
+    if len(uses) != 1 or _assigned(var, rest):
+        return None
+    use = line.end() + uses[0].start()
+    if any(_assigned(n, clean[line.end():use]) for n in names) or re.search(r'\b(?:for|while|do|goto)\b|\bcase\b|\}',
+                                                                           clean[line.end():use]):
+        return None
+    out = text[:use] + '(' + value + ')' + text[use + len(var):]
+    out = out[:line.start()] + out[line.end():]
+    declared = re.search(r'(?m)^[ \t]*[\w ]+?\s+' + var + r'\s*;[ \t]*\n', _blank(out))
+    if declared and len(re.findall(r'(?<![\w.>])' + var + r'\b', _blank(out))) == 1:
+        out = out[:declared.start()] + out[declared.end():]
+    return out

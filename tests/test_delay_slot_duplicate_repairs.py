@@ -43,3 +43,40 @@ def test_left_alone_where_the_value_could_differ():
 def test_propose_finds_the_family():
     from decomprepair.propose import propose
     assert any(p.module == 'delay_slot_duplicate_repairs' for p in propose(SOURCE, 'f').proposals)
+
+
+COMPARISON = '''void f(s32 arg0, void *arg2, void *arg3) {
+    s32 var_v0;
+
+    g(arg0, 0);
+    var_v0 = arg0 != 0;
+    if (arg0 == D) {
+        g(arg0, 9);
+        var_v0 = arg0 != 0;
+    }
+    if ((var_v0 & (arg2 != NULL)) && (arg3 != NULL)) {
+        h(arg2, arg3);
+    }
+}
+'''
+
+
+def test_a_comparison_is_moved_and_written_where_it_is_used():
+    # An N64 function at 92%: m2c's `var_v0 = arg0 != 0` stayed in a saved register (`andi v0,s0,1`) until the
+    # comparison was written in the condition, as the game computed it; moving it after the `if` wasn't enough.
+    (_, moved), (family, inlined) = d.variants(COMPARISON, 'f')
+    assert family == 'delay_slot_duplicate'
+    assert '    }\n    var_v0 = arg0 != 0;\n    if ((var_v0 & (arg2 != NULL))' in moved
+    assert 'var_v0' not in inlined
+    assert '        g(arg0, 9);\n    }\n    if (((arg0 != 0) & (arg2 != NULL)) && (arg3 != NULL)) {' in inlined
+
+
+def test_inlined_only_for_a_single_use():
+    twice = COMPARISON.replace('        h(arg2, arg3);', '        h(var_v0, arg3);')
+    assert len(d.variants(twice, 'f')) == 1
+    changed = COMPARISON.replace('    if ((var_v0 & ', '    arg0 = k();\n    if ((var_v0 & ')
+    assert len(d.variants(changed, 'f')) == 1  # its input changes before the use
+
+
+def test_an_assignment_is_not_a_comparison():
+    assert d.variants(COMPARISON.replace('var_v0 = arg0 != 0;', 'var_v0 = arg0 = 0;'), 'f') == []
