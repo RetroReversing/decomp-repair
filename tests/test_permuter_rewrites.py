@@ -74,3 +74,14 @@ def test_register_is_never_added_to_an_assignment():
         assert out is not None
         assert out[3] == '    D_80102ED4 = 0;' and out[4] == '    v = g();' and out[5] == '    return v;'
         assert out[1] in ('    s32 v;', '    register s32 v;')
+
+
+def test_a_split_pointer_sum_adds_bytes_whatever_the_pointer_type():
+    """`p = (char *)(i * 4); p += (s32)(D);` on an `s32 *` added D four times over; 8 functions of an N64 game kept
+    that as their best C."""
+    from decomprepair import value_repairs
+    source = 'void f(u32 i) {\n    s32 *p;\n\n    p = (i * 4) + D;\n    *p = 1;\n}\n'
+    texts = [t for _, t in value_repairs.variants(source, 'f')]
+    split = [t for t in texts if 'p = (void *)((i * 4));' in t]
+    assert split and 'p = (void *)((char *)p + (s32)(D));' in split[0]
+    assert not any('p += (s32)' in t for t in texts)
