@@ -46,7 +46,14 @@ def calls(asm):
         if op == 'jal':
             pending = args.split('+')[0].strip()
             continue
-        if dest and dest[1] in ARGREG and not op.startswith(('sw', 'sh', 'sb', 'sd', 'swc1', 'sdc1')):
+        store = op.startswith(('sw', 'sh', 'sb', 'sd', 'swc1', 'sdc1'))
+        # (an argument register read into a register that isn't one is a temporary, not an argument: an N64
+        # function's `mfhi $a2` then `subu $v1, $a2, $v1` divided by three, and its calls took one argument)
+        if dest and not store and dest[1] not in ARGREG and not op.startswith(('b', 'j')):
+            for read in re.findall(r'\$(\w+)', args)[1:]:
+                if read in ARGREG and read != dest[1]:
+                    written.pop(read, None)
+        if dest and dest[1] in ARGREG and not store:
             written[dest[1]] = _constant(op, args)
     return found
 
@@ -57,6 +64,8 @@ def _constant(op, args):
         return int(m[1], 0)
     if op == 'move' and re.fullmatch(r'\$\w+\s*,\s*\$zero', args):
         return 0
+    if op in ('addu', 'or', 'daddu') and re.fullmatch(r'\$\w+\s*,\s*\$zero\s*,\s*\$zero', args):
+        return 0  # (`move $a0, $zero` as some assemblers write it)
     return None
 
 
