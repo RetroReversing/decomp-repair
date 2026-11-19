@@ -188,3 +188,40 @@ def test_the_carried_register_value_is_dropped():
 def test_left_alone_when_the_value_is_really_used():
     from decomprepair import register_carrier_repairs as r
     assert r.variants(CARRIER.replace('            h(temp_s0);', '            h(var_a0);'), 'f') == []
+
+
+RANGE = '''void f(void *p) {
+    u32 t;
+
+    t = g(0x20);
+    if (t >= 4U) {
+        if (t != 4) {
+
+        } else {
+            h(p);
+        }
+    } else {
+        k(p);
+    }
+}
+'''
+
+
+def test_the_range_test_as_the_switch():
+    # An N64 function at 95.4% (93.2% as if/else if): exact as the switch.
+    from decomprepair import range_case_switch_repairs as r
+    (family, out), = r.variants(RANGE, 'f')
+    assert family == 'range_case_switch'
+    assert '''    switch (t) {
+    case 0: case 1: case 2: case 3:
+        k(p);
+        break;
+    case 4:
+        h(p);
+        break;
+    }''' in out
+
+
+def test_left_alone_for_a_large_range():
+    from decomprepair import range_case_switch_repairs as r
+    assert r.variants(RANGE.replace('4U', '40U').replace('!= 4', '!= 40'), 'f') == []
