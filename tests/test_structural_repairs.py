@@ -34,6 +34,8 @@ def test_narrow_widening_offers_each_narrow_local_and_parameter_as_s32():
     assert any('void f(void *arg0, s32 arg1)' in t for t in out)
     assert any('    s32 temp_s1;' in t and 's16 arg1' in t for t in out)
     assert narrow_widening_repairs.variants(source.replace('s16 arg1', 's32 arg1').replace('s8 temp', 's32 temp'), 'f') == []
+    two = source.replace('    s8 temp_s1;\n', '    s8 temp_s1;\n    s16 temp_a0;\n')
+    assert any('    s32 temp_s1;\n    s32 temp_a0;' in t for t in texts(narrow_widening_repairs.variants(two, 'f')))
 
 
 def test_unknown32_float_when_the_target_moves_the_field_through_the_fpu():

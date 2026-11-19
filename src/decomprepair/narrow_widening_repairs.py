@@ -4,7 +4,7 @@ m2c types a local from the load that fills it: `s8 temp_s1 = M2C_FIELD(p, s8 *, 
 field with `lbu` and sign-extends where the value is used, or keeps a halfword parameter's `sll`/`sra`; the game
 read it with `lb` into an `int` and used it as it was. Two N64 functions holding a byte field across a call (86.6%,
 90.0%) and one storing an `s16` parameter (70.0%) were exact with the local or parameter as `s32`. One variant per
-local or parameter, each alone.
+local or parameter, each alone, and all the narrow locals together.
 """
 import re
 
@@ -38,4 +38,11 @@ def variants(source, name):
         text = source[:start] + 's32' + source[stop:]
         if text != source:
             result.append((FAMILY, text))
+    locals_ = [(a, b) for a, b in found if a > opening]
+    if len(locals_) > 1:
+        # (an N64 function's two halfword locals were exact only together: 402 -> 2 -> exact)
+        text = source
+        for start, stop in sorted(locals_, reverse=True):
+            text = text[:start] + 's32' + text[stop:]
+        result.append((FAMILY, text))
     return result
