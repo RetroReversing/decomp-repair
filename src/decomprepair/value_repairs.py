@@ -88,7 +88,9 @@ def variants(source,name):
             declared=pointer or re.search(r'\b(?:s32|u32|int|unsigned\s+int)\s+'+re.escape(lhs)+r'\s*;',body[:m.start()])
             if not declared:
                 continue
-            text=f'{lhs} = (char *)({left}); {lhs} += (s32)({right});' if pointer else f'{lhs} = {left}; {lhs} += {right};'
+            # (byte arithmetic for any pointer: `p += (s32)(b)` on an `s32 *` multiplied `b` by four, a different
+            # address, and 8 functions of an N64 game kept that as their best C because its bytes scored close)
+            text=f'{lhs} = (void *)({left}); {lhs} = (void *)((char *){lhs} + (s32)({right}));' if pointer else f'{lhs} = {left}; {lhs} += {right};'
             add('sum_shape',[(opening+m.start(),opening+m.end(),text)])
             if sum(f=='sum_shape' for f,_ in result)>=4:
                 break

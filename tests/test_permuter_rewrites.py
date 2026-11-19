@@ -1,5 +1,6 @@
 """The permuter's rewrites: they propose C only; nothing here compiles or judges."""
 import random
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -74,3 +75,38 @@ def test_register_is_never_added_to_an_assignment():
         assert out is not None
         assert out[3] == '    D_80102ED4 = 0;' and out[4] == '    v = g();' and out[5] == '    return v;'
         assert out[1] in ('    s32 v;', '    register s32 v;')
+
+
+def test_a_split_pointer_sum_adds_bytes_whatever_the_pointer_type():
+    """`p = (char *)(i * 4); p += (s32)(D);` on an `s32 *` added D four times over; 8 functions of an N64 game kept
+    that as their best C."""
+    from decomprepair import value_repairs
+    source = 'void f(u32 i) {\n    s32 *p;\n\n    p = (i * 4) + D;\n    *p = 1;\n}\n'
+    texts = [t for _, t in value_repairs.variants(source, 'f')]
+    split = [t for t in texts if 'p = (void *)((i * 4));' in t]
+    assert split and 'p = (void *)((char *)p + (s32)(D));' in split[0]
+    assert not any('p += (s32)' in t for t in texts)
+
+def test_a_cast_never_cuts_a_pointer():
+    """The operand of a pointer cast once became `(unsigned short)D_80109698`: an address cut to 16 bits."""
+    from decomprepair import permuter
+    lines = ['void f(void) {', '    s32 v;', '',
+             '    (*(s32 *)((char *)(D_80109698) + 0xFC)) = v;', '    temp = (void *) p;', '    v = w + 1;', '}']
+    seen = set()
+    for seed in range(300):
+        out = permuter._add_cast(list(lines), random.Random(seed))
+        assert out is not None
+        assert '((char *)(D_80109698) +' in out[3] and out[4] == lines[4]
+        seen.add(out[5])
+    assert any(line != lines[5] for line in seen)
+
+def test_a_cast_never_lands_on_a_literal():
+    """`(unsigned short)0xDA380003` truncated a display-list command to 3; only hex literals slipped past `isdigit`."""
+    import random
+
+    from decomprepair import permuter
+    lines = ['void f(void) {', '    s32 v;', '', '    v = 0xDA380003;', '    w = 12 + v;', '}']
+    for seed in range(300):
+        out = permuter._add_cast(list(lines), random.Random(seed))
+        assert out is not None
+        assert not re.search(r'\)\s*(?:0[xX][0-9A-Fa-f]+|\d+)\b', out[3] + out[4]), out
