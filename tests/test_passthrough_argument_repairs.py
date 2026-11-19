@@ -22,6 +22,16 @@ def test_each_parameter_at_its_own_position():
     assert '        g(arg0, arg1, D, M2C_FIELD(arg1, s32 *, 0xC), M2C_FIELD(arg1, s32 *, 0x24))' in calls
 
 
-def test_only_unprototyped_callees():
-    assert all('h(arg0, arg2);' in text for _, text in p.variants(SOURCE, 'f'))
-    assert p.variants(SOURCE.replace('s32 g();', 's32 g(s32, void *, s32, s32);'), 'f') == []
+def test_a_prototype_is_widened_with_the_call():
+    texts = [t for _, t in p.variants(SOURCE.replace('s32 g();', 's32 g(s32, void *, s32, s32);'), 'f')]
+    assert any('s32 g(s32, void *, s32, s32, s32);' in t and 'g(arg0, D, arg2, M2C_FIELD' in t for t in texts)
+    assert all(t.count('g(') == 2 for t in texts)  # the prototype and the one call
+
+
+def test_a_prototyped_callee_gains_the_parameter():
+    # Three N64 functions called f32 g(u16 *) as g(arg0, &sp10): exact with the prototype widened.
+    source = 'f32 g(u16 *);\nvoid f(s32 arg0) {\n    u16 sp10;\n\n    h(g(&sp10), arg0);\n}\n'
+    texts = [t for _, t in p.variants(source, 'f')]
+    assert any('f32 g(s32, u16 *);' in t and 'g(arg0, &sp10)' in t for t in texts)
+    twice = source.replace('h(g(&sp10), arg0);', 'h(g(&sp10), g(&sp10));')
+    assert not any('f32 g(s32, u16 *);' in t for _, t in p.variants(twice, 'f'))

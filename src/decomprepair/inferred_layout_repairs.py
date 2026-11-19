@@ -29,9 +29,12 @@ def field_macros(body):
     m2c writes every field this way, so a record never formed from a draft: an N64 function needed one, its
     struct member accesses being what let gcc 2.7.2 schedule a global's load across a store through the pointer."""
     found = []
-    for hit in re.finditer(rf'\bM2C_FIELD\(\s*({IDENT})\s*,\s*({TYPE})\s*\*\s*,\s*({NUMBER})\s*\)', body):
+    # (a field that is itself a pointer to pointers, `void ***`, is a 4-byte pointer like any other: a list node's
+    # links were `M2C_FIELD(p, void **, 0)` and `M2C_FIELD(p, void ***, 4)`)
+    for hit in re.finditer(rf'\bM2C_FIELD\(\s*({IDENT})\s*,\s*({TYPE}(?:\s*\*)*)\s*\*\s*,\s*({NUMBER})\s*\)', body):
         typ = ' '.join(hit[2].split())
-        found.append((hit.start(), hit.end(), hit[1], CANONICAL.get(typ, typ), number(hit[3])))
+        typ = 'void *' if typ.endswith('*') else CANONICAL.get(typ, typ)
+        found.append((hit.start(), hit.end(), hit[1], typ, number(hit[3])))
     return found
 
 
@@ -68,7 +71,13 @@ def accesses(body, implicit_bases=()):
                 if split is None:
                     continue
                 left, right = strip_outer(address[:split]), address[split+1:].strip()
-                base = re.fullmatch(rf'\(\s*(?:char|[su]8|unsigned\s+char|signed\s+char)\s*\*\s*\)\s*({IDENT})', left)
+                # (the base may be parenthesised, `(char *)(p)`, or cast to an integer first, `(char *)((s32)p)`:
+                # the same base either way)
+                base = re.fullmatch(rf'\(\s*(?:char|[su]8|unsigned\s+char|signed\s+char)\s*\*\s*\)\s*'
+                                    rf'(?:\(\s*\(\s*(?:[su]32|int|unsigned\s+int)\s*\)\s*({IDENT})\s*\)'
+                                    rf'|\(\s*({IDENT})\s*\)|({IDENT}))', left)
+                if base:
+                    base = [None, base[1] or base[2] or base[3]]
                 if not re.fullmatch(NUMBER, right):
                     continue
                 base_name = base[1] if base else left if left in implicit_bases else None
@@ -123,7 +132,9 @@ def variants(source, name, arch):
                 conflict = True
                 break
             fields[offset] = (typ, size)
-        if conflict or not 2 <= len(fields) <= MAX_FIELDS or len(hits) < 3:
+        # (two fields stored once each count: a callee's record written as `p->a = x; p->b = y;` stayed casts, and
+        # a global's load could not pass them)
+        if conflict or not 2 <= len(fields) <= MAX_FIELDS or len(hits) < 2:
             continue
         layout, cursor = [], 0
         for offset, (typ, size) in sorted(fields.items()):
