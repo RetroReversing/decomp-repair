@@ -78,10 +78,11 @@ def variants(source, name, asm=''):
     opening = clean.find('{', span[0], span[1])
     if paren < 0 or opening < 0 or (end := close(clean, opening, '{', '}')) is None:
         return []
-    shut = close(clean, paren, '(', ')')
+    shut = close(clean, paren, '(', ')')  # (close gives the index just past the bracket)
     if shut is None or shut > opening:
         return []
-    params, body = source[paren + 1:shut], source[opening:end + 1]
+    shut -= 1
+    params, body = source[paren + 1:shut], source[opening:end]
     pieces = params.split(',')
     made = list(pieces)
     for k, piece in enumerate(pieces):
@@ -93,7 +94,7 @@ def variants(source, name, asm=''):
     new_body = new_body if new_body != body else None
 
     def build(p, b):
-        return source[:paren + 1] + (p or params) + source[shut:opening] + (b or body) + source[end + 1:]
+        return source[:paren + 1] + (p or params) + source[shut:opening] + (b or body) + source[end:]
     found = []
     for p, b in ((new_params, new_body), (None, new_body), (new_params, None)):
         if p is None and b is None:

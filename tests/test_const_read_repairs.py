@@ -66,3 +66,8 @@ def test_the_target_habit_is_an_argument_load_between_the_prologue_saves():
 
 def test_nothing_read_only_means_no_variant():
     assert c.variants('void f(s32 *p) {\n    *p = 1;\n}\n', 'f') == []
+
+
+def test_the_last_and_only_parameter_is_made_const_too():
+    texts = [t for _, t in c.variants('f32 f(f32 *arg0) {\n    return arg0[0];\n}\n', 'f')]
+    assert texts == ['f32 f(const f32 *arg0) {\n    return arg0[0];\n}\n']
