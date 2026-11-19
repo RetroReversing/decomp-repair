@@ -24,8 +24,8 @@ FAMILIES = (FAMILY,)
 I = r'[A-Za-z_]\w*'
 SHAPE = re.compile(
     r'(?m)^(?P<ind>[ \t]*)(?P<shift>' + I + r')\s*=\s*(?P<start>\d+)\s*<<\s*0x10;[ \t]*\n'
-    r'(?P<between>(?:[ \t]*[^\n;{}]*;[ \t]*\n)*?)'
-    r'[ \t]*do\s*\{[ \t]*\n(?P<body>(?:[ \t]*[^\n{}]*;[ \t]*\n)*?)'
+    r'(?P<between>(?:[^\n;{}]*;[ \t]*\n)*?)'
+    r'[ \t]*do\s*\{[ \t]*\n(?P<body>(?:[^\n{}]*;[ \t]*\n)*?)'
     r'[ \t]*(?P<temp>' + I + r')\s*=\s*(?P<count>' + I + r')\s*\+\s*1;[ \t]*\n'
     r'[ \t]*(?P=count)\s*=\s*(?P=temp);[ \t]*\n'
     r'[ \t]*(?P=shift)\s*=\s*(?P=count)\s*<<\s*0x10;[ \t]*\n'

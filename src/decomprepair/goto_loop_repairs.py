@@ -35,10 +35,10 @@ FAMILIES = (FAMILY,)
 
 SHAPE = re.compile(
     r'(?m)^[ \t]*(?P<loop>[A-Za-z_]\w*):[ \t]*\n'
-    r'(?P<indent>[ \t]*)if \((?P<first>.*)\) \{[ \t]*\n(?P<step1>(?:[ \t]*[^\n:{}]*;[ \t]*\n)*?)[ \t]*goto (?P<label>\w+);[ \t]*\n'
+    r'(?P<indent>[ \t]*)if \((?P<first>.*)\) \{[ \t]*\n(?P<step1>(?:[^\n:{}]*;[ \t]*\n)*?)[ \t]*goto (?P<label>\w+);[ \t]*\n'
     r'[ \t]*\}[ \t]*\n'
-    r'[ \t]*if \((?P<second>.*)\) \{[ \t]*\n(?P<step2>(?:[ \t]*[^\n:{}]*;[ \t]*\n)*?)(?P=label):[ \t]*\n'
-    r'(?P<body>(?:[ \t]*[^\n:{}]*;[ \t]*\n)*?)'
+    r'[ \t]*if \((?P<second>.*)\) \{[ \t]*\n(?P<step2>(?:[^\n:{}]*;[ \t]*\n)*?)(?P=label):[ \t]*\n'
+    r'(?P<body>(?:[^\n:{}]*;[ \t]*\n)*?)'
     r'[ \t]*if \((?P<exit>.*)\) \{[ \t]*\n[ \t]*return (?P<left>[^;\n]+);[ \t]*\n[ \t]*\}[ \t]*\n'
     r'[ \t]*goto (?P=loop);[ \t]*\n'
     r'[ \t]*\}[ \t]*\n'

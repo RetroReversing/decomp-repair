@@ -33,7 +33,7 @@ SHAPE = re.compile(
     r'(?m)^(?P<indent>[ \t]*)(?P<result>[A-Za-z_]\w*) = (?:NULL|0);[ \t]*\n'
     r'[ \t]*if \((?P<node>[A-Za-z_]\w*) != (?:NULL|0)\) \{[ \t]*\n'
     r'[ \t]*(?P<loop>[A-Za-z_]\w*):[ \t]*\n'
-    r'(?P<before>(?:[ \t]*[^\n:{}]*;[ \t]*\n)*?)'
+    r'(?P<before>(?:[^\n:{}]*;[ \t]*\n)*?)'
     r'[ \t]*if \((?P<condition>.*)\) \{[ \t]*\n'
     r'[ \t]*(?P=node) = (?P<next>[^;\n]+);[ \t]*\n'
     r'[ \t]*(?P=result) = (?:NULL|0);[ \t]*\n'
