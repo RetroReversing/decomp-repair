@@ -8,7 +8,10 @@ import random
 import re
 
 TYPES_32 = ["int", "unsigned", "unsigned int", "long", "unsigned long", "s32", "u32", "uInt", "uLong"]
-CASTS = ["(int)", "(unsigned)", "(s32)", "(u32)", "(uInt)", "(uLong)", "(short)", "(unsigned short)"]
+# (32-bit casts only: a random `(unsigned short)` on a value changes what the C computes. An N64 function's best held
+# `(unsigned short)temp_v1 | 1` where the game ORed the whole flags word, kept because it raised the byte score, and
+# the correct C then scored worse than it)
+CASTS = ["(int)", "(unsigned)", "(s32)", "(u32)", "(uInt)", "(uLong)"]
 # Typedef names: only offered when the source or its header declares them. zlib's uInt/uLong made 9,970 of 10,000
 # rewrites of an N64 function fail to compile, crowding out everything else the pass could have tried.
 _TYPEDEFS = {"s32", "u32", "uInt", "uLong"}

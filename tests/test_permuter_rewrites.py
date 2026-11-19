@@ -110,3 +110,15 @@ def test_a_cast_never_lands_on_a_literal():
         out = permuter._add_cast(list(lines), random.Random(seed))
         assert out is not None
         assert not re.search(r'\)\s*(?:0[xX][0-9A-Fa-f]+|\d+)\b', out[3] + out[4]), out
+
+
+def test_a_random_cast_never_narrows_a_value():
+    """`(unsigned short)flags | 1` stored only the low half of a word the game ORed whole."""
+    import random as _random
+
+    from decomprepair import permuter
+    lines = ['void f(s32 *p) {', '    s32 v;', '', '    v = p[0];', '    p[1] = v | 1;', '}']
+    for seed in range(300):
+        out = permuter._add_cast(list(lines), _random.Random(seed))
+        if out:
+            assert '(short)' not in ''.join(out) and '(unsigned short)' not in ''.join(out)
