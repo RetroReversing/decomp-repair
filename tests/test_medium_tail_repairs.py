@@ -85,3 +85,38 @@ def test_a_tested_global_pointer_held_in_a_local():
 def test_left_alone_when_a_call_could_change_it():
     assert global_pointer_local_repairs.variants(GLOBAL.replace('    h(&D', '    k();\n    h(&D'), 'f') == []
     assert global_pointer_local_repairs.variants(GLOBAL.replace('    g(&D', '    D_800BD554 = 0;\n    g(&D'), 'f') == []
+
+
+SWITCH = '''void f(void *arg0) {
+    if (arg0 != NULL) {
+        switch (M2C_FIELD(arg0, u16 *, 0x78)) {
+        case 0x38:
+        case 0x37:
+            g(M2C_FIELD(arg0, s32 *, 0x6C), arg0);
+            return;
+        case 0x39:
+            h(M2C_FIELD(arg0, s32 *, 0x6C), arg0);
+            break;
+        }
+    }
+}
+'''
+
+
+def test_stacked_case_labels_get_their_own_body():
+    # An N64 function: gcc's compare tree tested 0x38 and 0x37 apart, the bodies merged later. 76.4% -> 91.4% (exact
+    # once a stray `case 0: break;` an earlier rewrite added is gone too).
+    from decomprepair import case_split_repairs
+    (family, out), = case_split_repairs.variants(SWITCH, 'f')
+    assert family == 'split_case_labels'
+    assert out.count('g(M2C_FIELD(arg0, s32 *, 0x6C), arg0);\n            return;') == 2
+    assert '        case 0x38:\n            g(' in out and '        case 0x37:\n            g(' in out
+
+
+def test_a_body_with_a_label_or_block_is_left_alone():
+    from decomprepair import case_split_repairs
+    labelled = SWITCH.replace('            g(M2C_FIELD', 'block_7:\n            g(M2C_FIELD')
+    assert case_split_repairs.variants(labelled, 'f') == []
+    blocked = SWITCH.replace('            g(M2C_FIELD(arg0, s32 *, 0x6C), arg0);\n            return;',
+                             '            if (arg0) {\n                g(arg0);\n            }\n            return;')
+    assert case_split_repairs.variants(blocked, 'f') == []
