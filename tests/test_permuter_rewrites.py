@@ -1,5 +1,6 @@
 """The permuter's rewrites: they propose C only; nothing here compiles or judges."""
 import random
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -74,3 +75,15 @@ def test_register_is_never_added_to_an_assignment():
         assert out is not None
         assert out[3] == '    D_80102ED4 = 0;' and out[4] == '    v = g();' and out[5] == '    return v;'
         assert out[1] in ('    s32 v;', '    register s32 v;')
+
+
+def test_a_cast_never_lands_on_a_literal():
+    """`(unsigned short)0xDA380003` truncated a display-list command to 3; only hex literals slipped past `isdigit`."""
+    import random
+
+    from decomprepair import permuter
+    lines = ['void f(void) {', '    s32 v;', '', '    v = 0xDA380003;', '    w = 12 + v;', '}']
+    for seed in range(300):
+        out = permuter._add_cast(list(lines), random.Random(seed))
+        assert out is not None
+        assert not re.search(r'\)\s*(?:0[xX][0-9A-Fa-f]+|\d+)\b', out[3] + out[4]), out

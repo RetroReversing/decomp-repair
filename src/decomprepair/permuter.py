@@ -117,7 +117,10 @@ def _add_cast(lines, rng, known=frozenset(_TYPEDEFS)):
     cands = [(i, m) for i in range(lo, hi) if not _DECL.match(lines[i]) and "=" in lines[i]
              # rvalues only: never cast an assignment target, a call, or the base of a member/array access
              for m in re.finditer(r"(?<=[=(,+\-*/&|^ ])(\w+)\b(?!\s*(?:\(|=(?!=)|\+\+|--|\[|\.|->|[-+*/&|^]=))",
-                                  lines[i]) if not m.group(1).isdigit()]
+                                  lines[i])
+             # (no literal: `(unsigned short)0xDA380003` stored 3 where an N64 function stored a display-list command,
+             # and the byte score rewarded it; `isdigit` let every hex literal through)
+             if not m.group(1)[0].isdigit()]
     if not cands:
         return None
     i, m = rng.choice(cands)

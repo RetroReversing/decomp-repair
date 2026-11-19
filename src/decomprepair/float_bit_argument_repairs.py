@@ -28,7 +28,9 @@ INTEGER_PARAMETER = re.compile(r'\s*(?:(?:signed|unsigned|const)\s+)*(?:s32|u32|
                                r'(?:\s+' + IDENT + r')?\s*')
 TYPE_WORDS = {'signed', 'unsigned', 'const', 's32', 'u32', 'int', 'long', 'M2C_UNK', 'M2C_UNK32'}
 FLOATING = re.compile(r'\b(?:f32|f64|float|double)\b')
-LITERAL = re.compile(r'\s*(0[xX][0-9a-fA-F]+|\d+)[uUlL]*\s*')
+# (an integer cast on the literal is a permuter leftover, `(short)0x3CA3D70A`: the call still passes all the bits)
+LITERAL = re.compile(r'\s*(?:\(\s*(?:(?:un)?signed\s+)?(?:short|char|int|long|s8|u8|s16|u16|s32|u32)\s*\)\s*)?'
+                     r'(0[xX][0-9a-fA-F]+|\d+)[uUlL]*\s*')
 
 
 def float_text(bits):
@@ -77,7 +79,9 @@ def variants(source, name, header='', arch='mips', flags=()):
             continue
         params = [(low + a, low + b) for a, b in split_args(clean[low:high])]
         texts = [clean[a:b] for a, b in params]
-        if not texts or FLOATING.search(texts[0]) or any(FLOATING.search(t) and 'double' in t or '...' in t for t in texts):
+        unlisted = not clean[low:high].strip()  # `f32 g();`: m2c's guess, the calls say how many there are
+        if not texts and not unlisted or texts and (FLOATING.search(texts[0])
+                                                    or any(FLOATING.search(t) and 'double' in t or '...' in t for t in texts)):
             continue  # a float first argument puts floats in $f12/$f14; doubles and varargs move arguments too
         calls = []
         for hit in re.finditer(r'(?<![\w.>])' + re.escape(callee) + r'\s*\(', clean[opening:span[1]]):
@@ -87,6 +91,10 @@ def variants(source, name, header='', arch='mips', flags=()):
                 break
             args = [(start + 1 + a, start + 1 + b) for a, b in split_args(clean[start+1:end-1])]
             calls.append(args)
+        if unlisted and calls and len({len(args) for args in calls}) == 1 and calls[0]:
+            # (the parameters as the calls pass them, each an integer until a float literal says otherwise)
+            texts = ['s32'] * len(calls[0])
+            params = [(low, high)] * len(texts)
         if not calls or any(len(args) != len(params) for args in calls):
             continue
         # (a float first argument goes in $f12 and moves the later ones; alone, it moves nothing: an N64 function
@@ -106,10 +114,13 @@ def variants(source, name, header='', arch='mips', flags=()):
                 changes.append((a, b, ' ' + text if clean[a:a+1] == ' ' else text))
             else:
                 if useful:
-                    last = texts[index].split()[-1]
-                    param = 'f32' + (' ' + last if last not in TYPE_WORDS else '')
-                    lead = re.match(r'\s*', texts[index])[0]
-                    changes.append((params[index][0], params[index][1], lead + param))
+                    if unlisted:
+                        changes.append((low, high, ', '.join('f32' if i == index else 's32' for i in range(len(texts)))))
+                    else:
+                        last = texts[index].split()[-1]
+                        param = 'f32' + (' ' + last if last not in TYPE_WORDS else '')
+                        lead = re.match(r'\s*', texts[index])[0]
+                        changes.append((params[index][0], params[index][1], lead + param))
                     edits.append(changes)
     result = []
     def apply(groups):
