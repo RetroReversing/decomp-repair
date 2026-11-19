@@ -34,3 +34,32 @@ def test_left_alone():
     assert w.variants(SOURCE, 'f', ASM + 'lh $v0, %lo(D_8010D784)($v0)\n') == []
     # a symbol of known type is not touched
     assert w.variants(SOURCE.replace('extern char D_8010D784[];', 'extern s32 D_8010D784;'), 'f', ASM) == []
+
+
+UNKNOWN = '''s16 f(s32 arg0) {
+    u32 i;
+
+    i = arg0 & 0xFFF;
+    if (i < 0x400U) {
+        return *((M2C_UNK *)((s8 *)&D_800CF554 + (i * 2)));
+    }
+    if (i < 0x800U) {
+        return *((M2C_UNK *)((s8 *)&D_800CF554 + ((~arg0 & 0x3FF) * 2)));
+    }
+    return (s16) ((s32) *((M2C_UNK *)((s8 *)&D_800CF554 + ((arg0 & 0x3FF) * 2))) * -1);
+}
+'''
+UNKNOWN_ASM = '''lh         $v0, %lo(D_800CF554)($at)
+lh         $v0, %lo(D_800CF554)($at)
+lhu        $v0, %lo(D_800CF554)($at)
+'''
+
+
+def test_m2c_word_casts_take_the_targets_widths():
+    # An N64 sine table: 92% read as words; exact with each read as the target's (lh, lh, lhu).
+    (family, ordered), (_, common) = w.variants(UNKNOWN, 'f', UNKNOWN_ASM)
+    assert family == 'symbol_access_width'
+    assert ordered.count('(s16 *)((s8 *)&D_800CF554') == 2 and ordered.count('(u16 *)((s8 *)&D_800CF554') == 1
+    assert ordered.index('(u16 *)') > ordered.rindex('(s16 *)((s8')
+    assert common.count('(s16 *)((s8 *)&D_800CF554') == 3
+    assert w.variants(UNKNOWN, 'f', UNKNOWN_ASM.replace('lh ', 'lw ').replace('lhu', 'lw ')) == []
