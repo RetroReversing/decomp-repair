@@ -58,3 +58,61 @@ def test_the_choice_written_as_the_argument():
 
 def test_left_alone_when_the_value_is_used_again():
     assert t.variants(CHOICE.replace('g(a, var_a2, i);', 'g(a, var_a2, i);\n    h(var_a2);'), 'f') == []
+
+
+TREE = '''void f(s32 arg1, void *p) {
+    s32 t;
+    s32 r;
+    s32 g;
+    s32 b;
+
+    t = arg1 & 0xFF;
+    if (t != 0) {
+        r = 0x40;
+        if (t != 1) {
+            r = 0xFF;
+            g = 0xFF;
+        } else {
+            g = 0x40;
+        }
+        b = 0xFF;
+    } else {
+        r = 0xFF;
+        g = 0x40;
+        b = 0x40;
+    }
+    h(r, g, b);
+}
+'''
+
+
+def test_the_assignment_tree_as_a_switch():
+    # An N64 function at 94.8%: exact as the switch (83.9% as if/else if).
+    from decomprepair import assignment_tree_switch_repairs as a
+    (family, ascending), (_, reverse) = a.variants(TREE, 'f')
+    assert family == 'assignment_tree_switch'
+    assert '''    switch (t) {
+    case 0:
+        r = 0xFF;
+        g = 0x40;
+        b = 0x40;
+        break;
+    case 1:
+        r = 0x40;
+        g = 0x40;
+        b = 0xFF;
+        break;
+    default:
+        r = 0xFF;
+        g = 0xFF;
+        b = 0xFF;
+        break;
+    }
+    h(r, g, b);''' in ascending
+    assert reverse.index('case 1:') < reverse.index('case 0:')
+
+
+def test_left_alone_when_a_block_does_more_than_assign_constants():
+    from decomprepair import assignment_tree_switch_repairs as a
+    assert a.variants(TREE.replace('            g = 0x40;\n', '            g = k();\n'), 'f') == []
+    assert a.variants(TREE.replace('if (t != 1)', 'if (u != 1)'), 'f') == []
