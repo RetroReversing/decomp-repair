@@ -26,7 +26,7 @@ def variants(source, name):
         return []
     shape = re.compile(r'(?m)^(?P<ind>[ \t]*)(?P<v>' + I + r')\s*=\s*(?P<a>[^;\n]+);[ \t]*\n'
                        r'[ \t]*if \((?P<c>[^\n]*)\) \{[ \t]*\n[ \t]*(?P=v)\s*=\s*(?P<b>[^;\n]+);[ \t]*\n[ \t]*\}[ \t]*\n'
-                       r'[ \t]*return (?P=v);')
+                       r'[ \t]*(?:return (?P=v)|(?P<lv>' + I + r')\s*=(?!=)\s*(?P=v));')
     result = []
     for hit in shape.finditer(clean, opening, end):
         v, a = hit['v'], source[hit.start('a'):hit.end('a')].strip()
@@ -37,11 +37,16 @@ def variants(source, name):
         if re.search(r'\b' + v + r'\b', c):
             c = re.sub(r'\b' + v + r'\b', a, c)
         ind = hit['ind']
+        # (a store of the value, `D = v;`, as well as its return: an N64 library's error wrapper stored the result
+        # code to a global, 99.4% carried in a variable and exact as the conditional expression)
+        lead = 'return ' if hit['lv'] is None else hit['lv'] + ' = '
+        if hit['lv'] is not None and re.search(r'\b' + v + r'\b', clean[hit.end():end]):
+            continue
         forms = []
         inverse = negate(c)
         if inverse:
-            forms.append(f'{ind}return ({inverse}) ? {a} : {b};')
-        forms.append(f'{ind}return ({c}) ? {b} : {a};')
+            forms.append(f'{ind}{lead}({inverse}) ? {a} : {b};')
+        forms.append(f'{ind}{lead}({c}) ? {b} : {a};')
         for form in forms:
             text = source[:hit.start()] + form + source[hit.end():]
             decl = re.search(r'(?m)^[ \t]*[\w ]+?\s+' + v + r'\s*;[ \t]*\n', text[opening:])
