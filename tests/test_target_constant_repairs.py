@@ -30,7 +30,7 @@ addiu      $sp, $sp, 0x20
 def test_pairs_by_order_and_by_size():
     # An N64 function borrowed its sibling's C: 98.7%; exact with the sizes paired smallest with smallest (its loop's
     # step and bound are scheduled the other way round, so in order of appearance two of them were swapped).
-    (_, ordered), (family, ranked) = t.variants(SOURCE, 'f', ASM)
+    (family, ranked), (_, ordered) = t.variants(SOURCE, 'f', ASM)  # (the likelier pairing first)
     assert family == 'target_constant'
     assert 'g(0x2C00, 0xD);' in ranked and 'memset(D, 0, 0x1640);' in ranked
     assert 'off += 0x2C;' in ranked and 'i < 0xC0U' in ranked
