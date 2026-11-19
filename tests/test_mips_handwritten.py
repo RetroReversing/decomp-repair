@@ -40,3 +40,14 @@ def test_a_saved_register_written_before_it_is_saved():
 def test_only_the_entry_block_is_read_for_saved_registers():
     # bnez a0 ...; then s0 written: another block may come after a save on another path
     assert reason([0x14800002, NOP, 0x00808021, JR_RA, NOP]) is None
+
+
+def test_a_leaf_that_starts_in_registers_no_compiler_picks_first():
+    # lui $t0, 0x3F80; sw $t0, 0($a0) (an N64 SDK's hand-written guMtxIdentF): flagged
+    assert '$t0' in mips.asm_reason(words(0x3C083F80, 0xAC880000, JR_RA, NOP), True)
+    # IDO starts at $t6, GCC at $v0: compiled
+    assert mips.asm_reason(words(0x3C0E3F80, 0xAC8E0000, JR_RA, NOP), True) is None
+    assert mips.asm_reason(words(0x3C023F80, 0xAC820000, JR_RA, NOP), True) is None
+    # $v0 written too, or a call made: not proof
+    assert mips.asm_reason(words(0x3C083F80, 0xAC880000, 0x24020001, JR_RA, NOP), True) is None
+    assert mips.asm_reason(words(0x3C083F80, 0x0C000000, NOP, JR_RA, NOP), True) is None
