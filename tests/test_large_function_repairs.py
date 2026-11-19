@@ -20,7 +20,7 @@ def test_callees_with_float_arguments_get_prototypes():
     # An N64 function: its sin/cos and draw calls passed doubles where the game passed floats; 77% -> 98% with these.
     (family, out), = c.variants(PROTO, 'f')
     assert family == 'call_site_prototype'
-    assert 'f32 sinf_(f32);' in out and 'void *draw(s32, s32, f32, f32);' in out
+    assert 'f32 sinf_(f32);' in out and 'void *draw(void *, s32, f32, f32);' in out
     assert 's32 h();' in out  # integer arguments only: left as m2c declared it
 
 
@@ -47,3 +47,10 @@ def test_the_dropped_comparison_is_put_back():
 
 def test_an_odd_mask_is_left_alone():
     assert m.variants(FLAG.replace('0xC00', '0xC01'), 'f') == []
+
+
+def test_addresses_and_pointers_are_void_pointers():
+    source = PROTO.replace('    f32 t;\n', '    f32 t;\n    f32 m[3];\n').replace(
+        '    h(p, 3);\n', '    h(p, 3);\n    mat(m, &t, 0.5f);\n').replace('s32 h();\n', 's32 h();\ns32 mat();\n')
+    (_, out), = c.variants(source, 'f')
+    assert 's32 mat(void *, void *, f32);' in out

@@ -18,6 +18,7 @@ DECL = re.compile(r"(?m)^(?P<ret>[\w ]+?[\s*]+)(?P<name>" + IDENT + r")\s*\(\s*\
 # (set per function by variants: the f32 locals and parameters, and the callees declared to return f32)
 f32_names: set = set()
 f32_funcs: set = set()
+pointer_names: set = set()
 
 
 def split_args(text):
@@ -36,6 +37,8 @@ def split_args(text):
 
 def kind(arg):
     a = arg.strip()
+    if a.startswith("&") or a in pointer_names or a == "NULL":
+        return "ptr"
     if re.fullmatch(r"-?\d+\.\d*f?|-?\d*\.\d+f?|-?\d+(\.\d+)?e-?\d+f?", a):
         return "f32"
     if re.fullmatch(r"\(f32\)\s*.+", a):
@@ -69,7 +72,10 @@ def variants(source, name):
     if not end:
         return []
     body = source[opening:end]
-    global f32_names, f32_funcs
+    global f32_names, f32_funcs, pointer_names
+    pointer_names = set(re.findall(r"(?m)^\s*[\w ]+?\*\s*(" + IDENT + r")\s*;", body))
+    pointer_names |= set(re.findall(r"(?m)^\s*[\w ]+?\s+(" + IDENT + r")\s*\[[^]]*\]\s*;", body))
+    pointer_names |= set(re.findall(r"\*\s*(" + IDENT + r")\s*[,)]", source[span[0]:opening]))
     f32_names = set(re.findall(r"(?m)^\s*f32\s+(" + IDENT + r")\s*(?:\[[^]]*\])*\s*;", body))
     f32_names |= set(re.findall(r"(?m)^\s*f32\s+(" + IDENT + r")\s*=", body))
     f32_names |= set(re.findall(r"\bf32\s+(" + IDENT + r")\s*[,)]", source[span[0]:opening]))
@@ -91,7 +97,9 @@ def variants(source, name):
         params = []
         for k in range(len(sigs[0])):
             ks = {s[k] for s in sigs}
-            params.append("f32" if ks == {"f32"} else "s32" if "f32" not in ks else None)
+            # (an address, an array or a pointer local passed as `s32` is refused by the compiler: `void *` then)
+            params.append("f32" if ks == {"f32"} else "void *" if ks == {"ptr"} else
+                          "s32" if not ks & {"f32", "ptr"} else None)
         if None in params:
             continue
         ret = m['ret'].rstrip()
