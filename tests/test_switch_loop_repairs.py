@@ -112,6 +112,11 @@ def test_two_counted_loops_share_a_word_snapshot_and_keep_volatile_access():
     assert 'left[offset].cleared = 0;' in candidate
     assert not offered(LOOPS.replace('        previous =', '        if (i) continue;\n        previous =',1), LOOP)
     assert not offered(LOOPS.replace('u16 previous;', 'u8 previous;'), LOOP)
+    other_subscript = LOOPS.replace('left[3];','left[3][3];').replace('left[previous]','left[flag][previous]')
+    assert not offered(other_subscript, LOOP)
+    hidden_use = '#define OBSERVE() consume(previous)\n'+LOOPS.replace(
+        '    u8 flag;', '    u8 flag;\n    OBSERVE();')
+    assert not offered(hidden_use, LOOP)
     assert not offered(LOOPS.replace('((u32)((x) * 2))','((float)((x) * 2))'), LOOP)
     assert not offered(LOOPS.replace('((u32)((x) * 2))','((u32)((x)++))'), LOOP)
 
@@ -132,6 +137,9 @@ def test_store_order_keeps_the_volatile_load_and_zero_store():
         'record->cells[index][i].flags = *(volatile s32 *)&input->flags;\n'
         '        record->cells[index][i].cleared = 0;' in candidate)
     assert not offered(POINTER.replace('volatile u8 cleared;', 'u8 cleared;'), STORES)
+    hidden_use = '#define OBSERVE() consume(flag)\n'+POINTER.replace(
+        '    }\n}', '    }\n    OBSERVE();\n}')
+    assert not offered(hidden_use, STORES)
     assert not offered(POINTER.replace('    }\n}', '    }\n    read_value(flag);\n}'), STORES)
 
 
