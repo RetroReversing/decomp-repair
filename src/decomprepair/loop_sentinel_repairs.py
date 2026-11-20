@@ -16,7 +16,7 @@ def _number(text):
     return int(text, 16 if text.lower().startswith('0x') else 10)
 
 
-def _target_sentinels(asm):
+def target_sentinels(asm):
     instructions, labels = _code(asm)
     exits, loops = [], []
     for i, (opcode, args) in enumerate(instructions):
@@ -44,7 +44,7 @@ def _target_sentinels(asm):
 
 
 def variants(source, name, header, arch, asm):
-    if arch != 'mips' or not asm or not (values := _target_sentinels(asm)):
+    if arch != 'mips' or not asm or not (values := target_sentinels(asm)):
         return []
     part = facts(source, name, header, arch)
     if not part:
