@@ -36,3 +36,19 @@ void f(const struct V *a, const struct V *b, float *out) {
     assert proposals[0][1] == source.replace('x = a->x, y = b->y', 'y = b->y, x = a->x')
     assert all('float ' in proposal and '*out = x + y - z;' in proposal for _, proposal in proposals)
     assert not floating_initializers.variants(source.replace('b->y', 'read(b)'), 'f')
+
+
+def test_adjacent_grouped_declarations_transfer_tail_loads():
+    source = """struct V { float x, y, z, w; };
+void f(const struct V *a, const struct V *b, float *out) {
+    float aw = a->w, bx = b->x, ax = a->x, bw = b->w;
+    float ay = a->y, bz = b->z, by = b->y, az = a->z;
+    *out = aw + bx + ax + bw + ay + bz + by + az;
+}
+"""
+    proposals = floating_initializers.variants(source, 'f')
+    assert proposals[0][1] == source.replace('ax = a->x, bw = b->w', 'az = a->z, ax = a->x').replace(
+        'by = b->y, az = a->z', 'by = b->y, bw = b->w')
+    mixed = source.replace('float ay', 'double ay')
+    assert all('float aw = a->w, bx = b->x, az = a->z' not in text
+               for _, text in floating_initializers.variants(mixed, 'f'))
