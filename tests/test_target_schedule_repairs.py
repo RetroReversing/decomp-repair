@@ -1,4 +1,4 @@
-from decomprepair import twine_schedule_repairs as repairs
+from decomprepair import target_schedule_repairs as repairs
 
 
 def propose(text, rewrite, *args):
