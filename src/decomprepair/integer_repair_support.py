@@ -42,6 +42,21 @@ def _view(source, name):
     return View(source, clean, opening, span[1])
 
 
+def plain_repair_view(source, name, header):
+    """Only source whose lexical reads and names are visible to the rewrite."""
+    part = view(source,name)
+    if not part:
+        return None
+    context = _blank(header)+'\n'+part.clean
+    definitions = re.findall(r'^\s*#\s*define\s+('+IDENT+r')([^\n]*)',context,re.M)
+    literals = rf'[ \t]+(?:{NUMBER}|\(\(void\s*\*\)\s*0\))'
+    macros = {ident for ident, body in definitions if not re.fullmatch(literals,body.rstrip())}
+    if (macros & set(re.findall(IDENT,part.body))
+            or re.search(r'\b(?:asm|__asm__|goto|volatile)\b|^\s*#\s*include\b',context,re.M)):
+        return None
+    return part
+
+
 def locals_for(part):
     """Ordinary, unescaped scalar declarations; leave shadows and qualified objects to the compiler."""
     found = []
