@@ -14,7 +14,9 @@ import re
 
 from . import m2cfix
 from .csource import _blank, find
+from .integer_abi import scalar
 from .pattern_repairs import close
+from .target_call_arity_repairs import _instructions
 
 FAMILY = 'passthrough_argument'
 FAMILIES = (FAMILY,)
@@ -22,7 +24,7 @@ FAMILIES = (FAMILY,)
 IDENT = r'[A-Za-z_]\w*'
 
 
-def variants(source, name):
+def variants(source, name, *, asm=None, arch=None, header='', callees='', require_evidence=False):
     span = find(source, name)
     if not span:
         return []
@@ -37,6 +39,15 @@ def variants(source, name):
     names = [re.search(IDENT + r'\s*$', p)[0].strip() if re.search(IDENT + r'\s*$', p) else None for p in params]
     if not names or names == ['void']:
         return []
+    incoming = None
+    if require_evidence:
+        context = header+'\n'+source
+        kinds = [re.sub(r'\b'+re.escape(n)+r'\s*$', '', p).strip() if n else '' for n,p in zip(names,params)]
+        if arch != 'mips' or not all(_integer_parameter(k, context) for k in kinds[:4]):
+            return []
+        incoming = _incoming_calls(asm)
+        if not incoming:
+            return []
     outside = clean[:span[0]] + clean[span[1]:]
     unprototyped = set(re.findall(r'(?m)^[ \t]*(?:extern\s+)?[\w ]+?[\s*]+(' + IDENT + r')\s*\(\s*\)\s*;', outside))
     # a callee with a prototype too, when this is its only call: its parameter list gains the caller's type there
@@ -54,6 +65,8 @@ def variants(source, name):
         if not closing:
             continue
         args = [a.strip() for a in m2cfix._split_top_level(clean[paren + 1:closing - 1])] if clean[paren + 1:closing - 1].strip() else []
+        if incoming is not None and (call[1] not in incoming or calls[call[1]] != 1):
+            continue
         if len(args) >= 8:
             continue
         if not args and call[1] in unprototyped and len([n for n in names[:4] if n]) > 1 and None not in names[:4]:
@@ -61,10 +74,12 @@ def variants(source, name):
             # m2c drops them all; one N64 function, 40 points off with `f()`, was exact as `f(arg0, arg1, arg2)`,
             # the callee keeping its first `$a` registers live where the caller's saves expected them)
             text = source[:closing - 1] + ', '.join(names[:4]) + source[closing - 1:]
-            if text not in [t for _, t in result]:
+            if (incoming is None or _allows(call[1], range(len(names[:4])), len(names[:4]), incoming, header, callees)):
                 result.append((FAMILY, text))
         for k, param in enumerate(names[:4]):
             if param is None or k > len(args) or (k < len(args) and args[k] == param) or param in args:
+                continue
+            if incoming is not None and not _allows(call[1], [k], len(args)+1, incoming, header, callees):
                 continue
             # insert before the k-th argument (or at the end)
             if k < len(args):
@@ -107,3 +122,78 @@ def _next_argument(text, start):
         if depth == 0 and ch == ',':
             return i + 1
     return len(text)
+
+
+def _integer_parameter(kind, context):
+    value = scalar(kind, context, 'mips')
+    return (value is not None and value[0] <= 32) or bool(re.fullmatch(r'[\w\s]+\*+[\w\s*]*',kind))
+
+
+def _allows(callee, positions, count, incoming, header, callees):
+    if not set(positions) <= incoming[callee]:
+        return False
+    evidence = _blank(header+'\n'+callees)
+    for declaration in re.finditer(rf'(?m)^\s*(?:extern\s+)?[\w *]+[\s*]+{re.escape(callee)}\s*\(([^()]*)\)\s*[;{{]', evidence):
+        params = declaration[1].strip()
+        if params and (params == 'void' or '...' in params or
+                       len(m2cfix._split_top_level(params)) != count):
+            return False
+    return True
+
+
+_ARGUMENTS = ('a0', 'a1', 'a2', 'a3')
+_CALLER_SAVED = set(_ARGUMENTS) | {'at', 'v0', 'v1', 'ra'} | {f't{n}' for n in range(10)}
+_NO_GPR_WRITE = {'nop','sw','sb','sh','sd','swc1','sdc1','mult','multu','div','divu','mtlo','mthi','mtc1'}
+_GPR_WRITE = set('addiu addi addu daddiu daddu subu add sub and andi or ori xor xori nor '
+                 'lui sll srl sra sllv srlv srav slt slti sltu sltiu mflo mfhi mfc1 '
+                 'lb lbu lh lhu lw lwu ld lwl lwr move li la neg negu'.split())
+
+
+def _transfer(registers, op, operands):
+    if op in _NO_GPR_WRITE:
+        return True
+    if op not in _GPR_WRITE:
+        return False
+    args = [arg.strip() for arg in operands.split(',')]
+    if not re.fullmatch(r'\$[a-z][a-z0-9]*', args[0]):
+        return False
+    dest = args[0][1:]
+    source = None
+    if op == 'move' and len(args) == 2:
+        source = args[1]
+    elif op in {'addu', 'daddu', 'or'} and len(args) == 3 and '$zero' in args[1:]:
+        source = args[2] if args[1] == '$zero' else args[1]
+    elif op in {'addiu','ori','sll'} and len(args) == 3 and args[2] in {'0','0x0'}:
+        source = args[1]
+    origin = registers.get(source[1:]) if source and source.startswith('$') else None
+    registers.pop(dest, None)
+    if origin is not None and dest != 'zero':
+        registers[dest] = origin
+    return True
+
+
+def _incoming_calls(asm):
+    # Prove origins along a straight-line entry path only. A branch, indirect
+    # transfer or unknown operation ends the proof. The callee sees the delay
+    # slot's writes and may clobber every caller-saved register afterwards.
+    instructions = list(_instructions(asm))
+    counts = collections.Counter(args for op,args in instructions if op == 'jal')
+    registers = {reg: index for index,reg in enumerate(_ARGUMENTS)}
+    result = {}
+    pc = 0
+    while pc < len(instructions):
+        op, operands = instructions[pc]
+        pc += 1
+        if op != 'jal':
+            if not _transfer(registers, op, operands):
+                break
+            continue
+        registers.pop('ra', None)
+        if pc == len(instructions) or not _transfer(registers, *instructions[pc]):
+            break
+        if re.fullmatch(IDENT, operands) and counts[operands] == 1:
+            result[operands] = {i for i,reg in enumerate(_ARGUMENTS) if registers.get(reg) == i}
+        for reg in _CALLER_SAVED:
+            registers.pop(reg, None)
+        pc += 1
+    return result

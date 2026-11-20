@@ -13,7 +13,7 @@ STORES=set('sb sh sw sd swc1 sdc1'.split())
 ALU=set('move addu addiu add subu sub slt sltu slti sltiu and andi or ori xor xori nor sll sllv srl srlv sra srav dsll dsrl dsra mfhi mflo negu neg not'.split())
 
 
-def read(targets):
+def read(targets, *, symbol=None):
     if not targets or len(targets)>8192:return None
     instructions=[];leaders={0};transfers={};delay=set()
     for i,text in enumerate(targets):
@@ -29,9 +29,15 @@ def read(targets):
         if i+2<len(targets):leaders.add(i+2)
         destination=None
         if op!='jr' and op not in CALLS:
-            match=re.search(r'(?:^|,)\s*(0x[0-9a-fA-F]+|\d+)\s*$',args)
-            if not match:return None
-            address=int(match[1],0 if match[1].startswith('0x') else 10)
+            operand = re.sub(r'\s+\[bytes [0-9a-fA-F]+\]$', '', args).rsplit(',',1)[-1].strip()
+            if re.fullmatch(r'0x[0-9a-fA-F]+|\d+', operand):
+                address = int(operand, 16 if operand.startswith('0x') else 10)
+            elif re.fullmatch(r'\.L[0-9a-fA-F]+', operand):
+                address = int(operand[2:], 16)
+            elif symbol and re.fullmatch(re.escape(symbol)+r'\+0x[0-9a-fA-F]+', operand):
+                address = int(operand.split('+0x')[-1], 16)
+            else:
+                return None
             if address%4 or not 0<=address//4<len(targets):return None
             destination=address//4;leaders.add(destination)
         transfers[i]=(op,destination)
