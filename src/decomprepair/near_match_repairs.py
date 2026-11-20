@@ -127,3 +127,34 @@ def bitwise_operand_order(source, name, header=''):
         if len(result) >= 4:
             break
     return result
+
+
+def float_update_order(source, name, header=''):
+    """Stage a float increment before the matching post-call field read."""
+    span = find(source, name)
+    clean = _blank(source)
+    if not span or re.search(r'\b(?:volatile|asm|__asm__)\b', clean+'\n'+header):
+        return []
+    opening = clean.find('{', *span)
+    # m2c emits the same typed field macro for the store and its read.
+    field = r'M2C_FIELD\(\s*'+ID+r'\s*,\s*(?:f32|float)\s*\*\s*,\s*(?:0x[0-9a-fA-F]+|[0-9]+)\s*\)'
+    pattern = rf'(?<=[;{{}}])\s*({field})\s*=\s*([^;{{}}]+)\s*\+\s*\1\s*;'
+    out = []
+    for hit in re.finditer(pattern, clean[opening:span[1]]):
+        rhs = hit[2].strip()
+        # Only a fully parenthesized increment. Exclude other outer operators
+        # so introducing an assignment to a float cannot change their grouping.
+        if not rhs.startswith('(') or close(rhs, 0) != len(rhs):
+            continue
+        start = opening + hit.start(1)
+        end = opening + hit.end()
+        loc = source[start:opening + hit.end(1)]
+        increment = source[opening + hit.start(2):opening + hit.end(2)].strip()
+        temp = 'repair_float_increment'
+        while re.search(rf'\b{temp}\b', clean+'\n'+header):
+            temp += '_'
+        out.append(('arithmetic_operand_order', source[:start]+f'{loc} = {loc} + {increment};'+source[end:]))
+        out.append(('float_update_lifetime', source[:start]+
+                    f'{{ float {temp} = {increment}; {loc} = {loc} + {temp}; }}'+source[end:]))
+        break
+    return out
