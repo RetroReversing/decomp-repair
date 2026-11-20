@@ -128,27 +128,27 @@ def rewrite(source, name, asm, context='', resolve=None):
     if match['source_offset']:
         address += f" + {match['source_offset']}"
     return (source[:signature.start()]+extra+
-            f"""struct __m2c_unaligned_output {{ u16 half0; u8 byte2; u8 byte3; u8 byte4; }};
+            f"""struct __m2c_unaligned_output {{ u16 __m2c_unaligned_half0; u8 __m2c_unaligned_byte2; u8 __m2c_unaligned_byte3; u8 __m2c_unaligned_byte4; }};
 {source[signature.start():part.opening].strip()} {{
-    struct __m2c_unaligned_output *output = (struct __m2c_unaligned_output *){signature[1]};
-    u8 *input = {address};
+    struct __m2c_unaligned_output *__m2c_unaligned_out = (struct __m2c_unaligned_output *){signature[1]};
+    u8 *__m2c_unaligned_src = {address};
     struct __m2c_unaligned_input {{
-        u8 padding[2];
-        u8 byte2;
-        u8 byte3;
-        u16 half4;
-        u8 byte6;
-        u8 byte7;
-    }} record;
-    int i;
+        u8 __m2c_unaligned_padding[2];
+        u8 __m2c_unaligned_byte2;
+        u8 __m2c_unaligned_byte3;
+        u16 __m2c_unaligned_half4;
+        u8 __m2c_unaligned_byte6;
+        u8 __m2c_unaligned_byte7;
+    }} __m2c_unaligned_row;
+    int __m2c_unaligned_index;
 
-    for (i = 0; i < {bound}; i++, input += 8, output++) {{
-        record = *(struct __m2c_unaligned_input *)input;
-        output->byte4 = (record.byte2 & {match['mask']}) >> {match['shift']};
-        if (output->byte4 == 0) {{
-            output->half0 = record.half4;
-            output->byte2 = record.byte6;
-            output->byte3 = record.byte7;
+    for (__m2c_unaligned_index = 0; __m2c_unaligned_index < {bound}; __m2c_unaligned_index++, __m2c_unaligned_src += 8, __m2c_unaligned_out++) {{
+        __m2c_unaligned_row = *(struct __m2c_unaligned_input *)__m2c_unaligned_src;
+        __m2c_unaligned_out->__m2c_unaligned_byte4 = (__m2c_unaligned_row.__m2c_unaligned_byte2 & {match['mask']}) >> {match['shift']};
+        if (__m2c_unaligned_out->__m2c_unaligned_byte4 == 0) {{
+            __m2c_unaligned_out->__m2c_unaligned_half0 = __m2c_unaligned_row.__m2c_unaligned_half4;
+            __m2c_unaligned_out->__m2c_unaligned_byte2 = __m2c_unaligned_row.__m2c_unaligned_byte6;
+            __m2c_unaligned_out->__m2c_unaligned_byte3 = __m2c_unaligned_row.__m2c_unaligned_byte7;
         }}
     }}
 }}"""+source[ending+1:])

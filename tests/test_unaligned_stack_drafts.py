@@ -62,10 +62,10 @@ def test_covered_stack_views_share_the_copied_record():
     assert stack_copy(ASM) == (0, '$t0')
     result = rewrite(SOURCE, 'f', ASM)
     assert 'void f(u16 *arg)' in result
-    assert 'record = *(struct __m2c_unaligned_input *)input;' in result
-    assert 'output->byte4 = (record.byte2 & 0x30) >> 2;' in result
-    assert 'output->half0 = record.half4;' in result
-    assert 'i < count; i++, input += 8, output++' in result
+    assert '__m2c_unaligned_row = *(struct __m2c_unaligned_input *)__m2c_unaligned_src;' in result
+    assert '->__m2c_unaligned_byte4 = (__m2c_unaligned_row.__m2c_unaligned_byte2 & 0x30) >> 2;' in result
+    assert '->__m2c_unaligned_half0 = __m2c_unaligned_row.__m2c_unaligned_half4;' in result
+    assert '__m2c_unaligned_index < count;' in result
     assert 'sp2' not in result and 'M2C_UNALIGNED32' not in result
 
 
@@ -85,6 +85,14 @@ def test_absolute_counter_alias_needs_two_relocations_and_the_same_address():
     asm = ASM + load * 2
     resolve = {'items': 0x80000000, 'D_8000001E': 0x8000001E}.get
     assert 'extern u8 D_8000001E;' in rewrite(source, 'f', asm, resolve=resolve)
-    assert 'i < M2C_FIELD(&items, u8 *, 30)' in rewrite(source, 'f', ASM + load, resolve=resolve)
-    assert 'i < M2C_FIELD(&items, u8 *, 30)' in rewrite(
+    assert '__m2c_unaligned_index < M2C_FIELD(&items, u8 *, 30)' in rewrite(source, 'f', ASM + load, resolve=resolve)
+    assert '__m2c_unaligned_index < M2C_FIELD(&items, u8 *, 30)' in rewrite(
         source, 'f', asm, 'extern float D_8000001E;', resolve=resolve)
+
+
+def test_rewrite_keeps_argument_and_bound_names_out_of_generated_locals():
+    source = SOURCE.replace('arg', 'output').replace('count', 'input')
+    result = rewrite(source, 'f', ASM)
+    assert 'void f(u16 *output)' in result
+    assert '__m2c_unaligned_index < input;' in result
+    assert rewrite(source, 'f', ASM, '#define __m2c_unaligned_index 3') is None
