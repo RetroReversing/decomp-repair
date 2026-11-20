@@ -260,3 +260,15 @@ def variants(source, name, arch, asm='', header='', *, bundle=True):
         for family,items in groups.items():
             if items and len(ordered)<LIMIT:ordered.append((family,items.pop(0)))
     return ordered
+
+
+def call_result_pass(source, name):
+    """Cheap first probes for repeated assignments from the same callee."""
+    part = _part(source, name)
+    if not part or re.search(r'\b(?:volatile|restrict|asm|__asm__)\b', part.clean):
+        return []
+    callees = re.findall(r'\b\w+\s*=\s*(' + IDENT + r')\s*\(', part.body)
+    if len(set(callees)) == len(callees):
+        return []
+    return [(family, child) for family, child in value_lifetimes(source, name) + split_results(source, name)
+            if family in ('call_result_reuse', 'split_call_result')]
