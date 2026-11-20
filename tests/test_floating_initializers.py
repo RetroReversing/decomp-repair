@@ -23,3 +23,16 @@ def test_callee_extent_requires_contiguous_unescaped_writes():
     assert callee_layout.extent('out[0]=1; out[1]=2; out[2]=3;', 'out') == 3
     assert callee_layout.extent('out[0]=1; out[2]=3;', 'out') is None
     assert callee_layout.extent('out[0]=1; out[1]=2; escape(out);', 'out') is None
+
+
+def test_grouped_float_declarators_keep_type_and_statement_boundaries():
+    source = """struct V { float x, y, z; };
+void f(const struct V *a, const struct V *b, float *out) {
+    float x = a->x, y = b->y, z = a->z;
+    *out = x + y - z;
+}
+"""
+    proposals = floating_initializers.variants(source, 'f')
+    assert proposals[0][1] == source.replace('x = a->x, y = b->y', 'y = b->y, x = a->x')
+    assert all('float ' in proposal and '*out = x + y - z;' in proposal for _, proposal in proposals)
+    assert not floating_initializers.variants(source.replace('b->y', 'read(b)'), 'f')
