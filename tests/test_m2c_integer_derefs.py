@@ -41,3 +41,9 @@ def test_declarations_function_pointer_types_and_multiplication_are_not_derefere
     source = ("void f(s32 arg0) {\n    u8 **sp5C;\n    u16 (*sp27C)[];\n    s32 t;\n"
               "    t = arg0 * (arg0 + 1);\n    t = M2C_FIELD(arg0, s32 (**)(void *), 8);\n    t = (arg0 + 1) * 2;\n}\n")
     assert typed_dereferences(source, "f") == source
+
+
+def test_store_after_conditional_block_uses_value_width_without_retyping_cursor():
+    source = ("void f(void *cursor, s16 value) {\n    if (value) {\n"
+              "        cursor += 4;\n    }\n    *cursor = value;\n}\n")
+    assert typed_dereferences(source, 'f') == source.replace('*cursor =', '*(s16 *)cursor =')
