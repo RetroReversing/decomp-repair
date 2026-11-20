@@ -2,7 +2,6 @@ import pytest
 
 from decomprepair.combined_store_repairs import FAMILY, variants
 
-
 SOURCE = """void f(void) {
     s32 x;
     s32 *p;
