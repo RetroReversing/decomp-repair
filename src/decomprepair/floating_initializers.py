@@ -40,6 +40,7 @@ def variants(source, name, header=''):
                 and not set(re.findall(IDENT,hit[0])) & (qualified | macros))
 
     groups = []
+    grouped = []
     for hit in LOAD.finditer(part.clean,part.opening+1,part.end-1):
         start = hit.start()
         if (not is_top_level(start) or not ordinary_load(hit)
@@ -57,8 +58,26 @@ def variants(source, name, header=''):
         group = list(DECLARATOR.finditer(part.clean,*statement.span('items')))
         if all(ordinary_load(hit) for hit in group):
             groups.append(group)
+            grouped.append((statement, group))
     groups.sort(key=lambda group: group[0].start())
     candidates = []
+    # Try a bounded transfer between adjacent declarations of the same type.
+    # Every initializer is independent and keeps its original conversion.
+    for (left, first), (right, second) in zip(grouped, grouped[1:]):
+        if left['type'] != right['type'] or source[left.end():right.start()].strip():
+            continue
+        group = first + second
+        names = {hit['name'] for hit in group}
+        if len(names) != len(group) or names & {re.match(IDENT, hit['expr'])[0] for hit in group}:
+            continue
+        for position in (len(first)-2, len(first)-1):
+            order = first[:position] + [second[-1]] + first[position:-1] + second[:-1] + [first[-1]]
+            candidate = edit(source, [(old.start(), old.end(), source[new.start():new.end()])
+                                      for old, new in zip(group, order) if old is not new])
+            if candidate not in candidates:
+                candidates.append(candidate)
+        if len(candidates) >= LIMIT // 2:
+            break
     for group in groups:
         if len(group)<2 or len({hit['name'] for hit in group}) != len(group):
             continue
