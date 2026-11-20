@@ -110,6 +110,10 @@ def _unary(text: str, at: int) -> bool:
     before = text[:at].rstrip()
     if not before:
         return True
+    if before.endswith('}'):
+        # A bare store can start immediately after a conditional block. A star
+        # after a compound literal can also be multiplication, so require the LHS.
+        return bool(re.match(r'\*\s*[A-Za-z_]\w*\s*=(?!=)', text[at:]))
     if before[-1] in _BEFORE_UNARY:
         chain = before.rstrip('* \t')  # (a run of stars after a type name is a declarator)
         return not (chain and (chain[-1].isalnum() or chain[-1] == '_') and not re.search(r'\breturn$', chain)
@@ -134,7 +138,7 @@ def _width(text: str, at: int, end: int, scalars: dict[str, str]) -> str:
     load = re.match(r'\s*(\w+)\s*=\s*$', statement[:local])
     if load and scalars.get(load[1]) in SCALARS:
         return scalars[load[1]]
-    store = re.match(r'\s*\*\s*\(', statement) and statement[:local].strip() == ''
+    store = not statement[:local].strip()
     value = re.match(r'\s*=\s*(\w+(?:\.\d+)?f?)\s*$', text[end:stop]) if store and stop >= 0 else None
     if value:
         word = value[1]
