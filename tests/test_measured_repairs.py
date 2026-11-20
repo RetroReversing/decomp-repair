@@ -43,6 +43,7 @@ def test_delayed_scaled_pointer_follows_a_known_macro_store():
     assert 'M2C_FIELD(obj,s8*,0x12) = 0; x = *((void **)((i*4) + base)); p = (i*4) + base;' in candidate
     assert not storage.delayed_pointer(source,'f',header.replace('*(typ)','fn(typ)'),{4})
     assert not storage.delayed_pointer(source.replace('M2C_FIELD(obj,','M2C_FIELD(p,'),'f',header,{4})
+    assert not storage.delayed_pointer(source.replace('x = *p','base = *p'),'f',header,{4})
 
 
 def test_aggregate_preserves_locations_and_does_not_guess_at_overlapping_arrays():

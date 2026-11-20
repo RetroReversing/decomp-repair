@@ -56,13 +56,14 @@ def delayed_pointer(source, name, header, scale):
         rf'(?P<p>{IDENT})\s*=(?!=)\s*(?P<address>\(?\s*(?P<index>{IDENT})\s*\*\s*'
         rf'(?P<scale>{NUMBER})\s*\)?\s*\+\s*(?P<base>{IDENT}))\s*;\s*'
         rf'(?P<store>[^;{{}}]+?\s*=(?!=)\s*(?:{NUMBER}|NULL)\s*;)\s*'
-        rf'{IDENT}\s*=(?!=)\s*(?P<read>\*\s*(?P=p))\s*;')
+        rf'(?P<dest>{IDENT})\s*=(?!=)\s*(?P<read>\*\s*(?P=p))\s*;')
     results = []
     for hit in pattern.finditer(part.clean,part.opening+1,part.end-1):
         pointer, base, index = hit['p'],hit['base'],hit['index']
         decl = pointers.get(pointer)
         base_decl = pointers.get(base)
-        if not decl or decl.end() > hit.start() or index not in integers or base==pointer:
+        if (not decl or decl.end() > hit.start() or index not in integers or base==pointer
+                or hit['dest'] in {pointer,base,index}):
             continue
         if len(scale) and integer(hit['scale']) not in scale:
             continue
