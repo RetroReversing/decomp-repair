@@ -79,3 +79,51 @@ def variants(source, name, assembly=''):
         if sum(f == 'call_forwarded_arguments' for f,_ in out) >= 4:
             break
     return out
+
+
+def square_rootf(source, name, header=''):
+    """Repair a single mislabeled float square-root declaration and call."""
+    clean = _blank(source)
+    span = find(source, name)
+    if not span or re.search(r'\bsqrtf\b|^\s*#\s*(?:define|undef)\s+sqrt\b', clean+'\n'+_blank(header), re.M):
+        return None
+    prototype = re.search(r'(?m)^\s*(?:extern\s+)?(?:float|f32)\s+(sqrt)\s*\(\s*(?:float|f32)'
+                          r'(?:\s+[A-Za-z_]\w*)?\s*\)\s*;', clean[:span[0]])
+    if not prototype:
+        return None
+    opening = clean.find('{', *span)
+    tokens = list(re.finditer(r'\bsqrt\b', clean))
+    if len(tokens) != 2 or tokens[0].start() != prototype.start(1):
+        return None
+    call = tokens[1]
+    if not opening < call.start() < span[1] or not clean[call.end():].lstrip().startswith('('):
+        return None
+    if re.search(r'\bsqrt\b', _blank(header)):
+        return None
+    for token in reversed(tokens):
+        source = source[:token.end()] + 'f' + source[token.end():]
+    return source
+
+
+def bitwise_operand_order(source, name, header=''):
+    """Try both C89 spellings of an unsigned local's simple AND update."""
+    span = find(source, name)
+    clean = _blank(source)
+    if not span or re.search(r'\b(?:volatile|asm|__asm__)\b', clean+'\n'+header):
+        return []
+    opening = clean.find('{', *span)
+    body = clean[opening:span[1]]
+    unsigned = set(re.findall(r'\b(?:u32|unsigned(?:\s+int)?)\s+('+ID+r')\s*[=;]', body))
+    macros = set(re.findall(r'^\s*#\s*define\s+('+ID+r')\b', clean+'\n'+header, re.M))
+    result = []
+    for match in re.finditer(r'(?<=[;{}])\s*('+ID+r')\s*&=\s*('+ID+r')\s*;', body):
+        left, right = match.groups()
+        if left == right or not {left, right} <= unsigned or {left, right} & macros:
+            continue
+        start = opening + match.start(1)
+        end = opening + match.end()
+        for rhs in (f'{right} & {left}', f'{left} & {right}'):
+            result.append(('bitwise_operand_order', source[:start]+f'{left} = {rhs};'+source[end:]))
+        if len(result) >= 4:
+            break
+    return result
