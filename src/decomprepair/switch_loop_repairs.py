@@ -59,6 +59,11 @@ def _macro_safe(text, macros, locals_):
     return True
 
 
+def _hidden_local(text, macros, locals_):
+    return any((set(re.findall(IDENT, body))-params) & locals_
+               for name in set(re.findall(IDENT, text)) & macros.keys() for params,body in macros[name])
+
+
 def _word_result(expr, model, context, macros):
     call = re.match(rf'^({IDENT})\s*\(', expr)
     if call:
@@ -150,8 +155,12 @@ def _loop(model, context, declarations):
         if any(len(address) != 2 for address in addresses):
             continue
         root = addresses[0][0]
+        # Only the captured index may vary in the destination address. This
+        # keeps moving the word conversion into the store from retiming any
+        # other subscript load relative to that conversion.
         if (any(address[0] != root for address in addresses) or root.count(f'[{old}]') != 1
-                or re.search(rf'\b{index}\b', root) or len({address[1] for address in addresses}) != 3):
+                or not re.fullmatch(rf'{IDENT}(?:\[(?:[0-9]+|0[xX][0-9a-fA-F]+|{old})\])+', root)
+                or len({address[1] for address in addresses}) != 3):
             continue
         types = [model.access(access) for access in (first, second, third)]
         array = model.roots.get(re.match(IDENT, root)[0])
@@ -177,7 +186,8 @@ def _loop(model, context, declarations):
         groups.setdefault((index, old, value), []).append(
             (loop, start, stop, indent, first, second, third, expr_text, staged_text, zero, flag))
     for (index, old, value), loops in groups.items():
-        if any(not _root_local(p, declarations[n].start()) for n in (index, old, value)):
+        if (any(not _root_local(p, declarations[n].start()) for n in (index, old, value))
+                or _hidden_local(p.body, macros, {index, old, value})):
             continue
         if any(not any(start <= ref.start() < stop for _,start,stop,*_ in loops)
                for decl in (declarations[old], declarations[value]) for ref in refs(p, decl)):
@@ -269,6 +279,7 @@ def _stores(model, context, declarations):
     pat = re.compile(
         rf'(?m)^({INDENT})({IDENT})\s*=\s*(\*\s*\(\s*volatile\s+({IDENT})\s*\*\s*\)\s*&({ACCESS}))\s*;\n'
         rf'\1({ACCESS})\s*=\s*0\s*;\n\1({ACCESS})\s*=\s*\2\s*;')
+    macros = _macros(context)
     # The layout with a live record index is the useful alternative. Other arms
     # intentionally keep their staged allocation and observable access order.
     for hit in pat.finditer(p.clean, p.opening+1, p.end):
@@ -287,7 +298,8 @@ def _stores(model, context, declarations):
             continue
         # Every other use must be after a new assignment to the staging local.
         # No jump can bypass those assignments.
-        if re.search(r'\bgoto\b', p.body) or not _reassigned(p, declarations[temp], after=hit.end()):
+        if (re.search(r'\bgoto\b', p.body) or _hidden_local(p.body, macros, {temp})
+                or not _reassigned(p, declarations[temp], after=hit.end())):
             continue
         expression = p.source[hit.start(3):hit.end(3)]
         yield edit(p.source, [(hit.start(), hit.end(), f'{indent}{dest} = {expression};\n{indent}{zero} = 0;')])
