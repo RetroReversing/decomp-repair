@@ -20,7 +20,8 @@ def _prefix(part, index):
 
 
 def automatic_integers(part, name):
-    result = {d['name'] for d in locals_for(part)}
+    result = {d['name'] for d in locals_for(part)
+              if not re.search(rf'(?<!&)&(?!&)\s*\(*\s*{d["name"]}\b',part.body)}
     span = find(part.source, name)
     if not span:
         return result
@@ -51,13 +52,12 @@ def selector_after_call(source, name, header, sites):
             continue
         value, var = _literal(init['value']), init['var']
         calls = {callee for callee, literal in sites if literal == value}
-        if not calls:
+        if not calls or re.search(rf'(?<!&)&(?!&)\s*\(*\s*{var}\b',part.body):
             continue
         path = block_path(part,init.start())
         if init['type']:
             # Reject any shadow and any use through a saved address.
-            if len(re.findall(rf'\b{INT_TYPE}\s+{var}\b',part.body)) != 1 or re.search(
-                    rf'(?<!&)&(?!&)\s*\(*\s*{var}\b',part.body):
+            if len(re.findall(rf'\b{INT_TYPE}\s+{var}\b',part.body)) != 1:
                 continue
         elif var not in available or available[var].end() > init.start():
             continue

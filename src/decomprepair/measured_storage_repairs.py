@@ -105,7 +105,8 @@ def guarded_global_address(source, name, header, symbols):
     results = []
     for symbol in sorted(symbols):
         typ = re.search(rf'\bextern\s+({INTEGER})\s+{re.escape(symbol)}\s*;',declarations_text)
-        if not typ or re.search(rf'#\s*define\s+{symbol}\b',declarations_text):
+        if (not typ or re.search(rf'#\s*define\s+{symbol}\b',declarations_text)
+                or re.search(rf'\b(?:{TYPES}|{INTEGER})\s+\**\s*{symbol}\b',part.clean[span[0]:part.end])):
             continue
         for guard in re.compile(r'\bif\s*\(').finditer(part.clean,part.opening+1,part.end-1):
             if part.clean[part.opening+1:guard.start()].rstrip()[-1:] not in ('',';','{','}'):

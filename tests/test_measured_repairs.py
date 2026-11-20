@@ -31,6 +31,8 @@ def test_loop_bound_never_moves_across_a_mutated_input_or_continue():
     assert not control.loop_tail_bound(source.replace('update(i);','length++;'),'f','',{-3})
     assert not control.loop_tail_bound(source.replace('update(i);','if(i) continue;'),'f','',{-3})
     assert not control.loop_tail_bound(source.replace('update(i);','update(&length);'),'f','',{-3})
+    alias = source.replace('int length','int n').replace('int i;', 'int i; int length; length=n;')
+    assert not control.loop_tail_bound(alias.replace('update(i);','update(&(length));'),'f','',{-3})
 
 
 def test_delayed_scaled_pointer_follows_a_known_macro_store():
