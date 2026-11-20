@@ -69,3 +69,52 @@ def test_a_bound_that_is_not_a_positive_constant_is_left_alone():
 
 def test_a_loop_that_leaves_early_is_left_alone():
     assert r.variants(DRAFT.replace('g(*var_s0);', 'break;'), 'f') == []
+
+
+GUARDED = '''extern u32 limit;
+extern void *items;
+void consume(void *);
+
+void f(void) {
+    u8 __repair_frame[8];
+    u32 i;
+    void **cursor;
+
+    i = 0;
+    if (limit != 0) {
+        cursor = &items;
+        do {
+            consume(*cursor);
+            i++;
+            cursor++;
+        } while (i < (u32) limit);
+    }
+}
+'''
+
+
+def test_guarded_runtime_bound_tries_indexed_loop_with_and_without_padding():
+    combined, padded = r.frame_variants(GUARDED, 'f')
+    assert combined[0] == padded[0] == r.FAMILY
+    assert combined[1] == padded[1].replace('    u8 __repair_frame[8];\n', '')
+    assert 'extern void *items[];' in combined[1]
+    assert 'for (i = 0; i < (u32) limit; i++) {\n        consume(items[i]);\n    }' in combined[1]
+    assert 'if (limit' not in combined[1] and 'do {' not in combined[1]
+
+
+def test_padding_that_is_read_survives_the_indexed_rewrite():
+    source = GUARDED.replace('i = 0;', 'consume(__repair_frame);\n    i = 0;')
+    assert not r.frame_variants(source, 'f')
+    assert 'consume(__repair_frame);' in only(source)
+
+
+def test_guard_must_cover_only_the_walk_with_the_same_unsigned_limit():
+    for source in (
+        GUARDED.replace('limit != 0', 'another != 0'),
+        GUARDED.replace('extern u32 limit;', 'extern s32 limit;'),
+        GUARDED.replace('extern u32 limit;', 'extern volatile u32 limit;'),
+        GUARDED.replace('    }\n}', '    } else {\n        consume(0);\n    }\n}'),
+        GUARDED.replace('cursor = &items;', 'consume(0);\n        cursor = &items;'),
+        GUARDED.replace('limit);\n    }', 'limit);\n        consume(0);\n    }'),
+    ):
+        assert not r.variants(source, 'f')
