@@ -252,10 +252,13 @@ def _cached_pointers(text):
     return text
 
 
-def _scaffolding(text):
+def _scaffolding(text, *, unwrap_do_zero):
     text = re.sub(r'/\*\s*__repair_\w*\s*\*/', '', text)
-    for step in (_rows_loops, _unwrap_do_zero, _literal_locals, _single_use_temporaries, _phase_union,
-                 _value_blocks, _inline_helpers, _cached_pointers):
+    steps = (_rows_loops, _literal_locals, _single_use_temporaries, _phase_union,
+             _value_blocks, _inline_helpers, _cached_pointers)
+    if unwrap_do_zero:
+        steps = (steps[0], _unwrap_do_zero, *steps[1:])
+    for step in steps:
         text = step(text)
     return text
 
@@ -288,7 +291,8 @@ def _read_before_set(text):
     return text
 
 
-def clean(source: str | None) -> str | None:
+def clean(source: str | None, *, unwrap_do_zero: bool = True) -> str | None:
+    """Remove debris, optionally retaining one-iteration loops used for compiler matching."""
     if not source:
         return None
     text = POINTER_CUT.sub(lambda m: f'{m[1]}{m[2]})', source)
@@ -300,5 +304,5 @@ def clean(source: str | None) -> str | None:
     text = COMPARED_CUT.sub('', text)
     text = INT_LITERAL.sub(lambda m: m[1] if int(m[1], 0) <= 0x7FFFFFFF else m[0], text)
     text = LITERAL_CAST.sub(lambda m: m[0] if int(m[2], 16) <= WIDTH[' '.join(m[1].split())] else m[2], text)
-    text = _scaffolding(text)
+    text = _scaffolding(text, unwrap_do_zero=unwrap_do_zero)
     return text if text != source else None

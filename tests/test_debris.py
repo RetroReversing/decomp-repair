@@ -134,3 +134,10 @@ def test_left_alone_where_meaning_could_change():
     # the cached symbol is assigned later in the file: the copy holds the old value
     cached = 'void *__repair_cached_pointer = D;\nvoid f(void) {\n    D = 0;\n    g(__repair_cached_pointer);\n}\n'
     assert debris.clean(cached) is None
+
+
+def test_one_iteration_loops_can_be_kept_during_recovery():
+    source = 'void f(void) {\n    do { g(); } while (0);\n}\n'
+    assert debris.clean(source, unwrap_do_zero=False) is None
+    damaged = source.replace('g();', 'register global = 0;')
+    assert debris.clean(damaged, unwrap_do_zero=False) == source.replace('g();', 'global = 0;')
