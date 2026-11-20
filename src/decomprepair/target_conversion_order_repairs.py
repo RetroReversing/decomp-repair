@@ -82,7 +82,7 @@ def inequality(data, witnesses):
         for hit in re.compile(pattern).finditer(part.clean,part.opening+1,part.end-1):
             word, tmp = hit['word'], hit['tmp']
             if ((hit['callee'],integer(hit['imm'])) not in witnesses or word==tmp or hit['test']==tmp
-                    or not _statement(part,hit.start())
+                    or not _statement(part,hit.start()) or block_path(part,hit.start())!=[part.opening]
                     or not all(_local(data,v,WORD,hit.start()) for v in (word,tmp))
                     or _refs(hit['call'],tmp)):
                 continue
@@ -295,7 +295,7 @@ def table_offset(data, symbols):
 def signed_bound(data):
     part, _, _, _ = data
     pattern = re.compile(rf'(?P<expr>\(?\s*(?P<a>{IDENT})\s*-\s*(?P<b>{IDENT})\s*\)?)'
-                         rf'\s*(?:<=|>=|<|>)\s*(?P<bound>{IDENT})\b')
+                         rf'\s*(?:<=|>=|<|>)\s*(?P<bound>{IDENT})\b(?=\s*(?:[);]|&&|\|\|))')
     for hit in pattern.finditer(part.clean,part.opening+1,part.end-1):
         expr = hit['expr']
         if (expr.count('(')!=expr.count(')') or not _local(data,hit['bound'],S64,hit.start())
