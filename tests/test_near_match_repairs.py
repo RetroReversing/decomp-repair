@@ -17,3 +17,15 @@ def test_bitwise_order_keeps_simple_local_values():
     ]
     assert not bitwise_operand_order(source.replace('unsigned b', 'volatile unsigned b'), 'f')
     assert not bitwise_operand_order(source, 'f', '#define b foo()')
+
+
+def test_float_update_stages_the_measurement_once():
+    from decomprepair.near_match_repairs import float_update_order
+
+    load = 'M2C_FIELD(obj, f32 *, 0x40)'
+    source = f'void f(void *obj) {{ {load} = (compute({load}) * 0.5f) + {load}; }}'
+    variants = dict(float_update_order(source, 'f'))
+    assert set(variants) == {'arithmetic_operand_order', 'float_update_lifetime'}
+    assert 'float repair_float_increment = (compute(' in variants['float_update_lifetime']
+    assert all(child.count('compute(') == 1 for child in variants.values())
+    assert not float_update_order(source.replace('f32', 's32'), 'f')
