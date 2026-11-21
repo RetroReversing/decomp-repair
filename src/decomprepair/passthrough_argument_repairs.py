@@ -455,6 +455,42 @@ def _missing_caller_argument(source, name, header, asm, callee, *, memory_wrappe
                          (start, start, f'{added}, ')])
 
 
+def _forward_stack_output(source, name, header, asm, callee, resolve):
+    """Recover the entry argument before a float-returning call's stack output."""
+    address = resolve(callee) if resolve is not None else None
+    entry_carries_argument = _entry_a0_reaches(asm, callee) or (
+        address is not None and _entry_a0_reaches(asm, f'func_{address:08X}'))
+    if (not entry_carries_argument or not (part := view(source, name))
+            or re.search(rf'\b(?:{callee}|{name})\s*\(', _blank(header))):
+        return None
+    signature = re.search(
+        rf'\bvoid\s+{re.escape(name)}\s*\((?P<formal>void|s32\s+(?P<arg>{IDENT}))\)\s*$',
+        part.clean[:part.opening],
+    )
+    sites = list(calls(part, callee))
+    prototypes = list(re.finditer(
+        rf'(?m)^[ \t]*f32\s+{callee}\((?P<types>(?:M2C_UNK|[su](?:16|32))\s*\*)\);'
+        r'[ \t]*/\* extern \*/[ \t]*$', source[:part.opening],
+    ))
+    if not signature or len(sites) != 1 or len(prototypes) != 1:
+        return None
+    start, end = sites[0]
+    local = re.fullmatch(rf'&(?P<local>{IDENT})', part.clean[start:end].strip())
+    if not local:
+        return None
+    kind = prototypes[0]['types'].rstrip('* ').strip()
+    if not re.search(rf'(?m)^\s*{kind}\s+{local["local"]}\s*;', part.clean[part.opening + 1:start]):
+        return None
+    arg = signature['arg'] or '__repair_incoming'
+    changes = [(start, start, f'{arg}, ')]
+    if signature['arg'] is None:
+        if re.search(rf'\b{arg}\b', part.clean + header):
+            return None
+        changes.append((*signature.span('formal'), f's32 {arg}'))
+    pos = prototypes[0].start('types')
+    return edit(source, [(pos, pos, 's32, '), *changes])
+
+
 def _shifted_memory_wrapper(source, name, header, asm, rows, changes):
     """Both named arguments moved down when m2c omitted the destination of memset."""
     if changes != [2, 3, 5] or len(rows) != 9 or tuple(rows[4][1:]) != ('jal memset', 'jal memset'):
@@ -686,7 +722,7 @@ def _pointer_call_reuse(source, name, header, asm, rows, i, callee):
     return edit(source, changes)
 
 
-def shifted_call_variants(source, name, header, asm, rows):
+def shifted_call_variants(source, name, header, asm, rows, *, resolve=None):
     """Focus passthrough proposals on the measured setup for one changed call."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
     if candidate := _float_wrapper_output(source, name, header, asm, rows, changes):
@@ -707,6 +743,11 @@ def shifted_call_variants(source, name, header, asm, rows):
         call = re.fullmatch(rf'jal ({IDENT})', target)
         if marker != ' ' or target != candidate or not call or not local:
             continue
+        if i + 1 < len(rows):
+            stack_slot = re.fullmatch(rf'addiu \$a1, \$sp, {NUMBER}', rows[i + 1][1])
+            if (stack_slot and rows[i + 1][2] == stack_slot[0].replace('$a1', '$a0', 1)
+                    and (candidate_source := _forward_stack_output(source, name, header, asm, call[1], resolve))):
+                return [(FAMILY, candidate_source)]
         if candidate_source := _pointer_call_reuse(source, name, header, asm, rows, i, call[1]):
             return [(FAMILY, candidate_source)]
         relocations = _relocated_shift_count(rows, local)

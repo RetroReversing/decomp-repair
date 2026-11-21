@@ -325,3 +325,21 @@ def test_halfword_table_can_have_an_odd_stride_with_a_one_bit_shift():
         variants(source, 'f', '', rows))['measured_relocated_array_scale']
     assert 'return entries[select(3)];' in dict(
         variants(source.replace('* 6', '* 2'), 'f', '', rows))['measured_relocated_array_scale']
+
+
+def test_independent_halfword_and_word_table_accesses_are_repaired_in_turn():
+    source = ('extern M2C_UNK ids;\nextern M2C_UNK slots;\n'
+              'void f(s32 i) { consume(*(&ids + (choose() * 2)), *(&slots + (i * 4))); }')
+    halfword = [
+        ('i', 'sll $v0, $v0, 1', 'sll $v0, $v0, 3'),
+        ('i', 'lui $a0, %hi(ids)', 'lui $a0, %hi(ids+0x2)'),
+        (' ', 'addu $a0, $a0, $v0', 'addu $a0, $a0, $v0'),
+        ('i', 'lhu $a0, %lo(ids)($a0)', 'lhu $a0, %lo(ids+0x2)($a0)'),
+    ]
+    word = ['lui $at, %hi(slots)', 'addu $at, $at, $a0', 'lw $v0, %lo(slots)($at)']
+    word_rows = SHIFT + [(' ', op, op) for op in word]
+    forward = [('r', 'addiu $a1, $sp, 0x10', 'addiu $a0, $sp, 0x10')]
+    fixed = dict(variants(source, 'f', '', forward + halfword + word_rows))['measured_relocated_array_scale']
+    assert 'consume(ids[choose()], *(&slots + (i * 4)));' in fixed
+    fixed = dict(variants(fixed, 'f', '', forward + word_rows))['measured_duplicate_word_scale']
+    assert 'consume(ids[choose()], slots[i]);' in fixed
