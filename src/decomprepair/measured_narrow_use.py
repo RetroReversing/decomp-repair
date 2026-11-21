@@ -3,7 +3,7 @@
 import re
 
 from .csource import _blank
-from .integer_repair_support import IDENT, NUMBER, edit, integer, view
+from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for, view
 
 FAMILY = 'measured_narrow_use'
 REG = r'\$\w+'
@@ -125,6 +125,43 @@ def _stage_masked_halfword_or(source, name, rows):
     return [('measured_masked_halfword_or', edit(source, edits))] if len(edits) == 1 else []
 
 
+def _stage_byte_pack_return(part, rows):
+    """Keep the packed word in the existing local before narrowing the return."""
+    changed = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changed) != 5 or changed != list(range(changed[0], changed[0] + 5)):
+        return None
+    first = changed[0]
+    shift = re.fullmatch(r'sll \$v1, (\$a[0-3]), 8', rows[first][1])
+    if not shift:
+        return None
+    reg = shift[1]
+    target = [f'sll $v1, {reg}, 8', f'srl $v0, {reg}, 8', 'andi $v0, $v0, 0xff',
+              f'or {reg}, $v1, $v0', f'andi $v0, {reg}, 0xffff']
+    actual = [f'sll $v0, {reg}, 8', f'srl $v1, {reg}, 8', 'andi $v1, $v1, 0xff',
+              'or $v0, $v0, $v1', 'andi $v0, $v0, 0xffff']
+    if list(rows[first:first + 5]) != [('r', a, b) for a, b in zip(target, actual)]:
+        return None
+    shape = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)return\s*\(\(\s*(?P<local>{IDENT})\s*<<\s*8\s*\)\s*\|\s*'
+        rf'\(\(\s*(?P=local)\s*>>\s*8\s*\)\s*&\s*(?P<byte>{NUMBER})\s*\)\)\s*&\s*(?P<word>{NUMBER})\s*;')
+    hits = list(shape.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    local = hit['local']
+    if (integer(hit['byte']) != 0xff or integer(hit['word']) != 0xffff
+            or not any(decl['name'] == local and decl['type'] == 'u32' for decl in locals_for(part))
+            or part.clean[part.opening + 1:hit.start()].rstrip()[-1:] not in (';', '}')
+            or not re.fullmatch(r'\s*}\s*', part.clean[hit.end():part.end])
+            or re.search(rf'&\s*{local}\b|\b(?:volatile|asm|__asm__)\b', part.body)
+            or re.search(rf'(?m)^\s*#\s*define\s+{local}\b', part.clean)):
+        return None
+    indent = hit['indent']
+    replacement = (f'{indent}{local} = ({local} << 8) | (({local} >> 8) & {hit["byte"]});\n'
+                   f'{indent}return {local} & {hit["word"]};')
+    return edit(part.source, [(*hit.span(), replacement)])
+
+
 def variants(source, name, rows):
     """Offer narrowing repairs separately so the next diff can guide the search."""
     if candidate := _zero_store_width(source, name, rows):
@@ -134,7 +171,11 @@ def variants(source, name, rows):
     if not any('andi ' in row[1] for row in rows):
         return []
     part = view(source, name)
-    if not part or re.search(r'\b(?:goto|asm|__asm__)\b', _blank(source)):
+    if not part:
+        return []
+    if candidate := _stage_byte_pack_return(part, rows):
+        return [('measured_stage_byte_pack_return', candidate)]
+    if re.search(r'\b(?:goto|asm|__asm__)\b', _blank(source)):
         return []
     return _byte_uses(source, part, rows) + _remainder(source, part, rows)
 

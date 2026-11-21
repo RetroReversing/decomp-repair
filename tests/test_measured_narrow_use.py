@@ -167,3 +167,26 @@ def test_stage_masked_halfword_before_merging_and_storing_it():
     assert 'value = M2C_FIELD(p, u16 *, 12) & 65520, value |= bits' in fixed
     assert not variants(source.replace('u16 bits', 's32 bits'), 'f', rows)
     assert not variants(source, 'f', rows[:-1])
+
+
+def test_pack_in_existing_local_before_masked_return():
+    source = """\
+s32 f(u32 input) {
+    u32 word;
+    word = ~input;
+    return ((word << 8) | ((word >> 8) & 0xff)) & 0xffff;
+}
+"""
+    rows = [
+        ('r', 'sll $v1, $a2, 8', 'sll $v0, $a2, 8'),
+        ('r', 'srl $v0, $a2, 8', 'srl $v1, $a2, 8'),
+        ('r', 'andi $v0, $v0, 0xff', 'andi $v1, $v1, 0xff'),
+        ('r', 'or $a2, $v1, $v0', 'or $v0, $v0, $v1'),
+        ('r', 'andi $v0, $a2, 0xffff', 'andi $v0, $v0, 0xffff'),
+    ]
+    [(family, fixed)] = variants(source, 'f', rows)
+    assert family == 'measured_stage_byte_pack_return'
+    assert 'word = (word << 8) | ((word >> 8) & 0xff);\n    return word & 0xffff;' in fixed
+    assert not variants(source.replace('u32 word;', 's32 word;'), 'f', rows)
+    assert not variants(source.replace('word = ~input;', 'word = ~input; escape(&word);'), 'f', rows)
+    assert not variants(source, 'f', rows[:-1])
