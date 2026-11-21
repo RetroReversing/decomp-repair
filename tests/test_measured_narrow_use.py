@@ -81,3 +81,39 @@ def test_shared_halfword_index_restages_the_two_score_loops():
     assert not shared_halfword_index_variants(source.replace('s16 *winner', 'volatile s16 *winner'), 'f', rows)
     assert not shared_halfword_index_variants(source.replace('    do {\n        index', '    use(index);\n    do {\n        index'),
                                              'f', rows)
+
+
+def test_byte_backedge_uses_the_loop_entry_carrier():
+    from decomprepair.measured_narrow_use import byte_backedge_variants
+
+    source = """void f(u8 *start) {
+    u8 *ptr = start;
+    long raw;
+    s32 phase;
+    u32 opcode;
+    raw = *ptr;
+    if (((u8)raw) != 12) {
+        opcode = raw & 255;
+        do {
+            switch (opcode) {
+            case 1: raw *= 2; ptr += raw; break;
+            default: ptr++; break;
+            }
+            phase = *ptr;
+            opcode = phase & 255;
+        } while (phase != 12);
+    }
+}
+"""
+    rows = [
+        ('r', 'lbu $a0, ($t0)', 'lbu $v0, ($t0)'),
+        ('r', 'bne $a0, $t1, 0x38', 'bne $v0, $t1, 0x38'),
+        ('r', 'andi $v1, $a0, 0xff', 'andi $v1, $v0, 0xff'),
+    ]
+    [(family, text)] = byte_backedge_variants(source, 'f', rows)
+    assert family == 'byte_backedge_carrier'
+    assert 'raw = *ptr;\n            opcode = raw & 255;' in text
+    assert 'while (raw != 12)' in text
+    assert not byte_backedge_variants(source, 'f', rows[:-1])
+    assert not byte_backedge_variants(source.replace('    }\n}', '    }\n    use(raw);\n}'), 'f', rows)
+    assert not byte_backedge_variants(source.replace('u8 *ptr', 'volatile u8 *ptr'), 'f', rows)

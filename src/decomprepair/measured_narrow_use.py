@@ -155,3 +155,76 @@ def shared_halfword_index_variants(source, name, rows):
         if all(source[a:b] == part.clean[a:b] for a, b, _ in edits):
             results.append((HALFWORD_INDEX, edit(source, edits)))
     return results[:2]
+
+
+BYTE_BACKEDGE = 'byte_backedge_carrier'
+
+
+def _byte_backedge_evidence(rows):
+    """A byte load feeds the loop branch and its delay-slot mask in both builds."""
+    load = re.compile(rf'lbu (?P<dst>{REG}), (?P<address>(?:0x[0-9a-f]+|\d+)?\({REG}\))')
+    branch = re.compile(rf'bne (?P<byte>{REG}), (?P<sentinel>{REG}), (?P<edge>\S+)')
+    for read, jump, narrow in zip(rows, rows[1:], rows[2:]):
+        target, candidate = (load.fullmatch(op) for op in read[1:])
+        if (not target or not candidate or target['dst'] == candidate['dst']
+                or target['address'] != candidate['address']):
+            continue
+        first, second = (branch.fullmatch(op) for op in jump[1:])
+        if (first and second and first['byte'] == target['dst'] and second['byte'] == candidate['dst']
+                and first['sentinel'] == second['sentinel'] and first['edge'] == second['edge']
+                and (a := MASK8.fullmatch(narrow[1])) and (b := MASK8.fullmatch(narrow[2]))
+                and a[1] == target['dst'] and b[1] == candidate['dst']
+                and narrow[1] == narrow[2].replace(f', {candidate["dst"]},', f', {target["dst"]},', 1)):
+            return True
+    return False
+
+
+def byte_backedge_variants(source, name, rows):
+    """Try reusing the byte carrier from the guarded loop entry at its back edge."""
+    from .loaded_byte_repairs import declarators
+    from .pattern_repairs import close
+
+    if not _byte_backedge_evidence(rows) or not (part := view(source, name)):
+        return []
+    byte_mask = r'(?:255|0[xX][fF]{2})'
+    entry = re.compile(
+        rf'(?<=[;{{}}])\s*(?P<old>{IDENT})\s*=\s*\*\s*(?P<ptr>{IDENT})\s*;'
+        rf'\s*if\s*\(\s*\(\s*\(u8\)\s*(?P=old)\s*\)\s*!=\s*(?P<stop>\d+)\s*\)\s*{{'
+        rf'\s*(?P<opcode>{IDENT})\s*=\s*(?P=old)\s*&\s*{byte_mask}\s*;\s*do\s*{{'
+    )
+    result = []
+    for hit in entry.finditer(part.clean, part.opening + 1, part.end):
+        old, ptr, opcode = (hit[k] for k in ('old', 'ptr', 'opcode'))
+        end = close(part.clean, hit.end() - 1, '{', '}')
+        if not end or not re.search(rf'(?<=[;{{}}])\s*u8\s*\*\s*{ptr}\s*(?:=|;)', part.clean[:hit.start()]):
+            continue
+        tail = re.search(
+            rf'(?<=[;{{}}])\s*(?P<phase>{IDENT})\s*=\s*\*\s*{ptr}\s*;'
+            rf'\s*{opcode}\s*=\s*(?P=phase)\s*&\s*{byte_mask}\s*;\s*}}\s*$',
+            part.clean[hit.end():end],
+        )
+        if not tail:
+            continue
+        phase = tail['phase']
+        latch = re.match(rf'\s*while\s*\(\s*(?P<phase>{phase})\s*!=\s*{hit["stop"]}\s*\)\s*;',
+                         part.clean[end:part.end])
+        if not latch or len({old, ptr, opcode, phase}) != 4:
+            continue
+        declarations = {old: r'(?:long|s32|int|u32)', phase: WORD}
+        if not all(re.search(rf'(?<=[;{{}}])\s*{typ}\s+{var}\s*;', part.clean[:hit.start()])
+                   and len(declarators(part.clean, var)) == 1 for var, typ in declarations.items()):
+            continue
+        if (len(re.findall(rf'\b{phase}\b', part.body)) != 4
+                or re.search(rf'\b{old}\b', part.clean[end + latch.end():part.end])
+                or re.search(rf'&\s*\(*\s*{old}\b', part.body)
+                or len(declarators(part.clean, ptr)) != 1):
+            continue
+        loop_body = part.clean[hit.end():end]
+        jumps = set(re.findall(rf'\bgoto\s+({IDENT})\s*;', loop_body))
+        labels = set(re.findall(rf'(?m)^[ \t]*({IDENT})[ \t]*:', loop_body))
+        if jumps - labels or re.search(r'\b(?:asm|__asm__)\b', loop_body):
+            continue
+        edits = [(m.start(), m.end(), old) for m in re.compile(rf'\b{phase}\b').finditer(
+            part.clean, hit.end() + tail.start(), end + latch.end())]
+        result.append((BYTE_BACKEDGE, edit(source, edits)))
+    return result[:4]
