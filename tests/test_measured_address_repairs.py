@@ -53,3 +53,48 @@ def test_reciprocal_links_only_reorder_the_two_independent_fields():
     assert not variants(source.replace('.next','.prev'),'f','',diff)
     assert not variants(source.replace('; a','; /* keep */ a'),'f','',diff)
     assert not variants(source,'f','',diff[:1])
+
+
+def test_byte_offset_through_a_generated_global_uses_the_call_delay_slot():
+    from decomprepair.measured_address_repairs import rewrite_byte_offsets
+
+    source = 'extern M2C_UNK state;\nvoid f(void) { dispatch(&state + 0x8010); }'
+    target = '''lui $a0, %hi(state + 0x8010)
+jal dispatch
+addiu $a0, $a0, %lo(state + (0x8010 & 0xFFFF))
+'''
+    fixed = rewrite_byte_offsets(source, 'f', target)
+    assert fixed and 'dispatch((char *)&state + 0x8010)' in fixed
+    assert rewrite_byte_offsets(fixed, 'f', target) is None
+    assert rewrite_byte_offsets(source, 'f', target.replace('0x8010 &', '0x8030 &')) is None
+    assert rewrite_byte_offsets(source, 'f', target.replace('jal dispatch', 'move $a0, $v0')) is None
+    assert rewrite_byte_offsets(source, 'f', target, 'extern s32 state;') is None
+    assert rewrite_byte_offsets(source.replace('0x8010);', '0x8010 * 4);'), 'f', target) is None
+
+
+def test_address_wrapper_can_restore_the_incoming_first_argument():
+    from decomprepair.measured_address_repairs import rewrite_byte_offsets
+
+    source = '''M2C_UNK dispatch(void *); /* extern */
+extern M2C_UNK state;
+s32 f(void) {
+    dispatch(&state + 0x40);
+    return 0;
+}
+'''
+    target = '''addiu $sp, $sp, -0x18
+sw $ra, 0x10($sp)
+lui $a1, %hi(state + 0x40)
+jal dispatch
+addiu $a1, $a1, %lo(state + 0x40)
+lw $ra, 0x10($sp)
+move $v0, $zero
+jr $ra
+addiu $sp, $sp, 0x18
+'''
+    patch = rewrite_byte_offsets(source, 'f', target, 'void other(s32 arg0);')
+    assert patch and 's32 f(s32 arg0)' in patch
+    assert 'dispatch(s32, void *);' in patch
+    assert 'dispatch(arg0, (char *)&state + 0x40);' in patch
+    assert rewrite_byte_offsets(source, 'f', target, 's32 dispatch(void *);') is None
+    assert rewrite_byte_offsets(source, 'f', target, '#define arg0 1') is None
