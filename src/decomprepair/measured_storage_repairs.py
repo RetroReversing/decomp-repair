@@ -231,12 +231,12 @@ def stack_array_record(source, name, header, slots, moved):
     return results
 
 
-def strided_fields(source, name, header, views):
+def strided_fields(source, name, header, views, *, minimum_symbols=2):
     part = _visible(source,name,header,labels=True)
     if not part:
         return []
     direct = re.compile(rf'\*\(\s*(?P<type>{TYPES})\s*\*\s*\)\s*\(\s*'
-                        rf'(?P<symbol>{IDENT})\s*\+\s*(?P<expr>{IDENT}(?:\s*\*\s*{NUMBER})?)\s*\)')
+                        rf'(?P<symbol>{IDENT})\s*\+\s*(?P<expr>(?P<paren>\()?\s*{IDENT}(?:\s*\*\s*{NUMBER})?\s*(?(paren)\)))\s*\)')
     stable = automatic_integers(part,name)
     declarations_text = _blank(header)+'\n'+part.clean[:find(source,name)[0]]
     results = []
@@ -244,7 +244,10 @@ def strided_fields(source, name, header, views):
         edits = []
         symbols = set()
         for hit in direct.finditer(part.clean,part.opening+1,part.end-1):
-            typ,symbol,expr = hit['type'],hit['symbol'],hit['expr']
+            typ,symbol = hit['type'],hit['symbol']
+            expr = hit['expr'].strip()
+            if expr.startswith('(') and expr.endswith(')'):
+                expr = expr[1:-1].strip()
             size = WIDTH[typ]
             if widths.get(symbol)!=size or stride <= size or stride%size:
                 continue
@@ -274,7 +277,7 @@ def strided_fields(source, name, header, views):
             symbols.add(symbol)
             if len(edits)>=8:
                 break
-        if len(symbols)>=2:
+        if len(symbols)>=minimum_symbols:
             results.append((STRIDE,edit(source,edits)))
         if len(results)==2:
             break
