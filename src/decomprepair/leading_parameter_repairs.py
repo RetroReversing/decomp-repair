@@ -11,7 +11,9 @@ import re
 
 from . import m2cfix
 from .csource import _blank, find
+from .integer_repair_support import edit
 from .pattern_repairs import close
+from .target_call_arity_repairs import _instructions
 
 FAMILY = 'leading_parameters'
 FAMILIES = (FAMILY,)
@@ -33,6 +35,40 @@ def stack_types(asm):
     return types
 
 
+def _indirect_zero_wrapper(source, clean, name, params_open, params_close, opening, end, asm):
+    """A straight-line indirect call consumes entry a0 and sets a1 in its delay slot."""
+    ops = [(op, re.sub(r'\s+', '', args)) for op, args in _instructions(asm)]
+    if len(ops) != 9:
+        return None
+    high, load, frame, save, call, delay, restore, ret, finish = ops
+    address = re.fullmatch(rf'(\$[vt]\d),%hi\(({IDENT})\)', high[1])
+    if not address or high[0] != 'lui':
+        return None
+    reg, symbol = address.groups()
+    if load != ('lw', f'{reg},%lo({symbol})({reg})') or call != ('jalr', reg):
+        return None
+    if (not re.fullmatch(r'\$sp,\$sp,-(?:0x[\da-fA-F]+|\d+)', frame[1])
+            or frame[0] != 'addiu' or finish != ('addiu', frame[1].replace('-', ''))
+            or not re.fullmatch(r'\$ra,(?:0x[\da-fA-F]+|\d+)\(\$sp\)', save[1])
+            or save[0] != 'sw' or restore != ('lw', save[1]) or ret != ('jr', '$ra')
+            or delay not in (('addu', '$a1,$zero,$zero'), ('or', '$a1,$zero,$zero'), ('move', '$a1,$zero'))):
+        return None
+    body = re.fullmatch(rf'\s*(?P<call>{IDENT})\s*\(\s*(?P<zero>0)\s*\)\s*;\s*', clean[opening + 1:end - 1])
+    if not body or body['call'] == name:
+        return None
+    callback = re.escape(body['call'])
+    declarations = list(re.finditer(
+        rf'(?m)^[ \t]*extern\s+{IDENT}\s*\(\s*\*\s*{callback}\s*\)\s*\(\s*(?P<type>{IDENT})\s*\)\s*;',
+        clean[:params_open]))
+    if len(declarations) != 1 or declarations[0]['type'] == 'void' or re.search(
+            rf'(?m)^\s*#\s*define\s+(?:{callback}|arg0|s32)\b', clean):
+        return None
+    proto = declarations[0].start('type')
+    literal = opening + 1 + body.start('zero')
+    return edit(source, [(params_open + 1, params_close - 1, 's32 arg0'),
+                         (proto, proto, 's32, '), (literal, literal, 'arg0, ')])
+
+
 def variants(source, name, asm):
     span = find(source, name)
     if not span:
@@ -45,6 +81,9 @@ def variants(source, name, asm):
     params_open = clean.rfind('(', span[0], opening)
     params_close = close(clean, params_open)
     params = [p.strip() for p in m2cfix._split_top_level(source[params_open + 1:params_close - 1])]
+    if params == ['void'] or not any(params):
+        candidate = _indirect_zero_wrapper(source, clean, name, params_open, params_close, opening, end, asm)
+        return [(FAMILY, candidate)] if candidate else []
     first = re.search(r'\barg(\d+)\s*$', params[0]) if params else None
     if not first or not 0 < int(first[1]) <= 3:
         return []
