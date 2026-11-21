@@ -38,3 +38,9 @@ def test_float_grid_requires_independent_local_values_and_target_evidence():
     assert not variants(SOURCE.replace('float b = y + xy;', 'float b = compute();'), 'f', ROWS)
     assert not variants(SOURCE.replace('grid[2][2] = xy;', 'grid[2][2] = grid[1][1];'), 'f', ROWS)
     assert not variants(SOURCE.replace('grid[2][2]', 'grid[2][0]'), 'f', ROWS)
+
+
+def test_float_grid_retries_products_after_stores_align():
+    [(_, normalized), (_, exact_shape)] = variants(SOURCE, 'f', ROWS)
+    registers = [('r', 'mul.s $f2, $f4, $f6', 'mul.s $f2, $f6, $f4')]
+    assert variants(normalized, 'f', registers) == [('measured_float_grid_stores', exact_shape)]

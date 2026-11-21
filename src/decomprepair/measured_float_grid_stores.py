@@ -12,7 +12,7 @@ TERM = rf'(?:{FLOAT_LITERAL}|{IDENT})'
 PURE = rf'{TERM}(?:\s*[+*\-]\s*{TERM})?'
 STORE = re.compile(
     rf'(?m)^(?P<indent>[ \t]*)(?P<base>{IDENT})\s*\[\s*(?P<row>[0-2])\s*\]'
-    rf'\s*\[\s*(?P<col>[0-2])\s*\]\s*=\s*(?P<expr>{PURE})\s*;[ \t]*$'
+    r'\s*\[\s*(?P<col>[0-2])\s*\]\s*=\s*(?P<expr>[^;{}\n]+)\s*;[ \t]*$'
 )
 DECL = re.compile(
     rf'(?m)^[ \t]*(?:register[ \t]+)?{FLOAT}[ \t]+(?P<name>{IDENT})\s*=\s*(?P<rhs>[^;\n]+);[ \t]*\n'
@@ -50,6 +50,8 @@ def _grid(part, name):
 
 
 def _normalize(source, part, stores):
+    if any(not re.fullmatch(PURE, m['expr']) for m in stores):
+        return None
     first = stores[0].start()
     prefix = part.clean[part.opening + 1:first]
     if DECL.sub('', PADDING.sub('', prefix)).strip():
@@ -89,22 +91,35 @@ def _normalize(source, part, stores):
     return edit(source, edits)
 
 
+def _products(source, part):
+    declarations = {m['name']: m for m in DECL.finditer(part.clean, part.opening + 1, part.end)}
+    result = []
+    for decl in declarations.values():
+        product = PRODUCT.fullmatch(decl['rhs'])
+        if product:
+            left, right = product['first'], product['second']
+            if (left != right and left in declarations and right in declarations
+                    and max(declarations[left].end(), declarations[right].end()) <= decl.start()):
+                result.append((FAMILY, edit(source, [(*decl.span('rhs'), f'{right} * {left}')])))
+    return result[:15]
+
+
 def variants(source, name, rows):
-    """Try row-major stores and repartition single-use float expression lifetimes."""
-    if '[' not in source or not _mismatched_float_stores(rows):
+    """Try store normalization and continue testing products after a better draft is saved."""
+    register_products = any(marker == 'r' and target.startswith('mul.s ') and candidate.startswith('mul.s ')
+                            for marker, target, candidate in rows)
+    store_offsets = _mismatched_float_stores(rows)
+    if '[' not in source or not (store_offsets or register_products):
         return []
     part = view(source, name)
     stores = _grid(part, name) if part else []
-    if not stores or (normal := _normalize(source, part, stores)) is None:
+    if not stores:
         return []
-    result = [(FAMILY, normal)]
-    new = view(normal, name)
-    declarations = {m['name']: m for m in DECL.finditer(new.clean, new.opening + 1, new.end)}
-    for decl in declarations.values():
-        product = PRODUCT.fullmatch(decl['rhs'])
-        if not product:
-            continue
-        left, right = product['first'], product['second']
-        if left != right and left in declarations and right in declarations:
-            result.append((FAMILY, edit(normal, [(*decl.span('rhs'), f'{right} * {left}')])))
-    return result[:16]
+    if store_offsets and (normal := _normalize(source, part, stores)) is not None:
+        return [(FAMILY, normal), *_products(normal, view(normal, name))]
+    # Once stores align, their inlined arithmetic identifies the follow-up
+    # shape. Restrict the operands to already-initialized ordinary float locals.
+    if (register_products and any('(' in m['expr'] for m in stores)
+            and all(re.fullmatch(r'[\w. +*()\-]+', m['expr']) for m in stores)):
+        return _products(source, part)
+    return []
