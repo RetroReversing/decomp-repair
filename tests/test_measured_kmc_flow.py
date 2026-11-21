@@ -161,3 +161,27 @@ def test_guarded_constant_stores_preserve_comparisons_and_the_shared_field():
     assert not variants(source.replace('24)', '28)'), 'f', '', rows)
     assert not variants(source.replace('s16 result;', 's16 result; use(&result);'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:2])
+
+
+def test_early_float_field_load_follows_the_child_pointer_read():
+    source = """void f(void *parent) {
+    void *child;
+    child = M2C_FIELD(parent, void **, 108);
+    M2C_FIELD(child, s16 *, 38) = 1;
+    M2C_FIELD(child, f32 *, 28) = (f32) (M2C_FIELD(parent, f32 *, 40) - 1.0f);
+}
+"""
+    read, sub = 'lwc1 $f0, 0x28($s0)', 'sub.s $f0, $f0, $f2'
+    rows = measured(['lw $v0, 0x6c($s0)'])
+    rows += [('o', read, ''), ('o', sub, '')]
+    rows += measured(['sh $v1, 0x26($v0)'])
+    rows += [('o', '', read), ('o', '', sub)]
+    rows += measured(['swc1 $f0, 0x1c($v0)'])
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_early_float_field_load'
+    assert 'f32 __repair_parent_float;' in fixed
+    assert '    __repair_parent_float = M2C_FIELD(parent, f32 *, 40);\n    M2C_FIELD(child, s16' in fixed
+    assert '(f32) (__repair_parent_float - 1.0f)' in fixed
+    assert not variants(source.replace('*, 40)', '*, 44)'), 'f', '', rows)
+    assert not variants(source.replace(' = 1;', ' = input();'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:-1] + measured(['swc1 $f0, 0x1c($a0)']))

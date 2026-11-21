@@ -112,7 +112,52 @@ def _guarded_constant_stores(source, name, rows):
         f'{indent}}}'))])
 
 
+def _early_float_load(source, name, header, rows):
+    """Stage the parent float immediately after loading the child pointer."""
+    changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
+    if len(changes) != 4:
+        return None
+    (read_at, read, gap1), (_, sub, gap2), (_, gap3, late_read), (_, gap4, late_sub) = changes
+    if read_at == 0 or any((gap1, gap2, gap3, gap4)) or (read, sub) != (late_read, late_sub):
+        return None
+    reg, slot = r'\$\w+', NUMBER
+    load = re.fullmatch(rf'lwc1 (?P<value>\$f\d+), (?P<offset>{slot})\((?P<base>{reg})\)', read)
+    if not load:
+        return None
+    value, base = re.escape(load['value']), re.escape(load['base'])
+    bind = re.fullmatch(rf'lw (?P<child>{reg}), (?P<offset>{slot})\({base}\)', rows[read_at - 1][1])
+    store_at = changes[-1][0] + 1
+    if (not bind or store_at >= len(rows) or not re.fullmatch(rf'sub\.s {value}, {value}, \$f\d+', sub)):
+        return None
+    out = re.fullmatch(rf'swc1 {value}, ({slot})\({re.escape(bind["child"])}\)', rows[store_at][1])
+    if (not out or bind['child'] == load['base'] or not (part := view(source, name))
+            or '__repair_parent_float' in source + header):
+        return None
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]+)(?P<child>{IDENT}) = M2C_FIELD\((?P<parent>{IDENT}), void \*\*, (?P<link>{slot})\);\n'
+        rf'(?P<stores>(?:(?P=indent)M2C_FIELD\((?:(?P=parent)|(?P=child)), s(?:8|16|32) \*, {slot}\)'
+        rf' = (?:{slot}|{IDENT});\n)+)'
+        rf'(?P=indent)M2C_FIELD\((?P=child), f32 \*, (?P<out>{slot})\) = \(f32\) '
+        rf'\((?P<read>M2C_FIELD\((?P=parent), f32 \*, (?P<in>{slot})\)) - \d+(?:\.\d+)?[fF]\);')
+    hits = [hit for hit in pattern.finditer(part.clean, part.opening + 1, part.end)
+            if tuple(integer(hit[key]) for key in ('link', 'out', 'in')) ==
+            (integer(bind['offset']), integer(out[1]), integer(load['offset']))]
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    if re.search(r'/[*/]', source[hit.start():hit.end()]):
+        return None
+    local = '__repair_parent_float'
+    return edit(source, [
+        (part.opening + 1, part.opening + 1, f'\n    f32 {local};'),
+        (hit.start('stores'), hit.start('stores'), f'{hit["indent"]}{local} = {hit["read"]};\n'),
+        (*hit.span('read'), local),
+    ])
+
+
 def variants(source, name, header, rows):
+    if candidate := _early_float_load(source, name, header, rows):
+        return [('measured_early_float_field_load', candidate)]
     if candidate := _guarded_constant_stores(source, name, rows):
         return [('guarded_constant_stores', candidate)]
     if not 23 <= len(rows) <= 125:
