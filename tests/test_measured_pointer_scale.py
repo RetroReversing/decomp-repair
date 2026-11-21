@@ -190,3 +190,25 @@ int scan(int index, int other) {
     assert not variants(source, 'scan', 'extern int table;', access * 2)
     assert not variants(source.replace('return ', 'observe(&table); return '), 'scan', '', access * 2)
     assert not variants(source, 'scan', '', access + [(' ', 'nop', 'nop')] * 2)
+
+
+def test_halfword_byte_cursor_uses_the_measured_back_edge_step():
+    source = """int f(void *record) {
+    char *cursor;
+    cursor = (*(u16 **)((char *)record + 4));
+    do {
+        use(*(u16 *)cursor);
+        cursor += 3;
+    } while (again());
+}"""
+    rows = [
+        (' ', 'move $s4, $a0', 'move $s4, $a0'),
+        (' ', 'lhu $a0, ($s4)', 'lhu $a0, ($s4)'),
+        ('|', 'bnez $v0, 4 [bytes 1440fffe]', 'bnez $v0, 4 [bytes 1440fffd]'),
+        ('i', 'addiu $s4, $s4, 6', 'addiu $s4, $s4, 3'),
+    ]
+    [(family, candidate)] = variants(source, 'f', '', rows)
+    assert family == 'measured_halfword_byte_cursor'
+    assert 'cursor += 6;' in candidate
+    assert not variants(source.replace('*(u16 *)cursor', '*cursor'), 'f', '', rows)
+    assert not variants(source, 'f', '', [rows[0], (' ', 'lbu $a0, ($s4)', 'lbu $a0, ($s4)'), *rows[2:]])

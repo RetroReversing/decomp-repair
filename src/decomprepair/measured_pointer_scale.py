@@ -333,7 +333,48 @@ def _loop_step(source, name, rows):
     return edit(source, updates) if len(updates) == 1 else None
 
 
+def _under_scaled_halfword_cursor(source, name, rows):
+    """A byte cursor advances by an element count inside a halfword-reading loop."""
+    if 'char *' not in source or '+=' not in source:
+        return None
+    advances = []
+    target = []
+    previous = ''
+    step = re.compile(rf'addiu (\$\w+), \1, ({NUMBER})')
+    back_edge = re.compile(rf'bnez \$\w+, ({NUMBER})(?: \[bytes [0-9a-f]+\])?')
+    for mark, wanted, current in rows:
+        if not wanted:
+            continue
+        if (mark != ' ' and (a := step.fullmatch(wanted)) and (b := step.fullmatch(current))
+                and a[1] == b[1] and a[1] not in ('$sp', '$zero')
+                and 0 < integer(b[2]) <= 32 and integer(a[2]) == 2 * integer(b[2])
+                and (branch := back_edge.fullmatch(previous))):
+            start, remainder = divmod(integer(branch[1]), 4)
+            halfword = re.compile(rf'lh[u]? \$\w+, (?:0|0x0)?\({re.escape(a[1])}\)')
+            if not remainder and start < len(target) - 1 and any(halfword.fullmatch(op) for op in target[start:]):
+                advances.append((integer(b[2]), integer(a[2])))
+        target.append(wanted)
+        previous = wanted
+    if len(advances) != 1 or not (part := view(source, name)):
+        return None
+    current, wanted = advances[0]
+    edits = []
+    for hit in re.finditer(rf'(?m)^\s*char\s*\*\s*({IDENT})\s*;', part.body):
+        pointer = hit[1]
+        assignment = rf'\b{pointer}\s*=\s*\(*\s*\*\s*\([su]16\s*\*\*\)'
+        use = rf'\*\s*\([su]16\s*\*\)\s*{pointer}\b'
+        if not re.search(assignment, part.body) or not re.search(use, part.body):
+            continue
+        for update in re.finditer(rf'(?m)^\s*{pointer}\s*\+=\s*({NUMBER})\s*;', part.body):
+            if integer(update[1]) == current:
+                offset = part.opening + 1
+                edits.append((offset + update.start(1), offset + update.end(1), str(wanted)))
+    return edit(source, edits) if len(edits) == 1 else None
+
+
 def variants(source, name, header, rows):
+    if candidate := _under_scaled_halfword_cursor(source, name, rows):
+        return [('measured_halfword_byte_cursor', candidate)]
     if ('+=' in source or '-=' in source) and (candidate := _loop_step(source, name, rows)):
         return [('measured_pointer_step', candidate)]
     if '* 2' in source and 'u16 *' in source and (candidate := _halfword_scans(source, name, rows)):
