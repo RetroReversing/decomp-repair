@@ -4,7 +4,7 @@ import re
 import struct
 
 from . import goto_structure_repairs
-from .integer_repair_support import IDENT, NUMBER, edit, integer, view
+from .integer_repair_support import IDENT, NUMBER, edit, integer, plain_repair_view, view
 from .mips import normalized_integer_lines
 from .pattern_repairs import close
 
@@ -362,6 +362,51 @@ def _byte_guard_return(source, name, header, rows):
     ))])
 
 
+_FLOAT_RANGES = re.compile(
+    rf'\b(?P<x>{IDENT})\s*=\s*(?P<xmax>{IDENT})\s*-\s*(?P<xmin>{IDENT})\s*;\s*'
+    rf'(?P<y>{IDENT})\s*=\s*(?P<ymax>{IDENT})\s*-\s*(?P<ymin>{IDENT})\s*;\s*'
+    rf'if\s*\(\s*(?P=y)\s*<\s*(?P=x)\s*\)\s*\{{\s*'
+    rf'do\s*\{{\s*(?P<out>{IDENT})\s*=\s*(?P=x)\s*;\s*\}}\s*while\s*\(0\)\s*;\s*\}}\s*'
+    rf'else\s*\{{\s*(?P=out)\s*=\s*(?P=y)\s*;\s*\}}'
+)
+
+
+def _in_place_float_ranges(source, name, header, rows):
+    """Reuse the two extrema locals when their computed widths feed one store."""
+    changed = [(target, current) for mark, target, current in rows if mark != ' ']
+    if len(changed) != 3 or any(mark not in (' ', 'r') for mark, _, _ in rows):
+        return None
+    target, current = zip(*changed)
+    sub = re.fullmatch(r'sub\.s (\$f\d+), \1, (\$f\d+)', target[0])
+    old = re.fullmatch(r'sub\.s (\$f\d+), (\$f\d+), (\$f\d+)', current[0])
+    if not sub or not old or sub.groups() != old.groups()[1:] or old[1] == sub[1]:
+        return None
+    comparison = re.fullmatch(r'c\.lt\.s (\$f\d+), ' + re.escape(sub[1]), target[1])
+    store = re.fullmatch(rf'swc1 {re.escape(sub[1])}, (?P<out>%lo\((?P<symbol>{IDENT})\)\(\$\w+\))', target[2])
+    if (not comparison or not store or current[1] != f'c.lt.s {comparison[1]}, {old[1]}'
+            or current[2] != f'swc1 {old[1]}, {store["out"]}'):
+        return None
+    part = plain_repair_view(source, name, header)
+    if not part or not (hit := _FLOAT_RANGES.search(part.clean, part.opening + 1, part.end)):
+        return None
+    names = [hit[key] for key in ('x', 'y', 'xmax', 'ymax', 'xmin', 'ymin', 'out')]
+    if len(set(names)) != len(names) or hit['out'] != store['symbol']:
+        return None
+    if re.search(r'/[*/]', source[hit.start():hit.end()]):
+        return None
+    prefix = part.clean[part.opening + 1:hit.start()]
+    suffix = part.clean[hit.end():part.end]
+    for local in names[:6]:
+        if (not re.search(rf'\bf32\s+{local}\s*;', prefix)
+                or re.search(rf'&\s*{local}\b', prefix) or re.search(rf'\b{local}\b', suffix)):
+            return None
+    _, _, xmax, ymax, xmin, ymin, out = names
+    return edit(source, [(*hit.span(), (
+        f'{xmax} -= {xmin};\n  {ymax} -= {ymin};\n  if ({ymax} < {xmax}) '
+        f'{{ {out} = {xmax}; }} else {{ {out} = {ymax}; }}'
+    ))])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -377,6 +422,8 @@ def variants(source, name, header, rows):
         return [('guarded_constant_stores', candidate)]
     if candidate := _byte_guard_return(source, name, header, rows):
         return [('measured_byte_guard_return', candidate)]
+    if candidate := _in_place_float_ranges(source, name, header, rows):
+        return [('measured_in_place_float_ranges', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
