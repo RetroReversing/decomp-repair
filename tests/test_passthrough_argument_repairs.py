@@ -618,3 +618,21 @@ def test_float_call_forwards_entry_argument_before_stack_output():
     assert not p.shifted_call_variants(source.replace('s32 item', 'f32 item'), 'f', '', asm, rows)
     assert p.shifted_call_variants(source, 'f', 'void f(s32 item);', asm, rows)
     assert not p.shifted_call_variants(implicit, 'f', 'void f(void);', asm, rows)
+
+
+def test_forward_second_entry_argument_when_float_literal_moves_to_third_slot():
+    source = ('typedef s32 M2C_UNK;\nM2C_UNK show(M2C_UNK, f32); /* extern */\n'
+              'void f(void *p, M2C_UNK target) { show(0, 0.5f); }')
+    target = ['sw $ra, 0x14($sp)', 'lui $a2, 0x3f00', 'lw $s1, 0x20($s0)',
+              'jal show', 'move $a0, $zero', 'jr $ra', 'nop']
+    rows = [('r', op, op.replace('$a2', '$a1')) if i == 1 else (' ', op, op)
+            for i, op in enumerate(target)]
+    raw = '\n'.join(target).replace('jal show', 'jal func_80002000')
+    resolve = {'show': 0x80002000}.get
+    header = 'typedef int s32;'
+    [(_, fixed)] = p.shifted_call_variants(source, 'f', header, raw, rows, resolve=resolve)
+    assert 'show(M2C_UNK, M2C_UNK, f32)' in fixed
+    assert 'show(0, target, 0.5f)' in fixed
+    assert not p.shifted_call_variants(source, 'f', header, raw, rows)
+    assert not p.shifted_call_variants(source, 'f', header, 'move $a1, $zero\n' + raw, rows, resolve=resolve)
+    assert not p.shifted_call_variants(source.replace('0.5f', '1.0f'), 'f', header, raw, rows, resolve=resolve)
