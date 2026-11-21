@@ -7,7 +7,10 @@ This proposes the pairs. It never compiles or judges: the caller scores each can
 
 Only reorderings that cannot change what the function does are proposed. A statement is movable when it is a plain
 expression statement directly inside a block; loops, conditionals, labels, gotos, declarations and returns are
-barriers a statement never crosses, and each block's statements are their own run. Two statements swap past each
+barriers a statement never crosses, and each block's statements are their own run. An initialised declaration
+(`f32 c = x * 2.0f;`) is a barrier too, so its value could never move: `split_declarations` rewrites a block's
+leading `T name = value;` lines as `T name;` plus `name = value;` right after the block's last declaration (the
+same order, so the same evaluation), and the moves are proposed on that source as well. Two statements swap past each
 other only when neither writes a name the other touches, and the memory rules hold: a call, or a write through a
 pointer, array or address, never crosses a statement that reads or writes anything but a local, and a statement
 that names a macro stays where it is. Functions with `volatile` or `asm` get nothing.
@@ -308,8 +311,81 @@ def _render(source, run, order):
     return run[0].start, run[-1].end, out
 
 
+DECLARATOR = re.compile(rf'((?:(?:register|unsigned|signed)\s+)*{IDENT}\b(?:\s+{IDENT}\b)?\s*\**\s*)\b({IDENT})\s*=(?!=)\s*(.*)', re.S)
+
+
+def split_declarations(source, name):
+    """The function with each block's leading `T name = value;` declarations split into a declaration and an
+    assignment placed after the block's declarations, or None when it has none to split.
+
+    Only single scalar declarators are split (no arrays, braces, commas, static or const), and nothing is split
+    when a value names a variable declared later in the same block (it would then read the new one).
+    """
+    part = view(source, name)
+    if not part:
+        return None
+    clean = part.clean
+    finish = close(clean, part.opening, '{', '}')
+    if finish is None:
+        return None
+    edits = []
+    for brace in [part.opening] + [m.start() for m in re.finditer(r'\{', clean[part.opening + 1:finish])]:
+        brace = brace if brace == part.opening else brace + part.opening + 1
+        stop = close(clean, brace, '{', '}')
+        if stop is None:
+            return None
+        at, decls = brace + 1, []
+        while True:
+            at = _skip_space(clean, at, stop - 1)
+            end = _statement_end(clean, at, stop - 1) if at < stop - 1 else None
+            text = clean[at:end - 1] if end else ''
+            word = re.match(IDENT, text)
+            if not end or not word or word[0] in KEYWORDS or not _is_declaration(text):
+                break
+            decls.append((at, end, text))
+            at = end
+        pieces, names = [], [re.findall(IDENT, re.sub(r'=.*', '', t, flags=re.S))[-1:] for _, _, t in decls]
+        for k, (start, end, text) in enumerate(decls):
+            hit = DECLARATOR.fullmatch(text.rstrip())
+            if (not hit or re.search(r'\b(?:static|const|extern)\b|[{\[,]', hit[1] + hit[3])
+                    or re.search(r'[{]|,(?![^(]*\))', hit[3])):
+                continue
+            later = {n for ns in names[k + 1:] for n in ns}
+            if later & set(re.findall(IDENT, hit[3])):
+                continue
+            pieces.append(f'{hit[2]} = {source[start + hit.start(3):end - 1].strip()};')
+            edits.append((start, end, f'{hit[1].rstrip()} {hit[2]};'.replace('* ', '*')))
+        if pieces:
+            last = decls[-1][1]
+            indent = re.search(r'[ \t]*$', source[:decls[-1][0]])[0]
+            edits.append((last, last, ''.join(f'\n{indent}{p}' for p in pieces)))
+    if not edits:
+        return None
+    edits.sort(key=lambda e: (e[0], e[1]))
+    return edit(source, edits)
+
+
+def _sources(source, name):
+    split = split_declarations(source, name)
+    return [source] if split is None else [source, split]
+
+
 def single_moves(source, name, header='', limit=10 ** 6):
-    """Every candidate that relocates one statement (what a one-move search already tries)."""
+    """Every candidate that relocates one statement (what a one-move search already tries), including the moves
+    of a split declaration's value (`split_declarations`)."""
+    found = []
+    for at, origin in enumerate(_sources(source, name)):
+        if at:
+            found.append(origin)
+        for candidate in _single_moves(origin, name, header, limit - len(found)):
+            if candidate != source and candidate not in found:
+                found.append(candidate)
+        if len(found) >= limit:
+            return found[:limit]
+    return found
+
+
+def _single_moves(source, name, header, limit):
     runs = _analysis(source, name, header)
     found = []
     for run in runs or ():
@@ -329,10 +405,19 @@ def variants(source, name, header='', limit=LIMIT, seed=0, exclude=()):
     movable statements has every pair enumerated; a long straight run is sampled, favouring statements that write a
     local (a counter or a held constant: what shapes register allocation).
     """
-    runs = _analysis(source, name, header)
-    if not runs:
-        return []
     seen = {source, *exclude, *single_moves(source, name, header)}
+    found = []
+    for origin in _sources(source, name):
+        found += _variants(origin, name, header, limit - len(found), seed, seen)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def _variants(source, name, header, limit, seed, seen):
+    runs = _analysis(source, name, header)
+    if not runs or limit <= 0:
+        return []
     rng = random.Random(seed)
     pool = []
     for index, run in enumerate(runs):
