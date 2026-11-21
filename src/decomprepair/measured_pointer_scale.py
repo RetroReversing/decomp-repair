@@ -9,7 +9,7 @@ WRITE_SUFFIX = re.compile(r'\s*(?:=(?!=)|(?:[-+*/%&|^]|<<|>>)=|\+\+|--)')
 SHIFT = re.compile(rf'sll\s+(\$\w+),\s*(\$\w+),\s*({NUMBER})')
 
 
-def _word_shift(rows):
+def _word_shifts(rows):
     hits = []
     for row, (mark, target, current) in enumerate(rows):
         if mark == ' ':
@@ -19,7 +19,7 @@ def _word_shift(rows):
             amount = integer(wanted[3])
             if 1 <= amount <= 29 and integer(staged[3]) == amount + 2:
                 hits.append((row, wanted[1], amount))
-    return hits[0] if len(hits) == 1 else None
+    return hits
 
 
 def _float_table(part, name, header, rows):
@@ -79,9 +79,9 @@ def _stage_call(part, rows):
     return None
 
 
-def _scale_bases(rows, row, register):
+def _scale_bases(rows, row, register, side=1):
     """Find word loads using the shifted register and a corroborating table relocation."""
-    code = [target for _, target, _ in rows]
+    code = [entry[side] for entry in rows]
     index = re.escape(register)
     high = re.compile(rf'lui (?P<base>\$\w+), %hi\((?P<name>{IDENT})\)')
     result = set()
@@ -146,6 +146,42 @@ def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=Non
             matches.append([(*declaration.span(), f'extern {kind} {table}[];'),
                             (deref.start(), end, f'{table}[{index}]')])
     return edit(part.source, matches[0]) if len(matches) == 1 else None
+
+
+def _repeated_word_table(part, header, rows, shifts):
+    """Require two measured 4-to-16-byte accesses to the same relocated word table."""
+    tables = {}
+    for row, register, amount in shifts:
+        if amount != 2:
+            continue
+        shared = _scale_bases(rows, row, register) & _scale_bases(rows, row, register, side=2)
+        for table in shared:
+            tables[table] = tables.get(table, 0) + 1
+    candidates = []
+    for table, count in sorted(tables.items()):
+        if count < 2:
+            continue
+        refs = []
+        prefix = re.compile(rf'\*\(\s*&{re.escape(table)}\s*\+\s*\(')
+        for access in prefix.finditer(part.clean, part.opening + 1, part.end):
+            end = close(part.clean, access.end() - 1)
+            if not end:
+                continue
+            index = re.fullmatch(r'(.+?)\s*\*\s*(?:4|0x4)\s*', part.clean[access.end():end - 1], re.S)
+            outer_close = re.match(r'\s*\)', part.clean[end:part.end])
+            if not index or not outer_close or re.search(r'[;{}=]|\+\+|--', index[1]):
+                continue
+            stop = end + outer_close.end()
+            if WRITE_SUFFIX.match(part.clean, stop) or re.search(r'/[*/]', part.source[access.start():stop]):
+                continue
+            refs.append((access.start(), stop, f'{table}[{index[1]}]'))
+        if len(refs) < 2 or not (declaration := _read_declaration(part, header, table, len(refs))):
+            continue
+        replacement = (*declaration.span(), f'extern M2C_UNK {table}[];')
+        candidates.append(('measured_repeated_word_table', edit(part.source, [replacement, *refs])))
+        if len(candidates) == 2:
+            break
+    return candidates
 
 
 def _relocated_scaled_load(part, header, rows, row, register, amount):
@@ -302,12 +338,14 @@ def variants(source, name, header, rows):
         return [('measured_pointer_step', candidate)]
     if '* 2' in source and 'u16 *' in source and (candidate := _halfword_scans(source, name, rows)):
         return [('measured_halfword_scan_scale', candidate)]
-    if 'extern M2C_UNK ' not in source or not (shift := _word_shift(rows)):
+    if 'extern M2C_UNK ' not in source or not (shifts := _word_shifts(rows)):
         return []
     part = view(source, name)
     if part is None:
         return []
-    row, register, amount = shift
+    if len(shifts) > 1:
+        return _repeated_word_table(part, header, rows, shifts)
+    row, register, amount = shifts[0]
     if sum(mark != ' ' for mark, _, _ in rows) == 1 and amount >= 2 and (bases := _scale_bases(rows, row, register)):
         candidate = _inline_scale(part, header, bases) if amount == 2 else _shared_shift(part, header, bases, amount)
         if candidate:
