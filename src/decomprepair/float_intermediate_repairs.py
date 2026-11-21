@@ -163,10 +163,55 @@ def _stage_subtracted_product(source, name, rows):
     return proposals if len(proposals) == 1 else []
 
 
+def _stage_comparison_load(source, name, rows):
+    """Stage the left comparison operand when its load appears first in the target."""
+    changed = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changed) != 2 or changed[1] != changed[0] + 1 or changed[1] + 1 >= len(rows):
+        return []
+    first, second = changed
+    target = [rows[i][1] for i in changed]
+    if [rows[i][2] for i in changed] != target[::-1]:
+        return []
+    load = re.compile(rf'lwc1 ({F32_REG}), ({NUMBER})?\((\$\w+)\)')
+    left, right = (load.fullmatch(op) for op in target)
+    if not left or not right or left[3] == right[3]:
+        return []
+    comparison = f'c.lt.s {left[1]}, {right[1]}'
+    if tuple(rows[second + 1]) != (' ', comparison, comparison) or not (part := view(source, name)):
+        return []
+    if re.search(r'\b(?:volatile|asm|__asm__|goto)\b', part.body):
+        return []
+    def field(side):
+        return rf'M2C_FIELD\((?P<{side}_base>{IDENT}), f32 \*, (?P<{side}_offset>{NUMBER})\)'
+
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<local>{IDENT}) = {field("rhs")};\s*'
+        rf'if \((?P<left>{field("lhs")}) < (?P=local)\) \{{'
+    )
+    edits = []
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
+        if block_path(part, hit.start()) != [part.opening] or part.clean[:hit.start()].rstrip()[-1:] not in ';}':
+            continue
+        if hit['rhs_base'] == hit['lhs_base'] or (integer(hit['lhs_offset']), integer(hit['rhs_offset'])) != (
+            integer(left[2] or '0'), integer(right[2] or '0')
+        ):
+            continue
+        names, _ = _unused_float_locals(part, hit.start())
+        if hit['local'] not in names or source[hit.start():hit.end()] != hit[0]:
+            continue
+        temporary = fresh(source, '', 'repair_compare_left')
+        edits.append([
+            (part.opening + 1, part.opening + 1, f'\n    f32 {temporary};'),
+            (hit.start(), hit.start(), f'{hit["indent"]}{temporary} = {hit["left"]};\n'),
+            (*hit.span('left'), temporary),
+        ])
+    return [('staged_float_comparison_load', edit(source, edits[0]))] if len(edits) == 1 else []
+
+
 def repeated_products(source, name, rows):
     """Stage the same interpolation across conversions without reordering products."""
     if _multiply_conversion_sites(rows) < 2 or not (part := view(source, name)):
-        return _stage_subtracted_product(source, name, rows)
+        return _stage_subtracted_product(source, name, rows) or _stage_comparison_load(source, name, rows)
     if re.search(r'\b(?:goto|for|while|do|asm|__asm__)\b', part.body):
         return []
     # Anchor at a statement so the added assignment never escapes an unbraced arm.

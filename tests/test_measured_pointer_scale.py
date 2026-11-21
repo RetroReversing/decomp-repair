@@ -426,3 +426,39 @@ def test_byte_table_recovers_load_width_and_stride_with_matched_byte_store():
     assert '*dst = (u8) table[(i & 255) * 24];' in fixed
     assert not variants(source.replace('(u8) ', ''), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:-1])
+
+
+def test_shared_word_offset_forms_preloaded_cursor_and_separate_table_reads():
+    source = '''extern M2C_UNK first;
+extern M2C_UNK second;
+void f(void) {
+    s32 offset;
+    s32 *cursor;
+    u16 i;
+    for (i = 0; i < 2; i++) {
+        offset = i * 4;
+        cursor = offset + &first;
+        if (*cursor) consume(*(offset + &second));
+    }
+}
+'''
+    rows = [(' ', op, op) for op in ('lui $fp, %hi(first)', 'addiu $fp, $fp, %lo(first)',
+                                      'andi $v0, $s2, 0xffff')]
+    rows += [('i', 'sll $s0, $v0, 2', 'sll $s0, $v0, 4')]
+    rows += [(' ', op, op) for op in ('addu $s1, $s0, $fp', 'lw $v0, ($s1)')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_preloaded_word_offset']
+    assert 'offset = i;' in fixed
+    assert not variants(source.replace('if (*cursor)', 'if (offset && *cursor)'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[1:])
+
+
+def test_call_pointer_scale_uses_a_preloaded_base_and_unchanged_other_argument():
+    source = 'extern M2C_UNK blocks;\nvoid f(s32 i) { send((i * 12) + &blocks, 11); }'
+    rows = [(' ', op, op) for op in ('lui $s2, %hi(blocks)', 'addiu $s2, $s2, %lo(blocks)',
+                                      'addu $a0, $a0, $v0')]
+    rows += [('i', 'sll $a0, $a0, 2', 'sll $a0, $a0, 4')]
+    rows += [(' ', op, op) for op in ('addu $a0, $a0, $s2', 'jal send', 'addiu $a1, $zero, 11')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_scaled_global_call']
+    assert 'send((i * 12) + (u8 *)&blocks, 11)' in fixed
+    overwrites = (' ', 'addiu $a0, $zero, 11', 'addiu $a0, $zero, 11')
+    assert not variants(source, 'f', '', rows[:-1] + [overwrites])
