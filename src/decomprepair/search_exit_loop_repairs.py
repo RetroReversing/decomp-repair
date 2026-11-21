@@ -197,3 +197,83 @@ def _break_search(source, clean, opening, end):
                 + f'{indent}return {raw("left").strip()};\n')
         result.append((BREAK, source[:hit.start()] + loop + source[hit.end():]))
     return result
+
+
+SEARCH_SENTINEL = 'search_sentinel_byte_guard'
+
+
+def _sentinel_evidence(rows):
+    for first, second in zip(rows, rows[1:]):
+        sentinel = re.fullmatch(r'addiu (\$a[0-3]), \$zero, -1', first[1])
+        if sentinel and not first[2] and second[1] == second[2]:
+            if re.fullmatch(rf'move \$s[0-7], {re.escape(sentinel[1])}', second[1]):
+                return True
+    return False
+
+
+def _byte_test_evidence(rows):
+    for load, comparison, shift, mask in zip(rows, rows[1:], rows[2:], rows[3:]):
+        read = re.match(r'lbu (\$\w+), ', load[1])
+        if not read or load[1] != load[2]:
+            continue
+        constant = re.fullmatch(r'addiu (\$\w+), \$zero, 2', comparison[1])
+        reg = read[1]
+        if (constant and comparison[2] == f'addiu {constant[1]}, $zero, 4'
+                and shift[1] == '' and shift[2] == f'sll {reg}, {reg}, 1'
+                and mask[1] == mask[2] == f'andi {reg}, {reg}, 0xff'):
+            return True
+    return False
+
+
+def sentinel_byte_guard_variants(source, name, rows):
+    """Try the missing no-hit sentinel and the simpler truncated byte test together."""
+    from .integer_repair_support import edit, locals_for, view
+    from .loaded_byte_repairs import declarators
+
+    if not _sentinel_evidence(rows) or not _byte_test_evidence(rows) or not (part := view(source, name)):
+        return []
+    parameters = part.clean[part.clean.rfind('(', 0, part.opening):part.opening]
+    tail = re.compile(
+        rf'\s*while\s*\(\s*(?P<index>{IDENT})\s*<\s*\d+[uU]\s*\)\s*;'
+        rf'(?P<copy>\s*(?P<key>{IDENT})\s*=\s*(?P=index)\s*;)'
+        rf'\s*(?P=index)\s*=\s*-1[uU]\s*;\s*(?P<label>{IDENT})\s*:'
+        rf'(?P<indent>\n[ \t]*)if\s*\(\s*(?P=key)\s*!=\s*-1\s*\)\s*{{'
+    )
+    test = re.compile(
+        rf'\(u8\)\s*\(\s*(?P<read>\*\(u8\s*\*\)\s*\(\(u8\s*\*\)\s*&{IDENT}\s*\+'
+        rf'\s*\(\s*(?P<key>{IDENT})\s*\*\s*(?:0x[0-9a-fA-F]+|\d+)\s*\)\s*\))'
+        rf'\s*<<\s*1\s*\)\s*==\s*4\b'
+    )
+    unsigned = {decl['name'] for decl in locals_for(part) if decl['type'] == 'u32'}
+    result = []
+    for loop in re.finditer(r'\bdo\s*{', part.body):
+        start = part.opening + 1 + loop.end()
+        end = close(part.clean, start - 1, '{', '}')
+        if end is None or not (exit_ := tail.match(part.clean, end, part.end)):
+            continue
+        key, index, label = (exit_[group] for group in ('key', 'index', 'label'))
+        if (index not in unsigned or not re.search(rf'\bs32\s+{key}\b', parameters)
+                or len(declarators(part.clean, key)) != 1
+                or re.search(rf'&\s*\(*\s*(?:{key}|{index})\b', part.body)):
+            continue
+        if len(re.findall(rf'\bgoto\s+{label}\s*;', part.body)) != 1:
+            continue
+        copy = re.search(rf'(?<={{)(?P<copy>\s*{key}\s*=\s*{index}\s*;)\s*goto\s+{label}\s*;',
+                         part.clean[start:end])
+        body_end = close(part.clean, exit_.end() - 1, '{', '}')
+        if not copy or body_end is None:
+            continue
+        guards = [hit for hit in test.finditer(part.clean, exit_.end(), body_end) if hit['key'] == key]
+        if len(guards) != 1:
+            continue
+        guard = guards[0]
+        new_test = f'({source[guard.start("read"):guard.end("read")]} & 0x7f) == 2'
+        edits = [
+            (start + copy.start('copy'), start + copy.end('copy'), ''),
+            (*exit_.span('copy'), ''),
+            (exit_.start('indent'), exit_.start('indent'), f'{exit_["indent"]}{key} = {index};'),
+            (*guard.span(), new_test),
+        ]
+        if not any(re.search(r'/[*/]', source[a:b]) for a, b, _ in edits):
+            result.append((SEARCH_SENTINEL, edit(source, edits)))
+    return result[:2]
