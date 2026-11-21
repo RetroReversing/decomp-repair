@@ -125,3 +125,36 @@ void f(void *obj) {
     assert 'if (M2C_FIELD(obj, s32 *, 8) != -1)' in fixed
     assert not variants(source.replace('s32 *, 8) != -1);', 's32 *, 12) != -1);'), 'f', diff)
     assert not variants(source, 'f', diff[:-2] + [same('bne $v0, $a2, 0xc'), same('nop')])
+
+
+def test_stage_mask_when_zero_argument_crosses_the_same_word_load():
+    from decomprepair.measured_memory_order import staged_field_masks
+
+    source = """
+#define FIELD(p,T,o) (*(T *)((u8 *)(p) + (o)))
+void f(void *obj) {
+    s32 word;
+    word = FIELD(obj,s32,0x28) & ~0xFC;
+    use(0, word);
+}
+"""
+    rows = [
+        ('o', '', 'move $a0, $zero'),
+        (' ', 'lw $v1, 0x28($s0)', 'lw $v1, 0x28($s0)'),
+        ('o', 'move $a0, $zero', ''),
+        (' ', 'addiu $v0, $zero, -0xfd', 'addiu $v0, $zero, -0xfd'),
+        (' ', 'and $v1, $v1, $v0', 'and $v1, $v1, $v0'),
+    ]
+    [(family, trial)] = staged_field_masks(source, 'f', rows)
+    assert family == 'staged_field_mask'
+    assert 'word = FIELD(obj,s32,0x28);\n    word &= ~0xFC;' in trial
+    assert not staged_field_masks(source.replace('0xFC', '0xFE'), 'f', rows)
+    assert not staged_field_masks(source.replace('s32 word', 's16 word'), 'f', rows)
+    assert not staged_field_masks(source.replace('    word =', '    if (obj)\n        word ='), 'f', rows)
+    assert not staged_field_masks(source.replace('*(T *)', '**(T **)'), 'f', rows)
+    assert not staged_field_masks(source, 'f', rows[:-1])
+    m2c = source.split('void f', 1)[1].replace('FIELD(obj,s32,', 'M2C_FIELD(obj,s32 *,')
+    [(family, _)] = staged_field_masks(
+        'void f' + m2c, 'f', rows, '#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))'
+    )
+    assert family == 'staged_field_mask'
