@@ -237,3 +237,49 @@ void f(s32 one, s32 two) {
     assert 'inspect(table[two]);' in fixed
     assert not variants(source, 'f', '', rows[:-1] + [same('lw $s0, %lo(table)($a0)')])
     assert not variants(source, 'f', '', rows[:-1] + [same('lw $a0, %lo(other)($a0)')])
+
+
+def test_measured_stride_in_halfword_return_keeps_odd_factor():
+    source = 'extern M2C_UNK slots;\ns32 f(s32 i) { return ((u16)*(&slots + (i * 12)) >> 7) & 1; }'
+    rows = [
+        ('i', 'sll $v0, $v0, 2', 'sll $v0, $v0, 4'),
+        ('i', 'lui $at, %hi(slots)', 'lui $at, %hi(other)'),
+        (' ', 'addu $at, $at, $v0', 'addu $at, $at, $v0'),
+        ('i', 'lhu $v0, %lo(slots)($at)', 'lhu $v0, %lo(other)($at)'),
+    ]
+    [(family, trial)] = variants(source, 'f', '', rows)
+    assert family == 'measured_relocated_array_scale'
+    assert 'extern u8 slots[];' in trial
+    assert '*(u16 *)(slots + i * 12)' in trial
+    assert not variants(source.replace('i * 12', 'i * 6'), 'f', '', rows)
+
+
+def test_measured_float_table_with_float_index_parameter():
+    source = 'extern M2C_UNK samples;\nf32 f(f32 x) { return *(&samples + (((s32) x & 0xfff) * 4)); }\n'
+    rows = [
+        ('i', 'sll $v0, $v0, 2', 'sll $v0, $v0, 4'),
+        (' ', 'lui $at, %hi(samples)', 'lui $at, %hi(samples)'),
+        (' ', 'addu $at, $at, $v0', 'addu $at, $at, $v0'),
+        ('o', '', 'lwc1 $f0, %lo(samples)($at)'),
+        (' ', 'jr $ra', 'jr $ra'),
+        ('o', 'lwc1 $f0, %lo(samples)($at)', 'cvt.s.w $f0, $f0'),
+    ]
+    [(family, trial)] = variants(source, 'f', '', rows)
+    assert family == 'measured_float_table_scale'
+    assert 'extern f32 samples[];' in trial
+    assert 'return samples[(s32)x & 0xfff];' in trial
+
+
+def test_measured_halfword_argument_with_displaced_byte_pointer():
+    source = 'void f(s32 n, u16 *packet) { work(n & 0xffff, packet + 4, *packet); }\n'
+    rows = [
+        (' ', 'lhu $a2, ($a1)', 'lhu $a2, ($a1)'),
+        (' ', 'andi $a0, $a0, 0xffff', 'andi $a0, $a0, 0xffff'),
+        (' ', 'jal work', 'jal work'),
+        ('i', 'addiu $a1, $a1, 4', 'addiu $a1, $a1, 8'),
+    ]
+    assert variants(source, 'f', '', rows) == [
+        ('measured_call_byte_offset', source.replace('packet + 4', '(u8 *)packet + 4'))
+    ]
+    assert not variants(source.replace('packet + 4', 'packet + 3'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[1:])
