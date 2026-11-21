@@ -177,3 +177,26 @@ lwc1 $f0, %lo(samples)($at)
     assert rewrite_float_table(source, 'sample', asm.replace('sll $a0, $a0, 2', 'sll $a0, $a0, 3')) is None
     assert rewrite_float_table(source, 'sample', asm.replace('lwc1 $f0', 'lw $v0')) is None
     assert rewrite_float_table(source, 'sample', asm, 'extern s32 samples;') is None
+
+
+def test_shared_numerator_retypes_only_measured_byte_offsets():
+    from decomprepair.kmc_cast_repairs import variants
+
+    source = """void f(void *p, s16 divisor) {
+    (*(s8 *)((char *)(p) + 4)) = 0xFF;
+    M2C_FIELD(p, s8 *, 5) = 255;
+    M2C_FIELD(p, s8 *, 7) = 255;
+    use(255 / divisor);
+}
+"""
+    rows = [
+        ('i', 'addiu $s4, $zero, 0xff', 'addiu $s5, $zero, -1'),
+        ('r', 'sb $s4, 4($s2)', 'sb $s5, 4($s2)'),
+        ('r', 'div $zero, $s4, $v0', 'div $zero, $v0, $v1'),
+        ('r', 'sb $s4, 5($s2)', 'sb $s5, 5($s2)'),
+    ]
+    [(family, repaired)] = variants(source, 'f', '', rows)
+    assert family == 'kmc_unsigned_byte_store'
+    assert repaired == source.replace('*(s8 *)', '*(u8 *)').replace('p, s8 *, 5', 'p, u8 *, 5')
+    assert not variants(source, 'f', '', rows[:2] + rows[3:])
+    assert not variants(source, 'f', '', rows[:3])
