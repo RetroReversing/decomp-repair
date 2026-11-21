@@ -113,3 +113,68 @@ def rewrite_linked_insert(source, name, asm, header=''):
     *{arg} = {access};
     {access} = {arg};
 ''')])
+
+
+def _list_transfer(asm):
+    if asm.count('jal') != 2 or 'bnez' not in asm:
+        return None
+    from .integer_repair_support import NUMBER
+    from .measured_stack_drafts import _lines
+
+    text = '\n'.join(' '.join(line.split()) for line in _lines(asm)
+                     if not line.startswith(('glabel ', 'endlabel ')))
+    text = re.sub(r'(?m)^addu (\$\w+), (\$\w+), \$zero$', r'move \1, \2', text)
+    return re.fullmatch(
+        rf'addiu \$sp, \$sp, -(?P<frame>{NUMBER})\nsw \$s1, (?P<save1>{NUMBER})\(\$sp\)\n'
+        rf'move \$s1, \$a0\nsw \$ra, (?P<ret>{NUMBER})\(\$sp\)\nsw \$s0, (?P<save0>{NUMBER})\(\$sp\)\n'
+        rf'lw \$s0, (?P<head>{NUMBER})\(\$s1\)\nbeqz \$s0, (?P<exit>\.L\w+)\nnop\n(?P<loop>\.L\w+):\n'
+        rf'jal (?P<unlink>{IDENT})\nmove \$a0, \$s0\nmove \$a0, \$s0\njal (?P<link>{IDENT})\n'
+        rf'addiu \$a1, \$s1, (?P<dest>{NUMBER})\nlw \$s0, (?P=head)\(\$s1\)\nbnez \$s0, (?P=loop)\nnop\n'
+        r'(?P=exit):\nlw \$ra, (?P=ret)\(\$sp\)\nlw \$s1, (?P=save1)\(\$sp\)\n'
+        r'lw \$s0, (?P=save0)\(\$sp\)\njr \$ra\naddiu \$sp, \$sp, (?P=frame)', text)
+
+
+def list_transfer_applies(asm):
+    target = _list_transfer(asm)
+    return bool(target and target['loop'] != target['exit'])
+
+
+def rewrite_list_transfer(source, name, asm, header=''):
+    """Keep the original node across both calls, then reload the list head."""
+    local = '__repair_transfer_node'
+    if 'M2C_FIELD' not in source or local in source + header or not (target := _list_transfer(asm)):
+        return None
+    from .integer_repair_support import edit, integer, view
+    from .stack_read_retry import _decimal
+
+    if target['loop'] == target['exit']:
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    signature = re.search(rf'\bvoid\s+{re.escape(name)}\s*\(\s*void\s*\*\s*(?P<arg>{IDENT})\s*\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+    arg = signature['arg']
+    head, dest = (integer(target[key]) for key in ('head', 'dest'))
+    if head == dest or head % 4 or dest % 4:
+        return None
+    remove, insert = target['unlink'], target['link']
+    field = f'M2C_FIELD({arg}, s32 *, {head})'
+    start = part.opening + 1
+    end = part.clean.rfind('}', start, part.end)
+    draft = (f'if ({field} != 0) {{ do {{ {remove}({field}); '
+             f'{insert}({field}, {arg} + {dest}); }} while ({field} != 0); }}')
+    if ' '.join(_decimal(part.clean[start:end]).split()) != draft:
+        return None
+    return edit(source, [(start, end, f'''
+    s32 {local};
+
+    {local} = {field};
+    while ({local} != 0) {{
+        {remove}({local});
+        {insert}({local}, {arg} + {dest});
+        {local} = {field};
+    }}
+''')])
