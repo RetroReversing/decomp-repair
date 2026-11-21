@@ -540,3 +540,46 @@ def test_guarded_halfword_requires_same_field_and_unchanged_first_argument():
     bad_source = source.replace('old < 2U', 'old < 3U')
     assert not p.shifted_call_variants(bad_source, 'step', '', asm, rows)
     assert not p.shifted_call_variants(source, 'step', 'void send(s32);', asm, rows)
+
+
+def test_forward_pointer_and_keep_the_result_in_the_argument_local():
+    source = '''void *lookup(s32); /* extern */
+void update(void *context) {
+    s32 item;
+    void *result;
+    item = M2C_FIELD(M2C_FIELD(context, void **, 8), s32 *, 12);
+    if (item != 0) {
+        result = lookup(item);
+        if (result != NULL) {
+            M2C_FIELD(context, void **, 24) = M2C_FIELD(result, void **, 16);
+        }
+    }
+}
+'''
+    target = [
+        'move $s0, $a0', 'lw $v0, 8($s0)', 'lw $a1, 12($v0)', 'beqz $a1, .Lend', 'nop',
+        'jal lookup', 'nop', 'move $a1, $v0', 'beqz $a1, .Lend', 'nop',
+        'lw $v0, 16($a1)', 'sw $v0, 24($s0)', 'jr $ra', 'nop',
+    ]
+    candidate = {2: 'lw $a0, 12($v0)', 3: 'beqz $a0, .Lend', 7: 'move $v1, $v0',
+                 8: 'beqz $v1, .Lend', 10: 'lw $v0, 16($v1)'}
+    rows = [('r', op, candidate[i]) if i in candidate else (' ', op, op) for i, op in enumerate(target)]
+
+    def assembly(ops):
+        lines = [f'/* {i * 4:06X} {0x80000000 + i * 4:08X} 00000000 */ {op}' for i, op in enumerate(ops)]
+        lines.insert(12, '.Lend:')
+        return '\n'.join(lines)
+
+    asm = assembly(target)
+    [(family, fixed)] = p.shifted_call_variants(source, 'update', '', asm, rows)
+    assert family == p.FAMILY
+    assert 'lookup(void *, void *);' in fixed
+    assert 'item = lookup(context, item);' in fixed
+    assert 'M2C_FIELD(item, void **, 16)' in fixed
+    assert 'result' not in fixed
+    assert not p.shifted_call_variants(source, 'update', 'void *lookup(s32);', asm, rows)
+    assert not p.shifted_call_variants(source, 'update', '', assembly([*target[:4], 'move $a0, $zero', *target[5:]]),
+                                       rows)
+    for edited in (source.replace('**, 16)', '**, 20)'),
+                   source.replace('= M2C_FIELD(result, void **, 16);', '= M2C_FIELD(result, void **, 16);\n use(item);')):
+        assert not p.shifted_call_variants(edited, 'update', '', asm, rows)

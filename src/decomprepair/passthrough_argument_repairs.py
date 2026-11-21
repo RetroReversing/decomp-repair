@@ -622,6 +622,70 @@ def _place_halfword_update(source, name, header, asm, callee, offset, condition,
     return _missing_caller_argument(moved, name, header, asm, callee)
 
 
+def _pointer_call_reuse(source, name, header, asm, rows, i, callee):
+    """The guarded pointer argument and the returned pointer occupy the same local."""
+    if i < 4 or i + 4 >= len(rows) or rows[i - 1][1] != rows[i + 1][1] or rows[i + 1][1] != 'nop':
+        return None
+    load = re.fullmatch(rf'lw \$a1, (?P<inner>{NUMBER})\((?P<base>\$\w+)\)', rows[i - 3][1])
+    before = re.fullmatch(r'beqz \$a1, (\S+)', rows[i - 2][1])
+    after = re.fullmatch(r'beqz \$a1, (\S+)', rows[i + 3][1])
+    if (not load or not before or not after or before[1] != after[1]
+            or rows[i - 3][2] != rows[i - 3][1].replace('$a1,', '$a0,', 1)
+            or rows[i - 2][2] != f'beqz $a0, {before[1]}'
+            or tuple(rows[i + 2][1:]) != ('move $a1, $v0', 'move $v1, $v0')
+            or rows[i + 3][2] != f'beqz $v1, {after[1]}'):
+        return None
+    outer = re.fullmatch(rf'lw {re.escape(load["base"])}, ({NUMBER})\(\$s[0-7]\)', rows[i - 4][1])
+    uses = [re.fullmatch(rf'lw \$\w+, ({NUMBER})\(\$a1\)', row[1]) for row in rows[i + 4:]]
+    if (not outer or not any(use and rows[at][2] == rows[at][1].replace('($a1)', '($v1)')
+                             for at, use in enumerate(uses, i + 4))
+            or not _entry_a0_reaches(asm, callee)
+            or re.search(rf'\b{callee}\s*\(', _blank(header))
+            or not (part := view(source, name))):
+        return None
+    prototype = re.search(
+        rf'(?m)^[ \t]*void\s*\*\s*{callee}\((?P<params>s32|)\);(?P<marker>[ \t]*/\* extern \*/)?',
+        source[:part.opening])
+    if not prototype or (prototype['params'] and not prototype['marker']):
+        return None
+    signature = re.search(rf'\bvoid\s+{re.escape(name)}\(\s*void\s*\*\s*({IDENT})\s*\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+    incoming = signature[1]
+    load_and_call = re.match(
+        rf'\s*(?P<type>s32)\s+(?P<item>{IDENT});\n'
+        rf'(?P<decl>[ \t]*void\s*\*\s*(?P<returned>{IDENT})\s*;[ \t]*\n)\s*'
+        rf'(?P=item)\s*=\s*M2C_FIELD\(M2C_FIELD\({incoming},\s*void\s*\*\*,\s*(?P<outer>{NUMBER})\),\s*'
+        rf'(?P<field>s32\s*\*),\s*(?P<inner>{NUMBER})\);\s*'
+        rf'if\s*\(\s*(?P=item)\s*!=\s*0\s*\)\s*{{\s*'
+        rf'(?P<lhs>(?P=returned))\s*=\s*{callee}\(\s*(?P<arg>(?P=item))\s*\);\s*'
+        r'if\s*\(\s*(?P=returned)\s*!=\s*(?:NULL|0)\s*\)\s*{',
+        part.body)
+    if (not load_and_call or load_and_call['item'] == load_and_call['returned']
+            or integer(load_and_call['outer']) != integer(outer[1])
+            or integer(load_and_call['inner']) != integer(load['inner'])
+            or len(list(calls(part, callee))) != 1):
+        return None
+    site = load_and_call
+    item, returned = site['item'], site['returned']
+    start = part.opening + 1
+    tail_start = start + site.end('arg')
+    tail = part.clean[tail_start:part.end]
+    fields = re.findall(rf'M2C_FIELD\({returned},\s*void\s*\*\*,\s*({NUMBER})\)', tail)
+    references = list(re.finditer(rf'\b{returned}\b', tail))
+    if (not fields or len(references) != len(fields) + 1 or re.search(rf'\b{item}\b', tail)
+            or not set(map(integer, fields)) <= {integer(use[1]) for use in uses if use}):
+        return None
+    changes = [(start + site.start(k), start + site.end(k), replacement)
+               for k, replacement in (('type', 'void *'), ('decl', ''), ('field', 'void **'),
+                                      ('lhs', item), ('arg', f'{incoming}, {item}'))]
+    changes += [(tail_start + hit.start(), tail_start + hit.end(), item) for hit in references]
+    if prototype['params']:
+        changes.append((*prototype.span('params'), 'void *, void *'))
+    return edit(source, changes)
+
+
 def shifted_call_variants(source, name, header, asm, rows):
     """Focus passthrough proposals on the measured setup for one changed call."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
@@ -643,6 +707,8 @@ def shifted_call_variants(source, name, header, asm, rows):
         call = re.fullmatch(rf'jal ({IDENT})', target)
         if marker != ' ' or target != candidate or not call or not local:
             continue
+        if candidate_source := _pointer_call_reuse(source, name, header, asm, rows, i, call[1]):
+            return [(FAMILY, candidate_source)]
         relocations = _relocated_shift_count(rows, local)
         if relocations is not None and i - local[0] <= 4 + relocations:
             nearby.append((call[1], i, local))
