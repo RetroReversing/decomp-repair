@@ -716,3 +716,22 @@ def test_call_stride_recognizes_an_early_address_before_stack_argument_stores():
         bad = rows[:]
         bad[index] = (' ', 'move $a1, $zero', 'move $a1, $zero')
         assert not variants(source, 'f', '', bad)
+
+
+def test_commuted_global_stride_uses_byte_address_from_matching_relocations():
+    source = """extern M2C_UNK table;
+void f(void *input) {
+    void *record;
+    record = (M2C_FIELD(input, s8 *, 12) * 0xe8) + &table;
+    use(M2C_FIELD(record, u8 *, 4));
+}
+"""
+    rows = [('i', 'sll $v0, $v0, 3', 'sll $v0, $v0, 5')]
+    rows += [(' ', op, op) for op in ('lui $v1, %hi(table)', 'addiu $v1, $v1, %lo(table)',
+                                      'addu $s0, $v0, $v1', 'lbu $a1, 4($s0)')]
+    assert variants(source, 'f', '', rows) == [
+        ('measured_commuted_global_stride', source.replace('+ &table', '+ (s8 *)&table'))]
+    assert not variants(source.replace('0xe8', '0xf0'), 'f', '', rows)
+    assert not variants(source, 'f', 'extern M2C_UNK table;', rows)
+    wrong_low = (' ', 'addiu $v1, $v1, %lo(other)', 'addiu $v1, $v1, %lo(other)')
+    assert not variants(source, 'f', '', rows[:2] + [wrong_low] + rows[3:])
