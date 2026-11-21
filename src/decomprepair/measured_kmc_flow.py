@@ -4,7 +4,7 @@ import re
 import struct
 
 from . import goto_structure_repairs
-from .integer_repair_support import IDENT, NUMBER, edit, integer, plain_repair_view, view
+from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for, plain_repair_view, view
 from .mips import normalized_integer_lines
 from .pattern_repairs import close
 
@@ -503,6 +503,50 @@ def _packed_color_channels(source, name, header, rows):
     ])
 
 
+_SCALED_FIELD = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<dest>{IDENT}\s*->\s*{IDENT})\s*=\s*'
+    rf'(?P<scale>\(\s*(?P<local>{IDENT})\s*\*\s*5[uU]?\s*\)\s*<<\s*5)\s*;'
+)
+
+
+def _scaled_field_store(source, name, header, rows):
+    """Reuse an unsigned local before the scaled value feeds a delay-slot store."""
+    matches = []
+    for i in range(2, len(rows) - 2):
+        window = rows[i - 2:i + 3]
+        if tuple(row[0] for row in window) != (' ', ' ', 'r', ' ', 'r'):
+            continue
+        target = normalized_integer_lines(row[1] for row in window)
+        current = normalized_integer_lines(row[2] for row in window)
+        if tuple(target[:3]) != ('sll $v0, $a0, 2', 'addu $v0, $v0, $a0', 'sll $a0, $v0, 5'):
+            continue
+        store = re.fullmatch(rf'sw \$a0, ({NUMBER}\(\$s[0-7]\))', target[4])
+        if (store and current[2] == 'sll $v0, $v0, 5' and current[4] == f'sw $v0, {store[1]}'
+                and target[3].startswith(('beqz ', 'bnez '))):
+            matches.append(i)
+    if len(matches) != 1:
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    hits = list(_SCALED_FIELD.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    local = hit['local']
+    unqualified = re.sub(rf'(?:->|\.)\s*{local}\b', '', part.body)
+    tokens = '|'.join(set(re.findall(IDENT, hit['dest'])) | {local})
+    if (re.search(rf'^\s*#\s*define\s+(?:{tokens})\b', header + '\n' + part.clean, re.M)
+            or len(re.findall(rf'\b{local}\b', unqualified)) != 3
+            or not any(decl['type'] == 'u32' and decl['name'] == local for decl in locals_for(part))
+            or not re.search(rf'\b{local}\s*=\s*[^;]+;', part.clean[part.opening + 1:hit.start()])
+            or re.search(r'/[*/]', source[hit.start():hit.end()])):
+        return None
+    indent = hit['indent']
+    fixed = f'{indent}{{ {local} = {hit["scale"]}; {hit["dest"]} = {local}; }}'
+    return edit(source, [(*hit.span(), fixed)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -524,6 +568,8 @@ def variants(source, name, header, rows):
         return [('measured_float_sum_destination', candidate)]
     if candidate := _packed_color_channels(source, name, header, rows):
         return [('measured_packed_color_channels', candidate)]
+    if candidate := _scaled_field_store(source, name, header, rows):
+        return [('measured_scaled_field_store', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
