@@ -27,7 +27,7 @@ IDENT = r'[A-Za-z_]\w*'
 def negate_any(condition):
     """`condition` inverted: a comparison flipped, a `!(..)` or `!x` unwrapped, anything else wrapped in `!(..)`."""
     text = condition.strip()
-    if re.search(r'\+\+|--|(?<![=!<>])=(?!=)|\b' + IDENT + r'\s*\(', re.sub(r'\bsizeof\s*\(', '', text)):
+    if re.search(r'\+\+|--|(?<![=!<>])=(?!=)|\b' + IDENT + r'\s*\(', re.sub(r'\b(?:sizeof|M2C_\w+)\s*\(', '(', text)):
         return None  # a side effect or a call: evaluating it once is the program
     if text.startswith('!'):
         inner = text[1:].strip()
