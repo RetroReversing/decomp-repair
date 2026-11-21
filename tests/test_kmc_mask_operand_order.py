@@ -54,3 +54,27 @@ def test_refuses_what_it_cannot_prove_equivalent():
     # The identity reads a value defined after the mask: not in scope yet.
     late = 'unsigned f(unsigned v) { unsigned t = ~0x1c0; unsigned w = v; t &= w; return t; }'
     assert not texts(late)
+
+
+M2C = '''#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))
+void f(void *arg0) {
+    M2C_FIELD(arg0, s32 *, 0x58) = (s32) (-0x1C1 & M2C_FIELD(arg0, s32 *, 0x58));
+}'''
+# Registers all differ (the other allocation cluster): only the target's own `and` says the mask is first.
+TARGET_FIRST = [(' ', 'lw $v1, 0x58($s0)', 'lw $v0, 0x58($s0)'), ('r', 'addiu $v0, $zero, -0x1c1', 'addiu $v1, $zero, -0x1c1'),
+                (' ', 'and $v0, $v0, $v1', 'and $v0, $v0, $v1')]
+TARGET_SECOND = [(' ', 'addiu $v1, $zero, -0x1c1', 'addiu $v1, $zero, -0x1c1'), (' ', 'and $v0, $v0, $v1', 'and $v0, $v0, $v1')]
+
+
+def test_m2c_field_reads_are_pure_and_the_drafts_mask_first_form_is_rewritten():
+    [result] = texts(M2C, rows=TARGET_FIRST)
+    reads = 'M2C_FIELD(arg0, s32 *, 0x58)'
+    assert f'(s32) ((({reads} & -0x1C1) | -0x1C1) & {reads});' in result
+    # any other macro, or a different definition of the field macro, is not known to be pure
+    assert not texts(M2C.replace('(s8 *)', '(char *)'), rows=TARGET_FIRST)
+    assert not texts(M2C.replace('& M2C_FIELD(arg0, s32 *, 0x58)', '& M2C_FIELD(next(), s32 *, 0x58)'), rows=TARGET_FIRST)
+
+
+def test_the_targets_own_and_is_evidence_even_when_every_register_differs():
+    assert mask_evidence(TARGET_FIRST)
+    assert not mask_evidence(TARGET_SECOND)  # the mask is the second operand: cse's order, nothing to hide
