@@ -4,7 +4,7 @@ import re
 from . import integer_lifetime_repairs, local_flow
 from .allocator_call_guards import context, dominators
 from .call_lifetime_repairs import block_path
-from .integer_repair_support import edit, refs
+from .integer_repair_support import IDENT, INTEGER, edit, locals_for, refs, view
 
 FAMILY = 'paired_integer_lifetimes'
 LIMIT = 16
@@ -30,10 +30,35 @@ def reaching(flow, variable, reachable):
     return incoming
 
 
+INTEGER_TYPES = {'s32','u32','int','unsigned int','signed int'}
+# Float and pointer locals have phases too: a float temporary m2c reuses for two products, or a cursor pointer
+# reused for a second walk, ties two values to one pseudo and so to one register (gap: float/pointer phases).
+WIDE_DECL = re.compile(rf'\b(?P<type>(?:f32|f64|float|double)|(?:{INTEGER}|f32|f64|float|double|void|struct\s+{IDENT}|{IDENT})'
+                       rf'\s*\*+)\s*(?P<name>{IDENT})\s*;')
+
+
+def _float_pointer_locals(part):
+    """Top-level float and pointer locals with one declaration and no address taken, beside the integer ones."""
+    found = []
+    for decl in WIDE_DECL.finditer(part.clean, part.opening + 1, part.end):
+        prefix = part.clean[part.opening + 1:decl.start()].rstrip()
+        if prefix and prefix[-1] not in ';{}':
+            continue
+        name = re.escape(decl['name'])
+        declared = re.findall(rf'(?:\b(?:{INTEGER}|f32|f64|float|double|void)\s*\**|\b{IDENT}\s*\*+)\s*{name}\s*(?=[;=,\[])',
+                              part.body)
+        if len(declared) != 1 or re.search(rf'&\s*{name}\b', part.body):
+            continue
+        found.append(decl)
+    return found
+
+
 def splits(source, name, header=''):
     if not context(source,name,header)[0]:
         return []
-    flow = local_flow.analyze(source,name)
+    part = view(source, name)
+    wide = _float_pointer_locals(part) if part else []
+    flow = local_flow.analyze(source,name,declarations=(locals_for(part) + wide) if wide else None)
     if not flow:
         return []
     dom = dominators(flow)
@@ -43,7 +68,7 @@ def splits(source, name, header=''):
             continue
         variable = decl['name']
         fresh = '__repair_phase_'+variable
-        if fresh in source or decl['type'] not in {'s32','u32','int','unsigned int','signed int'}:
+        if fresh in source or (decl['type'] not in INTEGER_TYPES and decl not in wide):
             continue
         definitions = [i for i,node in enumerate(flow.nodes) if variable in node.defines
                        and not node.start <= decl.start() < node.end]
@@ -77,7 +102,7 @@ def splits(source, name, header=''):
                     if any(flow.nodes[i].start<=hit.start()<flow.nodes[i].end for i in reached)]
             if len(uses)<2 or len(uses)==len(refs(flow.part,decl)):
                 continue
-            edits = [(decl.end(),decl.end(),f'\n{decl["type"]} {fresh};')]
+            edits = [(decl.end(),decl.end(),f'\n{decl["type"]}{"" if decl["type"].endswith("*") else " "}{fresh};')]
             edits += [(hit.start(),hit.end(),fresh) for hit in uses]
             # A scalar later reused for cast address arithmetic is a useful phase
             # boundary. This only prioritizes already-proven splits, never infers a type.
