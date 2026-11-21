@@ -1,7 +1,7 @@
 """Scalar-address lifetimes and split bitmask stores, proposed to the ordinary exact judge."""
 import re
 
-from .csource import _blank
+from .csource import _blank, find
 from .integer_repair_support import IDENT, INTEGER, NUMBER, edit, refs, view
 from .pattern_repairs import close
 
@@ -54,4 +54,54 @@ def variants(source,name,header=''):
         unsigned=re.sub(r'\b(?:s32|int)\b',lambda m:'u32' if m[0]=='s32' else 'unsigned int',lhs,count=1)
         if unsigned!=lhs and 'unsigned' not in lhs:
             add('split_mask_stores',[(hit.start(),hit.end(),f'{unsigned} &= {hit["a"]}; {unsigned} &= {hit["b"]};')])
+    return out
+
+
+BYTE_STEP = r'(?:0[xX][0-9a-fA-F]+|[1-9][0-9]*|0)'
+BYTE_UPDATE = re.compile(
+    rf'(?m)^lui (?P<base>\$\w+), %hi\((?P<symbol>{IDENT})\)\n'
+    r'addiu (?P=base), (?P=base), %lo\((?P=symbol)\)\n'
+    r'lbu (?P<value>\$\w+), (?:0|0x0)?\((?P=base)\)\n'
+    rf'addiu (?P=value), (?P=value), (?P<amount>-?{BYTE_STEP})\n'
+    r'sb (?P=value), (?:0|0x0)?\((?P=base)\)$'
+)
+
+
+def scoped_byte_updates(source, name, asm, header=''):
+    """Try retaining a proven byte-global address across its load and store."""
+    part = view(source, name)
+    if not part or '%hi(' not in asm or 'lbu' not in asm:
+        return []
+    lines = re.sub(r'/\*[^\n]*?\*/', '', asm)
+    lines = '\n'.join(' '.join(line.split()) for line in lines.splitlines())
+    definition = find(source, name)[0]
+    context = _blank(header) + '\n' + part.clean[:definition]
+    function = part.clean[definition:part.end]
+    used = set(re.findall(IDENT, context + '\n' + part.body))
+    pointer = '__repair_byte_address'
+    while pointer in used:
+        pointer += '_'
+    out = []
+    for target in BYTE_UPDATE.finditer(lines):
+        symbol = target['symbol']
+        if target['base'] == target['value']:
+            continue
+        decl = re.search(rf'\bextern\s+(?P<type>u8|unsigned\s+char)\s+{symbol}\s*;', context)
+        shadow = re.search(rf'\b(?:{INTEGER}|volatile|const)\s+\**\s*{symbol}\b', function)
+        macro = re.search(rf'(?m)^\s*#\s*define\s+{symbol}\b', context)
+        if not decl or shadow or macro:
+            continue
+        update = re.compile(rf'\b{symbol}\s*(?P<op>[+-])=\s*(?P<step>{BYTE_STEP})\s*;')
+        for hit in update.finditer(part.clean, part.opening + 1, part.end):
+            if part.clean[part.opening:hit.start()].rstrip()[-1:] not in {';', '{', '}'}:
+                continue
+            signed = int(hit['op'] + hit['step'], 0)
+            if signed != int(target['amount'], 0):
+                continue
+            usable = f'{{ {decl["type"]} *{pointer} = &{symbol}; *{pointer} {hit["op"]}= {hit["step"]}; }}'
+            proposal = ('scoped_byte_global_update', edit(source, [(hit.start(), hit.end(), usable)]))
+            if proposal not in out:
+                out.append(proposal)
+                if len(out) == 4:
+                    return out
     return out
