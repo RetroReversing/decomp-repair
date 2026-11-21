@@ -84,3 +84,29 @@ def test_wrong_width_cast_on_a_typed_symbol():
     assert outs and '*((u8 *) (((s8 *) (&gFlags)) + i))' in outs[0] and '(s32 *)' not in outs[0]
     # accesses the cast already matches are left alone
     assert w.variants(TYPED, 'f', 'lw $v1, %lo(gFlags)($v1)\nsw $v0, %lo(gFlags)($at)\n') == []
+
+
+def test_measured_signed_halfword_load_preserves_its_relocation():
+    from decomprepair.symbol_width_repairs import signed_halfword_load_variants
+
+    source = """extern s8 fields[];
+void f(void) {
+    s32 i = 0;
+    s16 *cursor = values;
+    s32 index = 0, dest = 0;
+    do {
+        s32 value;
+        value = *(volatile s32 *)(fields + index);
+        publish(value);
+        index += 8;
+    } while (++i < 4);
+}
+"""
+    rows = [('|', 'lh $v0, %lo(fields)($v0)', 'lw $v0, %lo(fields)($v0)')]
+    [(family, reordered), (_, staged), (_, qualified)] = signed_halfword_load_variants(source, 'f', rows)
+    assert family == 'relocated_signed_halfword_load'
+    assert 's32 index = 0; s16 *cursor = values; s32 i = 0;' in reordered
+    assert 'do { value = *(s16 *)(fields + index); } while (0);' in staged
+    assert 'value = *(volatile s16 *)(fields + index);' in qualified
+    assert not signed_halfword_load_variants(source, 'f', [('|', rows[0][1], rows[0][2].replace('fields', 'other'))])
+    assert not signed_halfword_load_variants(source.replace('value = *', 'if (flag) value = *'), 'f', rows)
