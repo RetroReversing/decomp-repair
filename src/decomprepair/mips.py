@@ -473,7 +473,12 @@ def boundary_reason(code: bytes, big_endian: bool = True, **_facts) -> str | Non
 
 
 def gcc_register_aliases(number):
-    """Legacy GCC GPR numbers, not pseudo-register numbers or another processor's ABI."""
+    """Legacy GCC hard-register numbers (GPRs 0-31, FPRs 32-63), not pseudo-register numbers or another processor's ABI.
+
+    The FPRs matter for float functions: without them a float pseudo's register never matched a diff's `$f20`, so
+    the allocation evidence for a float matrix function's register swap was empty."""
+    if 32 <= number < 64:
+        return (f'f{number - 32}', str(number))
     names = ('zero at v0 v1 a0 a1 a2 a3 t0 t1 t2 t3 t4 t5 t6 t7 '
              's0 s1 s2 s3 s4 s5 s6 s7 t8 t9 k0 k1 gp sp fp ra').split()
     if not 0 <= number < len(names):
