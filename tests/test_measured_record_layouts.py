@@ -1,6 +1,6 @@
 """Record layout and stack buffer regressions from measured KMC drafts."""
 
-from decomprepair import measured_stack_drafts, measured_storage_shapes
+from decomprepair import measured_record_layouts, measured_stack_drafts, measured_storage_shapes
 
 
 def _matched(source, target, asm, edits):
@@ -118,3 +118,24 @@ lbu $v0, 22($sp)
     assert 'c = __repair_format_bytes[2] - 48;' in fixed
     assert not measured_stack_drafts.rewrite(source, 'update', asm.replace('lbu $v0, 22', 'lw $v0, 22'))
     assert not measured_stack_drafts.rewrite(source.replace('c = sp16 - 48', 'c = &sp16'), 'update', asm)
+
+
+def test_record_advance_does_not_also_use_the_old_base_offset():
+    source = """extern u16 *cursor;
+typedef struct { unsigned short field_0; unsigned char pad_2[10]; unsigned short field_C; } __repair_record_cursor;
+int f(void) {
+    cursor += 6;
+    if (((__repair_record_cursor *)cursor)->field_C != 0) {
+        return 1;
+    }
+    return 0;
+}
+"""
+    step = 'addiu $v0, $a1, 0xc'
+    rows = [('i', 'lhu $v1, 0xc($a1)', 'lhu $v1, 0x18($a1)'), (' ', step, step)]
+    assert measured_record_layouts.variants(source, 'f', '', rows, '') == [
+        ('next_record_field_after_advance', source.replace('->field_C', '->field_0'))]
+    assert not measured_record_layouts.variants(source.replace('+= 6', '+= 4'), 'f', '', rows, '')
+    assert not measured_record_layouts.variants(source.replace('unsigned short field_0', 'short field_0'), 'f', '', rows, '')
+    wrong = rows[:1] + [(' ', 'addiu $v0, $s1, 0xc', 'addiu $v0, $s1, 0xc')]
+    assert not measured_record_layouts.variants(source, 'f', '', wrong, '')
