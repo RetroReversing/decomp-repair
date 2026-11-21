@@ -8,7 +8,7 @@ from .mips import abi_register_names
 SAVED = r'\$s[0-7]'
 REG = r'\$\w+'
 WITNESS = re.compile(
-    rf'(?m)^jal (?P<callee>{IDENT})\nnop\n'
+    rf'(?m)^jal (?P<callee>{IDENT})\n(?P<delay>nop|(?:addu|move) {SAVED}, \$a1(?:, \$zero)?)\n'
     rf'bnez \$v0, (?P<exit>\.L\w+)\naddiu \$v0, \$zero, -(?:0x)?1\n'
     r'lui \$v0, %hi\(D_A0000000\)\n'
     rf'or \$v0, (?P<addr>{SAVED}), \$v0\n'
@@ -34,6 +34,14 @@ def _evidence(asm):
     if not hit or hit['addr'] == hit['out'] or hit['value'] in ('$zero', '$v0',hit['addr'],hit['out']):
         return None
     before = asm[:hit.start()]
+    if hit['delay'] != 'nop':
+        out = re.escape(hit['out'])
+        if not re.fullmatch(rf'(?:addu {out}, \$a1, \$zero|move {out}, \$a1)', hit['delay']):
+            return None
+        # The delay slot consumes the original incoming output pointer.
+        if re.search(r'(?m)^(?:[bj]\w*\s|\w+ \$a1(?:,|$))', before):
+            return None
+        before += hit['delay'] + '\n'
     for address, incoming in ((hit['addr'],'$a0'),(hit['out'],'$a1')):
         reg, arg = re.escape(address),re.escape(incoming)
         moves = re.findall(rf'(?m)^(?!sw |sd |sh |sb |b\w* |j\w* )\w+ {reg}, [^\n]+',before)
