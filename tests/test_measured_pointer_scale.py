@@ -639,3 +639,37 @@ void f(void) {
     assert not variants(source.replace('*base = 15;', 'base = other; *base = 15;'), 'f', '', evidence)
     evidence[-1] = (' ', 'sh $zero, ($a1)', 'sh $zero, ($a1)')
     assert not variants(source, 'f', '', evidence)
+
+
+def test_byte_index_carrier_fixes_scaling_and_reuses_the_incoming_index():
+    source = """\
+extern s32 table;
+void f(s32 row, s32 index) {
+    s32 *base;
+    u8 *cursor;
+    do {
+        cursor = (void *) ((row * 0xA0) + (base = &table));
+        cursor = (void *) (((char *) cursor) + ((s32) (index * 2)));
+    } while (0);
+    *cursor |= 0x80;
+}
+"""
+    rows = [
+        ('i', 'sll $v0, $v0, 5', 'sll $v0, $v0, 7'),
+        (' ', 'lui $v1, %hi(table)', 'lui $v1, %hi(table)'),
+        (' ', 'addiu $v1, $v1, %lo(table)', 'addiu $v1, $v1, %lo(table)'),
+        (' ', 'addu $v0, $v0, $v1', 'addu $v0, $v0, $v1'),
+        (' ', 'sll $a1, $a1, 1', 'sll $a1, $a1, 1'),
+        ('r', 'addu $a1, $a1, $v0', 'addu $v0, $v0, $a1'),
+        ('r', 'lbu $v0, ($a1)', 'lbu $v1, ($v0)'),
+        ('r', 'ori $v0, $v0, 0x80', 'ori $v1, $v1, 0x80'),
+        (' ', 'jr $ra', 'jr $ra'),
+        ('r', 'sb $v0, ($a1)', 'sb $v1, ($v0)'),
+    ]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_byte_index_carrier'
+    assert 'cursor = (char *)&table + row * 0xA0;' in fixed
+    assert 'index *= 2;\n    index += (s32)cursor;\n    cursor = (u8 *)index;' in fixed
+    assert not variants(source.replace('0xA0', '0x80'), 'f', '', rows)
+    assert not variants(source.replace('*cursor |= 0x80;', '*cursor |= 0x80; touch();'), 'f', '', rows)
+    assert not variants(source, 'f', '', [*rows[:-1], ('r', 'sb $v0, ($a0)', 'sb $v1, ($v0)')])
