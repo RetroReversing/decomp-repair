@@ -27,8 +27,17 @@ def _float_table(part, name, header, rows):
     body = re.fullmatch(
         rf'\s*return \*\(&(?P<base>{IDENT}) \+ \(\(\((?P<index>{IDENT}) \+ (?P<offset>{NUMBER})\) '
         rf'& (?P<mask>{NUMBER})\) \* 4\)\);\s*', part.body.rstrip('}\n '))
-    if not signature or not body or signature['index'] != body['index'] or integer(body['mask']) != 255:
-        return None
+    if signature and body and signature['index'] == body['index'] and integer(body['mask']) == 255:
+        offset = f'({body["index"]} + {body["offset"]})'
+    else:
+        signature = re.search(rf'\bf32\s+{re.escape(name)}\s*\(\s*f32\s+({IDENT})\s*\)\s*$',
+                              part.clean[:part.opening])
+        body = re.fullmatch(
+            rf'\s*return\s*\*\(&(?P<base>{IDENT})\s*\+\s*\(\(\(s32\)\s*(?P<index>{IDENT})'
+            rf'\s*&\s*(?P<mask>{NUMBER})\)\s*\*\s*4\)\)\s*;\s*', part.body.rstrip('}\n '))
+        if not signature or not body or signature[1] != body['index']:
+            return None
+        offset = f'(s32){body["index"]}'
     base = body['base']
     decl = re.search(rf'\bextern M2C_UNK {base};', part.clean[:part.opening])
     if (not decl or re.search(rf'\b{base}\b', header) or len(re.findall(rf'\b{base}\b',part.clean)) != 2
@@ -36,7 +45,7 @@ def _float_table(part, name, header, rows):
             or not any(re.fullmatch(r'cvt\.s\.w\s+\$\w+,\s*\$\w+', current) for _,_,current in rows)):
         return None
     end = len(part.clean[:part.end].rstrip()) - 1
-    replacement = f"\n    return {base}[({body['index']} + {body['offset']}) & {body['mask']}];\n"
+    replacement = f"\n    return {base}[{offset} & {body['mask']}];\n"
     return edit(part.source,[(decl.start(),decl.end(),f'extern f32 {base}[];'),(part.opening+1,end,replacement)])
 
 
@@ -138,16 +147,23 @@ def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=Non
         if not hit or hit['table'] not in symbols or re.search(r'[;{}=]|\+\+|--', hit['value']):
             continue
         scale = integer(hit['scale'])
-        if width > 1 and scale != width:
+        if width > 1 and scale != width and byte_shift is None:
             continue
         if byte_shift is not None and scale & -scale != 1 << byte_shift:
             continue
         table = hit['table']
         declaration = _read_declaration(part, header, table, 1)
         if declaration and not re.search(r'/[*/]', part.source[deref.start():end]):
-            index = hit['value'] if width > 1 else f'{hit["value"]} * {hit["scale"]}'
-            matches.append([(*declaration.span(), f'extern {kind} {table}[];'),
-                            (deref.start(), end, f'{table}[{index}]')])
+            if width == 2 and byte_shift is not None:
+                if not re.fullmatch(IDENT, hit['value']):
+                    continue
+                # The odd part of the byte stride also survives in the target.
+                text = f'*({kind} *)({table} + {hit["value"]} * {hit["scale"]})'
+                declared_type = 'u8'
+            else:
+                index = hit['value'] if width > 1 else f'{hit["value"]} * {hit["scale"]}'
+                text, declared_type = f'{table}[{index}]', kind
+            matches.append([(*declaration.span(), f'extern {declared_type} {table}[];'), (deref.start(), end, text)])
     return edit(part.source, matches[0]) if len(matches) == 1 else None
 
 
@@ -213,9 +229,10 @@ def _relocated_scaled_load(part, header, rows, row, register, amount):
     if high[0][0] != high[1][0] or low[0] != low[1]:
         return None
     kind, width = {'lh': ('s16', 2), 'lhu': ('u16', 2), 'lb': ('s8', 1), 'lbu': ('u8', 1)}[low[0][0]]
-    if (width == 2 and amount != 1) or (width == 1 and amount < 2):
+    if width == 1 and amount < 2:
         return None
-    return _inline_scale(part, header, {high[0][1]}, kind, width, byte_shift=amount if width == 1 else None)
+    byte_shift = amount if width == 1 or amount > 1 else None
+    return _inline_scale(part, header, {high[0][1]}, kind, width, byte_shift=byte_shift)
 
 
 def _halfword_scans(source, name, rows):
@@ -375,7 +392,40 @@ def _under_scaled_halfword_cursor(source, name, rows):
     return edit(source, edits) if len(edits) == 1 else None
 
 
+def _call_byte_offset(source, name, rows):
+    """A halfword read and a displaced pointer feed different arguments of the same call."""
+    mismatches = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(mismatches) != 1 or (i := mismatches[0]) < 2:
+        return None
+    add = re.compile(rf'addiu \$a1, \$a1, ({NUMBER})')
+    target, candidate = (add.fullmatch(op) for op in rows[i][1:])
+    call = re.fullmatch(rf'jal ({IDENT})', rows[i - 1][1])
+    if (not target or not candidate or not call or rows[i - 1][1] != rows[i - 1][2]
+            or not 0 < integer(target[1]) or integer(candidate[1]) != 2 * integer(target[1])
+            or not any(a == b and re.fullmatch(r'lhu \$a2, (?:0|0x0)?\(\$a1\)', a)
+                       for _, a, b in rows[max(0, i - 4):i - 1])):
+        return None
+    if not (part := view(source, name)):
+        return None
+    parameters = re.search(rf'\b{re.escape(name)}\s*\([^,()]+,\s*u16\s*\*\s*({IDENT})\s*\)\s*$',
+                           part.clean[:part.opening])
+    if not parameters:
+        return None
+    pointer = parameters[1]
+    body = re.fullmatch(
+        rf'\s*{call[1]}\([^,;{{}}]+,\s*(?P<address>{pointer}\s*\+\s*(?P<offset>{NUMBER}))'
+        rf'\s*,\s*\*\s*{pointer}\s*\)\s*;\s*', part.body.rstrip('}\n '))
+    if not body or integer(body['offset']) != integer(target[1]):
+        return None
+    a, b = (part.opening + 1 + at for at in body.span('address'))
+    if source[a:b] == body['address']:
+        return edit(source, [(a, b, f'(u8 *){body["address"]}')])
+    return None
+
+
 def variants(source, name, header, rows):
+    if candidate := _call_byte_offset(source, name, rows):
+        return [('measured_call_byte_offset', candidate)]
     if candidate := _under_scaled_halfword_cursor(source, name, rows):
         return [('measured_halfword_byte_cursor', candidate)]
     if ('+=' in source or '-=' in source) and (candidate := _loop_step(source, name, rows)):
