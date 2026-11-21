@@ -234,3 +234,35 @@ void f(void) {
     assert not variants(source.replace('setting = value;', 'other = value;'), 'f', '', diff)
     assert not variants(source, 'f', '#define setting set_value()', diff)
     assert not variants(source, 'f', '', rows(target.replace('0x14', '0x18'), candidate.replace('0x14', '0x18')))
+
+
+def test_inline_signed_choice_before_float_conversion():
+    source = """\
+f32 f(void) {
+    s32 value;
+    s32 adjusted;
+    f32 result;
+    value = read_input();
+    if (value >= 0) {
+        adjusted = value + 1;
+    } else {
+        adjusted = value - 1;
+    }
+    result = (f32)(adjusted >> 1);
+    return result;
+}
+"""
+    body = [
+        'bltzl $v0, 0xc', 'addiu $v0, $v0, -1', 'addiu $v0, $v0, 1', 'sra $v0, $v0, 1',
+        'mtc1 $v0, $f2', 'nop', 'cvt.s.w $f2, $f2',
+    ]
+    diff = [(' ', op, op) for op in body]
+    diff.insert(4, ('o', '', 'neg.s $f0, $f4'))
+    diff.append(('o', 'neg.s $f0, $f4', ''))
+    [(family, fixed)] = variants(source, 'f', '', diff)
+    assert family == 'measured_inline_rounded_shift'
+    assert 'result = (f32)((value >= 0 ? value + 1 : value - 1) >> 1);' in fixed
+    assert not variants(source.replace('return result;', 'return result + adjusted;'), 'f', '', diff)
+    assert not variants(source.replace('s32 adjusted;', 'u32 adjusted;'), 'f', '', diff)
+    assert not variants(source, 'f', '#define value read_input()', diff)
+    assert not variants(source, 'f', '', [*diff[:-1], ('o', 'neg.s $f0, $f6', '')])

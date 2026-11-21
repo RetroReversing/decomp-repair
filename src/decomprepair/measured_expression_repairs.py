@@ -301,6 +301,46 @@ def _branch_field_update(part, name, header, rows, changed):
     return edit(part.source, changes)
 
 
+def _inline_rounded_shift(part, header, rows, changed):
+    """Keep the signed choice, shift and conversion in one expression for scheduling."""
+    if len(changed) != 2:
+        return None
+    first, second = changed
+    if first < 4 or second != first + 4:
+        return None
+    early, late = rows[first], rows[second]
+    if early != ('o', '', late[1]) or late[0] != 'o' or late[2] or not late[1].startswith('neg.s '):
+        return None
+    branch, negative, positive, shift = (row[1] for row in rows[first - 4:first])
+    integer_reg = re.fullmatch(rf'bltzl ({REG}), {NUM}', branch)
+    if not integer_reg:
+        return None
+    reg = integer_reg[1]
+    if (negative, positive, shift) != (f'addiu {reg}, {reg}, -1', f'addiu {reg}, {reg}, 1', f'sra {reg}, {reg}, 1'):
+        return None
+    transfer = re.fullmatch(rf'mtc1 {re.escape(reg)}, (\$f\d+)', rows[first + 1][1])
+    if not transfer or rows[first + 2][1] != 'nop' or rows[first + 3][1] != f'cvt.s.w {transfer[1]}, {transfer[1]}':
+        return None
+
+    shape = re.compile(
+        rf'\bif\s*\(\s*(?P<input>{IDENT})\s*>=\s*0\s*\)\s*{{\s*'
+        rf'(?P<temp>{IDENT})\s*=\s*(?P=input)\s*\+\s*1\s*;\s*}}\s*else\s*{{\s*'
+        rf'(?P=temp)\s*=\s*(?P=input)\s*-\s*1\s*;\s*}}\s*'
+        rf'(?P<result>{IDENT})\s*=\s*\(\s*(?P<cast>f32|float)\s*\)\s*\(\s*(?P=temp)\s*>>\s*1\s*\)\s*;')
+    hits = list(shape.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    value, temp, result = hit['input'], hit['temp'], hit['result']
+    locals_ = {decl['name']: decl['type'] for decl in locals_for(part)}
+    if (len({value, temp, result}) != 3 or locals_.get(value) != 's32' or locals_.get(temp) != 's32'
+            or len(re.findall(rf'\b{temp}\b', part.body)) != 4
+            or re.search(rf'(?m)^\s*#\s*define\s+(?:{value}|{temp}|{result})\b', header + '\n' + part.clean)
+            or re.search(r'\b(?:goto|asm|__asm__|volatile)\b', part.body)):
+        return None
+    return edit(part.source, [(*hit.span(), f'{result} = ({hit["cast"]})(({value} >= 0 ? {value} + 1 : {value} - 1) >> 1);')])
+
+
 def variants(source, name, header, rows):
     changed = [index for index,(marker,_,_) in enumerate(rows) if marker != ' ']
     if not 1 <= len(changed) <= 6 or not (part := view(source,name)):
@@ -317,4 +357,6 @@ def variants(source, name, header, rows):
         return [('measured_byte_lane_merge',candidate)]
     if candidate := _branch_field_update(part, name, header, rows, changed):
         return [('measured_branch_field_update', candidate)]
+    if candidate := _inline_rounded_shift(part, header, rows, changed):
+        return [('measured_inline_rounded_shift', candidate)]
     return measured_branch_shapes.variants(part, name, header, rows, changed)
