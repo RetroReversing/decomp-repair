@@ -283,3 +283,13 @@ def test_measured_halfword_argument_with_displaced_byte_pointer():
     ]
     assert not variants(source.replace('packet + 4', 'packet + 3'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[1:])
+
+
+def test_float_lookup_preserves_a_bias_after_converting_the_parameter():
+    source = ('extern M2C_UNK table;\nf32 f(f32 x) {\n'
+              '    return *(&table + ((((s32) x - 0x100) & 0xFFF) * 4));\n}')
+    rows = SHIFT + [('o', 'lwc1 $f0, %lo(table)($at)', 'cvt.s.w $f0, $f0')]
+    assert dict(variants(source, 'f', '', rows))['measured_float_table_scale'] == (
+        'extern f32 table[];\nf32 f(f32 x) {\n    return table[((s32) x - 0x100) & 0xFFF];\n}'
+    )
+    assert not variants(source.replace('0x100', 'bias'), 'f', '', rows)

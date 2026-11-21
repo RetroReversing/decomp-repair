@@ -3,7 +3,7 @@
 import re
 
 from .csource import _blank
-from .integer_repair_support import IDENT, edit, view
+from .integer_repair_support import IDENT, NUMBER, edit, view
 
 FAMILY = 'measured_narrow_use'
 REG = r'\$\w+'
@@ -65,8 +65,34 @@ def _remainder(source, part, rows):
     return []
 
 
+def _zero_store_width(source, name, rows):
+    """Narrow a leaf's sole casted zero store when its address code already matches."""
+    changes = [(wanted, current) for mark, wanted, current in rows if mark != ' ']
+    if len(changes) != 1:
+        return []
+    wanted, current = changes[0]
+    address = rf'\$zero, (?:0|0x0)?\((?P<base>{REG})\)'
+    store = re.fullmatch(rf's(?P<width>[bh]) {address}', wanted)
+    word = re.fullmatch(rf'sw {address}', current)
+    if not store or not word or store['base'] != word['base'] or not (part := view(source, name)):
+        return []
+    statement = re.fullmatch(
+        rf'\s*\*\(\s*(?P<type>[su]32)\s*\*\s*\)\s*'
+        rf'\(\(\s*{IDENT}\s*\*\s*{NUMBER}\s*\)\s*\+\s*{IDENT}\s*\)\s*=\s*0\s*;\s*',
+        part.body.rstrip('}\n '),
+    )
+    if not statement:
+        return []
+    start, end = statement.span('type')
+    offset = part.opening + 1
+    kind = 'u8' if store['width'] == 'b' else 'u16'
+    return [('measured_zero_store_width', edit(source, [(offset + start, offset + end, kind)]))]
+
+
 def variants(source, name, rows):
-    """Offer both repairs separately so the next diff can guide the other one."""
+    """Offer narrowing repairs separately so the next diff can guide the search."""
+    if candidate := _zero_store_width(source, name, rows):
+        return candidate
     if not any('andi ' in row[1] for row in rows):
         return []
     part = view(source, name)
