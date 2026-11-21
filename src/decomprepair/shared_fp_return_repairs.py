@@ -22,7 +22,7 @@ def _comparison(expr):
         elif depth == 0:
             outer.append(char)
     text = ''.join(outer)
-    return (not re.search(r'[?,|&]|(?<![<>])=',text)
+    return (not re.search(r'[?,|&^]|(?<![<>])=',text)
             and len(re.findall(r'(?<![<>])(?:<=|>=|<|>)(?![<>])',text)) == 1)
 
 
@@ -43,7 +43,7 @@ def variants(source, name, header=''):
     flag, label = end['flag'], end['label']
     yes, no = '__repair_fp_yes', '__repair_fp_no'
     macros = set(re.findall(r'^\s*#\s*define\s+('+IDENT+r')\b', source+'\n'+header, re.M))
-    if macros & {flag, label, 'if', 'goto', 'else', 'return'} or any(
+    if macros & {flag, label, 'if', 'goto', 'else', 'return', 's32', 'int'} or any(
             re.search(rf'\b{word}\b', source+'\n'+header) for word in (yes,no)):
         return []
     declaration = list(re.finditer(rf'(?m)^[ \t]*(?:s32|int)\s+{flag}\s*;', body))
