@@ -43,3 +43,12 @@ def test_requires_reversed_relocations_and_scoped_reads():
 def test_avoids_header_name_collision():
     [(_, source)] = variants(SOURCE, 'f', '#define initial_bound 5', ROWS)
     assert 's32 initial_bound_ = limit;' in source
+
+
+def test_try_one_shot_counter_reset_when_target_uses_the_branch_delay_slot():
+    rows = [('o', '', 'move $s1, $zero')] + ROWS + [('o', 'move $s1, $zero', 'andi $v0, $s1, 0xffff')]
+    [(family, fast), (fallback, _)] = variants(SOURCE, 'f', '', rows)
+    assert family == 'guard_reset_delay_slot'
+    assert 'flag = 0; do { index = 0; } while (0);' in fast
+    assert fallback == 'guard_reset_scheduling'
+    assert len(variants(SOURCE, 'f', '', rows[1:])) == 1
