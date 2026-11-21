@@ -88,11 +88,14 @@ def _scale_bases(rows, row, register, side=1):
     for i in range(row + 1, len(code) - 2):
         if hit := high.fullmatch(code[i]):
             base, name = re.escape(hit['base']), hit['name']
-            if (re.fullmatch(rf'addu {base}, {base}, {index}', code[i + 1])
-                    and re.fullmatch(rf'lw \$\w+, %lo\({name}\)\({base}\)', code[i + 2])):
-                result.add(name)
-                if hit['base'] == register:
-                    break
+            if re.fullmatch(rf'addu {base}, {base}, {index}', code[i + 1]):
+                immediate = re.fullmatch(rf'lw \$\w+, %lo\({name}\)\({base}\)', code[i + 2])
+                call_slot = (i + 3 < len(code) and re.fullmatch(rf'jal {IDENT}', code[i + 2])
+                             and re.fullmatch(rf'lw \$a[0-3], %lo\({name}\)\({base}\)', code[i + 3]))
+                if immediate or call_slot:
+                    result.add(name)
+                    if hit['base'] == register:
+                        break
         if re.match(rf'(?:[bj]\w*|\w+ {index},)\s', code[i]):
             break
 

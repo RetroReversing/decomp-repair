@@ -212,3 +212,28 @@ def test_halfword_byte_cursor_uses_the_measured_back_edge_step():
     assert 'cursor += 6;' in candidate
     assert not variants(source.replace('*(u16 *)cursor', '*cursor'), 'f', '', rows)
     assert not variants(source, 'f', '', [rows[0], (' ', 'lbu $a0, ($s4)', 'lbu $a0, ($s4)'), *rows[2:]])
+
+
+def test_repeated_word_table_accepts_a_direct_calls_argument_in_its_delay_slot():
+    source = """
+extern M2C_UNK table;
+void f(s32 one, s32 two) {
+    observe(*(&table + (one * 4)));
+    inspect(*(&table + (two * 4)));
+}
+"""
+    def same(op):
+        return (' ', op, op)
+    access = [
+        ('i', 'sll $v0, $v0, 2', 'sll $v0, $v0, 4'),
+        same('lui $a0, %hi(table)'),
+        same('addu $a0, $a0, $v0'),
+        same('lw $a0, %lo(table)($a0)'),
+    ]
+    rows = access + access[:3] + [same('jal inspect'), access[-1]]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_repeated_word_table'
+    assert 'observe(table[one]);' in fixed
+    assert 'inspect(table[two]);' in fixed
+    assert not variants(source, 'f', '', rows[:-1] + [same('lw $s0, %lo(table)($a0)')])
+    assert not variants(source, 'f', '', rows[:-1] + [same('lw $a0, %lo(other)($a0)')])

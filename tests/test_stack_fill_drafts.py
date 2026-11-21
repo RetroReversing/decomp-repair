@@ -122,3 +122,47 @@ def test_ascending_fill_uses_the_exclusive_end_to_recover_a_buffer():
     assert not ascending_applies(ASCENDING_ASM.replace('addiu $a0, $sp, 32', 'addiu $a0, $sp, 31'))
     assert rewrite_ascending(ASCENDING_SOURCE.replace('cursor += 1', 'cursor += 2'),
                              'write_page', ASCENDING_ASM) is None
+
+
+def test_word_clear_uses_frame_size_and_reuses_counter_for_idle_loop():
+    from decomprepair.stack_fill_drafts import rewrite_word_clear, word_clear_applies
+
+    source = """
+void f(void) {
+    s32 *ptr;
+    s32 count;
+    ptr = sp;
+    count = 4;
+    do {
+        *ptr = 0;
+        count -= 1;
+        ptr += 4;
+    } while (count != 0);
+    do {} while (1 != 0);
+}
+"""
+    asm = """
+addiu $sp, $sp, -64
+move $v1, $sp
+addiu $v0, $zero, 4
+.Lfill:
+sw $zero, ($v1)
+addiu $v0, $v0, -1
+bnez $v0, .Lfill
+addiu $v1, $v1, 4
+addiu $v0, $zero, 1
+.Lidle:
+bnez $v0, .Lidle
+nop
+jr $ra
+addiu $sp, $sp, 64
+"""
+    assert word_clear_applies(asm)
+    fixed = rewrite_word_clear(source, 'f', asm)
+    assert 's32 __repair_clear_words[16];' in fixed
+    assert 'ptr = __repair_clear_words;' in fixed
+    assert 'ptr += 1;' in fixed
+    assert 'count = 1;\n    do { } while (count != 0);' in fixed
+    assert not rewrite_word_clear(source.replace('count = 4', 'count = 5'), 'f', asm)
+    assert not word_clear_applies(asm.replace('bnez $v0, .Lidle', 'bnez $v0, .Lfill'))
+    assert not word_clear_applies(asm.replace('addiu $v0, $zero, 4', 'addiu $v0, $zero, 17'))
