@@ -208,10 +208,63 @@ def _stage_comparison_load(source, name, rows):
     return [('staged_float_comparison_load', edit(source, edits[0]))] if len(edits) == 1 else []
 
 
+def _reorder_swapped_float_locals(source, name, rows):
+    """Swap two declarations when the measured add and load exchange float registers."""
+    changed = [(mark, wanted, current) for mark, wanted, current in rows if mark != ' ']
+    if not 4 <= len(changed) <= 12 or any(mark != 'r' for mark, _, _ in changed):
+        return []
+    registers = set()
+    for _, wanted, current in changed:
+        target_regs = re.findall(F32_REG, wanted)
+        current_regs = re.findall(F32_REG, current)
+        if len(target_regs) != len(current_regs):
+            return []
+        registers.update(reg for a, b in zip(target_regs, current_regs) if a != b for reg in (a, b))
+    if len(registers) != 2:
+        return []
+    first, second = sorted(registers)
+    exchange = {first: second, second: first}
+    if any(wanted != re.sub(F32_REG, lambda hit: exchange.get(hit[0], hit[0]), current)
+           for _, wanted, current in changed):
+        return []
+    operations = [wanted for _, wanted, _ in changed]
+    arithmetic = re.compile(rf'add\.s ({F32_REG}), {F32_REG}, {F32_REG}')
+    adds = [hit[1] for op in operations if (hit := arithmetic.fullmatch(op)) and hit[1] in registers]
+    loads = [hit for op in operations if (hit := re.fullmatch(rf'lwc1 ({F32_REG}), ({NUMBER})?\(\$a[0-3]\)', op))]
+    if len(adds) != 1 or len(loads) != 1 or adds[0] == loads[0][1]:
+        return []
+    if not any(op.startswith(f'c.eq.s {adds[0]}, ') for op in operations):
+        return []
+    if not (part := view(source, name)) or re.search(r'\b(?:volatile|asm|__asm__|goto)\b', part.body):
+        return []
+    pattern = re.compile(
+        rf'(?m)^[ \t]*(?P<sum>{IDENT}) = (?P<expr>[^;{{}}]+);\s*(?:(?!\b(?P=sum)\b){IDENT} = 0;\s*)?'
+        rf'if \((?P=sum) != 0\.0f\) \{{\s*(?P<value>{IDENT}) = '
+        rf'M2C_FIELD\({IDENT}, f32 \*, (?P<offset>{NUMBER})\);'
+    )
+    edits = []
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
+        if '+' not in hit['expr'] or integer(hit['offset']) != integer(loads[0][2] or '0'):
+            continue
+        declarations = []
+        for key in ('sum', 'value'):
+            decls = list(re.compile(rf'(?m)^[ \t]*f32\s+(?P<name>{hit[key]})\s*;')
+                         .finditer(part.clean, part.opening + 1, hit.start()))
+            if len(decls) != 1 or block_path(part, decls[0].start()) != [part.opening]:
+                break
+            declarations.append(decls[0])
+        if len(declarations) == 2:
+            a, b = declarations
+            edits.append([(*a.span('name'), b['name']), (*b.span('name'), a['name'])])
+    return [('measured_float_declaration_swap', edit(source, edits[0]))] if len(edits) == 1 else []
+
+
 def repeated_products(source, name, rows):
     """Stage the same interpolation across conversions without reordering products."""
     if _multiply_conversion_sites(rows) < 2 or not (part := view(source, name)):
-        return _stage_subtracted_product(source, name, rows) or _stage_comparison_load(source, name, rows)
+        return (_stage_subtracted_product(source, name, rows)
+                or _stage_comparison_load(source, name, rows)
+                or _reorder_swapped_float_locals(source, name, rows))
     if re.search(r'\b(?:goto|for|while|do|asm|__asm__)\b', part.body):
         return []
     # Anchor at a statement so the added assignment never escapes an unbraced arm.

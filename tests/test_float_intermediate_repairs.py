@@ -75,3 +75,28 @@ def test_stage_left_field_for_two_swapped_comparison_loads():
     assert 'if (repair_compare_left < limit)' in fixed
     assert not repeated_products(source, 'f', rows[:-1])
     assert not repeated_products(source.replace('40', '44'), 'f', rows)
+
+
+def test_measured_exchange_swaps_only_the_two_plain_float_declarations():
+    from decomprepair.float_intermediate_repairs import repeated_products
+
+    source = '''void f(void *p) {
+    f32 value;
+    f32 other;
+    f32 total;
+    total = a + b;
+    status = 0;
+    if (total != 0.0f) {
+        value = M2C_FIELD(p, f32 *, 0);
+        use(value / total);
+    }
+}'''
+    rows = [('r', 'add.s $f10, $f4, $f0', 'add.s $f14, $f4, $f0'),
+            ('r', 'c.eq.s $f10, $f18', 'c.eq.s $f14, $f18'),
+            ('r', 'lwc1 $f14, ($a1)', 'lwc1 $f10, ($a1)'),
+            ('r', 'div.s $f4, $f0, $f10', 'div.s $f4, $f0, $f14')]
+    fixed = dict(repeated_products(source, 'f', rows))['measured_float_declaration_swap']
+    assert 'f32 total;\n    f32 other;\n    f32 value;' in fixed
+    assert fixed.split('total =', 1)[1] == source.split('total =', 1)[1]
+    assert not repeated_products(source.replace('*, 0', '*, 4'), 'f', rows)
+    assert not repeated_products(source, 'f', rows[:-1] + [('r', rows[-1][1], 'div.s $f4, $f0, $f2')])
