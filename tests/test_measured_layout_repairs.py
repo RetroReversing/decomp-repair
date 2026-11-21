@@ -38,3 +38,23 @@ def test_excess_frame_removes_only_an_unused_outer_array_of_matching_size():
     assert not unused_frame_array(source.replace('[8]','[16]'),'f',rows,report)
     assert not unused_frame_array(source,'f',rows,dict(report,local_deltas=[-8]))
     assert not unused_frame_array(source,'f',rows+[('r','nop','move $v0, $a0')],report)
+
+
+def test_trim_generated_overlay_without_touching_referenced_views():
+    source = '''void f(void) {
+    union {
+        unsigned char bytes[36];
+        struct { M2C_UNK value; } view_sp20;
+        struct { unsigned char pad[20]; f32 value; } view_sp34;
+    } m2c_initial_frame;
+    fill(&m2c_initial_frame.view_sp20.value);
+    use(m2c_initial_frame.view_sp34.value);
+}'''
+    report = {'frame_delta': -8, 'saved_deltas': [-8], 'local_deltas': [0]}
+    rows = [('s', 'addiu $sp, $sp, -80', 'addiu $sp, $sp, -88')]
+    assert unused_frame_array(source, 'f', rows, report) == [
+        ('measured_trim_frame_view', source.replace('bytes[36]', 'bytes[28]'))]
+    assert not unused_frame_array(source.replace('pad[20]', 'pad[28]'), 'f', rows, report)
+    assert not unused_frame_array(source.replace('use(m2c_initial_frame.view_sp34.value)', 'use(m2c_initial_frame.bytes)'),
+                                  'f', rows, report)
+    assert not unused_frame_array(source, 'f', rows, {**report, 'local_deltas': [4]})

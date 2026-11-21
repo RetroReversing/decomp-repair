@@ -35,7 +35,45 @@ def unused_frame_array(source, name, rows, report):
             continue
         replacement = '\n' * source[slice(*hit.span())].count('\n')
         return [('measured_unused_frame_array',edit(source,[(*hit.span(),replacement)]))]
-    return []
+    candidate = _trim_generated_frame_view(part, -delta)
+    return [('measured_trim_frame_view', candidate)] if candidate else []
+
+
+def _trim_generated_frame_view(part, excess):
+    """Reduce the generated backing extent without moving any typed views."""
+    if re.search(r'\b(?:volatile|asm|__asm__)\b', part.body):
+        return None
+    overlay = re.match(
+        r'\s*union\s*\{\s*unsigned char bytes\[(?P<count>\d+)\];(?P<views>.*?)'
+        r'\} m2c_initial_frame;', part.body, re.S,
+    )
+    if not overlay:
+        return None
+    member = re.compile(
+        r'struct \{ (?:unsigned char pad\[(?P<offset>\d+)\]; )?'
+        r'(?P<kind>M2C_UNK|[su](?:8|16|32)|f32) value; \} (?P<name>view_sp[0-9A-Fa-f]+);'
+    )
+    remaining = overlay['views']
+    fields = {}
+    while remaining := remaining.lstrip():
+        hit = member.match(remaining)
+        if not hit or hit['name'] in fields:
+            return None
+        width = {'s8': 1, 'u8': 1, 's16': 2, 'u16': 2}.get(hit['kind'], 4)
+        offset = int(hit['offset'] or 0)
+        if offset % width:
+            return None
+        fields[hit['name']] = offset + width
+        remaining = remaining[hit.end():]
+    count = int(overlay['count']) - excess
+    if not fields or count < max(fields.values()):
+        return None
+    tail = part.body[overlay.end():]
+    covered = re.sub(r'\bm2c_initial_frame\.(?:' + '|'.join(fields) + r')\.value\b', '', tail)
+    if covered == tail or re.search(r'\bm2c_initial_frame\b', covered):
+        return None
+    start, end = (part.opening + 1 + at for at in overlay.span('count'))
+    return edit(part.source, [(start, end, str(count))])
 
 
 def scoped_frame_array(source, name, rows, report):
