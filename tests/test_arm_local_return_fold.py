@@ -64,6 +64,13 @@ def test_return_collapse_and_packed_fold():
     assert any('high = (high & 0xFF) << 8;' in t and 'if (k)' not in t for _, t in a.variants(DRAFT, 'f'))
 
 
+def test_every_step_comes_as_one_child_first():
+    (family, text), *_ = a.variants(DRAFT, 'f')
+    assert family == a.FOLD
+    assert 'G0 = 0.0f;\n    G1 = 0.0f;' in text and 'x_arm' in text and 'y_arm' in text
+    assert 'if (k)' not in text and 'high = (high & 0xFF) << 8;' in text and 'do { } while (0);' in text
+
+
 def test_nothing_to_do():
     assert a.variants('s32 f(void) { return 0; }', 'f') == []
     assert a.variants('s32 g(void) { return 0; }', 'f') == []
