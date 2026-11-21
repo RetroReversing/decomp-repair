@@ -218,3 +218,37 @@ void f(void) {
     assert not variants(source.replace('index = 0;', 'index = read_tail();'), 'f', rows)
     assert not variants(source, 'f', rows, header='extern volatile s32 head;')
     assert not variants(source.replace('    tail = &storage;', '    if (ready)\n        tail = &storage;'), 'f', rows)
+
+
+def test_capture_indexed_base_before_stride():
+    source = """\
+extern void *table;
+void f(s32 index) {
+    s32 stride;
+    void *cursor;
+again:
+    stride = (index & 0xffff) * 40;
+    cursor = stride + M2C_FIELD(table, s32 *, 0);
+    consume(cursor);
+}
+"""
+    rows = [
+        ('r', 'lui $v0, %hi(table)', 'lui $a0, %hi(table)'),
+        ('r', 'lw $v0, %lo(table)($v0)', 'lw $a0, %lo(table)($a0)'),
+        (' ', 'andi $v1, $s0, 0xffff', 'andi $v1, $s0, 0xffff'),
+        ('o', '', 'sll $v0, $v1, 2'),
+        ('r', 'lw $a0, ($v0)', 'lw $a0, ($a0)'),
+        ('o', 'sll $v0, $v1, 2', ''),
+        (' ', 'addu $v0, $v0, $v1', 'addu $v0, $v0, $v1'),
+        (' ', 'sll $s1, $v0, 3', 'sll $s1, $v0, 3'),
+        (' ', 'addu $v1, $s1, $a0', 'addu $v1, $s1, $a0'),
+    ]
+    [(family, fixed)] = variants(source, 'f', rows)
+    assert family == 'measured_indexed_base_before_stride'
+    assert 'again:\n    repair_index_base = M2C_FIELD(table, s32 *, 0);\n    stride' in fixed
+    assert 'cursor = stride + repair_index_base;' in fixed
+    assert not variants(source.replace('* 40', '* 48'), 'f', rows)
+    assert not variants(source.replace('s32 *, 0)', 's32 *, 4)'), 'f', rows)
+    assert not variants(source, 'f', rows[:-1])
+    assert variants(source, 'f', rows, header='typedef volatile s32 vs32;')
+    assert not variants(source, 'f', rows, header='extern void *volatile table;')
