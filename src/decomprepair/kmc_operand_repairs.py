@@ -14,17 +14,30 @@ COMPARISON = re.compile(r'c\.(?:lt|le)\.[sd]\b')
 RELATION = {'<': '>', '>': '<', '<=': '>=', '>=': '<='}
 AND = re.compile(r'and\s+(\$\w+)\s*,\s*(\$\w+)\s*,\s*(\$\w+)')
 # A mask that needs a register: ~0x1c0, 0xFFFFFE3F, -449. (One that fits `andi` never gets a register operand.)
-MASK = r'(?:~\s*)?(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*|-\s*[0-9]+'
-READ = rf'{IDENT}(?:(?:->|\.){IDENT})*'
+MASK = r'(?:~\s*)?(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*|-\s*(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*'
+# A plain read: a name, a field chain, or m2c's own field macro on a name (a pure expression, safe to write twice).
+READ = rf'(?:{IDENT}(?:(?:->|\.){IDENT})*|M2C_FIELD\(\s*{IDENT}\s*,[^,()]*\*\s*,\s*{NUMBER}\s*\))'
+M2C_FIELD_DEFINITION = re.compile(r'#\s*define\s+M2C_FIELD\(\s*expr\s*,\s*type_ptr\s*,\s*offset\s*\)\s*'
+                                  r'\(\*\(type_ptr\)\(\(s8 \*\)\(expr\)\s*\+\s*\(offset\)\)\)')
+CONSTANT_LOAD = re.compile(r'addiu\s+(\$\w+)\s*,\s*\$zero\s*,\s*-')
 MASK_LIMIT = 6
 
 
 def mask_evidence(rows):
-    """An `and` whose two source registers are reversed, the result register unchanged."""
+    """The target has an `and` with a negative mask register first, or ours has the same `and` with its source
+    registers reversed (the result register unchanged). Either says the mask has to stay the first operand."""
+    constants = set()
     for marker, left, right in rows:
         a, b = AND.fullmatch(left.strip()), AND.fullmatch(right.strip())
         if marker != ' ' and a and b and a[2] != a[3] and a.groups() == (b[1], b[3], b[2]):
             return True
+        text = left.strip()
+        if load := CONSTANT_LOAD.match(text):
+            constants.add(load[1])
+        elif a and a[2] in constants and a[3] not in constants:
+            return True
+        elif (dest := re.match(r'\w+\s+(\$\w+)', text)) and not text.startswith(('sw', 'sb', 'sh', 'b', 'j')):
+            constants.discard(dest[1])
     return False
 
 
@@ -47,6 +60,8 @@ def mask_variants(source, name, part, macros):
     combine folds it back (`x & mask` is a subset of `mask`), and the operand order of the source survives.
     Only plain reads qualify: no calls, increments or dereferences of computed expressions."""
     body, found = part.body, []
+    if M2C_FIELD_DEFINITION.search(part.source[:part.opening]):
+        macros = macros - {'M2C_FIELD'}
     if macros & set(re.findall(IDENT, body)):
         return found
 
