@@ -143,3 +143,19 @@ def test_masked_loop_address_exposes_commuted_machine_add_in_integer_units():
     assert not variants(source.replace('void *base', 'u16 *base'), 'f', '', rows)
     assert not variants(source.replace(') * 4)', ') * 8)'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[1:])
+
+
+def test_halfword_copy_uses_measured_order_of_the_index_and_base():
+    source = '''void f(void *base, s32 index) {
+    void *dst;
+    dst = (index * 2) + base;
+    M2C_FIELD(dst, u16 *, 0) = (u16) M2C_FIELD(base, u16 *, 0);
+    M2C_FIELD(dst, u16 *, 2) = (u16) M2C_FIELD(base, u16 *, 2);
+}'''
+    rows = [(' ', op, op) for op in ('lhu $v0, ($v1)', 'sll $a0, $a1, 1')]
+    rows += [('r', 'addu $a0, $a0, $v1', 'addu $a0, $v1, $a0')]
+    rows += [(' ', op, op) for op in ('sh $v0, ($a0)', 'lhu $v0, 2($v1)', 'sh $v0, 2($a0)')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_copy_cursor_address']
+    assert 'dst = (void *)(index * 2 + (u32)base);' in fixed
+    assert not variants(source, 'f', '', rows[:-1])
+    assert not variants(source.replace('base, u16 *, 2', 'base, u16 *, 4'), 'f', '', rows)

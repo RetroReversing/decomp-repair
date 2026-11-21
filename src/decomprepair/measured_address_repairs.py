@@ -215,6 +215,49 @@ def _saved_global_call_offset(part, header, rows, change):
     return edit(part.source, matches) if len(matches) == 1 else None
 
 
+def _copy_cursor_address(part, rows, change):
+    """Use integer byte units for a measured destination address in a halfword copy."""
+    i, _, wanted, current = change
+    a, b = map(ADDU.fullmatch, (wanted, current))
+    if i < 2 or i + 3 >= len(rows) or not a or not b:
+        return None
+    dest, index, base = a.groups()
+    if index != dest or base == dest or b.groups() != (dest, base, index):
+        return None
+    shift = re.fullmatch(rf'sll {re.escape(index)}, \$a1, 1', rows[i - 1][1])
+    if not shift or rows[i - 1][1] != rows[i - 1][2]:
+        return None
+    offsets = []
+    for load_i, store_i in ((i - 2, i + 1), (i + 2, i + 3)):
+        load, store = rows[load_i][1], rows[store_i][1]
+        if load != rows[load_i][2] or store != rows[store_i][2]:
+            return None
+        read = re.fullmatch(rf'lhu ({REG}), ({NUMBER})?\({re.escape(base)}\)', load)
+        write = re.fullmatch(rf'sh ({REG}), ({NUMBER})?\({re.escape(dest)}\)', store)
+        if not read or not write or read[1] != write[1]:
+            return None
+        if integer(read[2] or '0') != integer(write[2] or '0'):
+            return None
+        offsets.append(integer(read[2] or '0'))
+    signature = re.search(rf'\bvoid\s*\*\s*(?P<base>{IDENT})\s*,\s*s32\s+(?P<index>{IDENT})\s*\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+    base, index = signature['base'], signature['index']
+    pattern = re.compile(rf'\b(?P<cursor>{IDENT}) = (?P<sum>\({index} \* 2\) \+ {base});')
+    hits = []
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
+        cursor = hit['cursor']
+        if not re.search(rf'\bvoid\s*\*\s*{cursor}\s*;', part.body):
+            continue
+        field = re.compile(rf'M2C_FIELD\({cursor}, u16 \*, ({NUMBER})\) = '
+                           rf'(?:\(u16\) )?M2C_FIELD\({base}, u16 \*, \1\);')
+        copied = {integer(m[1]) for m in field.finditer(part.clean, hit.end(), part.end)}
+        if set(offsets) <= copied:
+            hits.append((*hit.span('sum'), f'(void *)({index} * 2 + (u32){base})'))
+    return edit(part.source, hits) if len(hits) == 1 else None
+
+
 def variants(source, name, header, rows, symbols=None):
     changes = [(i,marker,left,right) for i,(marker,left,right) in enumerate(rows) if marker != ' ']
     if (not 1 <= len(changes) <= 6 or not (part := view(source,name))
@@ -223,6 +266,8 @@ def variants(source, name, header, rows, symbols=None):
     if len(changes) == 1:
         if candidate := _saved_global_call_offset(part, header, rows, changes[0]):
             return [('measured_saved_global_call_offset', candidate)]
+        if candidate := _copy_cursor_address(part, rows, changes[0]):
+            return [('measured_copy_cursor_address', candidate)]
         if candidate := _masked_loop_address(part, rows, changes[0]):
             return [('measured_masked_loop_address', candidate)]
         _,_,left,right = changes[0]
