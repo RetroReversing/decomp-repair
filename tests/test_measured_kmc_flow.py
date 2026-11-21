@@ -404,3 +404,24 @@ def test_packed_color_channels_requires_the_complete_register_swap():
     assert 'out->second = (red | alpha) | blue;' in candidate
     assert not variants(source.replace('255U', '254U'), 'probe', '', rows)
     assert not variants(source, 'probe', '', rows[:-1])
+
+
+def test_scaled_field_store_reuses_only_a_dead_unsigned_local():
+    source = """void probe(Buffer *out, u32 rate) {
+    u32 length;
+    length = rate / 160;
+    out->length = (length * 5) << 5;
+    consume(out->length);
+}"""
+    rows = measured(('sll $v0, $a0, 2', 'addu $v0, $v0, $a0'))
+    rows += [
+        ('r', 'sll $a0, $v0, 5', 'sll $v0, $v0, 5'),
+        (' ', 'beqz $v1, 0x178', 'beqz $v1, 0x178'),
+        ('r', 'sw $a0, 0x1214($s1)', 'sw $v0, 0x1214($s1)'),
+    ]
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_scaled_field_store'
+    assert '{ length = (length * 5) << 5; out->length = length; }' in candidate
+    assert not variants(source.replace('consume(out->length)', 'consume(length)'), 'probe', '', rows)
+    assert not variants(source, 'probe', '#define length count', rows)
+    assert not variants(source, 'probe', '', rows[:-1])
