@@ -444,3 +444,23 @@ s32 f(void) {
         bad_rows = [rows[0], ('r', rows[1][1], load), *rows[2:]]
         assert not p.shifted_call_variants(source, 'f', '', asm, bad_rows)
     assert not p.shifted_call_variants(source, 'f', 's32 allocate(s32);', asm, rows)
+
+
+def test_forward_a_missing_argument_when_a_byte_reload_and_earlier_calculation_are_shifted():
+    source = '''M2C_UNK send(u8); /* extern */
+s32 f(void) {
+    send(read_byte());
+    return 0;
+}
+'''
+    target = ['lbu $a1, 8($v1)', 'andi $v0, $a1, 0xff', 'addiu $v0, $a1, 1',
+              'jal send', 'lbu $a1, 8($v0)', 'jr $ra', 'nop']
+    edits = {0: 'lbu $a0, 8($v1)', 1: 'andi $v0, $a0, 0xff', 2: 'addiu $v0, $a0, 1', 4: 'lbu $a0, 8($v0)'}
+    rows = [('r', op, edits[i]) if i in edits else (' ', op, op) for i, op in enumerate(target)]
+    asm = '\n'.join(target)
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert 'send(__repair_incoming, read_byte());' in fixed
+    assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n'+asm, rows)
+    rows[0] = ('r', 'lbu $a1, 16($v1)', 'lbu $a0, 16($v1)')
+    assert not p.shifted_call_variants(source, 'f', '', asm, rows)
