@@ -68,3 +68,61 @@ def variants(source, name, asm):
     if stripped != text:
         result.insert(0, (FAMILY, stripped))
     return result
+
+
+_RECORD_WIDTHS = {'s8': 1, 'u8': 1, 's16': 2, 'u16': 2, 's32': 4, 'u32': 4}
+_RECORD_ACCESS = {1: 'sb|lb|lbu', 2: 'sh|lh|lhu', 4: 'sw|lw'}
+_RECORD_DECL = re.compile(
+    r'(?m)^[ \t]*(?P<kind>s8|u8|s16|u16|s32|u32)[ \t]+(?P<name>sp(?P<off>[0-9A-Fa-f]+));[ \t]*$'
+)
+_STACK_ADDRESS = re.compile(r'\baddiu\s+\$a[0-3]\s*,\s*\$sp\s*,\s*(0x[0-9a-fA-F]+|\d+)\b')
+
+
+def record_variants(source, name, asm, header=''):
+    """Keep the scalar prefix of an address-taken stack record at its measured offset."""
+    from .integer_repair_support import edit, view
+
+    if not asm or not (addresses := {int(text, 0) for text in _STACK_ADDRESS.findall(asm)}):
+        return []
+    floor = saved_floor(asm)
+    if floor is None or not (part := view(source, name)):
+        return []
+    if any(token in source + header for token in ('__repair_record_prefix', '__repair_record_bytes')):
+        return []
+    start = part.opening + 1
+    result = []
+    declarations = list(_RECORD_DECL.finditer(part.body))
+    for decl in declarations:
+        offset = int(decl['off'], 16)
+        kind, local = decl['kind'], decl['name']
+        width = _RECORD_WIDTHS[kind]
+        if offset not in addresses or offset >= floor or offset % width:
+            continue
+        previous = part.body[:decl.start()]
+        if previous.count('{') != previous.count('}'):
+            continue
+        # Other stack views are possible barriers even when this rule cannot rewrite them.
+        slots = {int(value, 16) for value in re.findall(r'\bsp([0-9A-Fa-f]+)\b', part.body)}
+        stop = min((other for other in slots if offset < other < floor), default=floor)
+        size = stop - offset
+        access = re.compile(rf'\b(?:{_RECORD_ACCESS[width]})\s+\$\w+\s*,\s*(0x[0-9a-fA-F]+|\d+)\(\$sp\)')
+        if size % width or not width < size <= 128 or offset not in {int(m, 0) for m in access.findall(asm)}:
+            continue
+        token = re.compile(rf'\b{local}\b')
+        if re.search(rf'(?m)^\s*#\s*define\s+{local}\b', header + '\n' + part.clean):
+            continue
+        uses = list(token.finditer(part.body))
+        if len(uses) < 3 or not re.search(rf'&\s*{local}\b', part.body):
+            continue
+        if any(re.search(r'(?:\.|->)\s*$', part.body[:use.start()]) for use in uses):
+            continue
+        if len(re.findall(rf'\b[A-Za-z_]\w*\s+\**{local}\s*(?=[;=,\[])', part.body)) != 1:
+            continue
+        new = f'struct {{ {kind} __repair_record_prefix; u8 __repair_record_bytes[{size-width}]; }} {local};'
+        edits = [(start+decl.start('kind'), start+decl.end(), new)]
+        edits.extend((start+hit.start(), start+hit.end(), f'{local}.__repair_record_prefix')
+                     for hit in uses if hit.start() != decl.start('name'))
+        result.append(('stack_record_extent', edit(source, edits)))
+        if len(result) >= 4:
+            break
+    return result

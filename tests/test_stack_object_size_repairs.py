@@ -31,3 +31,37 @@ def test_left_alone_when_used_by_value_or_word_sized():
     small = ASM.replace('0x94', '0x58').replace('0x90', '0x54')  # sp50 is a word: 0x50..0x54
     assert s.variants(by_value, 'f', small) == []
     assert s.variants(SOURCE, 'f', '') == []
+
+
+def test_stack_record_extent_keeps_scalar_reads_and_escaped_addresses():
+    from decomprepair.stack_object_size_repairs import record_variants
+
+    source = '''
+void f(void) {
+    s16 sp10;
+    read(&sp10);
+    if (sp10 == 3) {
+        sp10 = 4;
+    }
+    send(&sp10);
+}
+'''
+    asm = '''
+addiu $sp, $sp, -40
+sw $ra, 36($sp)
+sw $s0, 32($sp)
+jal read
+addiu $a0, $sp, 16
+lhu $v0, 16($sp)
+sh $v1, 16($sp)
+jal send
+addiu $a0, $sp, 16
+'''
+    [(family, fixed)] = record_variants(source, 'f', asm)
+    assert family == 'stack_record_extent'
+    assert 'struct { s16 __repair_record_prefix; u8 __repair_record_bytes[14]; } sp10;' in fixed
+    assert 'if (sp10.__repair_record_prefix == 3)' in fixed
+    assert 'send(&sp10.__repair_record_prefix);' in fixed
+    assert not record_variants(source, 'f', asm.replace('16($sp)', '18($sp)'))
+    assert not record_variants(source, 'f', asm, '#define sp10 other')
+    assert not record_variants(source.replace('sp10 = 4;', 's16 sp10 = 4;'), 'f', asm)
