@@ -107,7 +107,11 @@ def _flags_before_publish(part, rows, first, last, value, offset, pointer, resol
     if rows[first+2][1] != f'sw {pointer}, %lo({high[2]})({high[1]})':
         return None
     imm = re.fullmatch(rf'ori {re.escape(value)}, {re.escape(value)}, ({NUM})', rows[last+1][1])
-    low = re.fullmatch(rf'sw {re.escape(value)}, ({NUM})?\(\$v0\)', rows[last+2][1])
+    store_row = last + 2
+    if (store_row + 1 < len(rows) and rows[store_row][0] == ' '
+            and re.fullmatch(rf'lw \$ra, {NUM}\(\$sp\)', rows[store_row][1])):
+        store_row += 1
+    low = re.fullmatch(rf'sw {re.escape(value)}, ({NUM})?\(\$v0\)', rows[store_row][1])
     if not imm or not low or integer(low[1] or '0') != offset:
         return None
     pattern = re.compile(
@@ -312,14 +316,51 @@ def staged_field_masks(source, name, rows, header=''):
     return result[:4]
 
 
+def _publish_after_empty_loop(part, name, rows, changed, resolve, header):
+    init, earlier, later = changed
+    if rows[init][0] != 'i' or init + 6 >= earlier or '__repair_before_publish' in header:
+        return None
+    initial = re.fullmatch(rf'addiu \$v1, \$zero, ({NUM})', rows[init][1])
+    previous = re.fullmatch(rf'addiu \$v1, \$zero, ({NUM})', rows[init][2])
+    bound = re.fullmatch(rf'sltiu \$v0, \$v0, ({NUM})', rows[init + 3][1])
+    increment = 'addiu $v1, $v1, 1'
+    if (not initial or not previous or not bound or integer(initial[1]) + 1 != integer(previous[1])
+            or not 0 <= integer(initial[1]) < integer(bound[1]) < 256
+            or [rows[i][1] for i in (init + 1, init + 2, init + 5)] != [
+                increment, 'andi $v0, $v1, 0xff', increment]
+            or not rows[init + 4][1].startswith('bnez $v0, ')):
+        return None
+    snapshot = _measured_snapshot(part, name, rows, (earlier, later), resolve, header)
+    if not snapshot or not (updated := view(snapshot, name)):
+        return None
+    loop = re.search(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<counter>{IDENT}) = (?P<init>{NUM});\s*do \{{\s*'
+        rf'(?P=counter) \+= 1;\s*\}} while \(\(u32\) \((?P=counter) & 0xFF\) < (?P<bound>{NUM})[Uu]\);',
+        updated.body)
+    if not loop or integer(loop['init']) != integer(previous[1]) or integer(loop['bound']) != integer(bound[1]):
+        return None
+    var = loop['counter']
+    if len(re.findall(rf'\b{var}\b', updated.body)) != 4 or not re.search(rf'\bs32\s+{var}\s*;', updated.body):
+        return None
+    indent = loop['indent']
+    block = (f'{indent}{var} = {initial[1]};\n{indent}do {{\n{indent}    {var}++;\n'
+             f'{indent}}} while ((u8){var} < {loop["bound"]});\n{indent}{var}++;')
+    start = updated.opening + 1
+    return edit(snapshot, [(start + loop.start(), start + loop.end(), block)])
+
+
 def variants(source, name, rows, *, resolve=None, header=''):
     changed = [i for i,(mark,_,_) in enumerate(rows) if mark != ' ']
-    if len(changed) not in (2,4):
+    if len(changed) not in (2, 3, 4):
         return []
     part = view(source,name)
     if part is None:
         if (part := read(source,name)) and (candidate := reset_after_call(source,part,rows,changed)):
             return [('measured_call_reset_order',candidate)]
+        return []
+    if len(changed) == 3:
+        if candidate := _publish_after_empty_loop(part, name, rows, changed, resolve, header):
+            return [('measured_empty_loop_before_publish', candidate)]
         return []
     if candidate := _stage_scan_sentinel(part, header, rows, changed):
         return [('measured_scan_sentinel_order', candidate)]
