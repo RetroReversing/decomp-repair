@@ -10,7 +10,61 @@ def variants(part, name, header, rows, changed):
         return [('measured_divisor_store_order', candidate)]
     if len(changed) == 6 and (candidate := _mode_branches(part, header, rows, changed)):
         return [('measured_mode_defaults', candidate)]
+    if len(changed) == 3 and (candidate := _branch_constant_store(part, header, rows, changed)):
+        return [('measured_branch_constant_store', candidate)]
     return []
+
+
+def _branch_constant_store(part, header, rows, changed):
+    first, second, store = changed
+    if first < 3 or second != first + 1 or store != first + 3:
+        return None
+    default = re.fullmatch(rf'addiu (\$v[01]), \$zero, ({NUMBER})', rows[first][1])
+    if not default:
+        return None
+    register, value = default.groups()
+    alternate = re.fullmatch(rf'addiu {re.escape(register)}, \$zero, ({NUMBER})', rows[second][1])
+    output = re.fullmatch(rf'(sb|sh|sw) {re.escape(register)}, %lo\(({IDENT})\)\(\$at\)', rows[store][1])
+    load = re.fullmatch(rf'(?:lb|lbu|lh|lhu|lw) {re.escape(register)}, %lo\(({IDENT})\)\({re.escape(register)}\)',
+                        rows[first - 2][1])
+    if not alternate or not output or not load:
+        return None
+    branch = re.fullmatch(rf'bnez {re.escape(register)}, ({NUMBER})', rows[first - 1][1])
+    if (not branch or integer(branch[1]) != (store - 1) * 4
+            or rows[first - 3][1] != f'lui {register}, %hi({load[1]})'
+            or rows[store - 1][1] != f'lui $at, %hi({output[2]})'):
+        return None
+    other = '$v1' if register == '$v0' else '$v0'
+    if any(rows[i][0] != 'r' or rows[i][2] != rows[i][1].replace(register, other) for i in changed):
+        return None
+
+    scalar, destination = load[1], output[2]
+    shape = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<local>{IDENT})\s*=\s*(?P<default>{NUMBER});\s*'
+        rf'if\s*\(\s*{scalar}\s*==\s*0\s*\)\s*{{\s*(?P=local)\s*=\s*(?P<alt>{NUMBER});'
+        rf'\s*}}\s*{destination}\s*=\s*(?P=local);')
+    hits = list(shape.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    temporary = hit['local']
+    types = {decl['name']: decl['type'] for decl in locals_for(part)}
+    width = {'s8': 8, 'u8': 8, 's16': 16, 'u16': 16, 's32': 32, 'u32': 32}.get(types.get(temporary))
+    if width is None or re.search(rf'(?m)^\s*#\s*define\s+(?:{temporary}|{scalar}|{destination})\b',
+                                  header + '\n' + part.clean):
+        return None
+    values = integer(hit['default']), integer(hit['alt'])
+    signed = types[temporary].startswith('s')
+    bound = 1 << (width - signed)
+    lower = -bound if signed else 0
+    if values != (integer(value), integer(alternate[1])) or not all(lower <= n < bound for n in values):
+        return None
+    if len(re.findall(rf'\b{temporary}\b', part.clean[part.opening + 1:part.end])) != 4:
+        return None
+    indent = hit['indent']
+    return edit(part.source, [(*hit.span(), (
+        f'{indent}if ({scalar}) {{\n{indent}    {destination} = {hit["default"]};\n'
+        f'{indent}}} else {{\n{indent}    {destination} = {hit["alt"]};\n{indent}}}'))])
 
 
 def _mask_divisor(part, name, header, rows, changed):

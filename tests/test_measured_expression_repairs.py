@@ -208,3 +208,29 @@ void f(void *obj) {
     assert 'return;\n    } else {\n        value = 4;' in fixed
     assert not variants(source.replace('return;', 'if (maybe) return;'), 'f', '', diff)
     assert not variants(source.replace('mode == 7', 'mode == 8'), 'f', '', diff)
+
+
+def test_branch_constant_store_uses_the_condition_register():
+    source = """\
+extern s16 enabled;
+extern s8 setting;
+void f(void) {
+    s8 value;
+    value = 3;
+    if (enabled == 0) {
+        value = 5;
+    }
+    setting = value;
+}
+"""
+    target = ('lui $v0, %hi(enabled)|lh $v0, %lo(enabled)($v0)|bnez $v0, 0x14|'
+              'addiu $v0, $zero, 3|addiu $v0, $zero, 5|lui $at, %hi(setting)|sb $v0, %lo(setting)($at)')
+    candidate = target.replace('addiu $v0', 'addiu $v1').replace('sb $v0', 'sb $v1')
+    diff = rows(target, candidate)
+    [(family, fixed)] = variants(source, 'f', '', diff)
+    assert family == 'measured_branch_constant_store'
+    assert 'if (enabled) {\n        setting = 3;\n    } else {\n        setting = 5;' in fixed
+    assert not variants(source.replace('setting = value;', 'setting = value;\n    consume(value);'), 'f', '', diff)
+    assert not variants(source.replace('setting = value;', 'other = value;'), 'f', '', diff)
+    assert not variants(source, 'f', '#define setting set_value()', diff)
+    assert not variants(source, 'f', '', rows(target.replace('0x14', '0x18'), candidate.replace('0x14', '0x18')))
