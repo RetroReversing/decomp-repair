@@ -81,13 +81,18 @@ def _unknown_casts(source, clean, opening, end, asm):
     how wide each is. An N64 sine table read with `lh`, and `lhu` where its value was negated, was 92% as words and
     exact with each read typed as the target's: in the target's order when the counts agree, else all as the most
     common width. A float table read with `lwc1` was converted from an integer until read as `f32` (95.3% -> exact)."""
-    casts = list(re.finditer(r'\(\s*M2C_UNK\s*\*\s*\)\s*\(\s*\(\s*s8\s*\*\s*\)\s*&\s*(' + IDENT + r')\b',
+    casts = list(re.finditer(r'\(\s*(M2C_UNK|' + '|'.join(sorted(set(WIDTHS.values()))) + r')\s*\*\s*\)\s*\(+\s*\(\s*s8\s*\*\s*\)\s*\(*\s*&\s*(' + IDENT + r')\b',
                              clean[opening:end]))
     result = []
-    for symbol in dict.fromkeys(m[1] for m in casts):
-        mine = [m for m in casts if m[1] == symbol]
+    for symbol in dict.fromkeys(m[2] for m in casts):
+        mine = [m for m in casts if m[2] == symbol]
         found = _accesses(asm, symbol)
         if not found or set(found) <= {'s32'}:
+            continue
+        # a cast that already has a real type is only wrong when the target's loads never use that width: an N64
+        # function read a byte flag table as `*(s32 *)((s8 *)&D + i)` into a `u8`, which loads byte +3 (`D+0x3`,
+        # a different relocation); typed `u8` it read `lbu %lo(D)`.
+        if all(m[1] != 'M2C_UNK' for m in mine) and all(m[1] in found for m in mine):
             continue
         choices = []
         if len(found) == len(mine):
@@ -97,9 +102,8 @@ def _unknown_casts(source, clean, opening, end, asm):
         for kinds in choices:
             text = source
             for m, kind in sorted(zip(mine, kinds), key=lambda p: -p[0].start()):
-                at = opening + m.start()
-                cast = clean.find('M2C_UNK', at)
-                text = text[:cast] + kind + text[cast + len('M2C_UNK'):]
+                at = opening + m.start(1)
+                text = text[:at] + kind + text[at + len(m[1]):]
             if text != source and text not in [t for _, t in result]:
                 result.append((FAMILY, text))
     return result
