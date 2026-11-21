@@ -39,14 +39,23 @@ def variants(source, name, asm, header, toolchain):
         if candidate := _memcpy_wrapper(source, name, asm, header):
             return [('initial_forwarded_memcpy', candidate)]
     if toolchain == 'ido-7.1':
-        from . import ido_cursor_drafts, ido_indirect_event, ido_strided_cursor, ido_switch_reply
+        from . import ido_cursor_drafts, ido_indirect_event, ido_strided_cursor
 
         if candidate := ido_indirect_event.rewrite(source, name, asm, header):
             return [('ido_indirect_event', candidate)]
-        if candidate := ido_switch_reply.rewrite(source, name, asm, header):
-            return [(ido_switch_reply.FAMILY, candidate)]
-        return (ido_strided_cursor.rewrite(source, name, asm, header)
+        return (stack_variants(source, name, asm, header)
+                or ido_strided_cursor.rewrite(source, name, asm, header)
                 or ido_cursor_drafts.variants(source, name, asm, header))
+    return []
+
+
+def stack_variants(source, name, asm, header):
+    """Try the addressed IDO records shared by drafts and broken baselines."""
+    from . import ido_stack_iterators, ido_switch_reply
+
+    for rule in (ido_switch_reply, ido_stack_iterators):
+        if candidate := rule.rewrite(source, name, asm, header):
+            return [(rule.FAMILY, candidate)]
     return []
 
 
