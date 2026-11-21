@@ -94,3 +94,117 @@ def test_rejects_wrong_stack_extent_and_changed_retry():
     assert repair.rewrite(DRAFT, 'verify', ASM.replace('$a2, $zero, 16', '$a2, $zero, 20')) is None
     assert repair.rewrite(DRAFT, 'verify', ASM.replace('bne $v1, $v0, .Lexit', 'beq $v1, $v0, .Lexit')) is None
     assert repair.rewrite(DRAFT.replace('temp == 3', 'temp == 4'), 'verify', ASM) is None
+
+
+INLINE = '''
+addiu $sp, $sp, -40
+sw $s0, 32($sp)
+move $s0, $a0
+sw $ra, 36($sp)
+lbu $v0, 2($s0)
+beqz $v0, .Lstart
+nop
+jal select_bank
+sb $zero, 2($s0)
+move $v1, $v0
+bnez $v1, .Lexit
+nop
+.Lstart:
+lw $a0, 4($s0)
+lw $a1, 8($s0)
+addiu $a2, $zero, 5
+jal read_page
+addiu $a3, $sp, 16
+move $v1, $v0
+beqz $v1, .Lfirst
+addiu $v0, $zero, 3
+bne $v1, $v0, .Lexit
+move $v0, $v1
+lw $a0, 4($s0)
+lw $a1, 8($s0)
+addiu $a2, $zero, 5
+jal read_page
+addiu $a3, $sp, 16
+move $v1, $v0
+beqz $v1, .Lcompare
+move $a0, $zero
+j .Lexit
+nop
+.Lmismatch:
+j .Lexit
+addiu $v0, $zero, 4
+.Lfirst:
+move $a0, $zero
+.Lcompare:
+addiu $a1, $sp, 16
+.Lloop:
+addu $v0, $s0, $a0
+lbu $v1, 20($v0)
+lbu $v0, 0($a1)
+bne $v1, $v0, .Lmismatch
+addiu $a0, $a0, 1
+slti $v0, $a0, 16
+bnez $v0, .Lloop
+addiu $a1, $a1, 1
+move $v0, $zero
+.Lexit:
+lw $ra, 36($sp)
+lw $s0, 32($sp)
+jr $ra
+addiu $sp, $sp, 40
+'''
+INLINE_DRAFT = '''
+s32 verify(void *input) {
+    u8 buf;
+    s32 second;
+    s32 first;
+    s32 i;
+    s32 result;
+    u8 *cur;
+
+    if ((M2C_FIELD(input, u8 *, 2) == 0) || (M2C_FIELD(input, u8 *, 2) = 0U, result = select_bank(), (result == 0))) {
+        first = read_page(M2C_FIELD(input, s32 *, 4), M2C_FIELD(input, s32 *, 8), 5, &buf);
+        if (first != 0) {
+            result = first;
+            if (first == 3) {
+                second = read_page(M2C_FIELD(input, s32 *, 4), M2C_FIELD(input, s32 *, 8), 5, &buf);
+                i = 0;
+                if (second != 0) {
+                    return second;
+                }
+                goto compare;
+            }
+            return result;
+        }
+        i = 0;
+    compare:
+        cur = &buf;
+    bytes:
+        i += 1;
+        if (M2C_FIELD((input + i), u8 *, 20) == *cur) {
+            cur += 1;
+            if (i >= 16) {
+                result = 0;
+                return result;
+            }
+            goto bytes;
+        }
+        return 4;
+    }
+    return result;
+}
+'''
+
+
+def test_recovers_inline_compare_from_byte_zero_and_preserves_failure_code():
+    candidate = repair.rewrite_inline(INLINE_DRAFT, 'verify', INLINE)
+    assert 'u8 __repair_read_buffer[16];' in candidate
+    assert 'for (__repair_read_index = 0,' in candidate
+    assert 'if (__repair_read_item[20] != *__repair_read_cursor) return 4;' in candidate
+    assert candidate.count('read_page(') == 2
+
+
+def test_inline_requires_both_stack_addresses_and_the_loop_delay_slot():
+    assert repair.rewrite_inline(INLINE_DRAFT, 'verify', INLINE.replace('$a1, $sp, 16', '$a1, $sp, 20')) is None
+    assert repair.rewrite_inline(INLINE_DRAFT, 'verify', INLINE.replace('$a1, $a1, 1', '$a1, $a1, 2')) is None
+    assert repair.rewrite_inline(INLINE_DRAFT.replace('return 4;', 'return 3;'), 'verify', INLINE) is None

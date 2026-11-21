@@ -39,13 +39,13 @@ def _decimal(text):
     return re.sub(r'(?<!\w)0x[0-9a-fA-F]+\b', lambda hit: str(int(hit[0], 16)), text)
 
 
-def _evidence(asm):
-    if 'lbu' not in asm or 'sltu' not in asm or 'jal' not in asm:
+def _evidence(asm, pattern=TARGET):
+    if 'lbu' not in asm or 'jal' not in asm:
         return None
     text = '\n'.join(' '.join(line.split()) for line in _lines(asm)
                      if not line.startswith(('glabel ', 'endlabel ')))
     text = re.sub(r'(?m)^addu (\$\w+), (\$\w+), \$zero$', r'move \1, \2', text)
-    match = TARGET.fullmatch(_decimal(text))
+    match = pattern.fullmatch(_decimal(text))
     if not match:
         return None
     buffer, length, save, ret, frame = (int(match[key]) for key in ('buffer', 'length', 'save', 'return', 'frame'))
@@ -141,5 +141,133 @@ def rewrite(source, name, asm, header=''):
         }}
     }}
     return ({compare}((char *){arg} + {record}, {buffer}, {length}) != 0) * 2;
+'''
+    return edit(source, [(start, end, body)])
+
+
+INLINE_TARGET = re.compile(
+    rf'addiu \$sp, \$sp, -(?P<frame>{NUMBER})\nsw \$s0, (?P<save>{NUMBER})\(\$sp\)\n'
+    rf'move \$s0, \$a0\nsw \$ra, (?P<return>{NUMBER})\(\$sp\)\nlbu \$v0, (?P<flag>{NUMBER})\(\$s0\)\n'
+    rf'beqz \$v0, (?P<entry>{LABEL})\nnop\njal (?P<select>{IDENT})\nsb \$zero, (?P=flag)\(\$s0\)\n'
+    rf'move \$v1, \$v0\nbnez \$v1, (?P<exit>{LABEL})\nnop\n(?P=entry):\n'
+    + READ +
+    rf'move \$v1, \$v0\nbeqz \$v1, (?P<first_compare>{LABEL})\naddiu \$v0, \$zero, (?P<retry>{NUMBER})\n'
+    r'bne \$v1, \$v0, (?P=exit)\nmove \$v0, \$v1\n'
+    r'lw \$a0, (?P=handle)\(\$s0\)\nlw \$a1, (?P=channel)\(\$s0\)\n'
+    r'addiu \$a2, \$zero, (?P=page)\njal (?P=read)\naddiu \$a3, \$sp, (?P=buffer)\n'
+    rf'move \$v1, \$v0\nbeqz \$v1, (?P<compare>{LABEL})\nmove \$a0, \$zero\nj (?P=exit)\nnop\n'
+    rf'(?P<mismatch>{LABEL}):\nj (?P=exit)\naddiu \$v0, \$zero, (?P<failure>{NUMBER})\n'
+    r'(?P=first_compare):\nmove \$a0, \$zero\n(?P=compare):\naddiu \$a1, \$sp, (?P=buffer)\n'
+    rf'(?P<loop>{LABEL}):\naddu \$v0, \$s0, \$a0\nlbu \$v1, (?P<record>{NUMBER})\(\$v0\)\n'
+    r'lbu \$v0, (?:0)?\(\$a1\)\nbne \$v1, \$v0, (?P=mismatch)\naddiu \$a0, \$a0, 1\n'
+    rf'slti \$v0, \$a0, (?P<length>{NUMBER})\nbnez \$v0, (?P=loop)\naddiu \$a1, \$a1, 1\n'
+    r'move \$v0, \$zero\n(?P=exit):\nlw \$ra, (?P=return)\(\$sp\)\nlw \$s0, (?P=save)\(\$sp\)\n'
+    r'jr \$ra\naddiu \$sp, \$sp, (?P=frame)'
+)
+
+
+def inline_applies(asm):
+    return _evidence(asm, INLINE_TARGET) is not None
+
+
+def _inline_source(target, arg, current):
+    flag, handle, channel, page, record, length, retry, failure = (
+        target[key] for key in ('flag', 'handle', 'channel', 'page', 'record', 'length', 'retry', 'failure'))
+    select, read = target['select'], target['read']
+    read_args = f'M2C_FIELD({arg}, s32 *, {handle}), M2C_FIELD({arg}, s32 *, {channel}), {page}'
+    retry_decl = '' if current else 's32 @second;'
+    buffer_result = '@first' if current else '@second'
+    phase_decl = 's32 @phase;' if current else ''
+    phase = '@phase' if current else '@result'
+    return _shape(f'''
+        u8 @buffer;
+        {retry_decl}
+        s32 @first;
+        s32 @index;
+        s32 @result;
+        {phase_decl}
+        u8 *@cursor;
+
+        if ((M2C_FIELD({arg}, u8 *, {flag}) == 0) ||
+            (M2C_FIELD({arg}, u8 *, {flag}) = 0U, @result = {select}(), (@result == 0))) {{
+            @first = {read}({read_args}, &@buffer);
+            if (@first != 0) {{
+                {phase} = @first;
+                if (@first == {retry}) {{
+                    {buffer_result} = {read}({read_args}, &@buffer);
+                    @index = 0;
+                    if ({buffer_result} != 0) {{
+                        return {buffer_result};
+                    }}
+                    goto @entry;
+                }}
+                return {phase};
+            }}
+            @index = 0;
+        @entry:
+            @cursor = &@buffer;
+        @loop:
+            @index += 1;
+            if (M2C_FIELD(({arg} + @index), u8 *, {record}) == *@cursor) {{
+                @cursor += 1;
+                if (@index >= {length}) {{
+                    @result = 0;
+                    return @result;
+                }}
+                goto @loop;
+            }}
+            return {failure};
+        }}
+        return @result;
+    ''')
+
+
+def rewrite_inline(source, name, asm, header=''):
+    """Restore the byte buffer, counting the comparison from the first byte."""
+    if 'M2C_FIELD' not in source or PREFIX in source + header or not (target := _evidence(asm, INLINE_TARGET)):
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    signature = re.search(rf'\bs32\s+{re.escape(name)}\(void \*(?P<arg>{IDENT})\)\s*$', part.clean[:part.opening])
+    if not signature:
+        return None
+    arg = signature['arg']
+    start = part.opening + 1
+    end = part.clean.rfind('}', start, part.end)
+    text = ' '.join(_decimal(part.clean[start:end]).split())
+    draft = next((hit for current in (False, True)
+                  if (hit := _inline_source(target, arg, current).fullmatch(text))), None)
+    if not draft or len(set(draft.groups())) != len(draft.groups()) or arg in draft.groups():
+        return None
+
+    flag, handle, channel, page, record, length, retry, failure = (
+        target[key] for key in ('flag', 'handle', 'channel', 'page', 'record', 'length', 'retry', 'failure'))
+    select, read = target['select'], target['read']
+    buffer, error, index, cursor, item, compare = (
+        PREFIX + key for key in ('buffer', 'error', 'index', 'cursor', 'item', 'compare'))
+    args = f'M2C_FIELD({arg}, s32 *, {handle}), M2C_FIELD({arg}, s32 *, {channel}), {page}, {buffer}'
+    body = f'''
+    u8 {buffer}[{length}];
+    s32 {error};
+    s32 {index};
+    u8 *{cursor};
+
+    if (M2C_FIELD({arg}, u8 *, {flag}) != 0) {{
+        M2C_FIELD({arg}, u8 *, {flag}) = 0;
+        {error} = {select}();
+        if ({error} != 0) return {error};
+    }}
+    {error} = {read}({args});
+    if ({error} == 0) goto {compare};
+    if ({error} != {retry}) return {error};
+    {error} = {read}({args});
+    if ({error} != 0) return {error};
+{compare}:
+    for ({index} = 0, {cursor} = {buffer}; {index} < {length}; {index}++, {cursor}++) {{
+        u8 *{item} = (u8 *){arg} + {index};
+        if ({item}[{record}] != *{cursor}) return {failure};
+    }}
+    return 0;
 '''
     return edit(source, [(start, end, body)])
