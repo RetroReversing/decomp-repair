@@ -253,3 +253,52 @@ def test_measured_carriers(family, source, code, changes, expected, nearby):
 def test_stack_buffer_leaves_an_existing_macro_alone():
     _, source, code, changes, _, _ = CASES[2]
     assert not variants(source, 'f', '#define __repair_text output', rows(code, changes))
+
+
+def test_interpolation_load_can_feed_a_store_back_to_the_same_field():
+    _, source, code, changes, _, _ = CASES[4]
+    source = source.replace('result = ((8.0f - value) * 0.2f) + value;',
+                            'M2C_FIELD(cell, f32 *, 12) = (f32) (((8.0f - value) * 0.2f) + value);')
+    source = source.replace('    M2C_FIELD(cell, f32 *, 12) = result;\n', '')
+    code = code.replace('mtc1 $at, $f0', 'mtc1 $at, $f8').replace('sub.s $f0, $f0', 'sub.s $f0, $f8')
+    [(label, fixed)] = variants(source, 'f', '', rows(code, changes))
+    assert label == 'measured_float_interpolation_load'
+    assert fixed.count('M2C_FIELD(cell, f32 *, 12)') == 4
+    assert '0.2f) + (M2C_FIELD(cell, f32 *, 12)));' in fixed
+    wrong_field = source.replace('cell, f32 *, 12) =', 'cell, f32 *, 20) =')
+    assert not variants(wrong_field, 'f', '', rows(code, changes))
+
+
+def test_indexed_word_stores_use_byte_strides_and_fill_the_return_slot():
+    names = ('low', 'high', 'top', 'bottom')
+    fields = (4, 8, 12, 16)
+    source = ''.join(f'extern M2C_UNK {symbol};\n' for symbol in names)
+    source += 'void f(void *item) {\n    s32 offset;\n    offset = i * 24;\n'
+    source += ''.join(f'    *(&{symbol} + offset) = M2C_FIELD(item, s32 *, {field});\n'
+                      for symbol, field in zip(names, fields))
+    source += '}\n'
+    code = '''lui $v1, %hi(i)
+lw $v1, %lo(i)($v1)
+lw $a1, 4($a0)
+sll $v0, $v1, 1
+addu $v0, $v0, $v1
+sll $v0, $v0, 3
+'''
+    for idx, (symbol, field) in enumerate(zip(names, fields)):
+        if idx:
+            code += f'lw $v1, {field}($a0)\n'
+        code += f'lui $at, %hi({symbol})\naddu $at, $at, $v0\n'
+        if idx == 3:
+            code += 'jr $ra\n'
+        reg = '$a1' if not idx else '$v1'
+        code += f'sw {reg}, %lo({symbol})($at)\n'
+    last = 'sw $v1, %lo(bottom)($at)'
+    changes = {'sll $v0, $v0, 3': 'sll $v0, $v0, 5', last: 'nop', '': last}
+    delta = rows(code, changes)
+    [(label, fixed)] = variants(source, 'f', '', delta)
+    assert label == 'measured_indexed_byte_stores'
+    line = fixed.splitlines()[-1]
+    assert 'offset = i * 24;' in line
+    assert all(f'*(s32 *)((u8 *)&{symbol} + offset)' in line for symbol in names)
+    assert line.endswith('16); }')
+    assert not variants(source.replace('16);', '20);'), 'f', '', delta)

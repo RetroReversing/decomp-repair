@@ -180,3 +180,41 @@ void f(s32 input) {
     assert 'notify(void);' in fixed and '} else {\n        notify();' in fixed
     assert not variants(source, 'f', 'void notify(s32);', rows)
     assert not variants(source.replace('finish(result', 'finish(input'), 'f', '', rows)
+
+
+def test_early_exit_uses_argument_register_already_written_by_the_guard():
+    rows = measured('''
+beqz $v0, 64
+addiu $a0, $zero, 6
+lui $v0, %hi(table)
+lw $v0, %lo(table)($v0)
+lhu $v1, 12($v0)
+addiu $v0, $zero, 8
+beq $v1, $v0, 64
+addiu $a0, $zero, 6
+jal reset
+nop
+j f+156
+nop
+''')
+    rows[9] = ('|', 'nop', 'addiu $a0, $zero, 6')
+    rows += [(' ', '', '')] * 30
+    source = '''
+void reset(s32);
+void f(void) {
+    s32 a;
+    void *item;
+    if (((flag1 != 0) || (flag2 != 0) || (flag3 != 0)) && (M2C_FIELD(M2C_FIELD(&state, void **, 16), u16 *, 12) != 8)) {
+        reset(6);
+        return;
+    }
+    a = prepare();
+    finish(a);
+}
+'''
+    [(label, fixed)] = variants(source, 'f', '', rows)
+    assert label == 'measured_guard_exit_without_inferred_argument'
+    assert 'void reset(void);' in fixed and 'reset();' in fixed
+    assert '    a = prepare();' in fixed
+    assert not variants(source, 'f', 'void reset(s32);', rows)
+    assert not variants(source.replace('!= 8', '!= 9'), 'f', '', rows)
