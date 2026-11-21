@@ -39,11 +39,12 @@ def variants(source, name, asm, header, toolchain):
         if candidate := _memcpy_wrapper(source, name, asm, header):
             return [('initial_forwarded_memcpy', candidate)]
     if toolchain == 'ido-7.1':
-        from . import ido_cursor_drafts, ido_indirect_event
+        from . import ido_cursor_drafts, ido_indirect_event, ido_strided_cursor
 
         if candidate := ido_indirect_event.rewrite(source, name, asm, header):
             return [('ido_indirect_event', candidate)]
-        return ido_cursor_drafts.variants(source, name, asm, header)
+        return (ido_strided_cursor.rewrite(source, name, asm, header)
+                or ido_cursor_drafts.variants(source, name, asm, header))
     return []
 
 
