@@ -45,6 +45,9 @@ def _code_only(text: str) -> str:
     return clean
 
 
+_ATTRIBUTE = re.compile(r"\b(?:__attribute__\s*\(\([^()]*(?:\([^()]*\)[^()]*)*\)\)|__declspec\s*\([^()]*(?:\([^()]*\)[^()]*)*\))")
+
+
 def find(text: str, name: str) -> tuple[int, int] | None:
     """(start, end) of the definition of `name`, or of its asm stub; None when absent."""
     clean = _code_only(text)
@@ -60,6 +63,9 @@ def find(text: str, name: str) -> tuple[int, int] | None:
                        clean.rfind("}", 0, m.start())) + 1
         prefix = clean[boundary:m.start()]
         prefix = re.sub(r"(?m)^[ \t]*#[^\n]*", "", prefix).strip()
+        # a parenthesized attribute isn't an expression: `static __attribute__((always_inline)) void f(`, MSVC's
+        # `__declspec(noinline) void f(` (PC and Xbox C)
+        prefix = _ATTRIBUTE.sub(" ", prefix)
         if re.search(r"[=()+/!|%]", prefix) or re.search(r"\b(?:for|while|return|if|switch)\b", prefix):
             continue
         # walk to the end of the parameter list
