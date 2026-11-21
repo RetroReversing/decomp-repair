@@ -619,9 +619,18 @@ def _guarded_halfword_table(part, header, rows, row, register, amount):
 
 def _scaled_global_call(part, header, rows, row, register, amount):
     """The shifted byte index and a relocated base are passed as one argument."""
-    if not re.fullmatch(r'\$a[0-3]', register) or row + 2 >= len(rows):
+    if row + 2 >= len(rows):
         return None
     following = rows[row + 1:row + 4]
+    scratch_index = re.fullmatch(r'\$v[01]', register)
+    argument = register
+    if scratch_index:
+        load_base = re.fullmatch(rf'lui (\$a[0-3]), %hi\(({IDENT})\)', following[0][1])
+        if not load_base:
+            return None
+        argument = load_base[1]
+    elif not re.fullmatch(r'\$a[0-3]', register):
+        return None
     first, second = (entry[1] for entry in following[:2])
     delay_call = re.fullmatch(rf'jal ({IDENT})', first)
     if delay_call:
@@ -631,13 +640,13 @@ def _scaled_global_call(part, header, rows, row, register, amount):
         table = _preloaded_base(rows, row, add[1])
         callee = delay_call
     else:
-        binding = _scaled_call_binding(rows, row, register, following)
+        binding = _scaled_call_binding(rows, row, argument, following, index=register)
         if not binding:
             return None
         table, callee = binding
     if not table or not (
         _read_declaration(part, header, table, 1)
-        or (delay_call and _read_declaration(part, header, table, 1, kind='s32'))
+        or ((delay_call or scratch_index) and _read_declaration(part, header, table, 1, kind='s32'))
     ):
         return None
     sites = list(calls(part, callee[1]))
@@ -646,7 +655,7 @@ def _scaled_global_call(part, header, rows, row, register, amount):
     start, end = sites[0]
     args = part.clean[start:end]
     # Require all earlier source arguments to be simple, so commas identify this slot.
-    prefix = rf'(?:\s*(?:{IDENT}|{NUMBER})\s*,){{{register[-1]}}}'
+    prefix = rf'(?:\s*(?:{IDENT}|{NUMBER})\s*,){{{argument[-1]}}}'
     hit = re.match(rf'{prefix}\s*\({IDENT} \* (?P<stride>{NUMBER})\) \+ (?P<base>&{table})\s*(?=,|$)', args)
     if not hit or not (stride := integer(hit['stride'])) or stride & -stride != 1 << amount:
         return None
@@ -654,16 +663,17 @@ def _scaled_global_call(part, header, rows, row, register, amount):
     return edit(part.source, [(pos, pos, '(u8 *)')])
 
 
-def _scaled_call_binding(rows, row, register, following):
+def _scaled_call_binding(rows, row, register, following, *, index):
     hi, lo, add = ([entry[1] for entry in following] + [''])[:3]
-    base = re.fullmatch(rf'lui (\$v[01]), %hi\(({IDENT})\)', hi)
+    base_register = re.escape(register) if index != register else r'\$v[01]'
+    base = re.fullmatch(rf'lui ({base_register}), %hi\(({IDENT})\)', hi)
     if (base and lo == f'addiu {base[1]}, {base[1]}, %lo({base[2]})'
-            and add == f'addu {register}, {register}, {base[1]}'
+            and add == f'addu {register}, {index}, {base[1]}'
             and all(mark == ' ' and a == b for mark, a, b in following)):
         table, call_start = base[2], row + 4
     else:
         saved = re.fullmatch(rf'addu {re.escape(register)}, {re.escape(register)}, (\$s[0-7])', hi)
-        if not saved or tuple(following[0]) != (' ', hi, hi):
+        if index != register or not saved or tuple(following[0]) != (' ', hi, hi):
             return None
         table = _preloaded_base(rows, row, saved[1])
         if not table:
