@@ -1,4 +1,4 @@
-"""Recover one stack buffer behind a descending byte fill and a call."""
+"""Recover one stack buffer behind a byte fill and a call."""
 
 import re
 
@@ -94,4 +94,91 @@ def rewrite(source, name, asm, header=''):
     if ({write}({args}, (M2C_UNK *){local}, 0) == 0) {{
         {check} = {byte};
     }}
+''')])
+
+
+ASCENDING = re.compile(
+    r'addiu \$sp, \$sp, -(?P<frame>\d+)\nsw \$ra, (?P<save>\d+)\(\$sp\)\nmove \$a1, \$a0\n'
+    r'addiu \$v1, \$sp, (?P<start>\d+)\naddiu \$a0, \$sp, (?P=save)\n(?P<loop>\.L\w+):\n'
+    r'lbu \$v0, (?P<value>\d+)\(\$a1\)\nsb \$v0, (?:0)?\(\$v1\)\naddiu \$v1, \$v1, 1\n'
+    r'slt \$v0, \$v1, \$a0\nbnez \$v0, (?P=loop)\naddiu \$a2, \$zero, (?P<page>\d+)\n'
+    r'sw \$zero, 16\(\$sp\)\nlw \$a0, (?P<handle>\d+)\(\$a1\)\nlw \$a1, (?P<channel>\d+)\(\$a1\)\n'
+    rf'jal (?P<write>{IDENT})\naddiu \$a3, \$sp, (?P=start)\nlw \$ra, (?P=save)\(\$sp\)\n'
+    r'jr \$ra\naddiu \$sp, \$sp, (?P=frame)',
+)
+
+
+def _ascending(asm):
+    if 'lbu' not in asm or 'slt' not in asm or 'jal' not in asm:
+        return None
+    text = '\n'.join(' '.join(line.split()) for line in _lines(asm)
+                     if not line.startswith(('glabel ', 'endlabel ')))
+    text = re.sub(r'(?m)^addu (\$\w+), (\$\w+), \$zero$', r'move \1, \2', text)
+    target = ASCENDING.fullmatch(_decimal(text))
+    if target:
+        start, save, frame = (int(target[key]) for key in ('start', 'save', 'frame'))
+        if 24 <= start < save and start % 4 == 0 and 4 <= save - start <= 64 and save + 4 <= frame:
+            return target
+    return None
+
+
+def ascending_applies(asm):
+    return _ascending(asm) is not None
+
+
+def rewrite_ascending(source, name, asm, header=''):
+    """Fill one byte array up to the exclusive end shown by the original stack addresses."""
+    local = '__repair_fill_buffer'
+    index = '__repair_fill_index'
+    if 'M2C_FIELD' not in source or any(token in source + header for token in (local, index)):
+        return None
+    if not (target := _ascending(asm)) or not (part := view(source, name)):
+        return None
+    signature = re.search(rf'\bvoid\s+{re.escape(name)}\s*\(\s*void\s*\*\s*(?P<arg>{IDENT})\s*\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+    arg = signature['arg']
+    handle, channel, page, value, write = (target[key] for key in ('handle', 'channel', 'page', 'value', 'write'))
+    args = f'M2C_FIELD({arg}, s32 *, {handle}), M2C_FIELD({arg}, s32 *, {channel}), {page}'
+    field = f'M2C_FIELD({arg}, u8 *, {value})'
+    first = f'sp{int(target["start"]):X}'
+    last = f'unksp{int(target["save"]):X}'
+    extent = int(target['save']) - int(target['start'])
+
+    start = part.opening + 1
+    end = part.clean.rfind('}', start, part.end)
+    body = ' '.join(_decimal(part.clean[start:end]).split())
+    for declaration, lower, upper in (
+        (f'u8 {first};', f'&{first}', f'&{last}'),
+        (f' union {{ unsigned char bytes[{int(target["frame"])}]; '
+         f'struct {{ unsigned char pad[{target["start"]}]; u8 value; }} view_{first}; '
+         f'struct {{ unsigned char pad[{target["save"]}]; s32 value; }} view_{last}; }} m2c_initial_frame;',
+         f'&m2c_initial_frame.view_{first}.value', f'&m2c_initial_frame.view_{last}.value'),
+    ):
+        shape = _shape(f'''
+            {declaration}
+            u8 *@cursor;
+            @cursor = {lower};
+            do {{
+                *@cursor = {field};
+                @cursor += 1;
+            }} while ((s32) @cursor < (s32) {upper});
+            {write}({args}, {lower}, 0);
+        ''')
+        if (draft := shape.fullmatch(body)) and draft['cursor'] != arg:
+            break
+    else:
+        return None
+
+    return edit(source, [(start, end, f'''
+    u8 {local}[{extent}];
+    s32 {index};
+
+    {index} = 0;
+    do {{
+        {local}[{index}] = {field};
+        {index} += 1;
+    }} while ({index} < {extent});
+    {write}({args}, {local}, 0);
 ''')])
