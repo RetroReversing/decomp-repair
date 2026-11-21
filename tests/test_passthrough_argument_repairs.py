@@ -73,3 +73,32 @@ addiu $sp, $sp, 0x18
     assert p.missing_entry_argument(source.replace('g(2)', 'g(0)'), 'f',
                                     asm.replace('addiu $a1, $zero, 0x2', 'addu $a1, $zero, $zero'))
     assert p.missing_entry_argument(source.replace('g(2)', 'g(-1)'), 'f', asm.replace(' 0x2\n', ' -0x1\n'))
+
+
+def test_address_wrapper_can_have_a_second_call_after_forwarding_the_first_argument():
+    source = '''M2C_UNK load(M2C_UNK *); /* extern */
+extern M2C_UNK table;
+void f(void) {
+    load(&table);
+    finish();
+}
+'''
+    asm = '''addiu $sp, $sp, -24
+sw $ra, 16($sp)
+lui $a1, %hi(table)
+jal load
+addiu $a1, $a1, %lo(table)
+jal finish
+nop
+lw $ra, 16($sp)
+jr $ra
+addiu $sp, $sp, 24
+'''
+    fixed = p.missing_entry_argument(source, 'f', asm)
+    assert fixed
+    assert 'M2C_UNK load(s32, M2C_UNK *);' in fixed
+    assert 'void f(s32 arg0)' in fixed
+    assert 'load(arg0, &table);\n    finish();' in fixed
+    assert p.missing_entry_argument(source, 'f', asm.replace('lui $a1', 'lui $a0')) is None
+    assert p.missing_entry_argument(source, 'f', asm.replace('jal finish', 'jal cleanup')) is None
+    assert p.missing_entry_argument(source, 'f', asm, 'void load(void *);') is None

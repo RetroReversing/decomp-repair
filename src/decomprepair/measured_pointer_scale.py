@@ -3,20 +3,23 @@
 import re
 
 from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for, view
+from .pattern_repairs import close
 
+WRITE_SUFFIX = re.compile(r'\s*(?:=(?!=)|(?:[-+*/%&|^]|<<|>>)=|\+\+|--)')
 SHIFT = re.compile(rf'sll\s+(\$\w+),\s*(\$\w+),\s*({NUMBER})')
 
 
 def _word_shift(rows):
     hits = []
-    for mark, target, current in rows:
+    for row, (mark, target, current) in enumerate(rows):
         if mark == ' ':
             continue
         wanted, staged = SHIFT.fullmatch(target), SHIFT.fullmatch(current)
         if wanted and staged and wanted.groups()[:2] == staged.groups()[:2]:
-            if integer(wanted[3]) == 2 and integer(staged[3]) == 4:
-                hits.append(wanted[1])
-    return len(hits) == 1
+            amount = integer(wanted[3])
+            if 2 <= amount <= 29 and integer(staged[3]) == amount + 2:
+                hits.append((row, wanted[1], amount))
+    return hits[0] if len(hits) == 1 else None
 
 
 def _float_table(part, name, header, rows):
@@ -76,11 +79,106 @@ def _stage_call(part, rows):
     return None
 
 
+def _scale_bases(rows, row, register):
+    """Find word loads using the shifted register and a corroborating table relocation."""
+    code = [target for _, target, _ in rows]
+    index = re.escape(register)
+    high = re.compile(rf'lui (?P<base>\$\w+), %hi\((?P<name>{IDENT})\)')
+    result = set()
+    for i in range(row + 1, len(code) - 2):
+        if hit := high.fullmatch(code[i]):
+            base, name = re.escape(hit['base']), hit['name']
+            if (re.fullmatch(rf'addu {base}, {base}, {index}', code[i + 1])
+                    and re.fullmatch(rf'lw \$\w+, %lo\({name}\)\({base}\)', code[i + 2])):
+                result.add(name)
+                if hit['base'] == register:
+                    break
+        if re.match(rf'(?:[bj]\w*|\w+ {index},)\s', code[i]):
+            break
+
+    if row + 2 < len(code):
+        add = re.fullmatch(rf'addu {index}, {index}, (?P<base>\$\w+)', code[row + 1])
+        if add and re.fullmatch(rf'lw \$\w+, (?:0|0x0)?\({index}\)', code[row + 2]):
+            base = re.escape(add['base'])
+            for i in range(row - 1, 0, -1):
+                if not re.match(rf'\w+ {base},', code[i]):
+                    continue
+                bind = high.fullmatch(code[i - 1])
+                if (bind and bind['base'] == add['base']
+                        and re.fullmatch(rf'addiu {base}, {base}, %lo\({bind["name"]}\)', code[i])):
+                    result.add(bind['name'])
+                break
+    return result
+
+
+def _read_declaration(part, header, symbol, uses):
+    found = re.search(rf'\bextern M2C_UNK {symbol};', part.clean[:part.opening])
+    if (not found or re.search(rf'\b{symbol}\b', header)
+            or len(re.findall(rf'\b{symbol}\b', part.clean)) != uses + 1):
+        return None
+    return found
+
+
+def _inline_scale(part, header, symbols):
+    patterns = (
+        re.compile(rf'&(?P<table>{IDENT}) \+ \((?P<value>.+) \* (?:4|0x4)\)', re.S),
+        re.compile(rf'\((?P<value>.+) \* (?:4|0x4)\) \+ &(?P<table>{IDENT})', re.S),
+    )
+    matches = []
+    for deref in re.compile(r'\*\(').finditer(part.clean, part.opening + 1, part.end):
+        end = close(part.clean, deref.end() - 1)
+        if not end or WRITE_SUFFIX.match(part.clean, end):
+            continue
+        address = part.clean[deref.end():end - 1]
+        hit = next((match for pattern in patterns if (match := pattern.fullmatch(address))), None)
+        if not hit or hit['table'] not in symbols or re.search(r'[;{}=]|\+\+|--', hit['value']):
+            continue
+        table = hit['table']
+        declaration = _read_declaration(part, header, table, 1)
+        if declaration and not re.search(r'/[*/]', part.source[deref.start():end]):
+            matches.append([(*declaration.span(), f'extern M2C_UNK {table}[];'),
+                            (deref.start(), end, f'{table}[{hit["value"]}]')])
+    return edit(part.source, matches[0]) if len(matches) == 1 else None
+
+
+def _shared_shift(part, header, symbols, amount):
+    pattern = re.compile(rf'(?m)^\s*(?P<offset>{IDENT}) = \({IDENT} & (?:255|0xFF)\) << (?P<amount>{NUMBER});')
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
+        offset = hit['offset']
+        if integer(hit['amount']) != amount or not re.search(rf'\bs32 {offset};', part.body):
+            continue
+        refs = list(re.finditer(rf'\*\(&(?P<table>{IDENT}) \+ {offset}\)', part.body))
+        if any(WRITE_SUFFIX.match(part.body, ref.end()) for ref in refs):
+            continue
+        names = [ref['table'] for ref in refs]
+        if not names or set(names) != symbols or len(set(names)) != len(names):
+            continue
+        if len(re.findall(rf'\b{offset}\b', part.body)) != len(refs) + 2:
+            continue
+        decls = [_read_declaration(part, header, table, 1) for table in names]
+        if not all(decls):
+            continue
+        edits = [(*hit.span('amount'), str(amount - 2))]
+        start = part.opening + 1
+        for table, decl, ref in zip(names, decls, refs):
+            edits.extend([(*decl.span(), f'extern M2C_UNK {table}[];'),
+                          (start + ref.start(), start + ref.end(), f'{table}[{offset}]')])
+        return edit(part.source, edits)
+    return None
+
+
 def variants(source, name, header, rows):
-    if 'extern M2C_UNK ' not in source or not _word_shift(rows):
+    if 'extern M2C_UNK ' not in source or not (shift := _word_shift(rows)):
         return []
     part = view(source, name)
     if part is None:
+        return []
+    row, register, amount = shift
+    if sum(mark != ' ' for mark, _, _ in rows) == 1 and (bases := _scale_bases(rows, row, register)):
+        candidate = _inline_scale(part, header, bases) if amount == 2 else _shared_shift(part, header, bases, amount)
+        if candidate:
+            return [('measured_duplicate_word_scale', candidate)]
+    if amount != 2:
         return []
     if candidate := _float_table(part, name, header, rows):
         return [('measured_float_table_scale', candidate)]
