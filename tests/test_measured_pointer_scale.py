@@ -343,3 +343,29 @@ def test_independent_halfword_and_word_table_accesses_are_repaired_in_turn():
     assert 'consume(ids[choose()], *(&slots + (i * 4)));' in fixed
     fixed = dict(variants(fixed, 'f', '', forward + word_rows))['measured_duplicate_word_scale']
     assert 'consume(ids[choose()], slots[i]);' in fixed
+
+
+def test_float_field_recovery_preserves_record_stride_and_nested_index():
+    source = ('extern M2C_UNK records;\nf32 f(s32 i) {\n'
+              '    return *(&records + (fetch(i) * 24)) * 2.0f;\n}')
+    rows = [('i', 'sll $v0, $v0, 3', 'sll $v0, $v0, 5')]
+    rows += [(' ', op, op) for op in ('lui $at, %hi(records)', 'addu $at, $at, $v0',
+                                      'lwc1 $f0, %lo(records)($at)')]
+    rows += [('>', '', 'cvt.s.w $f0, $f0')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_float_record_scale']
+    assert 'extern u8 records[];' in fixed
+    assert '*(f32 *)(records + (fetch(i)) * 24) * 2.0f' in fixed
+    assert not variants(source, 'f', '', rows[:-1])
+    assert not variants(source, 'f', '', rows[:-1] + [('>', '', 'cvt.s.w $f2, $f0')])
+
+
+def test_guarded_word_reads_correct_a_single_shared_record_stride():
+    source = ('extern M2C_UNK first;\nextern M2C_UNK second;\nvoid f(s32 i) {\n'
+              '    s32 offset;\n    offset = i * 16;\n'
+              '    if (*(&first + offset)) consume(*(&second + offset));\n}')
+    rows = [('i', 'sll $a0, $a0, 4', 'sll $a0, $a0, 6')]
+    rows += [(' ', op, op) for op in ('lui $at, %hi(first)', 'addu $at, $at, $a0',
+                                      'lw $v0, %lo(first)($at)')]
+    assert 'offset = i * 4;' in dict(variants(source, 'f', '', rows))['measured_word_stride']
+    assert not variants(source.replace('i * 16', 'i * 8'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:-1])

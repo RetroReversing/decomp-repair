@@ -56,7 +56,7 @@ def _float_table(part, name, header, rows):
     return edit(part.source,[(decl.start(),decl.end(),f'extern f32 {base}[];'),(part.opening+1,end,replacement)])
 
 
-def _stride(part, header):
+def _stride(part, header, *, amount=None, bases=()):
     pattern = re.compile(rf'(?m)^    (?P<local>{IDENT}) = (?P<index>{IDENT}) \* (?P<stride>{NUMBER});')
     for hit in pattern.finditer(part.clean, part.opening+1, part.end):
         stride = integer(hit['stride'])
@@ -67,6 +67,9 @@ def _stride(part, header):
             continue
         uses = re.findall(rf'\*\(&({IDENT}) \+ {local}\)', part.body)
         if not uses or len(set(uses)) != len(uses) or len(re.findall(rf'\b{local}\b',part.body)) != len(uses)+2:
+            continue
+        if amount is not None and (len(uses) < 2 or not bases.intersection(uses)
+                                   or stride & -stride != 1 << amount):
             continue
         if any(not re.search(rf'\bextern M2C_UNK {symbol};', part.clean[:part.opening])
                or re.search(rf'\b{symbol}\b', header) for symbol in uses):
@@ -161,7 +164,7 @@ def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=Non
         table = hit['table']
         declaration = _read_declaration(part, header, table, 1)
         if declaration and not re.search(r'/[*/]', part.source[deref.start():end]):
-            if width == 2 and scale != width:
+            if width > 1 and scale != width:
                 # The odd part of the byte stride also survives in the target.
                 value = hit['value']
                 if close(f'({value})', 0) != len(value) + 2:
@@ -211,6 +214,23 @@ def _repeated_word_table(part, header, rows, shifts):
         if len(candidates) == 2:
             break
     return candidates
+
+
+def _float_record_load(part, header, rows, row, register, amount):
+    """A float field load needs the original byte stride and no integer conversion."""
+    if amount < 2 or row + 4 >= len(rows):
+        return None
+    hi, add, load, convert = rows[row + 1:row + 5]
+    if any(mark != ' ' or wanted != current for mark, wanted, current in (hi, add, load)):
+        return None
+    base = re.fullmatch(rf'lui (?P<reg>\$\w+), %hi\((?P<table>{IDENT})\)', hi[1])
+    if not base or add[1] != f'addu {base["reg"]}, {base["reg"]}, {register}':
+        return None
+    addr = re.escape(f'%lo({base["table"]})({base["reg"]})')
+    field = re.fullmatch(rf'lwc1 (\$f\d+), {addr}', load[1])
+    if not field or convert != ('>', '', f'cvt.s.w {field[1]}, {field[1]}'):
+        return None
+    return _inline_scale(part, header, {base['table']}, 'f32', 4, byte_shift=amount)
 
 
 def _relocated_scaled_load(part, header, rows, row, register, amount):
@@ -465,6 +485,8 @@ def variants(source, name, header, rows):
     if part is None:
         return []
     for row, register, amount in shifts:
+        if candidate := _float_record_load(part, header, rows, row, register, amount):
+            return [('measured_float_record_scale', candidate)]
         if candidate := _relocated_scaled_load(part, header, rows, row, register, amount):
             return [('measured_relocated_array_scale', candidate)]
     if len(shifts) > 1:
@@ -476,6 +498,10 @@ def variants(source, name, header, rows):
         if candidate:
             return [('measured_duplicate_word_scale', candidate)]
     if amount != 2:
+        if (sum(mark != ' ' for mark, _, _ in rows) == 1
+                and (bases := _scale_bases(rows, row, register) & _scale_bases(rows, row, register, side=2))
+                and (stride := _stride(part, header, amount=amount, bases=bases))):
+            return [('measured_word_stride', edit(source, [stride]))]
         return []
     if candidate := _float_table(part, name, header, rows):
         return [('measured_float_table_scale', candidate)]
