@@ -62,36 +62,37 @@ def mask_variants(source, name, part, macros):
     body, found = part.body, []
     if M2C_FIELD_DEFINITION.search(part.source[:part.opening]):
         macros = macros - {'M2C_FIELD'}
-    if macros & set(re.findall(IDENT, body)):
-        return found
+    # A macro elsewhere in the function (NULL, a logging macro) does not matter; one inside the read or the mask does.
+    def hidden(*texts):
+        return bool(macros & set(re.findall(IDENT, ' '.join(texts))))
 
     def add(start, end, text):
         found.append(('mask_operand_order', edit(source, [(part.opening+1+start, part.opening+1+end, text)])))
 
     # x &= MASK;
     for m in re.finditer(rf'(?<![\w.>*])(?P<a>{READ})\s*&=\s*(?P<k>{MASK})\s*(?=;)', body):
-        if _needs_register(m['k']):
+        if _needs_register(m['k']) and not hidden(m['a'], m['k']):
             a, k = m['a'], m['k'].strip()
             add(m.start(), m.end(), f'{a} &= (({a} & {k}) | {k})')
     # x & MASK and MASK & x inside an expression.
     for m in re.finditer(rf'(?<![\w.>*&])(?P<a>{READ})\s*&\s*(?P<k>{MASK})(?![\w.&(])', body):
-        if _needs_register(m['k']):
+        if _needs_register(m['k']) and not hidden(m['a'], m['k']):
             a, k = m['a'], m['k'].strip()
             add(m.start('k'), m.end('k'), f'(({a} & {k}) | {k})')
     for m in re.finditer(rf'(?<![\w.>*&~])(?P<k>{MASK})\s*&\s*(?P<a>{READ})(?![\w.>(\[])', body):
-        if _needs_register(m['k']):
+        if _needs_register(m['k']) and not hidden(m['a'], m['k']):
             a, k = m['a'], m['k'].strip()
             add(m.start('k'), m.end('k'), f'(({a} & {k}) | {k})')
     # t = MASK; ... t &= x;   (a mask kept in a local before it is applied)
     for m in re.finditer(rf'(?<![\w.>*])(?P<t>{IDENT})\s*=\s*(?P<k>{MASK})\s*(?=;)', body):
         t, k = m['t'], m['k'].strip()
-        if not _needs_register(k):
+        if not _needs_register(k) or hidden(t, k):
             continue
         rest = body[m.end():]
         use = (re.search(rf'(?<![\w.>*])\b{t}\s*&=\s*(?P<a>{READ})\s*;', rest)
                or re.search(rf'(?<![\w.>*])\b{t}\s*=\s*{t}\s*&\s*(?P<a>{READ})\s*;', rest)
                or re.search(rf'(?<![\w.>*])\b{t}\s*=\s*(?P<a>{READ})\s*&\s*{t}\s*;', rest))
-        if not use or use['a'] == t or not re.search(rf'\b{use["a"]}\b', body[:m.start()]):
+        if not use or use['a'] == t or hidden(use['a']) or not re.search(rf'\b{use["a"]}\b', body[:m.start()]):
             continue
         a = use['a']
         add(m.start('k'), m.end('k'), f'(({a} & {k}) | {k})')
