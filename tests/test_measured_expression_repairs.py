@@ -266,3 +266,25 @@ f32 f(void) {
     assert not variants(source.replace('s32 adjusted;', 'u32 adjusted;'), 'f', '', diff)
     assert not variants(source, 'f', '#define value read_input()', diff)
     assert not variants(source, 'f', '', [*diff[:-1], ('o', 'neg.s $f0, $f6', '')])
+
+
+def test_square_three_float_differences_in_their_own_locals():
+    source = """\
+void f(const void *a, const void *b) {
+    f32 x;
+    f32 y;
+    f32 z;
+    x = M2C_FIELD(a, const f32 *, 0) - M2C_FIELD(b, const f32 *, 0);
+    y = M2C_FIELD(a, const f32 *, 4) - M2C_FIELD(b, const f32 *, 4);
+    z = M2C_FIELD(a, const f32 *, 8) - M2C_FIELD(b, const f32 *, 8);
+    use((x * x) + (y * y) + (z * z));
+}
+"""
+    diff = [('r', 'sub.s $f4, $f4, $f2', 'sub.s $f2, $f2, $f4'),
+            ('r', 'mul.s $f4, $f4, $f4', 'mul.s $f2, $f2, $f2')]
+    [(family, fixed)] = variants(source, 'f', '', diff)
+    assert family == 'measured_square_vector_locals'
+    assert 'x = x * x;\n    y = y * y;\n    z = z * z;\n    use(x + y + z);' in fixed
+    assert not variants(source.replace('use((x * x)', 'use((x * y)'), 'f', '', diff)
+    assert not variants(source.replace('y = M2C_FIELD', 'touch();\n    y = M2C_FIELD'), 'f', '', diff)
+    assert not variants(source.replace('f32 x;', 'f64 x;'), 'f', '', diff)
