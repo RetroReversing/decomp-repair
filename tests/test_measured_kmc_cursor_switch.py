@@ -252,3 +252,23 @@ def test_label_loop_cursor_splits_before_a_matching_reinitialization():
                         'f', '', rows)
     assert not variants(source.replace('write_halfword(cursor)', 'write_halfword(&cursor)'), 'f', '', rows)
     assert not variants(source.replace('    cursor = base;\n    next_loop:', '    next_loop:'), 'f', '', rows)
+
+
+def test_cursor_advance_order_keeps_the_middle_step_in_place():
+    source = """void f(void) {
+    s32 *left;
+    u8 *middle;
+    s32 *right;
+    left = (s32 *) (((u8 *) left) + 0x20);
+    middle += 32;
+    right = (s32 *) (((u8 *) right) + 32);
+}
+"""
+    a, b, c = (f'addiu ${reg}, ${reg}, 0x20' for reg in ('s3', 's5', 's4'))
+    rows = [('r', a, c), (' ', b, b), ('r', c, a)]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_cursor_advance_order'
+    assert 'right = (s32 *) (((u8 *) right) + 32);\n    middle += 32;\n    left =' in fixed
+    assert not variants(source.replace('middle += 32', 'middle += 16'), 'f', '', rows)
+    assert not variants(source.replace('s32 *left;', 's32 *volatile left;'), 'f', '', rows)
+    assert not variants(source, 'f', '', [('r', a, c), (' ', b, b), (' ', c, c)])
