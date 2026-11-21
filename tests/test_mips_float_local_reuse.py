@@ -47,3 +47,53 @@ def test_leaves_conditional_and_label_entered_lifetimes_separate():
     for source in (conditions, labels):
         assert repair.variants(source, 'f')
         assert all('send(temp_fs3);' in candidate for _, candidate in repair.variants(source, 'f'))
+
+
+ACCUMULATORS = """\
+void f(int control) {
+    f32 var_s5;
+    f32 var_s6;
+    f32 temp_s5_2;
+    f32 temp_s6_2;
+    var_s5 = var_s6 = 0.0f;
+    if (control) {
+        temp_s5_2 = first();
+        temp_s6_2 = second();
+        poll();
+        var_s5 = temp_s5_2 + adjust();
+        var_s6 = temp_s6_2 + adjust();
+    }
+    emit(var_s5, var_s6);
+}
+"""
+
+
+def accumulator_choices(source):
+    return [candidate for family, candidate in repair.variants(source, 'f')
+            if family == repair.ACCUMULATOR_FAMILY]
+
+
+def test_reuses_two_independent_accumulators_together_and_individually():
+    joint, x_only, z_only = accumulator_choices(ACCUMULATORS)
+    assert 'temp_s5_2' not in joint
+    assert 'temp_s6_2' not in joint
+    assert 'var_s5 = first();' in joint
+    assert 'var_s6 = second();' in joint
+    assert 'var_s5 = var_s5 + adjust();' in joint
+    assert 'var_s6 = var_s6 + adjust();' in joint
+    assert 'temp_s6_2 = second();' in x_only
+    assert 'temp_s5_2 = first();' in z_only
+
+
+def test_preserves_accumulators_with_reads_or_address_escapes():
+    for use in ('observe(var_s5);', 'observe(&var_s5);'):
+        [candidate] = accumulator_choices(ACCUMULATORS.replace('poll();', use))
+        assert 'temp_s5_2 = first();' in candidate
+        assert 'var_s6 = second();' in candidate
+
+
+def test_leaves_control_flow_bypasses_unchanged():
+    assert not accumulator_choices(ACCUMULATORS.replace('poll();', 'if (broken()) goto done;')
+                                   .replace('    emit(', 'done: emit('))
+    [candidate] = accumulator_choices(ACCUMULATORS.replace('var_s5 = temp_s5_2', 'if (test()) var_s5 = temp_s5_2'))
+    assert 'temp_s5_2 = first();' in candidate

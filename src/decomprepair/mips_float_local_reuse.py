@@ -13,8 +13,11 @@ from .integer_repair_support import edit
 from .pattern_repairs import close
 
 FAMILY = 'mips_float_local_reuse'
+ACCUMULATOR_FAMILY = 'mips_float_accumulator_reuse'
+FAMILIES = (FAMILY, ACCUMULATOR_FAMILY)
 _DECLARATION = re.compile(
-    r'(?m)^[ \t]*(?P<type>f32|float)[ \t]+(?P<name>(?:temp|var)_fs(?P<reg>[0-5])(?:_\d+)?)[ \t]*;[ \t]*\n')
+    r'(?m)^[ \t]*(?P<type>f32|float)[ \t]+'
+    r'(?P<name>(?:temp|var)_(?:fs(?P<reg>[0-5])|s[0-7])(?:_\d+)?)[ \t]*;[ \t]*\n')
 _LABEL = re.compile(r'(?m)^[ \t]*[A-Za-z_]\w*\s*:(?!:)|\b(?:case\s+[^:{}\n]+|default\s*):')
 _BRACE = re.compile(r'[{}]')
 
@@ -75,6 +78,42 @@ def _rewrite(source, groups):
     return edit(source, edits)
 
 
+def _accumulator_reuses(source, clean, opening, end, scopes, declarations):
+    """Use a private accumulator earlier when no path observes its old value."""
+    changes = []
+    for name, decl in declarations.items():
+        match = re.fullmatch(r'temp_s([0-7])(?:_\d+)?', name)
+        dest = f'var_s{match[1]}' if match else None
+        target = declarations.get(dest)
+        if not target or target['type'] != decl['type']:
+            continue
+        life = _lifetime(clean, decl, opening, end, scopes)
+        if not life or len(life[1]) != 2:
+            continue
+        first, use = life[1]
+        before = max(clean.rfind(c, first.end(), use.start()) for c in ';{}') + 1
+        consumer = re.match(rf'\s*(?P<dest>{dest})\s*=(?!=)\s*[^;{{}}]+;', clean[before:end])
+        if not consumer or not before + consumer.start('dest') < use.start() < before + consumer.end():
+            continue
+        # A jump or conditional return could bypass the final assignment.
+        # Calls cannot see a private local unless its address is taken.
+        if re.search(r'\b(?:goto|break|continue|return)\b', clean[first.end():before]):
+            continue
+        refs = list(re.finditer(rf'\b{dest}\b', clean[first.end():before + consumer.end()]))
+        if len(refs) != 1 or re.search(rf'&\s*\(*\s*{dest}\b', clean[opening:end]):
+            continue
+        first_scope = next((start for start, stop in scopes if start < first.start() < stop), None)
+        use_scope = next((start for start, stop in scopes if start < use.start() < stop), None)
+        if first_scope != use_scope:
+            continue
+        changes.append((dest, [(decl.start(), decl.end(), ''),
+                               (first.start(), first.end(), dest), (use.start(), use.end(), dest)]))
+    choices = [edit(source, edits) for _, edits in changes]
+    if len(changes) > 1 and len({dest for dest, _ in changes}) == len(changes):
+        choices.insert(0, edit(source, [change for _, edits in changes for change in edits]))
+    return [(ACCUMULATOR_FAMILY, text) for text in choices[:4]]
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -85,12 +124,16 @@ def variants(source, name):
     if not end or re.search(r'(?m)^\s*#|\b(?:asm|__asm__|setjmp|longjmp)\b|\bgoto\s*\*', clean[opening:end]):
         return []
     scopes = _scopes(clean, opening, end)
+    declared = list(_DECLARATION.finditer(clean, opening, end))
+    names = [decl['name'] for decl in declared]
+    declarations = {}
     lifetimes = {}
-    declarations = list(_DECLARATION.finditer(clean, opening, end))
-    names = [decl['name'] for decl in declarations]
-    for decl in declarations:
+    for decl in declared:
         scope = next((start for start, stop in scopes if start < decl.start() < stop), None)
         if scope != opening or names.count(decl['name']) != 1:
+            continue
+        declarations[decl['name']] = decl
+        if decl['reg'] is None:
             continue
         life = _lifetime(clean, decl, opening, end, scopes)
         if life:
@@ -106,4 +149,5 @@ def variants(source, name):
         longest = max(bank, key=len)
         if len(longest) >= 3:
             choices.append(_rewrite(source, [longest[:1] + longest[2:] if group is longest else group for group in bank]))
-    return [(FAMILY, text) for text in dict.fromkeys(choices) if text != source][:12]
+    accumulators = _accumulator_reuses(source, clean, opening, end, scopes, declarations)
+    return accumulators + [(FAMILY, text) for text in dict.fromkeys(choices) if text != source][:12]
