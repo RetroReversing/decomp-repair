@@ -6,6 +6,7 @@ from . import (
     measured_call_stride,
     measured_draft_shapes,
     measured_indexed_storage,
+    measured_record_layouts,
     measured_relocated_indices,
     measured_relocated_lifetimes,
 )
@@ -20,7 +21,7 @@ WORD = r'(?:s32|u32)'
 
 def variants(source, name, header, rows, asm, *, big_endian):
     changed = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
-    for family in (measured_draft_shapes, measured_indexed_storage):
+    for family in (measured_draft_shapes, measured_indexed_storage, measured_record_layouts):
         if choices := family.variants(source, name, header, rows, asm):
             return choices
     if choices := measured_relocated_indices.variants(source, name, header, rows, changed):
