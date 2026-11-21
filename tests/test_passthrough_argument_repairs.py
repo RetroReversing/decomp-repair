@@ -237,3 +237,139 @@ void f(void *out, f32 x, f32 y, f32 z) {
     assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n' + asm, rows)
     assert not p.shifted_call_variants(source.replace('40) = z', '44) = z'), 'f', '', asm, rows)
     assert not p.shifted_call_variants(source.replace('40) = z', '40) = y'), 'f', '', asm, rows)
+
+
+def test_missing_entry_context_is_restored_along_with_the_callee_prototype():
+    source = '''
+M2C_UNK callee(void *); /* extern */
+s32 f(void) {
+    callee(&object);
+    return 0;
+}
+'''
+    rows = [
+        (' ', 'jal callee', 'jal callee'),
+        ('r', 'move $a1, $s0', 'move $a0, $s0'),
+    ]
+    asm = 'jal callee\nmove $a1, $s0'
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert 'f(s32 __repair_incoming)' in fixed
+    assert 'callee(s32, void *);' in fixed
+    assert 'callee(__repair_incoming, &object);' in fixed
+    assert not p.shifted_call_variants(source, 'f', '', 'li $a0, 9\n' + asm, rows)
+    assert not p.shifted_call_variants(source, 'f', 'void callee(void *);', asm, rows)
+    assert not p.shifted_call_variants(source.replace('/* extern */', ''), 'f', '', asm, rows)
+
+
+def test_missing_entry_argument_requires_a0_unchanged_on_both_sides_of_a_branch():
+    source = '''
+M2C_UNK set_mode(M2C_UNK); /* extern */
+s32 f(void) {
+    s32 mode;
+    if (flag) mode = 1;
+    else mode = 0;
+    set_mode(mode);
+    return 0;
+}
+'''
+    instructions = [
+        'bnez $v0, .Lyes', 'nop',
+        'j .Lcall', 'move $a1, $zero',
+        '.Lyes:', 'addiu $a1, $zero, 1',
+        '.Lcall:', 'jal set_mode', 'nop', 'jr $ra', 'nop',
+    ]
+    def annotate(items):
+        output = []
+        pc = 0
+        for item in items:
+            if item.endswith(':'):
+                output.append(item)
+            else:
+                output.append(f'/* {pc:06X} {0x80000000+pc:08X} 00000000 */ {item}')
+                pc += 4
+        return '\n'.join(output)
+    rows = [
+        (' ', 'bnez $v0, .Lyes', 'bnez $v0, .Lyes'),
+        (' ', 'nop', 'nop'),
+        (' ', 'j .Lcall', 'j .Lcall'),
+        ('r', 'move $a1, $zero', 'move $a0, $zero'),
+        ('r', 'addiu $a1, $zero, 1', 'addiu $a0, $zero, 1'),
+        (' ', 'jal set_mode', 'jal set_mode'),
+        (' ', 'nop', 'nop'),
+    ]
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', annotate(instructions), rows)
+    assert family == 'passthrough_argument'
+    assert 'set_mode(__repair_incoming, mode);' in fixed
+    clobber = instructions[:]
+    clobber[1] = 'move $a0, $zero'
+    assert not p.shifted_call_variants(source, 'f', '', annotate(clobber), rows)
+    repeat = instructions[:-2] + ['j .Lcall', 'nop']
+    assert not p.shifted_call_variants(source, 'f', '', annotate(repeat), rows)
+
+
+def test_shifted_memset_wrapper_restores_destination_parameter():
+    source = '''
+M2C_UNK memset(M2C_UNK, M2C_UNK); /* extern */
+void f(M2C_UNK arg1, M2C_UNK arg2) {
+    memset(arg2, arg1);
+}
+'''
+    target = [
+        'addiu $sp, $sp, -24', 'sw $ra, 16($sp)', 'move $v0, $a1', 'move $a1, $a2',
+        'jal memset', 'move $a2, $v0', 'lw $ra, 16($sp)', 'jr $ra', 'addiu $sp, $sp, 24',
+    ]
+    rows = [(' ', text, text) for text in target]
+    for i, changed in ((2, 'move $v0, $a0'), (3, 'move $a0, $a1'), (5, 'move $a1, $v0')):
+        rows[i] = ('r', target[i], changed)
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', '\n'.join(target), rows)
+    assert family == 'passthrough_argument'
+    assert 'void f(void *__repair_incoming, M2C_UNK arg1, M2C_UNK arg2)' in fixed
+    assert 'memset(__repair_incoming, arg2, arg1);' in fixed
+    assert not p.shifted_call_variants(source.replace('memset(arg2, arg1);', 'memset(arg1, arg2);'),
+                                       'f', '', '\n'.join(target), rows)
+
+
+def test_local_call_group_keeps_context_when_later_code_differs():
+    source = '''
+M2C_UNK bind(void *, s32); /* extern */
+void f(void *obj, s32 (*callback)(void *)) {
+    bind(&table, 7);
+    callback(obj);
+}
+'''
+    rows = [
+        (' ', 'move $s0, $a0', 'move $s0, $a0'),
+        ('r', 'lui $a1, %hi(table)', 'lui $a0, %hi(table)'),
+        ('r', 'addiu $a1, $a1, %lo(table)', 'addiu $a0, $a0, %lo(table)'),
+        (' ', 'jal bind', 'jal bind'),
+        ('r', 'addiu $a2, $zero, 7', 'addiu $a1, $zero, 7'),
+        ('i', 'addiu $v0, $zero, 12', 'addiu $v0, $zero, 8'),
+        (' ', 'jalr $s3', 'jalr $s3'),
+        (' ', 'move $a0, $s0', 'move $a0, $s0'),
+    ]
+    asm = '\n'.join(row[1] for row in rows)
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert 'bind(obj, &table, 7);' in fixed
+    assert '(*callback)(void *)' in fixed
+    assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n' + asm, rows)
+
+
+def test_repeated_callee_repairs_only_the_first_short_call():
+    source = '''
+s32 search(); /* extern */
+s32 f(s32 context) {
+    if (search(1)) return 1;
+    return search(context, 2);
+}
+'''
+    target = ['jal search', 'addiu $a1, $zero, 1', 'jal search', 'nop', 'jr $ra', 'nop']
+    asm = '\n'.join(f'/* {i*4:06X} {0x80000000+i*4:08X} 00000000 */ {op}' for i, op in enumerate(target))
+    rows = [(' ', op, op) for op in target]
+    rows[1] = ('r', target[1], 'addiu $a0, $zero, 1')
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert fixed == source.replace('search(1)', 'search(context, 1)')
+    assert not p.shifted_call_variants(source.replace('search(context, 2)', 'search(2)'), 'f', '', asm, rows)
+    assert not p.shifted_call_variants(source.replace('search(1)', 'search(3)'), 'f', '', asm, rows)

@@ -13,10 +13,10 @@ import collections
 import re
 from dataclasses import dataclass
 
-from . import m2cfix
+from . import m2cfix, mips_regions, mips_return_paths
 from .csource import _blank, find
 from .integer_abi import scalar
-from .integer_repair_support import NUMBER, edit, integer, view
+from .integer_repair_support import NUMBER, calls, edit, integer, view
 from .pattern_repairs import close
 from .target_call_arity_repairs import _instructions
 
@@ -36,8 +36,10 @@ def variants(source, name, *, asm=None, arch=None, header='', callees='', requir
     if not end:
         return []
     signature = clean[span[0]:opening]
-    params_at = signature.rfind('(')
-    params = [p.strip() for p in m2cfix._split_top_level(signature[params_at + 1:signature.rfind(')')])]
+    definition = re.search(rf'\b{re.escape(name)}\s*\(', signature)
+    if not definition or not (closing := close(signature, definition.end() - 1)):
+        return []
+    params = [p.strip() for p in m2cfix._split_top_level(signature[definition.end():closing - 1])]
     names = [re.search(IDENT + r'\s*$', p)[0].strip() if re.search(IDENT + r'\s*$', p) else None for p in params]
     if not names or names == ['void']:
         return []
@@ -45,7 +47,9 @@ def variants(source, name, *, asm=None, arch=None, header='', callees='', requir
     if require_evidence:
         context = header+'\n'+source
         kinds = [re.sub(r'\b'+re.escape(n)+r'\s*$', '', p).strip() if n else '' for n,p in zip(names,params)]
-        if arch != 'mips' or not all(_integer_parameter(k, context) for k in kinds[:4]):
+        # For a targeted call, only the first parameter's ABI location is in question.
+        checked = kinds[:1] if selected_call is not None else kinds[:4]
+        if arch != 'mips' or not all(_integer_parameter(k, context) for k in checked):
             return []
         incoming = _incoming_calls(asm)
         if not incoming:
@@ -364,40 +368,160 @@ def _float_wrapper_output(source, name, header, asm, rows, changes):
     return edit(source, [(*sites[0].span('args'), out)])
 
 
-def shifted_call_variants(source, name, header, asm, rows):
-    """Focus passthrough proposals on a call whose argument setup is shifted down one register."""
-    changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
-    if candidate := _float_wrapper_output(source, name, header, asm, rows, changes):
-        return [(FAMILY, candidate)]
-    if not 1 <= len(changes) <= 6:
-        return []
+def _entry_a0_reaches(asm, callee, *, first_only=False):
+    """Require the incoming a0 on every route to a selected first call."""
+    if (0 in _incoming_calls(asm).get(callee, ())
+            and not any(op in mips_regions.CONDITIONAL | {'b', 'j'} for op, _ in _instructions(asm))):
+        return True
+    decoded = mips_return_paths.graph(asm)
+    if not decoded:
+        return False
+    rows, destinations = decoded
+    sites = [i for i, row in enumerate(rows) if row.split() == ['jal', callee]]
+    if not sites or (not first_only and len(sites) != 1):
+        return False
+    call = sites[0]
+    if any(src > call and dest <= call for src, dest in destinations.items()):
+        return False
+    registers = {'a0': 0}
+    for row in [*rows[:call], rows[call + 1]]:
+        op, *args = row.split(None, 1)
+        operands = args[0] if args else ''
+        if op in mips_regions.CONDITIONAL | {'b', 'j'}:
+            continue
+        if not _transfer(registers, op, operands) or registers.get('a0') != 0:
+            return False
+    return True
+
+
+def _missing_caller_argument(source, name, header, asm, callee, *, memory_wrapper=False):
+    """Restore a missing formal and its forward at one proven call site."""
+    added = '__repair_incoming'
+    if (added in source + header or re.search(rf'\b{callee}\s*\(', _blank(header))
+            or not _entry_a0_reaches(asm, callee) or not (part := view(source, name))):
+        return None
+    params = r'M2C_UNK arg1, M2C_UNK arg2' if memory_wrapper else 'void'
+    signature = re.search(rf'\b(?:void|s32|u32|M2C_UNK)\s+{re.escape(name)}\s*\((?P<args>{params})\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+    sites = list(calls(part, callee))
+    if len(sites) != 1:
+        return None
+    start, end = sites[0]
+    args = part.clean[start:end]
+    count = len(m2cfix._split_top_level(args))
+    if not args.strip() or not 1 <= count <= 3:
+        return None
+    if memory_wrapper:
+        close_at = part.clean.rfind('}', end, part.end)
+        if args != 'arg2, arg1' or part.clean[part.opening+1:close_at].strip() != f'{callee}(arg2, arg1);':
+            return None
+    prototypes = list(re.finditer(
+        rf'(?m)^[ \t]*(?:M2C_UNK|void|s32|u32)\s+{callee}\((?P<types>[^()]+)\);[ \t]*/\* extern \*/',
+        source[:part.opening]))
+    if len(prototypes) != 1:
+        return None
+    types = prototypes[0]['types'].strip()
+    if types in ('void', '...') or '...' in types or len(m2cfix._split_top_level(types)) != count:
+        return None
+    ctype, formal = ('void *', f'void *{added}, {params}') if memory_wrapper else ('s32', f's32 {added}')
+    return edit(source, [(*signature.span('args'), formal),
+                         (prototypes[0].start('types'), prototypes[0].start('types'), f'{ctype}, '),
+                         (start, start, f'{added}, ')])
+
+
+def _shifted_memory_wrapper(source, name, header, asm, rows, changes):
+    """Both named arguments moved down when m2c omitted the destination of memset."""
+    if changes != [2, 3, 5] or len(rows) != 9 or tuple(rows[4][1:]) != ('jal memset', 'jal memset'):
+        return None
+    pairs = [tuple(rows[i][1:]) for i in changes]
+    if pairs != [('move $v0, $a1', 'move $v0, $a0'),
+                 ('move $a1, $a2', 'move $a0, $a1'),
+                 ('move $a2, $v0', 'move $a1, $v0')]:
+        return None
+    return _missing_caller_argument(source, name, header, asm, 'memset', memory_wrapper=True)
+
+
+def _relocated_shift_count(rows, changes):
     argument = re.compile(r'(?P<op>lw|lhu|lb|lbu|andi|addiu|move|lui) \$a(?P<reg>[0-3]), (?P<value>.+)')
     relocations = 0
     for i in changes:
         want, have = map(argument.fullmatch, rows[i][1:])
-        if (not want or not have or int(want['reg']) != int(have['reg']) + 1 or want['op'] != have['op']):
-            return []
+        if not want or not have or int(want['reg']) != int(have['reg']) + 1 or want['op'] != have['op']:
+            return None
         if want['value'] == have['value']:
             continue
         low = re.fullmatch(rf"\$a{want['reg']}, %lo\(({IDENT})\)", want['value'])
         if (want['op'] != 'addiu' or not low or i - 1 not in changes
                 or have['value'] != f"$a{have['reg']}, %lo({low[1]})"
                 or list(rows[i - 1][1:]) != [f"lui $a{reg}, %hi({low[1]})" for reg in (want['reg'], have['reg'])]):
-            return []
-        # A verified relocation pair is one argument spread over two instructions.
+            return None
         relocations += 1
-    if len(changes) - relocations > 3:
-        return []
+    return relocations if len(changes) - relocations <= 3 else None
 
-    center = changes[0]
-    reach = 4 + relocations
-    nearby = set()
-    for i in range(max(0, center - 1), min(len(rows), center + reach + 1)):
-        marker, target, candidate = rows[i]
+
+def _repeated_first_call(source, name, header, asm, callee, rows, changes, call):
+    """Patch the first of several calls only when its shifted literal identifies it."""
+    if len(changes) != 1 or any(row[1] == f'jal {callee}' for row in rows[:call]):
+        return None
+    _, target, candidate = rows[changes[0]]
+    literal = re.fullmatch(rf'addiu \$a1, \$zero, ({NUMBER})', target)
+    if (not literal or candidate != f'addiu $a0, $zero, {literal[1]}'
+            or re.search(rf'\b{callee}\s*\(', _blank(header))
+            or not _entry_a0_reaches(asm, callee, first_only=True) or not (part := view(source, name))):
+        return None
+    if not re.search(rf'(?m)^\s*(?:M2C_UNK|s32|u32)\s+{callee}\(\);[ \t]*/\* extern \*/',
+                     source[:part.opening]):
+        return None
+    signature = re.search(rf'\b(?:s32|u32|void|M2C_UNK)\s+{re.escape(name)}\s*\('
+                          rf'\s*(?:s32|u32|M2C_UNK)\s+({IDENT})\)\s*$', part.clean[:part.opening])
+    if not signature:
+        return None
+    sites = list(calls(part, callee))
+    if len(sites) < 2:
+        return None
+    first = part.clean[slice(*sites[0])].strip()
+    if not re.fullmatch(NUMBER, first) or integer(first) != integer(literal[1]):
+        return None
+    caller = signature[1]
+    for span in sites[1:]:
+        if len(args := m2cfix._split_top_level(part.clean[slice(*span)])) != 2 or args[0].strip() != caller:
+            return None
+    start = sites[0][0]
+    return edit(source, [(start, start, f'{caller}, ')])
+
+
+def shifted_call_variants(source, name, header, asm, rows):
+    """Focus passthrough proposals on the measured setup for one changed call."""
+    changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if candidate := _float_wrapper_output(source, name, header, asm, rows, changes):
+        return [(FAMILY, candidate)]
+    if not 1 <= len(changes) <= 8:
+        return []
+    if candidate := _shifted_memory_wrapper(source, name, header, asm, rows, changes):
+        return [(FAMILY, candidate)]
+    nearby = []
+    previous = -2
+    for i, (marker, target, candidate) in enumerate(rows):
+        if not target.startswith(('jal ', 'jalr ')):
+            continue
+        local = [j for j in changes if max(previous + 2, i - 7) <= j <= i + 1]
+        previous = i
         call = re.fullmatch(rf'jal ({IDENT})', target)
-        if marker == ' ' and target == candidate and call and all(i - reach <= j <= i + 1 for j in changes):
-            nearby.add(call[1])
+        if marker != ' ' or target != candidate or not call or not local:
+            continue
+        relocations = _relocated_shift_count(rows, local)
+        if relocations is not None and i - local[0] <= 4 + relocations:
+            nearby.append((call[1], i, local))
     if len(nearby) != 1:
         return []
-    return variants(source, name, asm=asm, arch='mips', header=header, require_evidence=True,
-                    selected_call=nearby.pop())
+    selected, call, local = nearby[0]
+    if forwarded := variants(source, name, asm=asm, arch='mips', header=header, require_evidence=True,
+                             selected_call=selected):
+        return forwarded
+    if candidate := _missing_caller_argument(source, name, header, asm, selected):
+        return [(FAMILY, candidate)]
+    if candidate := _repeated_first_call(source, name, header, asm, selected, rows, local, call):
+        return [(FAMILY, candidate)]
+    return []
