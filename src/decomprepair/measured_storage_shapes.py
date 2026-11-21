@@ -24,6 +24,8 @@ def variants(source, name, header, rows, asm, *, big_endian):
     for family in (measured_draft_shapes, measured_indexed_storage, measured_record_layouts):
         if choices := family.variants(source, name, header, rows, asm):
             return choices
+    if candidate := _byte_offset_scale(source, name, rows, changed):
+        return [('measured_byte_offset_scale', candidate)]
     if choices := measured_relocated_indices.variants(source, name, header, rows, changed):
         return choices
     candidate = None
@@ -37,6 +39,38 @@ def variants(source, name, header, rows, asm, *, big_endian):
         return [(label, candidate)]
     return (measured_relocated_lifetimes.variants(source, name, header, rows, asm, changed)
             + measured_call_stride.variants(source, name, header, rows, changed))
+
+
+def _byte_offset_scale(source, name, rows, changed):
+    """Recover a record stride when repeated byte offsets miss by the same shift."""
+    if not 2 <= len(changed) <= 4 or not (part := view(source, name)):
+        return None
+    shifts = set()
+    for index in changed:
+        _, target, current = rows[index]
+        wanted = re.fullmatch(rf'(sll {REG}, {REG}, )({NUMBER})', target)
+        if not wanted or not (actual := re.fullmatch(re.escape(wanted[1]) + rf'({NUMBER})', current)):
+            return None
+        shifts.add((integer(actual[1]), integer(wanted[2])))
+    if len(shifts) != 1:
+        return None
+    old, new = shifts.pop()
+    if not (1 <= old <= 8 and 1 <= new <= 8 and old != new):
+        return None
+    binding = re.compile(
+        rf'(?m)^\s*(?P<local>{IDENT})\s*=\s*(?P<index>{IDENT})\s*\*\s*(?P<scale>{NUMBER})\s*;')
+    bindings = [hit for hit in binding.finditer(part.clean, part.opening + 1, part.end)
+                if integer(hit['scale']) == 1 << old]
+    if len(bindings) != len(changed) or len({hit['index'] for hit in bindings}) != 1:
+        return None
+    for hit in bindings:
+        name = re.escape(hit['local'])
+        addresses = re.findall(rf'\(\s*(?:s8|char|unsigned\s+char)\s*\*\s*\)\s*&{IDENT}\s*\+\s*{name}\s*\)',
+                               part.body)
+        if (not addresses or re.search(rf'\bs32\s+{name}\s*;', part.body) is None
+                or len(re.findall(rf'\b{name}\b', part.body)) != 2 + len(addresses)):
+            return None
+    return edit(source, [(*hit.span('scale'), str(1 << new)) for hit in bindings])
 
 
 def _pointer_advance(source, name, rows, changed):
