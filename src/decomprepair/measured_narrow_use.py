@@ -73,3 +73,85 @@ def variants(source, name, rows):
     if not part or re.search(r'\b(?:goto|asm|__asm__)\b', _blank(source)):
         return []
     return _byte_uses(source, part, rows) + _remainder(source, part, rows)
+
+
+HALFWORD_INDEX = 'shared_halfword_index'
+
+
+def _halfword_index_callees(rows):
+    """Find two halfword-index calls with a common target carrier and different candidate carriers."""
+    masked = re.compile(rf'andi (?P<dst>{REG}), \$v0, 0xffff')
+    calls = {}
+    for call, delay, mask, scale, add, load in zip(rows, rows[1:], rows[2:], rows[3:], rows[4:], rows[5:]):
+        callee = re.fullmatch(rf'jal ({IDENT})', call[1])
+        target, candidate = (masked.fullmatch(op) for op in mask[1:])
+        if (not callee or call[1] != call[2] or delay[1] != delay[2] or not target or not candidate
+                or target['dst'] == candidate['dst'] or add[1] != add[2]):
+            continue
+        if (scale[1] != f'sll $v0, {target["dst"]}, 1' or scale[2] != f'sll $v0, {candidate["dst"]}, 1'
+                or not all(re.fullmatch(rf'lh {REG}, \(\$v0\)', op) for op in load[1:])):
+            continue
+        key = callee[1], target['dst']
+        calls.setdefault(key, set()).add(candidate['dst'])
+    return {callee for (callee, _), carriers in calls.items() if len(carriers) >= 2}
+
+
+def shared_halfword_index_variants(source, name, rows):
+    """Reuse a narrowed call result across two score loops and inline the second load."""
+    callees = _halfword_index_callees(rows)
+    if not callees or not (part := view(source, name)) or re.search(r'\bvolatile\b', part.body):
+        return []
+    access = rf'{IDENT}\s*\.\s*(?P<field>{IDENT})'
+    first = re.compile(
+        rf'\bdo\s*{{\s*(?P<decl>u16\s+)(?P<slot>{IDENT})\s*=\s*'
+        rf'(?P<callee>{IDENT})\s*\(\s*\(u16\)\s*(?P<i>{IDENT})\s*\)\s*;'
+        rf'\s*(?P<score>{IDENT})\s*=\s*(?P<table>{access})\s*\[\s*(?P=slot)\s*\]\s*;'
+        rf'\s*if\s*\(\s*(?P<best>{IDENT})\s*<\s*(?P=score)\s*\)\s*{{'
+        rf'\s*(?P=best)\s*=\s*(?P=score)\s*;\s*{IDENT}\s*=\s*(?P=slot)\s*;\s*}}'
+        rf'\s*(?P=i)\+\+\s*;\s*}}\s*while\s*\(\s*(?P=i)\s*<\s*{IDENT}\s*\)\s*;'
+    )
+    results = []
+    for loop in first.finditer(part.clean, part.opening + 1, part.end):
+        call, i, score, table, slot = (loop[key] for key in ('callee', 'i', 'score', 'table', 'slot'))
+        if call not in callees or not re.search(rf'\bs16\s*\*\s*{loop["field"]}\s*;', part.body):
+            continue
+        second = re.compile(
+            rf'\bdo\s*{{\s*(?P<index>{IDENT})\s*=\s*\(u16\)\s*{call}\s*\(\s*\(u16\)\s*{i}\s*\)\s*;'
+            rf'(?P<load>\s*{score}\s*=\s*(?P<read>{re.escape(table)}\s*\[\s*(?P=index)\s*\])\s*;)'
+            rf'\s*{i}\+\+\s*;\s*{loop["best"]}\s*\+=\s*'
+            rf'(?P<compare>\*\s*(?P<ptr>{IDENT})\s*==\s*{score})\s*;'
+            rf'\s*}}\s*while\s*\(\s*{i}\s*<\s*{IDENT}\s*\)\s*;'
+        ).search(part.clean, loop.end(), part.end)
+        if not second:
+            continue
+        index, ptr = second['index'], second['ptr']
+        if len({index, i, score, slot}) != 4 or not re.search(rf'\bs16\s*\*\s*{ptr}\s*;', part.body):
+            continue
+        grouped = re.match(rf'\s*s32\s+(?P<names>{IDENT}(?:\s*,\s*{IDENT})+)\s*;',
+                           part.clean[part.opening+1:loop.start()])
+        if not grouped:
+            continue
+        names = re.findall(IDENT, grouped['names'])
+        if ({index, i, score, loop['best']} - set(names) or slot in names
+                or re.search(rf'&\s*\(*\s*(?:{index}|{i}|{score})\b', part.body)):
+            continue
+        if re.search(rf'\b(?:{index}|{score})\b', part.clean[second.end():part.end]):
+            continue
+        if re.search(rf'\b{index}\b', part.clean[loop.start():loop.end()]):
+            continue
+        if re.search(rf'\b{index}\b', part.clean[loop.end():second.start()]):
+            continue
+        start, end = (part.opening + 1 + p for p in grouped.span('names'))
+        decl_end = part.opening + 1 + grouped.end()
+        # Keep the score in the same scope while giving it its own declaration.
+        replacement = ', '.join(n for n in names if n != score)
+        comparison = f'{second["read"]} == *{ptr}'
+        edits = [(start, end, replacement), (decl_end, decl_end, f' s32 {score};'),
+                 (*loop.span('decl'), ''), (*second.span('load'), ''), (*second.span('compare'), comparison)]
+        edits.extend((hit.start(), hit.end(), index) for hit in
+                     re.compile(rf'\b{slot}\b').finditer(part.clean, loop.start(), loop.end()))
+        lhs_end = part.clean.index('=', loop.end('slot'), loop.end())
+        edits.append((lhs_end + 1, lhs_end + 1, ' (u16)'))
+        if all(source[a:b] == part.clean[a:b] for a, b, _ in edits):
+            results.append((HALFWORD_INDEX, edit(source, edits)))
+    return results[:2]
