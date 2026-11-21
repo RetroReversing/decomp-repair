@@ -122,3 +122,35 @@ def test_a_random_cast_never_narrows_a_value():
         out = permuter._add_cast(list(lines), _random.Random(seed))
         if out:
             assert '(short)' not in ''.join(out) and '(unsigned short)' not in ''.join(out)
+
+
+def test_dependency_guard_compares_evidence_before_mutation():
+    from decomprepair.permuter_dependencies import RejectedRewrite, protect
+
+    parser = pytest.importorskip('pycparser').CParser()
+    ast = parser.parse('typedef unsigned Word; Word f(Word x) { Word y = x + 1; return y; }')
+
+    def same(fn, *_):
+        fn.body.block_items.insert(0, parser.parse('void g(void) { ; }').ext[0].body.block_items[0])
+        return 'rewritten'
+
+    assert protect(same, RejectedRewrite)(ast.ext[1], ast, None, None, None) == 'rewritten'
+
+    def change(fn, *_):
+        fn.body.block_items[1].init.right.value = '2'
+
+    with pytest.raises(RejectedRewrite):
+        protect(change, RejectedRewrite)(ast.ext[1], ast, None, None, None)
+
+
+def test_dependency_guard_skips_unprovable_parents():
+    from decomprepair.permuter_dependencies import RejectedRewrite, protect
+
+    parser = pytest.importorskip('pycparser').CParser()
+    ast = parser.parse('int f(int *x) { return *x; }')
+
+    def rewrite(*_):
+        pytest.fail('The parent cannot be proved equivalent')
+
+    with pytest.raises(RejectedRewrite):
+        protect(rewrite, RejectedRewrite)(ast.ext[0], ast, None, None, None)
