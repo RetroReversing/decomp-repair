@@ -1077,6 +1077,32 @@ def _paired_record_padding(source, name, header, rows):
     return edit(source, edits)
 
 
+def _commuted_global_stride(part, header, rows, row, register, amount):
+    """An offset before a relocated scalar address can still be counted in bytes."""
+    if row + 4 >= len(rows) or sum(mark != ' ' for mark, _, _ in rows) != 1:
+        return None
+    high, low, add, load = (entry[1] for entry in rows[row + 1:row + 5])
+    base = re.fullmatch(rf'lui (?P<reg>\$\w+), %hi\((?P<symbol>{IDENT})\)', high)
+    if not base or base['reg'] == register or not _read_declaration(part, header, base['symbol'], 1):
+        return None
+    symbol, reg, index = base['symbol'], re.escape(base['reg']), re.escape(register)
+    if not re.fullmatch(rf'addiu {reg}, {reg}, %lo\({symbol}\)', low):
+        return None
+    address = re.fullmatch(rf'addu (\$\w+), (?:{index}, {reg}|{reg}, {index})', add)
+    if not address or not re.fullmatch(rf'l(?:bu?|hu?|w) \$\w+, {NUMBER}\({re.escape(address[1])}\)', load):
+        return None
+    pattern = re.compile(
+        rf'(?m)^[ \t]*{IDENT}\s*=\s*\(M2C_FIELD\([^;\n]+\)\s*\*\s*'
+        rf'(?P<stride>{NUMBER})\)\s*\+\s*(?P<base>&{symbol})\s*;')
+    hit = pattern.search(part.clean, part.opening + 1, part.end)
+    if not hit:
+        return None
+    stride = integer(hit['stride'])
+    if stride <= 0 or stride & -stride != 1 << amount:
+        return None
+    return edit(part.source, [(*hit.span('base'), f'(s8 *)&{symbol}')])
+
+
 def variants(source, name, header, rows):
     if candidate := _paired_record_padding(source, name, header, rows):
         return [('measured_paired_record_padding', candidate)]
@@ -1120,6 +1146,8 @@ def variants(source, name, header, rows):
             return [('measured_indirect_halfword_table', candidate)]
         if candidate := _float_record_load(part, header, rows, row, register, amount):
             return [('measured_float_record_scale', candidate)]
+        if candidate := _commuted_global_stride(part, header, rows, row, register, amount):
+            return [('measured_commuted_global_stride', candidate)]
         if candidate := _relocated_scaled_load(part, header, rows, row, register, amount):
             return [('measured_relocated_array_scale', candidate)]
     if len(shifts) > 1:
