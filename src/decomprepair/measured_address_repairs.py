@@ -3,7 +3,7 @@
 import re
 
 from .csource import _blank
-from .integer_repair_support import IDENT, edit, integer, view
+from .integer_repair_support import IDENT, NUMBER, edit, integer, view
 from .kmc_operand_repairs import ADDU
 from .target_constant_repairs import LITERAL
 
@@ -143,3 +143,90 @@ def variants(source, name, header, rows, symbols=None):
     if len(changes) == 2 and (candidate := reciprocal_links(source,part,changes)):
         return [('measured_link_store_order',candidate)]
     return []
+
+
+# The low half can occupy the call delay slot for an address argument.
+_OFFSET_HIGH = re.compile(rf'lui (?P<reg>{REG}), %hi\((?P<base>{IDENT}) \+ (?P<off>{NUMBER})\)')
+_OFFSET_LOW = re.compile(
+    rf'addiu (?P<reg>{REG}), (?P=reg), %lo\((?P<base>{IDENT}) \+ '
+    rf'(?:(?P<plain>{NUMBER})|\((?P<masked>{NUMBER}) & 0xFFFF\))\)'
+)
+_BYTE_ADDR = re.compile(rf'&\s*(?P<base>{IDENT})\s*\+\s*(?P<off>{NUMBER})\b(?!\s*[*%/])')
+_SECOND_ARG = re.compile(
+    rf'addiu \$sp, \$sp, -(?P<frame>{NUMBER})\nsw \$ra, (?P<slot>{NUMBER})\(\$sp\)\n'
+    rf'lui \$a1, [^\n]+\njal (?P<callee>{IDENT})\naddiu \$a1, \$a1, [^\n]+\n'
+    r'lw \$ra, (?P=slot)\(\$sp\)\n(?:addu \$v0, \$zero, \$zero|move \$v0, \$zero)\n'
+    r'jr \$ra\naddiu \$sp, \$sp, (?P=frame)'
+)
+
+
+def _offset_pairs(asm):
+    if '%hi(' not in asm or '%lo(' not in asm or ' + ' not in asm:
+        return [], set()
+    from .measured_stack_drafts import _lines
+
+    lines = [' '.join(line.split()) for line in _lines(asm) if not line.startswith(('glabel ', 'endlabel '))]
+    pairs = set()
+    for i, line in enumerate(lines[:-1]):
+        high = _OFFSET_HIGH.fullmatch(line)
+        if not high:
+            continue
+        second = i + 2 if lines[i + 1].startswith('jal ') else i + 1
+        low = _OFFSET_LOW.fullmatch(lines[second]) if second < len(lines) else None
+        if (low and (high['reg'], high['base']) == (low['reg'], low['base'])
+                and integer(high['off']) == integer(low['plain'] or low['masked'])):
+            pairs.add((high['reg'], high['base'], integer(high['off'])))
+    return lines, pairs
+
+
+def byte_offsets_apply(asm):
+    return bool(_offset_pairs(asm)[1])
+
+
+def _wrapper_offset(source, part, name, header, target, hit, replacement):
+    """Also restore the incoming first argument for an otherwise empty wrapper."""
+    callee = target['callee']
+    context = _blank(header)
+    if (re.search(rf'\b{callee}\b|(?m:^[ \t]*#\s*define\s+arg0\b)', context)
+            or re.search(r'\barg0\b', part.clean)):
+        return None
+    signature = re.search(rf'\bs32\s+{re.escape(name)}\s*\(\s*(?P<params>void)\s*\)\s*$', part.clean[:part.opening])
+    body = part.clean[part.opening + 1:part.clean.rfind('}', part.opening, part.end)]
+    statements = re.fullmatch(rf'\s*{callee}\(\s*{re.escape(hit[0])}\s*\);\s*return 0;\s*', body)
+    prototype = list(re.finditer(
+        rf'(?m)^[ \t]*M2C_UNK {callee}\((?P<arg>void \*)\);[ \t]*/\* extern \*/[ \t]*$',
+        source[:part.opening]))
+    if not signature or not statements or len(prototype) != 1 or len(re.findall(rf'\b{callee}\s*\(', part.clean)) != 2:
+        return None
+    at = prototype[0].start('arg')
+    return edit(source, [(at, at, 's32, '), (*signature.span('params'), 's32 arg0'),
+                         (*hit.span(), f'arg0, {replacement}')])
+
+
+def rewrite_byte_offsets(source, name, asm, header=''):
+    """Treat an evidenced displacement from a generated global as bytes."""
+    if 'M2C_UNK' not in source or '&' not in source:
+        return None
+    lines, pairs = _offset_pairs(asm)
+    if not pairs or not (part := view(source, name)):
+        return None
+    if re.search(r'\b(?:volatile|asm|__asm__)\b', part.body):
+        return None
+
+    edits = []
+    wrapper = _SECOND_ARG.fullmatch('\n'.join(lines)) if len(lines) == 9 else None
+    for hit in _BYTE_ADDR.finditer(part.clean, part.opening + 1, part.end):
+        base, off = hit['base'], integer(hit['off'])
+        regs = {reg for reg, symbol, offset in pairs if (symbol, offset) == (base, off)}
+        if (not regs or not re.search(rf'\bextern\s+M2C_UNK\s+{base}\s*;', part.clean[:part.opening])
+                or re.search(rf'\b{base}\b', _blank(header)) or re.search(r'/[*/]', source[slice(*hit.span())])):
+            continue
+        # Do not touch an already cast address or a local shadow of the global.
+        if (part.clean[:hit.start()].rstrip().endswith(')') or re.search(
+                rf'\b{IDENT}[\s*]+{base}\s*(?=[=;,)\[])', part.clean[part.clean.rfind(name, 0, part.opening):part.end])):
+            continue
+        replacement = f"(char *)&{base} + {hit['off']}"
+        if wrapper and regs == {'$a1'}:
+            return _wrapper_offset(source, part, name, header, wrapper, hit, replacement)
+        edits.append((*hit.span(), replacement))
+    return edit(source, edits) if 0 < len(edits) <= 4 else None
