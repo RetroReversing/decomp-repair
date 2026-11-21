@@ -2,7 +2,7 @@
 
 import re
 
-from . import measured_call_stride, measured_relocated_lifetimes
+from . import measured_call_stride, measured_draft_shapes, measured_relocated_lifetimes
 from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, calls, edit, integer, view
 from .mips_returns import instructions
@@ -14,6 +14,8 @@ WORD = r'(?:s32|u32)'
 
 def variants(source, name, header, rows, asm, *, big_endian):
     changed = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if choices := measured_draft_shapes.variants(source, name, header, rows, asm):
+        return choices
     if len(changed) == 1 and big_endian:
         label, candidate = 'wide_sdk_return_store', _wide_return(source, name, header, rows, asm, changed[0])
     elif len(changed) == 2:
