@@ -3,7 +3,7 @@ import re
 
 from decomprepair import integer_abi, local_flow, repair_localisation
 from decomprepair.allocator_call_guards import dominators
-from decomprepair.integer_repair_support import edit, refs
+from decomprepair.integer_repair_support import IDENT, NUMBER, edit, integer, refs, view
 from decomprepair.pattern_repairs import close
 
 FAMILIES = ('explicit_loop_backedge', 'row_number_staging')
@@ -90,3 +90,89 @@ def variants(source, name, header='', arch=None, locations=None, *, mapped_only=
         if (family,text) not in selected:selected.append((family,text))
         if len(selected)==LIMIT:break
     return selected
+
+
+def _copy_setup(asm):
+    if 'slti' not in asm or 'bnez' not in asm:
+        return None
+    from decomprepair.measured_stack_drafts import _lines
+
+    text = '\n'.join(' '.join(line.split()) for line in _lines(asm))
+    text = re.sub(r'(?m)^addu (\$\w+), (\$\w+), \$zero$', r'move \1, \2', text)
+    prefix = re.search(
+        rf'(?m)^move (?P<base>\$t\d), \$a0\n'
+        rf'lw \$v0, (?P<src0>{NUMBER})\((?P=base)\)\nsw \$v0, (?P<dst0>{NUMBER})\(\$a1\)\n'
+        rf'lw \$v0, (?P<src1>{NUMBER})\((?P=base)\)\nmove (?P<count>\$t\d), \$zero\n'
+        rf'sw \$v0, (?P<dst1>{NUMBER})\(\$a1\)\nlw \$v0, (?P<src2>{NUMBER})\((?P=base)\)\n'
+        r'move \$a3, (?P=base)\nmove \$a2, \$a1\n'
+        rf'sw \$v0, (?P<dst2>{NUMBER})\(\$a1\)\n(?P<label>\.L\w+):$', text)
+    if not prefix or prefix['base'] == prefix['count']:
+        return None
+    count = re.escape(prefix['count'])
+    loop = re.search(
+        rf'(?m)^addiu {count}, {count}, (?:0x1|1)\naddiu \$a3, \$a3, (?:0x4|4)\n'
+        rf'sw \$v0, {NUMBER}\(\$a2\)\nslti \$v0, {count}, (?P<limit>{NUMBER})\n'
+        rf'bnez \$v0, {re.escape(prefix["label"])}\naddiu \$a2, \$a2, (?:0x4|4)$',
+        text[prefix.end():])
+    if not loop:
+        return None
+    offsets = tuple(integer(prefix[f'{role}{i}']) for i in range(3) for role in ('src', 'dst'))
+    return offsets, integer(loop['limit'])
+
+
+def copy_setup_applies(asm):
+    return _copy_setup(asm) is not None
+
+
+def measured_copy_setup(source, name, asm, header=''):
+    """Keep cursor setup out of the final fixed field copy before the loop."""
+    if 'M2C_FIELD' not in source or not (evidence := _copy_setup(asm)):
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    prefix = re.search(rf'\bvoid\s+{re.escape(name)}\(void \*(?P<src>{IDENT}), void \*(?P<dst>{IDENT})\)\s*$',
+                       part.clean[:part.opening])
+    if not prefix:
+        return None
+    src, dst = prefix['src'], prefix['dst']
+
+    def word(index):
+        return (rf'M2C_FIELD\({dst}, s32 \*, (?P<d{index}>{NUMBER})\) = '
+                rf'\(s32\) M2C_FIELD\({src}, s32 \*, (?P<s{index}>{NUMBER})\);')
+
+    setup = re.search(
+        rf'(?m)^[ \t]*{word(0)}\s*(?P<count>{IDENT}) = (?:0|0x0);\s*{word(1)}\n'
+        rf'(?P<copies>[ \t]*(?P<from>{IDENT}) = {src};\n[ \t]*(?P<to>{IDENT}) = {dst};\n)'
+        rf'(?P<last>[ \t]*{word(2)}\n)[ \t]*(?P<loop>do\s*{{|(?P<label>__repair_rows_*)\s*:\s*{{)',
+        part.clean[part.opening + 1:part.end], re.M)
+    # The fixed copies must still refer to the original pointers.
+    if not setup or {setup['from'], setup['to']} & {src, dst} or setup['from'] == setup['to']:
+        return None
+    offsets, limit = evidence
+    if tuple(integer(setup[f'{role}{i}']) for i in range(3) for role in ('s', 'd')) != offsets:
+        return None
+    start = part.opening + 1
+    opening = start + setup.end() - 1
+    end = close(part.clean, opening, '{', '}')
+    if not end:
+        return None
+    count = setup['count']
+    tail = part.clean[end:part.end]
+    latch = (rf'\s*if \({count} < ({NUMBER})\) goto {setup["label"]};' if setup['label']
+             else rf'\s*while \({count} < ({NUMBER})\);')
+    if not (condition := re.match(latch, tail)) or integer(condition[1]) != limit:
+        return None
+    body = part.clean[opening + 1:end - 1]
+    if (not re.search(rf'\b{count} \+= (?:1|0x1);', body)
+            or not all(re.search(rf'\b{setup[key]} \+= (?:4|0x4);', body) for key in ('from', 'to'))):
+        return None
+    candidate = edit(source, [(start + setup.start('copies'), start + setup.end('last'),
+                              source[start + setup.start('last'):start + setup.end('last')]
+                              + source[start + setup.start('copies'):start + setup.end('copies')])])
+    if setup['label']:
+        return candidate
+    if len(re.findall(r'\bdo\s*{', part.body)) != 1:
+        return None
+    return next((text for family, text in variants(candidate, name, header, 'mips')
+                 if family == 'explicit_loop_backedge'), None)
