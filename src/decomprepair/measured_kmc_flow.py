@@ -1,0 +1,207 @@
+"""Recover source boundaries behind three small KMC scheduling differences."""
+
+import re
+import struct
+
+from . import goto_structure_repairs
+from .integer_repair_support import IDENT, NUMBER, edit, integer, view
+from .mips import normalized_integer_lines
+from .pattern_repairs import close
+
+_MOVE_LIMIT = re.compile(
+    r'lh \$v0, (?P<src0>\d+)\(\$a1\)\nsll \$v0, \$v0, 1\nsh \$v0, \(\$a0\)\n'
+    r'lh \$v0, (?P<src1>\d+)\(\$a1\)\naddiu \$a2, \$zero, (?P<literal>\d+)\n'
+    r'sh \$a2, (?P<dst>\d+)\(\$a0\)\nsh \$zero, \d+\(\$a0\)\n'
+    r'sll \$v0, \$v0, 1\nsh \$v0, 2\(\$a0\)'
+)
+_LIMIT_SOURCE = re.compile(
+    rf'(?P<literal>\s*M2C_FIELD\((?P<dst>{IDENT}), s16 \*, (?P<field>{NUMBER})\) = (?P<value>{NUMBER});)'
+    rf'(?P<coordinates>\s*M2C_FIELD\((?P=dst), s16 \*, 0\) = \(s16\) '
+    rf'\(M2C_FIELD\((?P<src>{IDENT}), s16 \*, (?P<src0>{NUMBER})\) \* 2\);'
+    rf'\s*M2C_FIELD\((?P=dst), s16 \*, 2\) = \(s16\) '
+    rf'\(M2C_FIELD\((?P=src), s16 \*, (?P<src1>{NUMBER})\) \* 2\);)'
+)
+_RELOC_STORE = re.compile(rf'lui \$at, %hi\((?P<slot>{IDENT})\)\nsw \$v0, %lo\((?P=slot)\)\(\$at\)')
+
+_FLOAT = re.compile(
+    rf'lui \$at, %hi\((?P<first>{IDENT})\)\nldc1 \$f2, %lo\((?P=first)\)\(\$at\)\n'
+    r'mtc1 \$a0, \$f0\nnop\ncvt\.d\.w \$f0, \$f0\nmul\.d \$f0, \$f0, \$f2\n'
+    rf'lui \$at, %hi\((?P<second>{IDENT})\)\nldc1 \$f2, %lo\((?P=second)\)\(\$at\)\n'
+    r'cvt\.s\.d \$f12, \$f0\ncvt\.d\.s \$f12, \$f12\nmul\.d \$f12, \$f12, \$f2\n'
+    r'addiu \$sp, \$sp, -24\nsw \$ra, 16\(\$sp\)\n'
+    rf'jal (?P<call>{IDENT})\ncvt\.s\.d \$f12, \$f12\nlui \$at, (?P<scale>\d+)\n'
+    r'mtc1 \$at, \$f2\nnop\nmul\.s \$f12, \$f0, \$f2\ntrunc\.w\.s \$f0, \$f12\n'
+    r'mfc1 \$v0, \$f0\nnop\nlw \$ra, 16\(\$sp\)\njr \$ra\naddiu \$sp, \$sp, 24'
+)
+_FLOAT_SOURCE = re.compile(
+    rf'\s*return \(s32\) \((?P<call>{IDENT})\(\(f32\) '
+    rf'\(\(f64\) \(f32\) \(\(f64\) (?P<arg>{IDENT}) \* (?P<first>{IDENT})\) \* (?P<second>{IDENT})\)\)'
+    r' \* (?P<scale>\d{1,10}(?:\.\d{1,10})?[fF])\);\s*'
+)
+
+_STAGED_CALL = re.compile(
+    r'lw \$v0, (?P<field>\d+)\(\$s2\)\naddiu \$a0, \$s1, (?P<arg>\d+)\nlw \$s0, \(\$v0\)\n'
+    rf'jal (?P<call>{IDENT})\nmove \$a1, \$zero\naddu \$s0, \$s3, \$s0\n'
+    r'lw \$v1, \d+\(\$s0\)\nsw \$v0, (?P<out>\d+)\(\$s0\)'
+)
+_CALL_SOURCE = re.compile(
+    rf'(?P<lead>(?P<base>{IDENT}) = \*M2C_FIELD\({IDENT}, s32 \*\*, (?P<field>{NUMBER})\);)'
+    rf'(?P<address>\s*(?P<addr>{IDENT}) = \(\({IDENT} & 0xFF\) \* 4\) \+ (?P=base);)'
+    rf'(?P<store>\s*M2C_FIELD\((?P=addr), s32 \*, (?P<out>{NUMBER})\) = )'
+    rf'(?P<call>{IDENT})\((?P<input>{IDENT}) \+ (?P<arg>{NUMBER}), 0\);'
+)
+_INDIRECT_CALL = re.compile(
+    r'lw \$s0, (?P<field>\d+)\(\$s2\)\naddiu \$a1, \$zero, (?P<mode>\d+)\nmove \$a2, \$s5\n'
+    r'lw \$v0, (?P<slot>\d+)\(\$s0\)\nsubu \$s3, \$s3, \$s1\njalr \$v0\nmove \$a0, \$s0'
+)
+_INDIRECT_SOURCE = re.compile(
+    rf'(?P<update>(?P<left>{IDENT}) -= (?P<right>{IDENT});)(?P<gap>\s*)'
+    rf'(?P<call>M2C_FIELD\((?P<base>{IDENT}), M2C_UNK \(\*\*\)\(void \*, M2C_UNK, s32\), '
+    rf'(?P<slot>{NUMBER})\)\((?P=base), (?P<mode>{NUMBER}), {IDENT}\);)'
+)
+
+
+def variants(source, name, header, rows):
+    if not 23 <= len(rows) <= 125:
+        return []
+    changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
+    if len(changes) not in (3, 4, 6):
+        return []
+    moved = _moved_pair(rows, changes)
+    if moved and _RELOC_STORE.fullmatch('\n'.join(moved)):
+        result = [fixed for family, fixed in goto_structure_repairs.variants(source, name)
+                  if family == 'goto_forward_else']
+        return [('measured_split_store_tail', result[0])] if len(result) == 1 else []
+    target = '\n'.join(normalized_integer_lines(left for _, left, _ in rows if left))
+    if len(changes) == 3 and (call := _STAGED_CALL.search(target)) and _call_rotation(rows, changes, call):
+        family, witness, build = 'measured_staged_call_result', call, _staged_call
+    elif len(changes) == 4 and (indirect := _INDIRECT_CALL.search(target)) and _indirect_rotation(rows, changes, indirect):
+        family, witness, build = 'measured_post_indirect_call_update', indirect, _after_indirect_call
+    elif moved and (limit := _MOVE_LIMIT.search(target)):
+        expected = (f'addiu $a2, $zero, {limit["literal"]}', f'sh $a2, {limit["dst"]}($a0)')
+        if moved != expected:
+            return []
+        family, witness, build = 'measured_late_halfword_limit', limit, _late_limit
+    elif len(changes) == 6 and (conversion := _FLOAT.fullmatch(target)):
+        if not any(left == 'cvt.s.d $f12, $f0' and right == 'cvt.s.d $f0, $f0' for _, left, right in changes):
+            return []
+        family, witness, build = 'measured_staged_float_conversion', conversion, _staged_conversion
+    else:
+        return []
+    part = view(source, name)
+    end = close(part.clean, part.opening, '{', '}') if part else None
+    if not end:
+        return []
+    part.end = end
+    fixed = build(part, name, header, witness)
+    return [(family, fixed)] if fixed else []
+
+
+def _moved_pair(rows, changes):
+    if len(changes) != 4:
+        return None
+    (a, _, old0), (b, _, old1), (c, want0, right0), (d, want1, right1) = changes
+    if (b != a + 1 or c <= b or d != c + 1 or right0 or right1 or changes[0][1] or changes[1][1]
+            or (want0, want1) != (old0, old1)):
+        return None
+    moved = normalized_integer_lines((want0, want1))
+    if _RELOC_STORE.fullmatch('\n'.join(moved)):
+        # The target delays the first slot's store until after the next
+        # call's argument setup, while the draft joins the branches.
+        setup = [row[1] for row in rows[b + 1:c]]
+        if (a < 2 or d + 1 >= len(rows) or len(setup) != 2 or setup[0] != 'move $a0, $s0'
+                or not re.fullmatch(r'addiu \$a1, \$zero, \d+', setup[1])
+                or not rows[a - 2][1].startswith('jal ') or rows[a - 2][1] != rows[d + 1][1]):
+            return None
+    return moved
+
+
+def _late_limit(part, name, _header, target):
+    signature = re.search(rf'\bvoid\s+{re.escape(name)}\(void \*({IDENT}), void \*({IDENT})\)\s*$', part.clean[:part.opening])
+    stores = _LIMIT_SOURCE.match(part.body)
+    if not signature or not stores or signature.groups() != (stores['dst'], stores['src']):
+        return None
+    fields = ('src0', 'src1')
+    if ([integer(stores[key]) for key in fields] != [int(target[key]) for key in fields]
+            or integer(stores['field']) != int(target['dst']) or integer(stores['value']) != int(target['literal'])):
+        return None
+    start = part.opening + 1
+    coordinates = part.source[start + stores.start('coordinates'):start + stores.end('coordinates')]
+    literal = part.source[start + stores.start('literal'):start + stores.end('literal')]
+    return edit(part.source, [(start, start + stores.end(), coordinates + literal)])
+
+
+def _staged_conversion(part, name, header, target):
+    source = _FLOAT_SOURCE.fullmatch(part.body)
+    signature = re.search(rf'\bs32\s+{re.escape(name)}\(s32 ({IDENT})\)\s*$', part.clean[:part.opening])
+    local = '__repair_float_stage'
+    if not source or not signature or signature[1] != source['arg'] or local in part.source or local in header:
+        return None
+    if any(source[key] != target[key] for key in ('first', 'second', 'call')) or source['call'] == name:
+        return None
+    bits = int.from_bytes(struct.pack('>f', float(source['scale'][:-1])), 'big')
+    if bits != int(target['scale']) << 16:
+        return None
+    fixed = f'''
+    f32 {local};
+
+    {local} = (f32)((f64){source['arg']} * {source['first']});
+    {local} = (f32)((f64){local} * {source['second']});
+    {local} = {source['call']}({local});
+    {local} *= {source['scale']};
+    return (s32){local};
+'''
+    return edit(part.source, [(part.opening + 1, part.end - 1, fixed)])
+
+def _call_rotation(rows, changes, target):
+    (a, *first), (b, *middle), (c, *last) = changes
+    return (b == a + 2 and c == b + 2 and first == ['', 'lw $s0, ($v0)']
+            and middle == ['lw $s0, ($v0)', 'move $a1, $zero'] and last == ['move $a1, $zero', '']
+            and rows[b + 1][1] == f'jal {target["call"]}')
+
+
+def _indirect_rotation(rows, changes, target):
+    sub, load = 'subu $s3, $s3, $s1', f'lw $v0, {target["slot"]}($s0)'
+    (a, *first), (b, *second), (c, *third), (d, *fourth) = changes
+    first, second, third, fourth = (normalized_integer_lines(pair) for pair in (first, second, third, fourth))
+    return (b == a + 2 and c == b + 2 and d == c + 1 and d + 1 < len(rows)
+            and (first, second, third, fourth) == (('', sub), ('', load), (load, ''), (sub, ''))
+            and rows[d + 1][1] == 'jalr $v0')
+
+
+def _staged_call(part, _name, header, target):
+    local = '__repair_call_result'
+    matches = list(_CALL_SOURCE.finditer(part.body))
+    if len(matches) != 1 or local in part.source or local in header:
+        return None
+    match = matches[0]
+    if (match['call'] != target['call'] or len({match[key] for key in ('addr', 'base', 'input', 'call')}) != 4
+            or any(integer(match[key]) != int(target[key]) for key in ('field', 'arg', 'out'))):
+        return None
+    start = part.opening + 1
+    address_start = start + match.start('address')
+    whitespace = re.match(r'\s*', match['address'])[0]
+    call = part.source[start + match.start('call'):start + match.end()]
+    return edit(part.source, [
+        (start, start, f'\n    s32 {local};'),
+        (address_start, address_start, f'{whitespace}{local} = {call}'),
+        (start + match.start('call'), start + match.end(), f'{local};'),
+    ])
+
+
+def _after_indirect_call(part, _name, _header, target):
+    matches = list(_INDIRECT_SOURCE.finditer(part.body))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    left, right = match['left'], match['right']
+    if (integer(match['slot']) != int(target['slot']) or integer(match['mode']) != int(target['mode'])
+            or left == right or any(
+                not re.search(rf'\bs32\s+{local}\s*;', part.body[:match.start()])
+                or re.search(rf'&\s*{local}\b', part.body) for local in (left, right)
+            )):
+        return None
+    start = part.opening + 1
+    call = part.source[start + match.start('call'):start + match.end('call')]
+    update = part.source[start + match.start('update'):start + match.end('update')]
+    return edit(part.source, [(start + match.start(), start + match.end(), call + match['gap'] + update)])
