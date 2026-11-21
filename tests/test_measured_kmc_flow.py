@@ -323,3 +323,26 @@ def test_byte_guard_return_keeps_the_zero_exit():
     assert 'else goto empty; return __repair_guard_result;' in candidate
     assert not variants(source.replace('empty: return 0;', 'empty: return 1;'), 'probe', '', rows)
     assert not variants(source.replace('p + 8', 'p + 9'), 'probe', '', rows)
+
+
+def test_in_place_float_ranges_reuses_dead_extrema():
+    source = """extern f32 scale;
+void probe(void) {
+    f32 x; f32 y; f32 x_hi; f32 x_lo; f32 y_hi; f32 y_lo;
+    x = x_hi - x_lo;
+    y = y_hi - y_lo;
+    if (y < x) { do { scale = x; } while (0); }
+    else { scale = y; }
+    scale *= 0.75f;
+}"""
+    rows = [
+        ('r', 'sub.s $f4, $f4, $f8', 'sub.s $f0, $f4, $f8'),
+        ('r', 'c.lt.s $f2, $f4', 'c.lt.s $f2, $f0'),
+        ('r', 'swc1 $f4, %lo(scale)($at)', 'swc1 $f0, %lo(scale)($at)'),
+    ]
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_in_place_float_ranges'
+    assert 'x_hi -= x_lo;' in candidate
+    assert 'if (y_hi < x_hi) { scale = x_hi; } else { scale = y_hi; }' in candidate
+    assert not variants(source.replace('0.75f', 'x_hi'), 'probe', '', rows)
+    assert not variants(source.replace('x = x_hi', 'expose(&x_hi); x = x_hi'), 'probe', '', rows)
