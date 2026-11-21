@@ -85,3 +85,18 @@ def variants(source, name, rows, header=''):
         lines.append(f'if ({expression} {pred}) {{')
         replacements.append(('\n' + indent).join(lines))
     return [(FAMILY, edit(source, [(*hit.span(), replacement)])) for replacement in replacements]
+
+
+def legacy_candidate(source, name, assembly):
+    """Recover a narrowly scoped retry lead for old passes without stored rows."""
+    instructions = [re.sub(r'\s+', ' ', line.split('*/', 1)[1].strip()).lower()
+                    for line in assembly.splitlines() if line.lstrip().startswith('/*') and '*/' in line]
+    for index in range(2, len(instructions) - 1):
+        if not instructions[index].endswith(', 0xff'):
+            continue
+        rows = [(' ', text, text) for text in instructions[index-2:index+2]]
+        mask = instructions[index]
+        rows[2] = ('i', mask, mask[:-4] + '0x7f')
+        if variants(source, name, rows):
+            return True
+    return False

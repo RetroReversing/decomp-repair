@@ -28,3 +28,11 @@ def test_reject_wrong_register_wrong_source_or_second_difference():
     assert not residual(ROWS + [('i', 'nop', 'move $v0, $a0')])
     assert not variants(SOURCE.replace('== 2', '== 3'), 'f', ROWS)
     assert not variants(SOURCE.replace('return 0;', SOURCE.split('{', 1)[1][:-2]), 'f', ROWS)
+
+
+def test_legacy_target_assembly_is_only_a_retry_lead():
+    from decomprepair.last_byte_mask_repairs import legacy_candidate
+
+    asm = '\n'.join(f'/* 000 00000000 00000000 */  {left.upper()}' for _, left, _ in ROWS)
+    assert legacy_candidate(SOURCE, 'f', asm)
+    assert not legacy_candidate(SOURCE, 'f', asm.replace('LBU', 'LB'))
