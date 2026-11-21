@@ -103,3 +103,29 @@ def _unknown_casts(source, clean, opening, end, asm):
             if text != source and text not in [t for _, t in result]:
                 result.append((FAMILY, text))
     return result
+
+
+def guarded_indexed_variants(source, name, asm):
+    """Correct a word-cast zero test when the target reads the same byte-addressed symbol."""
+    span = find(source, name)
+    if not span or not asm:
+        return []
+    clean = _blank(source)
+    pattern = re.compile(
+        r'\*\s*\(*\s*\(\s*(?P<kind>s32)\s*\*\s*\)\s*'
+        r'(?P<address>\()\s*\(*\s*\(\s*(?:s8|u8|char)\s*\*\s*\)\s*\(*\s*&\s*'
+        rf'(?P<symbol>{IDENT})\s*\)*\s*\+'
+    )
+    result = []
+    for hit in pattern.finditer(clean, *span):
+        end = close(clean, hit.start('address'))
+        if not end or not re.match(r'\s*\)*\s*==\s*0\b', clean[end:span[1]]):
+            continue
+        kinds = widths(asm, hit['symbol'])
+        if kinds not in ({'u8'}, {'s8'}):
+            continue
+        a, b = hit.span('kind')
+        result.append((FAMILY, source[:a]+next(iter(kinds))+source[b:]))
+        if len(result) == 2:
+            break
+    return result
