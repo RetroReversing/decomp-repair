@@ -158,3 +158,35 @@ void f(void *obj) {
         'void f' + m2c, 'f', rows, '#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))'
     )
     assert family == 'staged_field_mask'
+
+
+def test_publish_snapshots_word_after_restoring_empty_loop_initialization():
+    from decomprepair.measured_memory_order import variants
+
+    source = '''
+void apply(s32 input) {
+    s32 i;
+    void *ret;
+    i = 3;
+    do {
+        i += 1;
+    } while ((u32) (i & 0xFF) < 9U);
+    ret = create(input);
+    M2C_FIELD(&published, void **, 0) = ret;
+    M2C_FIELD(ret, s32 *, 16) = (s32) (M2C_FIELD(ret, s32 *, 16) | 8);
+}
+'''
+    rows = [('i', 'addiu $v1, $zero, 2', 'addiu $v1, $zero, 3')]
+    rows += [(' ', op, op) for op in (
+        'addiu $v1, $v1, 1', 'andi $v0, $v1, 0xff', 'sltiu $v0, $v0, 9', 'bnez $v0, .Lloop',
+        'addiu $v1, $v1, 1', 'lw $v0, 40($a0)', 'lw $v0, 36($v0)', 'jal create', 'move $a0, $a1',
+    )]
+    rows += [('o', 'lw $v1, 16($v0)', '')]
+    rows += [(' ', op, op) for op in ('lui $at, %hi(published)', 'sw $v0, %lo(published)($at)')]
+    rows += [('o', '', 'lw $v1, 16($v0)')]
+    rows += [(' ', op, op) for op in ('ori $v1, $v1, 8', 'lw $ra, 16($sp)', 'sw $v1, 16($v0)')]
+    [(family, fixed)] = variants(source, 'apply', rows)
+    assert family == 'measured_empty_loop_before_publish'
+    assert 'i = 2;' in fixed and '} while ((u8)i < 9);\n    i++;' in fixed
+    assert fixed.index('__repair_before_publish =') < fixed.index('M2C_FIELD(&published')
+    assert not variants(source.replace('ret = create(input);', 'ret = create(i);'), 'apply', rows)
