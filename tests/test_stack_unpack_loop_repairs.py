@@ -85,3 +85,17 @@ def test_left_alone_otherwise():
     assert x.variants(SOURCE.replace('if (var_a != &sp30)', 'if (var_a != &sp34)'), 'f', ASM) == []  # not whole strides
     assert x.variants(SOURCE.replace('var_b += 2;', 'var_b += 2; g(var_b);'), 'f', ASM) == []  # a cursor escapes
     assert x.variants('void h(void) {}', 'f', ASM) == []
+
+
+def test_m2cs_field_macro_and_typed_cursors_are_read_too():
+    # what m2c writes today: M2C_FIELD(...) reads, `M2C_UNK *` cursors for the stores it can't type, a typed cursor read
+    # as `*cursor`, and `do { } while (...)`; the cast chain above is the same program written out
+    import re
+    macro = re.sub(r'\(\*\((\w+) \*\)\(\(char \*\)\((\w+)\) \+ (-?\w+)\)\)', r'M2C_FIELD(\2, \1 *, \3)', SOURCE)
+    macro = macro.replace('s32 *var_b;', 's16 *var_b;').replace('*(s16 *)var_b = ', '*var_b = ')
+    macro = macro.replace('    loop: {', '    do {').replace('    }\n    if (var_a != &sp30) goto loop;', '    } while (var_a != &sp30);')
+    assert 'M2C_FIELD(arg1, u8 *, 1)' in macro and '*var_b = ' in macro and 'do {' in macro
+    for source in (macro, macro.replace('s32 *var_a;', 'M2C_UNK *var_a;')):
+        found = x.variants(source, 'f', ASM)
+        assert len(found) == 2 and 'sp30[i]' in found[0][1] and 'sp38[i*2+1]' in found[0][1]
+        assert 'for (i = 0; i < 4; i++)' in found[0][1] and 'var_' not in found[0][1] and 'M2C_FIELD(var' not in found[0][1]
