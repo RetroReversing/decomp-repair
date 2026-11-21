@@ -398,6 +398,22 @@ def _shared_shift(part, header, symbols, amount):
     return None
 
 
+def _indirect_word_stores(loop, register):
+    offsets = set()
+    for i, op in enumerate(loop[:-1]):
+        load = re.fullmatch(rf'lw (\$\w+), (?:0|0x0)?\({re.escape(register)}\)', op)
+        if not load or load[1] == register:
+            continue
+        reg = re.escape(load[1])
+        for following in loop[i + 1:i + 3]:
+            if store := re.fullmatch(rf'sw \$zero, ({NUMBER})\({reg}\)', following):
+                offsets.add(integer(store[1]))
+                break
+            if not re.fullmatch(rf'addiu (?!{reg},|{re.escape(register)},)\$\w+, \$\w+, {NUMBER}', following):
+                break
+    return offsets
+
+
 def _loop_step(source, name, rows):
     """Correct a typed cursor when its only mismatch is the scaled delay-slot advance."""
     changed = [(i, a, b) for i, (kind, a, b) in enumerate(rows) if kind != ' ']
@@ -422,8 +438,10 @@ def _loop_step(source, name, rows):
     load, store = (r'lh[u]?', 'sh') if width == 2 else ('lw', 'sw')
     operand = rf'\$\w+, (?:0|0x0)?\({re.escape(wanted["reg"])}\)'
     loop = [a for _, a, _ in rows[start:index-1]]
-    if not (any(re.fullmatch(rf'{load} {operand}', a) for a in loop)
-            and any(re.fullmatch(rf'{store} {operand}', a) for a in loop)):
+    direct = (any(re.fullmatch(rf'{load} {operand}', a) for a in loop)
+              and any(re.fullmatch(rf'{store} {operand}', a) for a in loop))
+    indirect = _indirect_word_stores(loop, wanted['reg']) if width == 4 and byte_step == 4 and not direct else set()
+    if not direct and len(indirect) < 2:
         return None
 
     if not (part := view(source, name)):
@@ -435,11 +453,16 @@ def _loop_step(source, name, rows):
         if integer(hit['step']) != abs(byte_step) or byte_step % width:
             continue
         ptr = hit['ptr']
-        declaration = rf'[su]{bits}\s*\*\s*{ptr}\b'
+        declaration = rf'[su]{bits}\s*\*\s*{ptr}\b' if direct else rf'void\s*\*\s*\*\s*{ptr}\b'
         if len(re.findall(rf'(?m)^\s*{declaration}\s*;', part.body[:hit.start()])) != 1:
             continue
-        if not re.search(rf'(?m)^\s*\*\s*{ptr}\s*[+\-*/%&|^]?=(?!=)', part.body[:hit.start()]):
-            continue
+        if direct:
+            if not re.search(rf'(?m)^\s*\*\s*{ptr}\s*[+\-*/%&|^]?=(?!=)', part.body[:hit.start()]):
+                continue
+        else:
+            fields = re.findall(rf'M2C_FIELD\(\*{ptr}, [su]32 \*, ({NUMBER})\) = 0;', part.body[:hit.start()])
+            if {integer(field) for field in fields} != indirect:
+                continue
         if re.search(rf'&\s*{ptr}\b', part.body):
             continue
         start, end = hit.span('step')

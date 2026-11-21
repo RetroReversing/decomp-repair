@@ -552,3 +552,26 @@ def test_reordered_byte_load_and_dependent_index_follow_the_call():
     assert 'object = create(4, 0, 2);\n        value = M2C_FIELD' in fixed
     assert not variants(source.replace('create(4', 'create(index'), 'f', '', rows)
     assert not variants(source.replace('u8 *, 8', 'u8 *, 9'), 'f', '', rows)
+
+
+def test_loop_step_scales_a_cursor_to_indirect_zeroed_records():
+    source = '''extern void *entries;
+void f(void) {
+    void **cursor;
+    s32 i = 0;
+    cursor = &entries;
+    do {
+        M2C_FIELD(*cursor, s32 *, 4) = 0;
+        i += 1;
+        M2C_FIELD(*cursor, s32 *, 8) = 0;
+        cursor += 4;
+    } while (i < 3);
+}'''
+    rows = [(' ', op, op) for op in ('lw $v0, ($v1)', 'sw $zero, 4($v0)', 'lw $v0, ($v1)',
+                                      'addiu $a0, $a0, 1', 'sw $zero, 8($v0)', 'sltiu $v0, $a0, 3',
+                                      'bnez $v0, 0')]
+    rows += [('i', 'addiu $v1, $v1, 4', 'addiu $v1, $v1, 16')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_pointer_step']
+    assert 'cursor += 1;' in fixed
+    assert not variants(source.replace('*, 8', '*, 12'), 'f', '', rows)
+    assert not variants(source.replace('void **cursor', 'void *cursor'), 'f', '', rows)
