@@ -63,8 +63,12 @@ def baseline_variants(source, name, asm, header, toolchain, *, resolve=None):
         return []
     if toolchain != 'ido-7.1':
         return []
-    from . import ido_mapped_poll, ido_matrix_copy
+    from . import ido_mapped_poll, ido_matrix_copy, ido_packed_stack_word, ido_typed_loops
 
+    if candidates := ido_typed_loops.variants(source, name, asm, header):
+        return candidates
+    if candidate := ido_packed_stack_word.rewrite(source, name, asm, header):
+        return [(ido_packed_stack_word.FAMILY, candidate)]
     if candidate := ido_matrix_copy.rewrite(source, name, asm, header):
         return [(ido_matrix_copy.FAMILY, candidate)]
     if candidate := ido_mapped_poll.rewrite(source, name, asm, header, resolve):
