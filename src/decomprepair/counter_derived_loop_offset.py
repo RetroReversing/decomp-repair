@@ -53,3 +53,45 @@ def variants(source, name, arch, asm):
         value = ' + '.join(f'({count} << {shift})' if shift else count for shift in shifts)
         return [(FAMILY, source[:a]+f'{offset} = {value};'+source[b:])]
     return []
+
+
+MASKED_BYTE_STRIDE = 'masked_byte_stride'
+
+
+def masked_byte_stride_variants(source, name, arch, asm):
+    """Spell a masked byte-table index as the target's two shifts and addition."""
+    if arch != 'mips' or not (span := find(source, name)):
+        return []
+    clean = _blank(source)
+    target = re.sub(r'/\*[^\n]*?\*/', '', asm)
+    shape = re.compile(
+        rf'\b(?P<index>{ID})\s*=\s*{ID}\s*&\s*(?P<mask>{NUM})\s*;'
+        rf'(?P<before>[^;{{}}]*?)\*\s*\(\s*\(\s*(?:u8|unsigned\s+char)\s*\*\s*\)\s*&\s*(?P<table>{ID})\s*\+'
+        rf'\s*\(\s*(?P<scale>(?P=index)\s*\*\s*(?P<stride>{NUM}))\s*\)\s*\)'
+    )
+    for hit in shape.finditer(clean, *span):
+        index, table = hit['index'], hit['table']
+        mask, stride = int(hit['mask'], 0), int(hit['stride'], 0)
+        factor = stride // 3
+        if (mask not in (0xff, 0xffff) or stride != 3 * factor or factor < 2 or factor & (factor - 1)
+                or factor.bit_length() > 16 or mask * stride > 0x7fffffff):
+            continue
+        prefix = clean[span[0]:hit.start()]
+        if (not re.search(rf'[;{{}}]\s*(?:u32|s32|unsigned\s+int|int)\s+{index}\s*;', prefix)
+                or re.search(rf'\b{index}\b', hit['before'])
+                or re.search(rf'&\s*{index}\b', clean[span[0]:span[1]])):
+            continue
+        shift = factor.bit_length() - 1
+        evidence = re.compile(
+            rf'\bandi\s+(?P<index>\$\w+),\s*\$\w+,\s*(?:0x{mask:x}|{mask})\s*\n'
+            r'\s*sll\s+(?P<double>\$\w+),\s*(?P=index),\s*(?:0x)?1\s*\n'
+            r'\s*addu\s+(?P<sum>\$\w+),\s*(?P=double),\s*(?P=index)\s*\n'
+            rf'\s*sll\s+(?P<stride>\$\w+),\s*(?P=sum),\s*(?:{shift}|0x{shift:x})\s*\n'
+            rf'\s*lui\s+(?P<base>\$\w+),\s*%hi\({table}\)\s*\n'
+            r'\s*addu\s+(?P<address>\$\w+),\s*(?P=base),\s*(?P=stride)\s*\n'
+            rf'\s*lbu\s+\$\w+,\s*%lo\({table}\)\((?P=address)\)', re.I,
+        )
+        if evidence.search(target):
+            start, end = hit.span('scale')
+            return [(MASKED_BYTE_STRIDE, f'{source[:start]}({index} + ({index} << 1)) << {shift}{source[end:]}')]
+    return []
