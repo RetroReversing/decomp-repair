@@ -613,3 +613,29 @@ def test_sentinel_cursor_steps_on_loop_entry_before_the_call():
     assert 'cursor += 2;\n            register_value(value, key);' in fixed
     assert not variants(source.replace('register_value(value, key)', 'register_value(value, cursor)'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:-1])
+
+
+def test_stage_corrected_halfword_pointer_without_rebasing_delay_store():
+    source = """\
+extern short field;
+void f(void) {
+    short *base;
+    base = &field;
+    *base = 15;
+    *((short *)((char *)base - two())) = 0;
+    sink(buffer, (base) - 2, 512);
+}
+"""
+    ops = [
+        'addiu $v1, $v1, %lo(field)', 'addiu $a1, $v1, -2', 'addiu $a2, $zero, 0x200',
+        'sh $v0, ($v1)', 'jal sink', 'sh $zero, -2($v1)',
+    ]
+    evidence = [(' ', op, op) for op in ops]
+    evidence[1] = ('i', ops[1], 'addiu $a1, $v1, -4')
+    [(family, fixed)] = variants(source, 'f', '', evidence)
+    assert family == 'measured_staged_halfword_call_address'
+    assert 'base = &field;\n    repair_call_address = base - 1;\n    *base = 15;' in fixed
+    assert 'sink(buffer, repair_call_address, 512);' in fixed
+    assert not variants(source.replace('*base = 15;', 'base = other; *base = 15;'), 'f', '', evidence)
+    evidence[-1] = (' ', 'sh $zero, ($a1)', 'sh $zero, ($a1)')
+    assert not variants(source, 'f', '', evidence)

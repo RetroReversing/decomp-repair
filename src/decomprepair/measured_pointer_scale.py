@@ -915,11 +915,67 @@ def _sentinel_entry_step(source, name, rows):
     return edit(source, changes) if len(changes) == 1 else None
 
 
+def _stage_halfword_call_address(source, name, header, rows):
+    """Correct the pointer scale while keeping a delay-slot store based on the original pointer."""
+    changed = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if len(changed) != 1 or not 0 < (at := changed[0]) < len(rows) - 2:
+        return None
+    add = re.compile(rf'addiu \$a1, (\$\w+), -({NUMBER})')
+    want, have = (add.fullmatch(op) for op in rows[at][1:])
+    if (not want or not have or want[1] != have[1] or integer(want[2]) % 2 or integer(want[2]) == 0
+            or integer(have[2]) != 2 * integer(want[2])):
+        return None
+    register = re.escape(want[1])
+    symbol = re.fullmatch(rf'addiu {register}, {register}, %lo\(({IDENT})\)', rows[at - 1][1])
+    call = next((i for i in range(at + 1, min(at + 7, len(rows) - 1))
+                 if rows[i][1].startswith('jal ')), None)
+    if not symbol or call is None:
+        return None
+    callee = re.fullmatch(rf'jal ({IDENT})', rows[call][1])
+    delay = re.fullmatch(rf'sh \$zero, -({NUMBER})\({register}\)', rows[call + 1][1])
+    if not callee or not delay or integer(delay[1]) != integer(want[2]) or not (part := view(source, name)):
+        return None
+    if any(re.search(r'\$a1\b', row[1]) for row in rows[at + 1:call]):
+        return None
+    initializer = list(re.finditer(rf'(?m)^(?P<indent>[ \t]*)(?P<base>{IDENT})\s*=\s*&{symbol[1]}\s*;',
+                                   part.clean[part.opening + 1:part.end]))
+    if len(initializer) != 1:
+        return None
+    init = initializer[0]
+    base = init['base']
+    start = part.opening + 1
+    preceding = part.clean[start:start + init.start()].rstrip()
+    if preceding.count('{') != preceding.count('}') or preceding[-1:] != ';':
+        return None
+    declarations = list(re.finditer(rf'(?m)^(?P<indent>[ \t]*)(?P<type>short|s16|u16)\s*\*\s*{base}\s*;',
+                                    part.clean[start:start + init.start()]))
+    arg = list(re.finditer(rf'\b{callee[1]}\s*\([^,;\n]+,\s*(?P<address>\(?{base}\)?\s*-\s*(?P<count>{NUMBER}))\s*,',
+                           part.clean[start + init.end():part.end]))
+    context = header + '\n' + part.clean
+    after_init = part.clean[start + init.end():part.end]
+    pointer_uses = re.sub(rf'\*\s*{base}\b', '', after_init)
+    if (len(declarations) != 1 or len(arg) != 1 or integer(arg[0]['count']) != integer(want[2])
+            or re.search(r'\b(?:goto|asm|__asm__|volatile)\b', part.body)
+            or re.search(r'\brepair_call_address\b', context)
+            or re.search(rf'\b{base}\b{WRITE_SUFFIX.pattern}|&\s*{base}\b',
+                         pointer_uses)):
+        return None
+    decl = declarations[0]
+    absolute = start + init.end()
+    lo, hi = arg[0].span('address')
+    return edit(source, [(start + decl.end(), start + decl.end(),
+                          f'\n{decl["indent"]}{decl["type"]} *repair_call_address;'),
+                         (absolute, absolute, f'\n{init["indent"]}repair_call_address = {base} - {integer(want[2]) // 2};'),
+                         (absolute + lo, absolute + hi, 'repair_call_address')])
+
+
 def variants(source, name, header, rows):
     if 'char *' in source and (candidate := _sentinel_entry_step(source, name, rows)):
         return [('measured_sentinel_entry_step', candidate)]
     if candidate := _loaded_halfword_call_offset(source, name, header, rows):
         return [('measured_loaded_halfword_call_offset', candidate)]
+    if candidate := _stage_halfword_call_address(source, name, header, rows):
+        return [('measured_staged_halfword_call_address', candidate)]
     if candidate := _call_byte_offset(source, name, rows):
         return [('measured_call_byte_offset', candidate)]
     if candidate := _under_scaled_halfword_cursor(source, name, rows):
