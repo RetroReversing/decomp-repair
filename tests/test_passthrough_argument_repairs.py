@@ -717,3 +717,40 @@ void f(s32 dest, s32 offset, u32 count) {
     assert 'write_bytes(dest, len)' in fixed
     assert fixed.index('saved_dest = dest') < fixed.index('saved_offset = offset')
     assert not p.shifted_call_variants(source, 'f', header, 'move $a0, $zero\n' + asm, rows)
+
+
+def test_forward_first_argument_with_a_guarded_halfword():
+    source = """\
+s32 send(s16);
+void f(void *context) {
+    s16 value;
+    value = M2C_FIELD(M2C_FIELD(context, void **, 8), s16 *, 6);
+    if (value != 0) {
+        send(value);
+    }
+}
+"""
+    target = [
+        'addiu $sp, $sp, -0x18', 'sw $ra, 0x10($sp)', 'lw $v0, 8($a0)',
+        'lh $a1, 6($v0)', 'beqz $a1, 0x20', 'nop', 'jal send', 'nop',
+        'lw $ra, 0x10($sp)', 'jr $ra', 'addiu $sp, $sp, 0x18',
+    ]
+    rows = [(' ', op, op) if i not in (3, 4) else ('r', op, op.replace('$a1,', '$a0,'))
+            for i, op in enumerate(target)]
+
+    def assembly(instructions):
+        return '\n'.join(f'/* 0 {0x80000000 + 4*i:08X} 00000000 */ {op}'
+                         for i, op in enumerate(instructions))
+
+    raw = target.copy()
+    raw[4] = 'beqz $a1, .L80000020'
+    raw[6] = 'jal func_80001234'
+    asm = assembly(raw).replace('/* 0 80000020', '.L80000020:\n/* 0 80000020')
+    resolve = {'send': 0x80001234}.get
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows, resolve=resolve)
+    assert family == p.FAMILY
+    assert 'send(void *, s16);' in fixed
+    assert 'send(context, value);' in fixed
+    assert not p.shifted_call_variants(source, 'f', '', asm.replace('nop', 'move $a0, $zero', 1), rows, resolve=resolve)
+    assert not p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert not p.shifted_call_variants(source, 'f', 's32 send(s16);', asm, rows, resolve=resolve)

@@ -838,6 +838,17 @@ def _saved_entry_forward(source, name, header, asm, rows, changes, resolve):
     return [(FAMILY, edit(part.source, [(begin, end, copying['first'] + copying['second'])]))]
 
 
+def _guarded_shifted_load(rows, changes, call):
+    """The shifted argument is loaded once and tested before entering the call."""
+    if call < 3 or call + 1 >= len(rows) or changes != [call - 3, call - 2]:
+        return False
+    load = re.fullmatch(rf'(?:lb|lbu|lh|lhu|lw) \$a1, (?:{NUMBER})?\(\$\w+\)', rows[call - 3][1])
+    branch = re.fullmatch(rf'beqz \$a1, {NUMBER}', rows[call - 2][1])
+    return bool(load and branch and rows[call - 1][1] == rows[call + 1][1] == 'nop'
+                and all(rows[i][0] == 'r' and rows[i][2] == rows[i][1].replace('$a1,', '$a0,', 1)
+                        for i in changes))
+
+
 def shifted_call_variants(source, name, header, asm, rows, *, resolve=None, read_data=None, big_endian=False):
     """Focus passthrough proposals on the measured setup for one changed call."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
@@ -872,6 +883,10 @@ def shifted_call_variants(source, name, header, asm, rows, *, resolve=None, read
                 return [(FAMILY, candidate_source)]
         if candidate_source := _pointer_call_reuse(source, name, header, asm, rows, i, call[1]):
             return [(FAMILY, candidate_source)]
+        if _guarded_shifted_load(rows, changes, i) and (forwarded := variants(
+                source, name, asm=asm, arch='mips', header=header, require_evidence=True,
+                selected_call=call[1], resolve=resolve)):
+            return forwarded
         relocations = _relocated_shift_count(rows, local)
         if relocations is not None and i - local[0] <= 4 + relocations:
             nearby.append((call[1], i, local))
