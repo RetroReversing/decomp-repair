@@ -57,3 +57,27 @@ def test_a_block_scoped_struct_tag_keeps_liveness_and_the_phase_split():
     assert local_flow.analyze(source, 'f') is not None
     split = phase_lifetime_repairs.splits(source, 'f')
     assert any('__repair_phase_n = g(k);' in text and 'n = 0;' in text for text in split)
+
+
+def test_float_and_pointer_locals_get_their_phases_split():
+    # gap: split_integer_phase only split integer locals; m2c reuses float temporaries and cursor pointers too
+    from decomprepair import phase_lifetime_repairs
+    source = '''void f(f32 *a, s32 *b, f32 x) {
+    f32 t;
+    s32 *p;
+    t = x * 2.0f;
+    a[0] = t;
+    t = a[1] * x;
+    a[2] = t;
+    a[3] = t;
+    p = b;
+    *p = 1;
+    p = b + 4;
+    *p = 2;
+    *p = 3;
+}
+'''
+    split = phase_lifetime_repairs.splits(source, 'f')
+    assert any('f32 __repair_phase_t;' in text and '__repair_phase_t = a[1] * x;' in text
+               and 't = x * 2.0f;' in text for text in split)
+    assert any('s32 *__repair_phase_p;' in text and '__repair_phase_p = b + 4;' in text for text in split)
