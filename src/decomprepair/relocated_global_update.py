@@ -70,12 +70,92 @@ def rewrite(source, name, asm, header='', resolve=None):
     # The two relocations must resolve in the words at the actual load and store.
     if (addresses.get(4), addresses.get(40)) != (address, address):
         return None
+    return _direct_word(source, name, header, resolve, address, [draft.span('read'), draft.span('write')])
+
+
+COUNTDOWN = re.compile(
+    rf'(?m)^lui \$v0, %hi\((?P<base>{IDENT})(?: \+ (?P<offset>{NUMBER}))?\)\n'
+    r'lw \$v0, %lo\((?P=base)(?(offset) \+ (?P=offset))\)\(\$v0\)\n'
+    rf'blez \$v0, (?P<nonpositive>\.L\w+)\nnop\naddiu \$v0, \$v0, -(?:1|0x1)\n'
+    r'lui \$at, %hi\((?P=base)(?(offset) \+ (?P=offset))\)\n'
+    r'j (?P<exit>\.L\w+)\nsw \$v0, %lo\((?P=base)(?(offset) \+ (?P=offset))\)\(\$at\)\n'
+    r'(?P=nonpositive):\nbnez \$v0, (?P<skip>\.L\w+)\naddiu \$v0, \$zero, -(?:1|0x1)\n'
+    rf'lui \$v1, %hi\((?P<obj>{IDENT})(?: \+ (?P<objoff>{NUMBER}))?\)\n'
+    r'lw \$v1, %lo\((?P=obj)(?(objoff) \+ (?P=objoff))\)\(\$v1\)\n'
+    r'lui \$at, %hi\((?P=base)(?(offset) \+ (?P=offset))\)\n'
+    r'sw \$v0, %lo\((?P=base)(?(offset) \+ (?P=offset))\)\(\$at\)\n'
+    rf'sh \$zero, (?P<clear>{NUMBER})\(\$v1\)\n(?P=skip):'
+)
+
+COUNTDOWN_DRAFT = re.compile(
+    rf'\s*if \((?P<field>M2C_FIELD\(&(?P<base>{IDENT}), s32 \*, (?P<offset>{NUMBER})\)) > 0\) {{\s*'
+    r'(?P=field) = \(s32\) \((?P=field) - 1\);\s*return;\s*}\s*'
+    r'if \((?P=field) == 0\) {\s*(?P=field) = -1;\s*'
+    rf'M2C_FIELD\(M2C_FIELD\(&(?P<obj>{IDENT}), void \*\*, (?P<objoff>{NUMBER})\), s16 \*, '
+    rf'(?P<clear>{NUMBER})\) = 0;\s*}}'
+)
+
+
+def _countdown_target(asm):
+    if 'blez' not in asm or '%hi(' not in asm:
+        return None
+    from .measured_stack_drafts import _lines
+
+    lines = '\n'.join(' '.join(line.split()) for line in _lines(asm)
+                      if not line.startswith(('glabel ', 'endlabel ')))
+    match = COUNTDOWN.match(lines)
+    if not match or len({match[key] for key in ('nonpositive', 'skip', 'exit')}) != 3:
+        return None
+    if not re.search(rf'(?m)^{re.escape(match["exit"])}:\njr \$ra\nnop$', lines[match.end():]):
+        return None
+    return match
+
+
+def countdown_applies(asm):
+    return _countdown_target(asm) is not None
+
+
+def _direct_word(source, name, header, resolve, address, accesses):
     alias = f'D_{address:08X}'
-    if resolve(alias) != address or re.search(rf'\b{alias}\b', source + '\n' + header):
+    if (not 0 <= address <= 0xFFFFFFFF or address % 4 or resolve(alias) != address
+            or re.search(rf'\b{alias}\b', source + '\n' + header)):
         return None
     definition = find(source, name)[0]
-    return edit(source, [
-        (definition, definition, f'extern s32 {alias};\n\n'),
-        (*draft.span('read'), alias),
-        (*draft.span('write'), alias),
-    ])
+    return edit(source, [(definition, definition, f'extern s32 {alias};\n\n'),
+                         *((a, b, alias) for a, b in accesses)])
+
+
+def rewrite_countdown(source, name, asm, header='', resolve=None):
+    """Use direct word accesses in the proven countdown prefix."""
+    if resolve is None or 'M2C_FIELD' not in source or not (target := _countdown_target(asm)):
+        return None
+    part = view(source, name)
+    if not part or not re.search(rf'\bvoid\s+{re.escape(name)}\(void\)\s*$', part.clean[:part.opening]):
+        return None
+    draft = COUNTDOWN_DRAFT.match(part.clean, part.opening + 1, part.end)
+    if not draft or integer(draft['clear']) != integer(target['clear']):
+        return None
+
+    def address(binding, key, offset):
+        base = resolve(binding[key])
+        return None if base is None else base + integer(binding[offset] or '0')
+
+    counter = address(target, 'base', 'offset')
+    obj = address(target, 'obj', 'objoff')
+    if (counter is None or obj is None or obj == counter or counter != address(draft, 'base', 'offset')
+            or obj != address(draft, 'obj', 'objoff')):
+        return None
+    words = instructions(asm)
+    if len(words) < 15:
+        return None
+    # Decode each load/store pair independently, including the first store in a jump delay slot.
+    for high, low, opcode, expected in ((0, 1, 35, counter), (5, 7, 43, counter),
+                                       (10, 11, 35, obj), (12, 13, 43, counter)):
+        if words[high] >> 26 != 15 or words[low] >> 26 != opcode:
+            return None
+        pair = words[high].to_bytes(4, 'big') + words[low].to_bytes(4, 'big')
+        if resolved(pair).get(4) != expected:
+            return None
+    accesses = [hit.span() for hit in re.compile(re.escape(draft['field'])).finditer(
+        part.clean, draft.start(), draft.end())]
+    return _direct_word(source, name, header, resolve, counter, accesses)

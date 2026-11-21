@@ -47,3 +47,55 @@ def test_reject_different_raw_addresses_or_return_shift(target):
 def test_reject_incompatible_source_or_owned_alias():
     assert repair.rewrite(DRAFT.replace('+ 24', '+ 25'), 'update', TARGET, resolve=SYMBOLS.get) is None
     assert repair.rewrite(DRAFT, 'update', TARGET, 'extern volatile s32 D_80029120;', SYMBOLS.get) is None
+
+
+def countdown_asm():
+    rows = [
+        ('lui $v0, %hi(arena + 64)', 0x3C028003), ('lw $v0, %lo(arena + 64)($v0)', 0x8C429120),
+        ('blez $v0, .Lnonpositive', 0x18400005), ('nop', 0),
+        ('addiu $v0, $v0, -1', 0x2442FFFF), ('lui $at, %hi(arena + 64)', 0x3C018003),
+        ('j .Lend', 0x0800000F), ('sw $v0, %lo(arena + 64)($at)', 0xAC229120),
+        ('.Lnonpositive:', None), ('bnez $v0, .Lskip', 0x14400006),
+        ('addiu $v0, $zero, -1', 0x2402FFFF), ('lui $v1, %hi(arena + 72)', 0x3C038003),
+        ('lw $v1, %lo(arena + 72)($v1)', 0x8C639128), ('lui $at, %hi(arena + 64)', 0x3C018003),
+        ('sw $v0, %lo(arena + 64)($at)', 0xAC229120), ('sh $zero, 6($v1)', 0xA4600006),
+        ('.Lskip:', None), ('.Lend:', None), ('jr $ra', 0x03E00008), ('nop', 0),
+    ]
+    lines = []
+    address = 0
+    for text, word in rows:
+        if word is not None:
+            text = f'/* {address:X} {address:08X} {word:08X} */ {text}'
+            address += 4
+        lines.append(text)
+    return '\n'.join(lines)
+
+
+COUNTDOWN = '''
+void tick(void) {
+    if (M2C_FIELD(&arena, s32 *, 0x40) > 0) {
+        M2C_FIELD(&arena, s32 *, 0x40) = (s32) (M2C_FIELD(&arena, s32 *, 0x40) - 1);
+        return;
+    }
+    if (M2C_FIELD(&arena, s32 *, 0x40) == 0) {
+        M2C_FIELD(&arena, s32 *, 0x40) = -1;
+        M2C_FIELD(M2C_FIELD(&arena, void **, 0x48), s16 *, 6) = 0;
+    }
+    update();
+}
+'''
+
+
+def test_countdown_keeps_other_stores_and_control_flow():
+    asm = countdown_asm()
+    candidate = repair.rewrite_countdown(COUNTDOWN, 'tick', asm, resolve=SYMBOLS.get)
+    assert candidate == COUNTDOWN.replace('void tick', 'extern s32 D_80029120;\n\nvoid tick').replace(
+        'M2C_FIELD(&arena, s32 *, 0x40)', 'D_80029120')
+
+
+def test_countdown_requires_both_raw_store_relocations():
+    asm = countdown_asm()
+    assert repair.rewrite_countdown(COUNTDOWN, 'tick', asm.replace('AC229120', 'AC229124', 1),
+                                    resolve=SYMBOLS.get) is None
+    assert repair.rewrite_countdown(COUNTDOWN.replace('s16 *, 6', 's16 *, 8'), 'tick', asm,
+                                    resolve=SYMBOLS.get) is None
