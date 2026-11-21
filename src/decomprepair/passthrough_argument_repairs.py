@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from . import m2cfix, mips_regions, mips_return_paths
 from .csource import _blank, find
+from .float_bit_argument_repairs import float_text
 from .integer_abi import scalar
 from .integer_repair_support import NUMBER, calls, edit, integer, view
 from .pattern_repairs import close
@@ -26,7 +27,8 @@ FAMILIES = (FAMILY,)
 IDENT = r'[A-Za-z_]\w*'
 
 
-def variants(source, name, *, asm=None, arch=None, header='', callees='', require_evidence=False, selected_call=None):
+def variants(source, name, *, asm=None, arch=None, header='', callees='', require_evidence=False,
+             selected_call=None, selected_slot=0, resolve=None):
     span = find(source, name)
     if not span:
         return []
@@ -47,14 +49,20 @@ def variants(source, name, *, asm=None, arch=None, header='', callees='', requir
     if require_evidence:
         context = header+'\n'+source
         kinds = [re.sub(r'\b'+re.escape(n)+r'\s*$', '', p).strip() if n else '' for n,p in zip(names,params)]
-        # For a targeted call, only the first parameter's ABI location is in question.
-        checked = kinds[:1] if selected_call is not None else kinds[:4]
+        # For a targeted call, verify the parameter types through the measured slot.
+        checked = kinds[:selected_slot + 1] if selected_call is not None else kinds[:4]
         if arch != 'mips' or not all(_integer_parameter(k, context) for k in checked):
             return []
         if selected_call is None:
             incoming = _incoming_calls(asm)
-        else:
+        elif selected_slot == 0:
             incoming = {selected_call: {0}} if _entry_a0_reaches(asm, selected_call) else {}
+        else:
+            roots = _incoming_calls(asm)
+            address = resolve(selected_call) if resolve is not None else None
+            raw = f'func_{address:08X}' if address is not None else selected_call
+            slots = roots.get(selected_call, roots.get(raw, ()))
+            incoming = {selected_call: {selected_slot}} if selected_slot in slots else {}
         if not incoming:
             return []
     outside = clean[:span[0]] + clean[span[1]:]
@@ -87,7 +95,9 @@ def variants(source, name, *, asm=None, arch=None, header='', callees='', requir
             text = source[:closing - 1] + ', '.join(names[:4]) + source[closing - 1:]
             if (incoming is None or _allows(call[1], range(len(names[:4])), len(names[:4]), incoming, header, callees)):
                 result.append((FAMILY, text))
-        for k, param in enumerate(names[:1] if selected_call is not None else names[:4]):
+        for k, param in enumerate(names[:4]):
+            if selected_call is not None and k != selected_slot:
+                continue
             if param is None or k > len(args) or (k < len(args) and args[k] == param) or param in args:
                 continue
             if incoming is not None and not _allows(call[1], [k], len(args)+1, incoming, header, callees):
@@ -727,9 +737,39 @@ def _pointer_call_reuse(source, name, header, asm, rows, i, callee):
     return edit(source, changes)
 
 
+def _shifted_float_literal(source, name, header, asm, rows, changes, resolve):
+    """Recognize a float literal displaced by an omitted incoming second argument."""
+    if len(changes) != 1:
+        return []
+    start = changes[0]
+    target, current = rows[start][1:]
+    value = re.fullmatch(rf'lui \$a2, ({NUMBER})', target)
+    if not value or current != f'lui $a1, {value[1]}' or not (literal := float_text(integer(value[1]) << 16)):
+        return []
+    for marker, wanted, have in rows[start + 1:start + 7]:
+        if marker != ' ' or wanted != have:
+            return []
+        if callee := re.fullmatch(rf'jal ({IDENT})', wanted):
+            if not (part := view(source, name)):
+                return []
+            sites = list(calls(part, callee[1]))
+            if len(sites) != 1:
+                return []
+            first, last = sites[0]
+            if not re.fullmatch(rf'\s*0\s*,\s*{re.escape(literal)}\s*', part.clean[first:last]):
+                return []
+            return variants(source, name, asm=asm, arch='mips', header=header, require_evidence=True,
+                            selected_call=callee[1], selected_slot=1, resolve=resolve)
+        if not re.fullmatch(rf'lw \$s[0-7], {NUMBER}\(\$s[0-7]\)', wanted):
+            return []
+    return []
+
+
 def shifted_call_variants(source, name, header, asm, rows, *, resolve=None):
     """Focus passthrough proposals on the measured setup for one changed call."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if forwarded := _shifted_float_literal(source, name, header, asm, rows, changes, resolve):
+        return forwarded
     if candidate := _float_wrapper_output(source, name, header, asm, rows, changes):
         return [(FAMILY, candidate)]
     if not 1 <= len(changes) <= 8:
