@@ -99,3 +99,43 @@ def test_countdown_requires_both_raw_store_relocations():
                                     resolve=SYMBOLS.get) is None
     assert repair.rewrite_countdown(COUNTDOWN.replace('s16 *, 6', 's16 *, 8'), 'tick', asm,
                                     resolve=SYMBOLS.get) is None
+
+
+def test_reload_wrapper_rebinds_only_the_word_read_by_both_calls():
+    from decomprepair.relocated_global_update import rewrite_reload_wrapper
+
+    annotated = [
+        ('27BDFFE8', 'addiu $sp, $sp, -24'),
+        ('AFB00010', 'sw $s0, 16($sp)'),
+        ('00808021', 'move $s0, $a0'),
+        ('3C048001', 'lui $a0, %hi(state + 256)'),
+        ('8C840100', 'lw $a0, %lo(state + 256)($a0)'),
+        ('AFBF0014', 'sw $ra, 20($sp)'),
+        ('0C000000', 'jal set_value'),
+        ('24050001', 'addiu $a1, $zero, 1'),
+        ('3C058001', 'lui $a1, %hi(state + 256)'),
+        ('8CA50100', 'lw $a1, %lo(state + 256)($a1)'),
+        ('0C000000', 'jal use_value'),
+        ('02002021', 'move $a0, $s0'),
+        ('8FBF0014', 'lw $ra, 20($sp)'),
+        ('8FB00010', 'lw $s0, 16($sp)'),
+        ('03E00008', 'jr $ra'),
+        ('27BD0018', 'addiu $sp, $sp, 24'),
+    ]
+    asm = '\n'.join(f'/* {4*i:06X} {0x80001000+4*i:08X} {word} */ {line}'
+                    for i, (word, line) in enumerate(annotated))
+    source = '''
+extern M2C_UNK state;
+void f(s32 input) {
+    set_value(M2C_FIELD(&state, s32 *, 256), 1);
+    use_value(input, M2C_FIELD(&state, s32 *, 256));
+}
+'''
+    resolve = {'state': 0x80010000, 'D_80010100': 0x80010100}.get
+    fixed = rewrite_reload_wrapper(source, 'f', asm, resolve=resolve)
+    assert fixed
+    assert 'extern s32 D_80010100;' in fixed
+    assert 'set_value(D_80010100, 1);\n    use_value(input, D_80010100);' in fixed
+    assert rewrite_reload_wrapper(source, 'f', asm.replace('8CA50100', '8CA50104'), resolve=resolve) is None
+    assert rewrite_reload_wrapper(source.replace('), 1);', '), 2);'), 'f', asm, resolve=resolve) is None
+    assert rewrite_reload_wrapper(source, 'f', asm, 'extern u32 D_80010100;', resolve) is None

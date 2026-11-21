@@ -159,3 +159,64 @@ def rewrite_countdown(source, name, asm, header='', resolve=None):
     accesses = [hit.span() for hit in re.compile(re.escape(draft['field'])).finditer(
         part.clean, draft.start(), draft.end())]
     return _direct_word(source, name, header, resolve, counter, accesses)
+
+
+RELOAD_WRAPPER = re.compile(
+    rf'addiu \$sp, \$sp, -(?P<frame>{NUMBER})\nsw \$s0, (?P<saved>{NUMBER})\(\$sp\)\n'
+    r'(?:move \$s0, \$a0|addu \$s0, \$a0, \$zero)\n'
+    rf'lui \$a0, %hi\((?P<base>{IDENT})(?: \+ (?P<offset>{NUMBER}))?\)\n'
+    r'lw \$a0, %lo\((?P=base)(?(offset) \+ (?:(?P=offset)|\((?P=offset) & 0xFFFF\)))\)\(\$a0\)\n'
+    rf'sw \$ra, (?P<ret>{NUMBER})\(\$sp\)\njal (?P<first>{IDENT})\n'
+    rf'addiu \$a1, \$zero, (?P<literal>{NUMBER})\n'
+    r'lui \$a1, %hi\((?P=base)(?(offset) \+ (?P=offset))\)\n'
+    r'lw \$a1, %lo\((?P=base)(?(offset) \+ (?:(?P=offset)|\((?P=offset) & 0xFFFF\)))\)\(\$a1\)\n'
+    rf'jal (?P<second>{IDENT})\n(?:move \$a0, \$s0|addu \$a0, \$s0, \$zero)\n'
+    r'lw \$ra, (?P=ret)\(\$sp\)\nlw \$s0, (?P=saved)\(\$sp\)\njr \$ra\naddiu \$sp, \$sp, (?P=frame)',
+)
+
+
+def _reload_target(asm):
+    if asm.count('jal') != 2 or '%hi(' not in asm:
+        return None
+    lines = (f'{op} {" ".join(args.split())}' for op, args in _instructions(abi_register_names(asm)))
+    return RELOAD_WRAPPER.fullmatch('\n'.join(lines))
+
+
+def reload_applies(asm):
+    return _reload_target(asm) is not None
+
+
+def rewrite_reload_wrapper(source, name, asm, header='', resolve=None):
+    """Read the same relocated word before each call, with corroborating machine words."""
+    if resolve is None or 'M2C_FIELD' not in source or not (target := _reload_target(asm)):
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    signature = re.search(rf'\bvoid\s+{re.escape(name)}\s*\(\s*s32\s+(?P<arg>{IDENT})\s*\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+
+    first, second, arg = target['first'], target['second'], signature['arg']
+    field = rf'M2C_FIELD\(&(?P<base>{IDENT}), s32 \*, (?P<offset>{NUMBER})\)'
+    start = part.opening + 1
+    end = part.clean.rfind('}', start, part.end)
+    draft = re.compile(rf'\s*{first}\((?P<read>{field}), (?P<literal>{NUMBER})\);\s*'
+                       rf'{second}\({arg}, (?P<reload>(?P=read))\);\s*').fullmatch(part.clean, start, end)
+    if not draft or integer(draft['literal']) != integer(target['literal']):
+        return None
+    old, original = (resolve(binding['base']) for binding in (draft, target))
+    if old is None or original is None:
+        return None
+    address = original + integer(target['offset'] or '0')
+    if old + integer(draft['offset']) != address:
+        return None
+
+    words = instructions(asm)
+    if len(words) != 16:
+        return None
+    addresses = resolved(b''.join(word.to_bytes(4, 'big') for word in words))
+    if (addresses.get(16), addresses.get(36)) != (address, address):
+        return None
+    return _direct_word(source, name, header, resolve, address, [draft.span('read'), draft.span('reload')])
