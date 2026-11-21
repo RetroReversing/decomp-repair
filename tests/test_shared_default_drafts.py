@@ -1,4 +1,4 @@
-from decomprepair.shared_default_drafts import applies, rewrite
+from decomprepair.shared_default_drafts import applies, explicit_default_labels, rewrite
 
 ASM = '''
 glabel f
@@ -74,3 +74,65 @@ def test_requires_the_table_direct_call_blocks_and_untyped_draft_owned_callees()
     assert not rewrite(SOURCE,'f',ASM,DATA,'void inside(int);')
     assert not rewrite(SOURCE.replace('case 3:', 'case 4:'),'f',ASM,DATA)
     assert not rewrite(SOURCE.replace('inside(index);', 'inside(arg1);'),'f',ASM,DATA)
+
+
+MASKED_ASM = '''
+andi $a0, $a0, 0xFF
+sltiu $v0, $a0, 4
+beqz $v0, .Ldefault
+nop
+sll $v0, $a0, 2
+lui $at, %hi(jtbl_80002000)
+addu $at, $at, $v0
+lw $v0, %lo(jtbl_80002000)($at)
+jr $v0
+nop
+.Lcase2:
+addiu $v0, $zero, 4
+.Lcase3:
+addiu $v0, $zero, 9
+.Ldefault:
+jr $ra
+nop
+'''
+MASKED_DATA = '''
+dlabel jtbl_80002000
+.word .Ldefault
+.word .Ldefault
+.word .Lcase2
+.word .Lcase3
+'''
+MASKED_RETURN = '''
+s32 decode(s32 arg0) {
+    u32 selector;
+    selector = arg0 & 0xFF;
+    switch (selector) {
+    case 2:
+        return 4;
+    case 3:
+        return 9;
+    default:
+        return 0;
+    }
+}
+'''
+
+
+def test_leading_table_entries_are_restored_as_explicit_default_labels():
+    fixed = explicit_default_labels(MASKED_RETURN, 'decode', MASKED_ASM, MASKED_DATA)
+    assert '    s32 selector;' in fixed
+    assert '    case 0:\n    case 1:\n    default:\n        return 0;' in fixed
+
+
+def test_leading_table_entries_break_when_no_default_is_written():
+    source = MASKED_RETURN.replace('    default:\n        return 0;\n', '').replace('    }\n}', '    }\n    return 0;\n}')
+    fixed = explicit_default_labels(source, 'decode', MASKED_ASM, MASKED_DATA)
+    assert '    case 0:\n    case 1:\n        break;\n    case 2:' in fixed
+    assert '    }\n    return 0;' in fixed
+
+
+def test_leading_table_entries_reject_unknown_distinct_and_out_of_range_cases():
+    wrong_table = MASKED_DATA.replace('.word .Ldefault', '.word .Lcase2', 1)
+    assert not explicit_default_labels(MASKED_RETURN, 'decode', MASKED_ASM, wrong_table)
+    assert not explicit_default_labels(MASKED_RETURN, 'decode', MASKED_ASM, MASKED_DATA.replace('.Lcase3', '.Lunknown'))
+    assert not explicit_default_labels(MASKED_RETURN.replace('case 2:', 'case 1:'), 'decode', MASKED_ASM, MASKED_DATA)
