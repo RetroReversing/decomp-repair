@@ -3,12 +3,49 @@ import re
 from collections import deque
 
 from . import mips_regions as flow
+from .integer_repair_support import NUMBER, integer
 from .mips_returns import instructions
 
 LIMIT = 4096
 
 
-def graph(asm):
+def switch_edges(asm, read_data, big_endian):
+    """Read every target of a guarded MIPS address table from the original ROM."""
+    rows = [" ".join(op.split()) for op in instructions(asm)]
+    prefix = re.compile(
+        rf'sltiu (?P<check>\$\w+), (?P<selector>\$\w+), (?P<count>{NUMBER})\n'
+        r'beqz (?P=check), [^\s]+\nsll (?P<index>\$\w+), (?P=selector), (?:2|0x2)\n'
+        rf'lui \$at, %hi\((?P<table>jtbl_[0-9A-Fa-f]{{8}})\)\n'
+        r'addu \$at, \$at, (?P=index)\nlw (?P=index), %lo\((?P=table)\)\(\$at\)\n'
+        r'jr (?P=index)\nnop'
+    )
+    dispatches = [i for i, row in enumerate(rows) if row.startswith('jr ') and row != 'jr $ra']
+    if len(dispatches) != 1 or (jump := dispatches[0]) < 6:
+        return None
+    first = jump - 6
+    shape = prefix.fullmatch('\n'.join(rows[first:jump + 2]))
+    if not shape or shape['selector'] == shape['check']:
+        return None
+    count = integer(shape['count'])
+    if not 2 <= count <= 256:
+        return None
+    addresses = [int(address, 16) for address in re.findall(
+        r'(?m)^\s*/\*\s*[0-9A-Fa-f]+\s+([0-9A-Fa-f]{8})\s+[0-9A-Fa-f]{8}\s*\*/', asm)]
+    if len(addresses) != len(rows) or len(set(addresses)) != len(rows):
+        return None
+    indices = {address: index for index, address in enumerate(addresses)}
+    data = read_data(shape['table'], 4 * count)
+    if data is None or len(data) != 4 * count:
+        return None
+    order = 'big' if big_endian else 'little'
+    targets = {indices.get(int.from_bytes(data[pos:pos + 4], order), -1) for pos in range(0, len(data), 4)}
+    if any(target <= jump + 1 for target in targets):
+        return None
+    return {jump: tuple(sorted(targets))}
+
+
+def graph(asm, *, indirect=None):
+    indirect = indirect or {}
     rows=instructions(asm)
     if not rows or len(rows)>8192:return None
     labels={};addresses={};index=0
@@ -21,7 +58,7 @@ def graph(asm):
     for i,row in enumerate(rows):
         op=row.split()[0]
         if op in {'eret','deret','syscall','teq','tne','tge','tlt'}:return None
-        if op=='jr' and not re.fullmatch(r'jr\s+\$ra',row):return None
+        if op=='jr' and not re.fullmatch(r'jr\s+\$ra',row) and i not in indirect:return None
         if op in flow.CONDITIONAL|flow.CALLS|flow.JUMPS:
             if i+1>=len(rows):return None
             delays.add(i+1)
@@ -36,6 +73,9 @@ def graph(asm):
         elif op.startswith(('b','j')) and op not in flow.CALLS|flow.JUMPS|{'break'}:return None
         if op in flow.CALLS-{'jal','jalr','bal'}:return None
     if set(destinations.values())&delays:return None
+    for jump, targets in indirect.items():
+        if set(targets) & delays or any(jump - 6 < dest <= jump for dest in destinations.values()):
+            return None
     if any(rows[i].split()[0] in flow.CONDITIONAL|flow.CALLS|flow.JUMPS|{'break'} for i in delays):return None
     return rows,destinations
 

@@ -28,7 +28,7 @@ IDENT = r'[A-Za-z_]\w*'
 
 
 def variants(source, name, *, asm=None, arch=None, header='', callees='', require_evidence=False,
-             selected_call=None, selected_slot=0, resolve=None):
+             selected_call=None, selected_slot=0, resolve=None, indirect=None):
     span = find(source, name)
     if not span:
         return []
@@ -59,8 +59,8 @@ def variants(source, name, *, asm=None, arch=None, header='', callees='', requir
             address = resolve(selected_call) if resolve is not None else None
             raw = f'func_{address:08X}' if address is not None else selected_call
             if selected_slot == 0:
-                proven = _entry_a0_reaches(asm, selected_call) or (
-                    raw != selected_call and _entry_a0_reaches(asm, raw))
+                proven = _entry_a0_reaches(asm, selected_call, indirect=indirect) or (
+                    raw != selected_call and _entry_a0_reaches(asm, raw, indirect=indirect))
             else:
                 roots = _incoming_calls(asm)
                 proven = selected_slot in roots.get(selected_call, roots.get(raw, ()))
@@ -383,12 +383,12 @@ def _float_wrapper_output(source, name, header, asm, rows, changes):
     return edit(source, [(*sites[0].span('args'), out)])
 
 
-def _entry_a0_reaches(asm, callee, *, first_only=False):
+def _entry_a0_reaches(asm, callee, *, first_only=False, indirect=None):
     """Require the incoming a0 on every route to a selected first call."""
     if (0 in _incoming_calls(asm).get(callee, ())
             and not any(op in mips_regions.CONDITIONAL | {'b', 'j'} for op, _ in _instructions(asm))):
         return True
-    decoded = mips_return_paths.graph(asm)
+    decoded = mips_return_paths.graph(asm, indirect=indirect)
     if not decoded:
         return False
     rows, destinations = decoded
@@ -421,6 +421,8 @@ def _entry_a0_reaches(asm, callee, *, first_only=False):
                 reached = True
             if op in mips_regions.CALLS:
                 pending.append((pc + 2, False))
+            elif indirect and pc in indirect:
+                pending.extend((target, delayed) for target in indirect[pc])
             elif pc in destinations:
                 pending.append((destinations[pc], delayed))
                 if op in mips_regions.CONDITIONAL:
@@ -767,9 +769,30 @@ def _shifted_float_literal(source, name, header, asm, rows, changes, resolve):
     return []
 
 
-def shifted_call_variants(source, name, header, asm, rows, *, resolve=None):
+def _switch_byte_forward(source, name, header, asm, rows, changes, resolve, read_data, big_endian):
+    if read_data is None or len(changes) != 1 or 'switch (' not in source:
+        return []
+    i = changes[0]
+    if not 0 < i < len(rows) - 1:
+        return []
+    load = re.fullmatch(rf'lbu \$a1, ({NUMBER})\((\$s[0-7])\)', rows[i][1])
+    callee = re.fullmatch(rf'jal ({IDENT})', rows[i - 1][1])
+    if not load or not callee or rows[i][2] != load[0].replace('$a1,', '$a0,', 1):
+        return []
+    clear = f'sb $zero, {load[1]}({load[2]})'
+    if tuple(rows[i - 1]) != (' ', callee[0], callee[0]) or tuple(rows[i + 1]) != (' ', clear, clear):
+        return []
+    if not (edges := mips_return_paths.switch_edges(asm, read_data, big_endian)):
+        return []
+    return variants(source, name, asm=asm, arch='mips', header=header, require_evidence=True,
+                    selected_call=callee[1], resolve=resolve, indirect=edges)
+
+
+def shifted_call_variants(source, name, header, asm, rows, *, resolve=None, read_data=None, big_endian=False):
     """Focus passthrough proposals on the measured setup for one changed call."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if forwarded := _switch_byte_forward(source, name, header, asm, rows, changes, resolve, read_data, big_endian):
+        return forwarded
     if forwarded := _shifted_float_literal(source, name, header, asm, rows, changes, resolve):
         return forwarded
     if candidate := _float_wrapper_output(source, name, header, asm, rows, changes):
