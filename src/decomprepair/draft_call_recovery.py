@@ -9,6 +9,7 @@ from .pattern_repairs import close
 
 _ANNOTATION = re.compile(r'/\*\s*[0-9a-fA-F]+\s+([0-9a-fA-F]{8})\s+([0-9a-fA-F]{8})\s*\*/\s*(.*)')
 _DIRECT = re.compile(r'jal\s+(?P<label>\.L(?P<address>[0-9a-fA-F]{8}))\s*$')
+_UPPER_SLOT = re.compile(r'lui\s+(\$\w+),\s*%hi\((\.L[0-9a-fA-F]{8})\)\s*$')
 _SAVED = r'\$s[0-7]'
 _COPY = re.compile(
     rf'addiu \$sp, \$sp, -(?P<frame>{NUMBER})\n'
@@ -37,11 +38,15 @@ def variants(source, name, asm, header, toolchain):
     if toolchain == 'gcc-2.7.2-kmc' and 'memcpy' in source:
         if candidate := _memcpy_wrapper(source, name, asm, header):
             return [('initial_forwarded_memcpy', candidate)]
+    if toolchain == 'ido-7.1':
+        from . import ido_cursor_drafts
+
+        return ido_cursor_drafts.variants(source, name, asm, header)
     return []
 
 
 def rename_local_calls(source, name, asm, header=''):
-    """Name out-of-function direct call targets by the address encoded in the JAL."""
+    """Name out-of-function direct targets and indirect pointer slots from the instruction bytes."""
     if not asm or '.L' not in asm:
         return None
     part = view(source, name)
@@ -52,7 +57,8 @@ def rename_local_calls(source, name, asm, header=''):
         return None
     addresses = [int(match[1], 16) for match in decoded]
     first, last = min(addresses), max(addresses)
-    targets = {}
+    targets = {label: 'indirect' for label in _indirect_labels(decoded)
+               if not first <= int(label[2:], 16) <= last}
     for instruction in decoded:
         if not (call := _DIRECT.fullmatch(instruction[3])):
             continue
@@ -60,16 +66,22 @@ def rename_local_calls(source, name, asm, header=''):
         encoded = ((pc + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
         if word >> 26 != 3 or address != encoded or first <= address <= last:
             continue
-        targets[call['label']] = f'func_{address:08X}'
+        label = call['label']
+        targets[label] = 'direct' if targets.get(label, 'direct') == 'direct' else None
     edits = []
     context = _blank(header) + '\n' + part.clean
-    for label, symbol in targets.items():
-        if re.search(rf'\b{symbol}\b', context) or re.search(rf'(?m)^\s*{re.escape(label)}:', asm):
+    for label, kind in targets.items():
+        symbol = f'func_{int(label[2:], 16):08X}'
+        if not kind or re.search(rf'\b{symbol}\b', context) or re.search(rf'(?m)^\s*{re.escape(label)}:', asm):
             continue
         token = rf'(?<![\w.]){re.escape(label)}\b(?=\s*\()'
-        stub = re.search(rf'(?m)^[ \t]*(?:extern\s+)?[\w *]+\s+(?P<label>{token})\s*\([^()]*\)\s*;'
-                         r'[ \t]*/\* extern \*/', source[:part.opening])
-        if not stub or not re.match(token, part.clean[stub.start('label'):]):
+        if kind == 'direct':
+            stub = re.search(rf'(?m)^[ \t]*(?:extern\s+)?[\w *]+\s+(?P<label>{token})\s*\([^()]*\)\s*;'
+                             r'[ \t]*/\* extern \*/', source[:part.opening])
+        else:
+            stub = re.search(rf'(?m)^[ \t]*extern\s+[\w *]+\s*\(\s*\*\s*(?P<label>{re.escape(label)})'
+                             r'\s*\)\s*\([^()]*\)\s*;', part.clean[:part.opening])
+        if not stub or not part.clean.startswith(label, stub.start('label')):
             continue
         uses = list(re.compile(token).finditer(part.clean, part.opening + 1, part.end))
         if not uses:
@@ -77,6 +89,35 @@ def rename_local_calls(source, name, asm, header=''):
         edits.append((*stub.span('label'), symbol))
         edits.extend((*use.span(), symbol) for use in uses)
     return edit(source, edits) if edits else None
+
+
+def _indirect_labels(decoded):
+    """The adjacent relocated load feeds a JALR without the register being overwritten."""
+    for i, instruction in enumerate(decoded[:-1]):
+        if not (upper := _UPPER_SLOT.fullmatch(instruction[3])):
+            continue
+        register, label = upper.groups()
+        escaped = re.escape(register)
+        low = decoded[i + 1]
+        if (int(low[1], 16) != int(instruction[1], 16) + 4
+                or not re.fullmatch(rf'lw\s+{escaped},\s*%lo\({re.escape(label)}\)\({escaped}\)\s*', low[3])):
+            continue
+        hi_word, lo_word = int(instruction[2], 16), int(low[2], 16)
+        rt = (hi_word >> 16) & 31
+        displacement = lo_word & 0xFFFF
+        address = ((hi_word & 0xFFFF) << 16) + displacement - (0x10000 if displacement & 0x8000 else 0)
+        if (hi_word >> 26 != 0x0F or lo_word >> 26 != 0x23 or not rt
+                or rt != ((lo_word >> 21) & 31) or rt != ((lo_word >> 16) & 31)
+                or (address & 0xFFFFFFFF) != int(label[2:], 16)):
+            continue
+        for later in decoded[i + 2:i + 10]:
+            if re.fullmatch(rf'jalr\s+{escaped}\s*', later[3]):
+                word = int(later[2], 16)
+                if word >> 26 == 0 and (word & 63) == 9 and ((word >> 21) & 31) == rt:
+                    yield label
+                break
+            if not re.match(rf'(?:lui|addiu|ori|sw)\s+(?!{escaped}\b)\$\w+,', later[3]):
+                break
 
 
 def _memcpy_wrapper(source, name, asm, header):

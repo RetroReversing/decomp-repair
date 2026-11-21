@@ -74,3 +74,25 @@ addiu $sp, $sp, 32''')
     assert not repairs.variants(source, 'f', asm.replace('$s0, $a2', '$s0, $a1'), '', compiler)
     assert not repairs.variants(source, 'f', asm.replace('addu $v0', 'subu $v0'), '', compiler)
     assert not repairs.variants(source.replace('return dest + size', 'return size'), 'f', asm, '', compiler)
+
+
+def test_rename_an_indirect_call_pointer_using_the_loaded_slot_address():
+    source = '''extern M2C_UNK (*.L80002FF0)(s32 *);
+void f(s32 *arg) {
+    .L80002FF0(arg);
+}
+'''
+    asm = '''/* 00 80000000 3C198000 */ lui $t9, %hi(.L80002FF0)
+/* 04 80000004 8F392FF0 */ lw $t9, %lo(.L80002FF0)($t9)
+/* 08 80000008 27BDFFE8 */ addiu $sp, $sp, -24
+/* 0C 8000000C 0320F809 */ jalr $t9
+/* 10 80000010 00000000 */ nop
+'''
+    result = repairs.rename_local_calls(source, 'f', asm)
+    assert 'extern M2C_UNK (*func_80002FF0)(s32 *);' in result
+    assert 'func_80002FF0(arg);' in result
+    assert not repairs.rename_local_calls(source, 'f', asm.replace('8F392FF0', '8F392FF4'))
+    assert not repairs.rename_local_calls(source, 'f', asm.replace('addiu $sp, $sp', 'addiu $t9, $sp'))
+    assert not repairs.rename_local_calls(source, 'f', asm.replace('0320F809', '0300F809'))
+    direct = source.replace('extern M2C_UNK (*', 'M2C_UNK ').replace(')(s32 *);', '(s32 *); /* extern */')
+    assert not repairs.rename_local_calls(direct, 'f', asm)
