@@ -157,3 +157,69 @@ def rewrite(source, name, asm, data, context=''):
         body.extend((f'        {callee}();','        break;'))
     body.extend(('    }','}'))
     return edit(source,edits+[(signature.start(),end+1,'\n'.join(body))])
+
+
+_MASKED_DISPATCH = re.compile(
+    rf'^andi (?P<input>\$a[0-3]), (?P=input), (?P<mask>{NUMBER})\n'
+    rf'sltiu (?P<index>\$\w+), (?P=input), (?P<count>{NUMBER})\n'
+    rf'beqz (?P=index), (?P<default>{TARGET})\n(?:nop\n)?'
+    r'sll (?P=index), (?P=input), 2\n'
+    rf'lui \$at, %hi\((?P<table>{IDENT})\)\n'
+    r'addu \$at, \$at, (?P=index)\n'
+    r'lw (?P=index), %lo\((?P=table)\)\(\$at\)\njr (?P=index)\nnop(?:\n|$)'
+)
+_MASKED_SOURCE = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<type>u32)[ \t]+(?P<temp>{IDENT});\s+'
+    rf'(?:(?:{IDENT} = {IDENT};)\s+)?(?P=temp) = (?P<arg>{IDENT}) & (?P<mask>{NUMBER});\s+'
+    r'switch \((?P=temp)\) \{\n(?P<body>[^{}]+)^[ \t]*\}'
+)
+_CASE = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?:case (?P<value>{NUMBER})|(?P<default>default)):[ \t]*$')
+
+
+def explicit_default_labels(source, name, asm, data):
+    """Restore leading case labels whose destinations are the dispatch guard's default."""
+    if not data or 'u32 ' not in source or 'switch (' not in source or 'andi' not in asm:
+        return None
+    part = view(source, name)
+    if not part or not (switch := _MASKED_SOURCE.search(part.clean, part.opening + 1, part.end)):
+        return None
+    if len(re.findall(r'\bswitch\s*\(', part.body)) != 1 or len(re.findall(rf'\b{switch["temp"]}\b', part.body)) != 3:
+        return None
+    lines, labels = _instructions(asm)
+    dispatch = _MASKED_DISPATCH.match('\n'.join(lines))
+    if not dispatch or integer(dispatch['mask']) not in (255, 65535):
+        return None
+    if integer(dispatch['mask']) != integer(switch['mask']) or switch['arg'] != 'arg' + dispatch['input'][-1]:
+        return None
+    count = integer(dispatch['count'])
+    if not 2 <= count <= 32:
+        return None
+    targets = _entries(data, dispatch['table'], count)
+    fallback = labels.get(dispatch['default'])
+    if not targets or fallback is None or any(target not in labels for target in targets):
+        return None
+    cases = list(_CASE.finditer(switch['body']))
+    values = [integer(c['value']) for c in cases if c['value']]
+    if not values or values != list(range(values[0], count)) or values[0] < 1:
+        return None
+    if any((labels[target] == fallback) != (number < values[0]) for number, target in enumerate(targets)):
+        return None
+    if len({labels[target] for target in targets[values[0]:]}) != len(values):
+        return None
+
+    defaults = [c for c in cases if c['default']]
+    if defaults and (len(defaults) != 1 or cases[-1] != defaults[0]):
+        return None
+    # The flat bodies m2c emits here terminate every arm. With no explicit default,
+    # insert a standalone break before the first case, preserving all active arms.
+    for index, case in enumerate(cases):
+        end = cases[index+1].start() if index+1 < len(cases) else len(switch['body'])
+        if not re.search(r'\b(?:break|return(?:\s+[^;]+)?)\s*;\s*$', switch['body'][case.end():end]):
+            return None
+    where = (defaults[0] if defaults else cases[0])
+    indent = where['indent']
+    added = ''.join(f'{indent}case {number}:\n' for number in range(values[0]))
+    if not defaults:
+        added += indent + '    break;\n'
+    at = switch.start('body') + where.start()
+    return edit(source, [(at, at, added), (*switch.span('type'), 's32')])
