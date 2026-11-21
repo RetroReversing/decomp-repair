@@ -213,3 +213,27 @@ f32 f(int key, int plain, f32 factor) {
     assert not variants(source, 'f', '', rows[:-1])
     assert not variants(source.replace('coefficient * factor;', 'coefficient * factor;\n        use(coefficient);'),
                         'f', '', rows)
+
+
+def test_byte_subtraction_reuses_the_signed_result_instead_of_the_pointer():
+    source = """void f(void *obj, void *child) {
+    short result;
+    void *pointer;
+    result = *((u8 *) (((char *) child) + 38));
+    pointer = (void *) (*((u8 *) (((char *) obj) + 130))); result = (u32) pointer - result;
+    if (result < 0) use(result);
+}
+"""
+    rows = [
+        ('r', 'lbu $a0, 0x26($s1)', 'lbu $a1, 0x26($s1)'),
+        ('r', 'lbu $a1, 0x82($s0)', 'lbu $a2, 0x82($s0)'),
+        ('r', 'subu $a0, $a1, $a0', 'subu $v1, $a2, $a1'),
+        ('r', 'bgez $a0, 0x18c', 'bgez $v1, 0x18c'),
+    ]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_byte_subtraction_carrier'
+    assert 'result = *((u8 *) (((char *) obj) + 130));' in fixed
+    assert 'result -= *((u8 *) (((char *) child) + 38));' in fixed
+    assert not variants(source.replace('+ 130', '+ 132'), 'f', '', rows)
+    assert not variants(source.replace('use(result)', 'use(pointer)'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:-1])

@@ -192,7 +192,49 @@ def _float_scale_carrier(source, name, rows):
     ])
 
 
+def _byte_subtraction_carrier(source, name, rows):
+    """Reuse the signed subtraction result in place of an unrelated pointer local."""
+    changes = [(i, a, b) for i, (mark, a, b) in enumerate(rows) if mark != ' ']
+    if not 3 <= len(changes) <= 14 or any(mark not in (' ', 'r') for mark, _, _ in rows):
+        return None
+    sub = re.compile(r'subu (\$\w+), (\$\w+), (\$\w+)')
+    moved = [(i, want) for i, a, b in changes if (want := sub.fullmatch(a)) and sub.fullmatch(b)]
+    if len(moved) != 1 or not (part := view(source, name)):
+        return None
+    pos, want = moved[0]
+    if not any(op.startswith(f'bgez {want[1]}, ') for _, op, _ in rows[pos + 1:pos + 6]):
+        return None
+    load = re.compile(rf'lbu (\$\w+), ({NUMBER})\((\$\w+)\)')
+    loads = {hit[1]: (integer(hit[2]), hit[3]) for _, op, _ in rows[max(pos - 12, 0):pos]
+             if (hit := load.fullmatch(op))}
+    if want[2] not in loads or want[3] not in loads or loads[want[2]][1] == loads[want[3]][1]:
+        return None
+    byte_read = r'\*\(\(u8 \*\) \(\(\(char \*\) {base}\) \+ {offset}\)\)'
+    right = byte_read.format(base=rf'(?P<right_base>{IDENT})', offset=rf'(?P<right_offset>{NUMBER})')
+    left = byte_read.format(base=rf'(?P<left_base>{IDENT})', offset=rf'(?P<left_offset>{NUMBER})')
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]+)(?P<result>{IDENT}) = (?P<right>{right});\n'
+        rf'(?P=indent)(?P<pointer>{IDENT}) = \(void \*\) \((?P<left>{left})\);\s*'
+        rf'(?P=result) = \(u32\) (?P=pointer) - (?P=result);')
+    hits = [hit for hit in pattern.finditer(part.clean, part.opening + 1, part.end)
+            if integer(hit['left_offset']) == loads[want[2]][0] and integer(hit['right_offset']) == loads[want[3]][0]]
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    result, pointer = hit['result'], hit['pointer']
+    if (len({result, pointer, hit['left_base'], hit['right_base']}) != 4
+            or not re.search(rf'(?m)^[ \t]*(?:short|s16|s32) {result};', part.body)
+            or not re.search(rf'(?m)^[ \t]*void \*{pointer};', part.body)
+            or re.search(rf'\b{pointer}\b', part.clean[hit.end():part.end])
+            or re.search(r'/[*/]', source[hit.start():hit.end()])):
+        return None
+    indent = hit['indent']
+    return edit(source, [(*hit.span(), f'{indent}{result} = {hit["left"]};\n{indent}{result} -= {hit["right"]};')])
+
+
 def variants(source, name, header, rows):
+    if candidate := _byte_subtraction_carrier(source, name, rows):
+        return [('measured_byte_subtraction_carrier', candidate)]
     if candidate := _float_scale_carrier(source, name, rows):
         return [('measured_float_scale_carrier', candidate)]
     if candidate := _early_float_load(source, name, header, rows):
