@@ -54,3 +54,58 @@ def variants(source, name):
         if len(result) >= 4:
             break
     return result
+
+
+COMPONENT_BEFORE_RESETS = 'component_before_global_resets'
+REG = r'\$\w+'
+NUMBER = r'(?:0x[0-9a-fA-F]+|[0-9]+)'
+COMPONENT_TARGET = re.compile(
+    rf'(?m)^lwc1 (?P<value>{REG}), (?:0x)?8\({REG}\)\n'
+    rf'lui (?P<first_reg>{REG}), %hi\((?P<first>{IDENT})\)\n'
+    r'sw \$zero, %lo\((?P=first)\)\((?P=first_reg)\)\n'
+    rf'lui (?P<second_reg>{REG}), %hi\((?P<second>{IDENT})\)\n'
+    r'sw \$zero, %lo\((?P=second)\)\((?P=second_reg)\)\n'
+    rf'beqz {REG}, \.L\w+\n'
+    rf'swc1 (?P=value), {NUMBER}\(\$sp\)$'
+)
+
+
+def component_before_resets(source, name, asm, header=''):
+    """Schedule the third input component before two independent pointer resets."""
+    from .integer_repair_support import view
+
+    if 'swc1' not in asm or not (part := view(source, name)):
+        return []
+    assembly = re.sub(r'/\*[^\n]*?\*/', '', asm)
+    lines = '\n'.join(' '.join(line.split()) for line in assembly.splitlines())
+    declarations = _blank(header) + '\n' + part.clean[:part.opening]
+    for target in COMPONENT_TARGET.finditer(lines):
+        first, second = target['first'], target['second']
+        if first == second or any(not re.search(rf'\bextern\s+void\s*\*+\s*{name}\s*;', declarations)
+                                  for name in (first, second)):
+            continue
+        sequence = re.compile(
+            rf'(?m)^(?P<global>[ \t]*{first}\s*=\s*(?:NULL|0)\s*;[ \t]*\n'
+            rf'[ \t]*{second}\s*=\s*(?:NULL|0)\s*;[ \t]*\n)'
+            rf'(?P<read>[ \t]*(?P<vector>{IDENT})\.(?P<field>{IDENT})\[2\]\s*=\s*'
+            rf'M2C_FIELD\(\s*(?P<input>{IDENT})\s*,\s*f32\s*\*\s*,\s*(?:8|0x8)\s*\)\s*;[ \t]*\n)'
+        )
+        for hit in sequence.finditer(part.clean, part.opening + 1, part.end):
+            vector, field, origin = hit['vector'], hit['field'], hit['input']
+            prefix = part.clean[part.opening + 1:hit.start()]
+            storage = re.search(rf'(?m)^\s*(?P<type>{IDENT})\s+{vector}\s*;', prefix)
+            if not storage or not re.search(
+                    rf'typedef\s+struct\s*{{\s*f32\s+{field}\s*\[\s*3\s*\]\s*;\s*}}\s*{storage["type"]}\s*;',
+                    declarations):
+                continue
+            if origin in (first, second, vector) or any(
+                    re.search(rf'\b(?:void|s32|u32|int)\s*\*+\s*{symbol}\b', prefix)
+                    for symbol in (first, second)):
+                continue
+            prefix = prefix.rstrip()
+            if not prefix.endswith((';', '{', '}')):
+                continue
+            read = source[hit.start('read'):hit.end('read')]
+            resets = source[hit.start('global'):hit.end('global')]
+            return [(COMPONENT_BEFORE_RESETS, source[:hit.start()] + read + resets + source[hit.end():])]
+    return []
