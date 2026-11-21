@@ -42,3 +42,31 @@ def test_left_alone_otherwise():
 def test_propose_finds_the_family():
     from decomprepair.propose import propose
     assert any(p.module == 'constant_exit_return_repairs' for p in propose(SOURCE, 'f').proposals)
+
+
+def test_guard_and_cleanup_return_constants_directly():
+    source = """\
+s32 f(void *arg) {
+    s32 result;
+    global = arg;
+    result = 0;
+    if (arg != NULL) {
+        if (ready) {
+            notify();
+        }
+        result = 1;
+        if (M2C_FIELD(arg, u8 *, 0xf) != 0) {
+            cleanup(arg);
+            result = 0;
+        }
+    }
+    return result;
+}
+"""
+    [(_, fixed)] = c.variants(source, 'f')
+    assert 'if (arg == NULL) return 0;' in fixed
+    assert 'if (M2C_FIELD(arg, u8 *, 0xf) == 0) return 1;\n        cleanup(arg);' in fixed
+    assert fixed.count('return 0;') == 2
+    assert not c.variants(source.replace('notify();', 'notify(&result);'), 'f')
+    assert not c.variants(source.replace('cleanup(arg);', 'other(arg); cleanup(arg);'), 'f')
+    assert not c.variants(source.replace('    result = 0;', '    if (ready)\n        result = 0;', 1), 'f')
