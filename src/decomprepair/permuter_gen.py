@@ -36,6 +36,7 @@ import json
 import random
 import re
 import sys
+from copy import copy
 from functools import wraps
 from pathlib import Path
 
@@ -522,13 +523,32 @@ def main() -> int:
     sys.path.insert(0, sys.argv[1])  # decomp-permuter's folder: its `src` package and its own copy of pycparser
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from perm_pycparser import c_ast, c_parser
+    from perm_pycparser.plyparser import Coord
     from permuter_capture import protect_expand
+    from permuter_clone import make_cloner
     from permuter_dependencies import GUARDED, RejectedRewrite, protect
     from permuter_formatting import LineGroups
     from src.ast_util import to_c
     from src.candidate import Candidate
     from src.helpers import get_default_randomization_weights
+    from src.perm.ast import apply_ast_perms
     from src.perm.perm import EvalState
+    from src.randomizer import Randomizer
+
+    node_types = [cls for cls in c_ast.Node.__subclasses__() if cls.__module__ == c_ast.__name__]
+    clone = make_cloner(node_types, Coord)
+
+    def fresh_candidate(unit, name, weights, seed):
+        # Keep the pinned Candidate.from_source path and its normalized AST cache.
+        # Only the target function is mutable. Clone its nodes, lists and source
+        # coordinates directly, leaving the cached function and other candidates isolated.
+        original, index, ast = Candidate._cached_shared_ast(unit, name)
+        ast = copy(ast)
+        ast.ext = ast.ext.copy()
+        fn = clone(original)
+        ast.ext[index] = fn
+        apply_ast_perms(fn, EvalState())
+        return Candidate(ast=ast, fn_name=name, rng_seed=seed, randomizer=Randomizer(weights, seed))
 
     def variants(job: dict):
         name, count = job["function"], int(job["count"])
@@ -550,7 +570,7 @@ def main() -> int:
             for key, factor in job.get("weight_boosts", {}).items():
                 if key in weights and isinstance(factor, (int, float)) and 0.25 <= factor <= 4:
                     weights[key] *= factor
-            first = Candidate.from_source(unit, EvalState(), name, weights, rng.randrange(1, MAX_SEED))
+            first = fresh_candidate(unit, name, weights, rng.randrange(1, MAX_SEED))
         except Exception as e:  # the C or the header isn't C pycparser reads (a macro call, a compiler extension)
             yield {"error": f"{type(e).__name__}: {e}"}
             return
@@ -598,7 +618,7 @@ def main() -> int:
                 break
             try:
                 if cand is None or rng.random() >= KEEP:
-                    cand = Candidate.from_source(unit, EvalState(), name, weights, rng.randrange(1, MAX_SEED))
+                    cand = fresh_candidate(unit, name, weights, rng.randrange(1, MAX_SEED))
                     lineage = []
                     configure(cand)
                 cand.randomize_ast()
