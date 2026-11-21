@@ -57,3 +57,13 @@ def test_rule_requires_word_width_writeback_input_registers_and_status_lifetime(
     assert not rewrite(SOURCE,'fetch',ASM.replace('jal ready','jal other'))
     assert not rewrite(SOURCE.replace('check(word);', 'check(&code);'),'fetch',ASM)
     assert not rewrite(SOURCE,'fetch',ASM,lambda symbol: 0xB0000000)
+
+
+def test_accepts_the_output_save_in_the_call_delay_slot():
+    measured = ASM.replace('addu $s3, $a1, $zero\njal ready\nnop', 'jal ready\naddu $s3, $a1, $zero')
+    assert rewrite(SOURCE, 'fetch', measured) == rewrite(SOURCE, 'fetch', ASM)
+    assert rewrite(SOURCE, 'fetch', measured.replace('addu $s3, $a1, $zero', 'move $s3, $a1'))
+    assert not rewrite(SOURCE, 'fetch', measured.replace('addu $s3, $a1, $zero', 'move $s3, $a2'))
+    assert not rewrite(SOURCE, 'fetch', measured.replace('addu $s3, $a1, $zero', 'move $s4, $a1'))
+    assert not rewrite(SOURCE, 'fetch', measured.replace('jal ready', 'move $s3, $zero\njal ready'))
+    assert not rewrite(SOURCE, 'fetch', measured.replace('jal ready', 'move $a1, $zero\njal ready'))
