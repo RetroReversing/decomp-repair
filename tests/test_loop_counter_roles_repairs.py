@@ -211,3 +211,46 @@ def test_nothing_for_a_missing_function_or_one_without_counter_loops():
     assert h.variants(SOURCE, 'missing') == []
     assert h.variants(PRELUDE + 'void g(void) {\n    s32 i;\n    i = 0;\n    A[0] = i;\n}\n', 'g') == []
     assert h.variants(SOURCE.replace('void f(s32 n) {', 'void f(s32 n) {\n    __asm__("nop");'), 'f') == []
+
+
+def test_reuse_counter_across_adjacent_guarded_loops_with_prior_values():
+    from decomprepair.loop_counter_roles_repairs import guarded_reuse_variants
+
+    source = """
+void f(void) {
+    u32 first;
+    u32 second;
+    first = load();
+    second = consume(first);
+    publish(second);
+    first = 0;
+    ready();
+    if (count1) {
+        do {
+            put(first);
+            first += 1;
+        } while (first < count1);
+    }
+    second = 0;
+    if (count2) {
+        do {
+            put(second);
+            second += 1;
+        } while (second < count2);
+    }
+}
+"""
+    rows = [
+        ('r', 'move $s1, $zero', 'move $a2, $zero'),
+        ('r', 'addiu $s1, $s1, 1', 'addiu $a2, $a2, 1'),
+        ('r', 'sltu $v0, $s1, $v0', 'sltu $v0, $a2, $v0'),
+    ]
+    [(family, candidate)] = guarded_reuse_variants(source, 'f', rows)
+    assert family == 'guarded_loop_counter_reuse'
+    assert 'second = consume(first);' in candidate
+    assert 'second = 0;\n    ready();' in candidate
+    assert 'while (second < count1);' in candidate
+    assert not guarded_reuse_variants(source, 'f', rows[:-1])
+    assert not guarded_reuse_variants(source.replace('second = 0;', 'publish(first); second = 0;'), 'f', rows)
+    assert not guarded_reuse_variants(source.replace('ready();', 'publish(second);'), 'f', rows)
+    assert not guarded_reuse_variants(source.replace('consume(first)', 'consume(&first)'), 'f', rows)
