@@ -2,7 +2,7 @@
 
 import re
 
-from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for, view
+from .integer_repair_support import IDENT, NUMBER, calls, edit, integer, locals_for, view
 from .pattern_repairs import close
 
 WRITE_SUFFIX = re.compile(r'\s*(?:=(?!=)|(?:[-+*/%&|^]|<<|>>)=|\+\+|--)')
@@ -504,7 +504,94 @@ def _call_byte_offset(source, name, rows):
     return None
 
 
+def _scaled_global_call(part, header, rows, row, register, amount):
+    """The shifted byte index and a relocated base are passed as one argument."""
+    if not re.fullmatch(r'\$a[0-3]', register) or row + 4 >= len(rows):
+        return None
+    hi, lo, add = (entry[1] for entry in rows[row + 1:row + 4])
+    if any(mark != ' ' or a != b for mark, a, b in rows[row + 1:row + 4]):
+        return None
+    base = re.fullmatch(rf'lui (\$v[01]), %hi\(({IDENT})\)', hi)
+    if (not base or lo != f'addiu {base[1]}, {base[1]}, %lo({base[2]})'
+            or add != f'addu {register}, {register}, {base[1]}'):
+        return None
+    for i, (mark, want, have) in enumerate(rows[row + 4:row + 8], row + 4):
+        if mark != ' ' or want != have:
+            return None
+        if callee := re.fullmatch(rf'jal ({IDENT})', want):
+            if i + 1 >= len(rows):
+                return None
+            marker, slot, current_slot = rows[i + 1]
+            if marker != ' ' or slot != current_slot or not re.fullmatch(rf'nop|sw \$\w+, {NUMBER}\(\$sp\)', slot):
+                return None
+            break
+        if not re.fullmatch(rf'(?:sw \$\w+, {NUMBER}\(\$sp\)|move \$a[0-3], \$zero)', want):
+            return None
+        if want.startswith(f'move {register},'):
+            return None
+    else:
+        return None
+    if not _read_declaration(part, header, base[2], 1):
+        return None
+    sites = list(calls(part, callee[1]))
+    if len(sites) != 1:
+        return None
+    start, end = sites[0]
+    args = part.clean[start:end]
+    # Require all earlier source arguments to be simple, so commas identify this slot.
+    prefix = rf'(?:\s*(?:{IDENT}|{NUMBER})\s*,){{{register[-1]}}}'
+    hit = re.match(rf'{prefix}\s*\({IDENT} \* (?P<stride>{NUMBER})\) \+ (?P<base>&{base[2]})\s*(?=,|$)', args)
+    if not hit or not (stride := integer(hit['stride'])) or stride & -stride != 1 << amount:
+        return None
+    pos = start + hit.start('base')
+    return edit(part.source, [(pos, pos, '(u8 *)')])
+
+
+def _loaded_halfword_call_offset(source, name, header, rows):
+    """Use halfword units for a byte offset applied after a global pointer load."""
+    changes = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changes) != 1 or (i := changes[0]) < 2 or i + 1 >= len(rows):
+        return None
+    step = re.compile(rf'addiu \$a0, \$a0, ({NUMBER})')
+    target, candidate = (step.fullmatch(op) for op in rows[i][1:])
+    mark, want, have = rows[i + 1]
+    callee = re.fullmatch(rf'jal ({IDENT})', want)
+    if not target or not candidate or mark != ' ' or want != have or not callee:
+        return None
+    wanted, scaled = integer(target[1]), integer(candidate[1])
+    if not wanted or wanted % 2 or scaled != 2 * wanted:
+        return None
+    base = None
+    for j in range(i - 1, max(0, i - 6), -1):
+        mark, want, have = rows[j]
+        if mark != ' ' or want != have:
+            return None
+        if base := re.fullmatch(rf'lw \$a0, %lo\(({IDENT})\)\(\$a0\)', want):
+            hi = f'lui $a0, %hi({base[1]})'
+            if tuple(rows[j - 1]) != (' ', hi, hi):
+                return None
+            break
+        if not re.fullmatch(r'(?:lui|lw) \$a[1-3], .+', want):
+            return None
+    if not base or not (part := view(source, name)):
+        return None
+    symbol = base[1]
+    declarations = part.clean[:part.opening]
+    if (re.search(rf'\b{symbol}\b', header)
+            or not re.search(rf'\bextern [su]16\s*\*\s*{symbol}\s*;', declarations)
+            or re.search(rf'\b{IDENT}[\s*]+{symbol}\s*(?=[=;,)\[])', part.body)):
+        return None
+    edits = []
+    for start, end in calls(part, callee[1]):
+        arg = re.match(rf'\s*{symbol}\s*\+\s*({NUMBER})\s*(?=,|$)', part.clean[start:end])
+        if arg and integer(arg[1]) == wanted:
+            edits.append((start + arg.start(1), start + arg.end(1), str(wanted // 2)))
+    return edit(source, edits) if len(edits) == 1 else None
+
+
 def variants(source, name, header, rows):
+    if candidate := _loaded_halfword_call_offset(source, name, header, rows):
+        return [('measured_loaded_halfword_call_offset', candidate)]
     if candidate := _call_byte_offset(source, name, rows):
         return [('measured_call_byte_offset', candidate)]
     if candidate := _under_scaled_halfword_cursor(source, name, rows):
@@ -519,6 +606,8 @@ def variants(source, name, header, rows):
     if part is None:
         return []
     for row, register, amount in shifts:
+        if candidate := _scaled_global_call(part, header, rows, row, register, amount):
+            return [('measured_scaled_global_call', candidate)]
         if candidate := _indirect_halfword_table(part, header, rows, row, register, amount):
             return [('measured_indirect_halfword_table', candidate)]
         if candidate := _float_record_load(part, header, rows, row, register, amount):
