@@ -55,14 +55,16 @@ def variants(source, name, *, asm=None, arch=None, header='', callees='', requir
             return []
         if selected_call is None:
             incoming = _incoming_calls(asm)
-        elif selected_slot == 0:
-            incoming = {selected_call: {0}} if _entry_a0_reaches(asm, selected_call) else {}
         else:
-            roots = _incoming_calls(asm)
             address = resolve(selected_call) if resolve is not None else None
             raw = f'func_{address:08X}' if address is not None else selected_call
-            slots = roots.get(selected_call, roots.get(raw, ()))
-            incoming = {selected_call: {selected_slot}} if selected_slot in slots else {}
+            if selected_slot == 0:
+                proven = _entry_a0_reaches(asm, selected_call) or (
+                    raw != selected_call and _entry_a0_reaches(asm, raw))
+            else:
+                roots = _incoming_calls(asm)
+                proven = selected_slot in roots.get(selected_call, roots.get(raw, ()))
+            incoming = {selected_call: {selected_slot}} if proven else {}
         if not incoming:
             return []
     outside = clean[:span[0]] + clean[span[1]:]
@@ -805,7 +807,7 @@ def shifted_call_variants(source, name, header, asm, rows, *, resolve=None):
         return []
     selected, call, local = nearby[0]
     if forwarded := variants(source, name, asm=asm, arch='mips', header=header, require_evidence=True,
-                             selected_call=selected):
+                             selected_call=selected, resolve=resolve):
         return forwarded
     if candidate := _missing_caller_argument(source, name, header, asm, selected):
         return [(FAMILY, candidate)]

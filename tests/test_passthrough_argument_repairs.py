@@ -636,3 +636,19 @@ def test_forward_second_entry_argument_when_float_literal_moves_to_third_slot():
     assert not p.shifted_call_variants(source, 'f', header, raw, rows)
     assert not p.shifted_call_variants(source, 'f', header, 'move $a1, $zero\n' + raw, rows, resolve=resolve)
     assert not p.shifted_call_variants(source.replace('0.5f', '1.0f'), 'f', header, raw, rows, resolve=resolve)
+
+
+def test_guarded_forward_uses_the_resolved_call_label_for_entry_proof():
+    source = ('s32 effect(s32, s32); /* extern */\n'
+              'void f(void *object) { if (object) effect(data, 0); }')
+    target = ['beqz $a0, .Lend', 'nop', 'lui $a1, %hi(data)', 'lw $a1, %lo(data)($a1)',
+              'jal effect', 'move $a2, $zero', '.Lend:', 'jr $ra', 'nop']
+    candidate = [op.replace('$a1', '$a0') if i in (2, 3) else
+                 op.replace('$a2', '$a1') if i == 5 else op for i, op in enumerate(target)]
+    rows = [(' ' if a == b else 'r', a, b) for a, b in zip(target, candidate)]
+    raw = '\n'.join(op if op.endswith(':') else f'/* {i*4:06X} {0x80000000+i*4:08X} 00000000 */ {op}'
+                    for i, op in enumerate(target)).replace('jal effect', 'jal func_80002000')
+    [(_, fixed)] = p.shifted_call_variants(source, 'f', '', raw, rows, resolve={'effect': 0x80002000}.get)
+    assert 'effect(void *, s32, s32)' in fixed
+    assert 'effect(object, data, 0)' in fixed
+    assert not p.shifted_call_variants(source, 'f', '', raw, rows, resolve={'effect': 0x80003000}.get)
