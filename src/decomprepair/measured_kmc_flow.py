@@ -318,6 +318,50 @@ def _collapse_identical_assignments(source, name, header, rows):
     return [('measured_identical_branch_assignments', edit(source, group)) for group in groups]
 
 
+_BYTE_GUARD_RETURN = re.compile(
+    rf'\bif\s*\(\s*(?P<load>\*\s*\(\s*(?:u8|unsigned\s+char)\s*\*\s*\)'
+    rf'\s*\(\s*\(\s*char\s*\*\s*\)\s*{IDENT}\s*\+\s*(?P<offset>{NUMBER})\s*\))'
+    rf'\s*==\s*0\s*\)\s*return\s+(?P<comparison>{IDENT}\s*<=\s*'
+    rf'\*\s*\(\s*(?:u8|unsigned\s+char)\s*\*\s*\)\s*'
+    rf'\(\s*\(\s*char\s*\*\s*\)\s*{IDENT}\s*\+\s*{NUMBER}\s*\))\s*;'
+    rf'\s*goto\s+(?P<label>{IDENT})\s*;(?=\s*\}}\s*$)'
+)
+
+
+def _byte_guard_return(source, name, header, rows):
+    """Give KMC a separate register for a byte guard and its comparison."""
+    changed = [(i, target, current) for i, (mark, target, current) in enumerate(rows) if mark != ' ']
+    if len(changed) != 2 or any(rows[i][0] != 'r' for i, _, _ in changed):
+        return None
+    (i, new_load, load), (j, new_branch, branch) = changed
+    if j != i + 1:
+        return None
+    field = re.fullmatch(rf'lbu \$v0, ({NUMBER}\(\$\w+\))', load)
+    exit_target = re.fullmatch(rf'bnez \$v0, ({NUMBER})', branch)
+    if not field or not exit_target:
+        return None
+    new_reg = re.fullmatch(r'lbu (\$(?!v0\b)\w+), ' + re.escape(field[1]), new_load)
+    if not new_reg or new_branch != f'bnez {new_reg[1]}, {exit_target[1]}':
+        return None
+    part = view(source, name)
+    if not part or not re.search(rf'\b(?:s32|int)\s+{re.escape(name)}\s*\([^{{}};]*\)\s*$',
+                                 part.clean[:part.opening]):
+        return None
+    hit = _BYTE_GUARD_RETURN.search(part.clean, part.opening + 1, part.end)
+    if not hit or integer(hit['offset']) != integer(field[1].split('(')[0]):
+        return None
+    label = hit['label']
+    if not re.search(rf'(?<![\w:]){re.escape(label)}\s*:\s*return\s+0\s*;', part.body[:hit.start() - part.opening - 1]):
+        return None
+    local = '__repair_guard_result'
+    if local in source or local in header or re.search(r'/[*/]', source[hit.start():hit.end()]):
+        return None
+    return edit(source, [(*hit.span(), (
+        f'{{ int {local} = {hit["load"]}; if ({local} == 0) {local} = {hit["comparison"]}; '
+        f'else goto {label}; return {local}; }}'
+    ))])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -331,6 +375,8 @@ def variants(source, name, header, rows):
         return [('measured_early_float_field_load', candidate)]
     if candidate := _guarded_constant_stores(source, name, rows):
         return [('guarded_constant_stores', candidate)]
+    if candidate := _byte_guard_return(source, name, header, rows):
+        return [('measured_byte_guard_return', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
