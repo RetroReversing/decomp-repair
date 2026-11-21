@@ -170,3 +170,35 @@ void f(int id, void *object) {
         rows[0], ('r', 'lw $a1, 8($a1)', 'lw $a0, 12($a1)'),
     ])
     assert not p.shifted_call_variants(source, 'f', 's32 read(s32);', asm, rows)
+
+
+def test_shifted_call_counts_paired_address_relocations_as_single_arguments():
+    source = '''
+s32 bind(void *, void *, s32);
+void f(void *context) {
+    bind(&pull, &update, 7);
+    touch(context);
+}
+'''
+    rows = [
+        ('r', 'lui $a1, %hi(pull)', 'lui $a0, %hi(pull)'),
+        ('r', 'addiu $a1, $a1, %lo(pull)', 'addiu $a0, $a0, %lo(pull)'),
+        ('r', 'lui $a2, %hi(update)', 'lui $a1, %hi(update)'),
+        ('r', 'addiu $a2, $a2, %lo(update)', 'addiu $a1, $a1, %lo(update)'),
+        (' ', 'sw $ra, 20($sp)', 'sw $ra, 20($sp)'),
+        (' ', 'jal bind', 'jal bind'),
+        ('r', 'addiu $a3, $zero, 7', 'addiu $a2, $zero, 7'),
+    ]
+    asm = '\n'.join(a for _, a, _ in rows)
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert 'bind(void *, void *, void *, s32)' in fixed
+    assert 'bind(context, &pull, &update, 7);' in fixed
+    invalid = [
+        rows[:1] + [('r', rows[1][1], 'addiu $a0, $a0, %lo(update)')] + rows[2:],
+        rows[:2] + [('r', 'lui $a2, %hi(other)', 'lui $a1, %hi(other)')] + rows[3:],
+        rows[:1] + [('r', rows[1][1], 'addiu $a0, $t0, %lo(pull)')] + rows[2:],
+    ]
+    for case in invalid:
+        assert not p.shifted_call_variants(source, 'f', '', asm, case)
+    assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n' + asm, rows)
