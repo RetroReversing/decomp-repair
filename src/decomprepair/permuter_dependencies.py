@@ -112,33 +112,48 @@ def signature(fn, typedefs=()):
     return types, values, returned, set(arithmetic)
 
 
+def compare_signatures(before, after):
+    old_types, old_values, old_returns, old_arithmetic = before
+    new_types, new_values, new_returns, new_arithmetic = after
+    return (old_returns == new_returns and all(new_types.get(n) == t for n, t in old_types.items())
+            and new_arithmetic <= old_arithmetic
+            and all(new_values.get(n) == value for n, value in old_values.items())
+            and all(n not in new_values for n in old_types if n not in old_values))
+
+
 def equivalent(before, after, typedefs=()):
     try:
-        old_types, old_values, old_returns, old_arithmetic = signature(before,typedefs)
-        new_types, new_values, new_returns, new_arithmetic = signature(after,typedefs)
-        return (old_returns == new_returns and all(new_types.get(n) == t for n, t in old_types.items())
-                and new_arithmetic <= old_arithmetic
-                and all(new_values.get(n) == value for n, value in old_values.items())
-                and all(n not in new_values for n in old_types if n not in old_values))
+        return compare_signatures(signature(before, typedefs), signature(after, typedefs))
     except (Unknown, AttributeError, TypeError, RecursionError):
         return False
 
 
 def protect(original, failure, blocked=()):
-    import copy
     @wraps(original)
     def guarded(fn, ast, indices, region, random):
         def hidden(node):
             return (type(node).__name__ == 'ID' and node.name in blocked
                     or any(hidden(c) for _, c in node.children()))
-        if hidden(fn):raise failure()
-        before = copy.deepcopy(fn)
-        try:result = original(fn, ast, indices, region, random)
+        if blocked and hidden(fn):
+            raise failure()
+        # These rewrites only edit the candidate function. Capture its dependency
+        # signature before it changes, without keeping a second syntax tree.
+        typedefs = [node for node in ast.ext if type(node).__name__ == 'Typedef'] if ast is not None else ()
+        try:
+            before = signature(fn, typedefs)
+        except (Unknown, AttributeError, TypeError, RecursionError) as error:
+            raise failure() from error
+        try:
+            result = original(fn, ast, indices, region, random)
         except Exception as error:
             # Native RandomizationFailure is swallowed by its retry loop, even
             # if the pass already changed nodes. Escape to our fresh-parent path.
             raise failure() from error
-        if not equivalent(before, fn,[n for n in ast.ext if type(n).__name__=='Typedef'] if ast is not None else ()):
+        try:
+            same = compare_signatures(before, signature(fn, typedefs))
+        except (Unknown, AttributeError, TypeError, RecursionError) as error:
+            raise failure() from error
+        if not same:
             raise failure()
         return result
     return guarded
