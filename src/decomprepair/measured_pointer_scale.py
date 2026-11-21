@@ -667,19 +667,28 @@ def _scaled_call_binding(rows, row, register, following, *, index):
     hi, lo, add = ([entry[1] for entry in following] + [''])[:3]
     base_register = re.escape(register) if index != register else r'\$v[01]'
     base = re.fullmatch(rf'lui ({base_register}), %hi\(({IDENT})\)', hi)
+    scan_limit = 4
+    extra_store = ''
     if (base and lo == f'addiu {base[1]}, {base[1]}, %lo({base[2]})'
             and add == f'addu {register}, {index}, {base[1]}'
             and all(mark == ' ' and a == b for mark, a, b in following)):
         table, call_start = base[2], row + 4
     else:
-        saved = re.fullmatch(rf'addu {re.escape(register)}, {re.escape(register)}, (\$s[0-7])', hi)
-        if index != register or not saved or tuple(following[0]) != (' ', hi, hi):
+        saved_add = re.compile(rf'addu {re.escape(register)}, {re.escape(register)}, (\$s[0-7])')
+        early_constant = re.fullmatch(rf'addiu (?!{re.escape(register)},)\$a[0-3], \$zero, {NUMBER}', hi)
+        add_row = 0
+        if early_constant and saved_add.fullmatch(lo) and tuple(following[0]) == (' ', hi, hi):
+            add_row = 1
+            scan_limit = 8
+            extra_store = r'|sh \$zero, (?:0|0x0)?\(\$s[0-7]\)'
+        saved = saved_add.fullmatch(following[add_row][1])
+        if index != register or not saved or tuple(following[add_row]) != (' ', saved[0], saved[0]):
             return None
         table = _preloaded_base(rows, row, saved[1])
         if not table:
             return None
-        call_start = row + 2
-    for i, (mark, want, have) in enumerate(rows[call_start:call_start + 4], call_start):
+        call_start = row + 2 + add_row
+    for i, (mark, want, have) in enumerate(rows[call_start:call_start + scan_limit], call_start):
         if mark != ' ' or want != have:
             return None
         if callee := re.fullmatch(rf'jal ({IDENT})', want):
@@ -690,7 +699,7 @@ def _scaled_call_binding(rows, row, register, following, *, index):
             if marker != ' ' or slot != current_slot or not re.fullmatch(safe_slot, slot):
                 return None
             break
-        if not re.fullmatch(rf'(?:sw \$\w+, {NUMBER}\(\$sp\)|move \$a[0-3], \$zero)', want):
+        if not re.fullmatch(rf'(?:sw \$\w+, {NUMBER}\(\$sp\)|move \$a[0-3], \$zero{extra_store})', want):
             return None
         if want.startswith(f'move {register},'):
             return None
