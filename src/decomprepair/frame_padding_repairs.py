@@ -9,6 +9,7 @@ that size those.
 """
 import re
 
+from . import mips_stack, passthrough_argument_repairs
 from .integer_repair_support import edit, view
 
 FAMILY = 'unused_frame_padding'
@@ -48,3 +49,18 @@ def variants(source, name, asm):
         return []
     lines = ''.join('\n    ' + declaration for declaration in _declarations(size))
     return [(FAMILY, edit(source, [(part.opening + 1, part.opening + 1, lines)]))]
+
+
+def forwarded_variants(source, name, header, rows, asm, frame_delta):
+    """Compose one measured reservation and one missing incoming call argument."""
+    if frame_delta <= 0 or sum(marker not in (' ', 's') for marker, _, _ in rows) != 1:
+        return []
+    frame_rows = [row if row[0] == 's' else (' ', row[1], row[1]) for row in rows]
+    frame = mips_stack.repair_layout(frame_rows) or {}
+    if (frame.get('inferred_growth') != frame_delta or frame.get('local_deltas')
+            or padding(asm) != frame_delta):
+        return []
+    call_rows = [row if row[0] != 's' else (' ', row[1], row[1]) for row in rows]
+    forwarded = passthrough_argument_repairs.shifted_call_variants(source, name, header, asm, call_rows)
+    return [('frame_reservation_with_forwarded_argument', padded)
+            for _, candidate in forwarded for _, padded in variants(candidate, name, asm)]
