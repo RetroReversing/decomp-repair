@@ -118,3 +118,32 @@ void *f(s32 arg2, s32 arg3, u16 arg4) {
     assert 'return g(arg0, arg1, arg2, arg3, arg4);' in out
     assert 'void *g(s32, s32, s32, s32, s32, s32, s32);' in out
     assert leading.variants(source.replace('s32 arg2,', 's32 arg0,').replace('arg2 &', 'arg0 &'), 'f', asm) == []
+
+
+def test_leading_argument_of_an_indirect_zero_wrapper():
+    source = """\
+extern s32 (*callback)(s32);
+void f(void) {
+    callback(0);
+}
+"""
+    asm = """\
+glabel f
+lui $v0, %hi(slot)
+lw $v0, %lo(slot)($v0)
+addiu $sp, $sp, -0x18
+sw $ra, 0x10($sp)
+jalr $v0
+addu $a1, $zero, $zero
+lw $ra, 0x10($sp)
+jr $ra
+addiu $sp, $sp, 0x18
+endlabel f
+"""
+    [(family, fixed)] = leading.variants(source, 'f', asm)
+    assert family == leading.FAMILY
+    assert fixed == source.replace('(s32);', '(s32, s32);').replace('f(void)', 'f(s32 arg0)').replace('callback(0)', 'callback(arg0, 0)')
+    assert not leading.variants(source, 'f', asm.replace('$a1', '$a0'))
+    assert not leading.variants(source, 'f', asm.replace('jalr $v0', 'jalr $v1'))
+    assert not leading.variants(source, 'f', asm.replace('jalr $v0', 'move $a0, $zero\njalr $v0'))
+    assert not leading.variants(source.replace('callback(0);', 'if (ready) callback(0);'), 'f', asm)
