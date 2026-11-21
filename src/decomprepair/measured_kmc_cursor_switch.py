@@ -77,9 +77,23 @@ _ELSE_SOURCE = re.compile(
 )
 
 
+_EARLY_CALL = re.compile(
+    rf'beqz \$v0, (?P<next>\d+)\naddiu \$a0, \$zero, (?P<code>\d+)\n'
+    rf'lui \$v0, %hi\((?P<global>{IDENT})\)\nlw \$v0, %lo\((?P=global)\)\(\$v0\)\n'
+    r'lhu \$v1, (?P<field>\d+)\(\$v0\)\naddiu \$v0, \$zero, (?P<guard>\d+)\n'
+    r'beq \$v1, \$v0, (?P=next)\naddiu \$a0, \$zero, (?P=code)\n'
+    rf'jal (?P<call>{IDENT})\nnop\nj (?P<name>{IDENT})\+\d+\nnop'
+)
+_EARLY_SOURCE = re.compile(
+    rf'^\s*(?:(?:s32 |void \*){IDENT};\s*)*if \(\(\({IDENT} != 0\) \|\| \({IDENT} != 0\) \|\| \({IDENT} != 0\)\) && '
+    rf'\(M2C_FIELD\(M2C_FIELD\(&{IDENT}, void \*\*, {NUMBER}\), u16 \*, (?P<field>{NUMBER})\) '
+    rf'!= (?P<guard>{NUMBER})\)\) \{{\s*(?P<call>{IDENT})\((?P<arg>{NUMBER})\);\s*return;\s*\}}'
+)
+
+
 def variants(source, name, header, rows):
     if len(rows) not in (14, 20, 21, 33):
-        return []
+        return _early_call(source, name, header, rows)
     changes = [(left, right) for tag, left, right in rows if tag != ' ']
     target = '\n'.join(normalized_integer_lines(left for _, left, _ in rows if left))
     if (match := _SWAP.fullmatch(target)) and len(changes) == 7 and ('', 'move $a1, $a0') in changes:
@@ -93,7 +107,7 @@ def variants(source, name, header, rows):
           and (match := _ELSE_CALL.search(target)) and match['name'] == name):
         family, draft, rewrite = 'measured_guarded_no_argument_call', _ELSE_SOURCE, _else_call
     else:
-        return []
+        return _early_call(source, name, header, rows)
     part = view(source, name)
     end = close(part.clean, part.opening, '{', '}') if part else None
     if not end:
@@ -203,3 +217,28 @@ def _else_call(part, _name, header, target, body):
         (*declaration.span('args'), 'void'),
         (start + body.start('tail'), start + body.end('tail'), f'\n    }} else {{\n        {callee}();\n    }}'),
     ])
+
+def _early_call(source, name, header, rows):
+    if not 30 <= len(rows) <= 160:
+        return []
+    changes = [normalized_integer_lines((left, right)) for tag, left, right in rows if tag != ' ']
+    if len(changes) != 1 or changes[0][0] != 'nop':
+        return []
+    target = '\n'.join(normalized_integer_lines(left for _, left, _ in rows if left))
+    evidence = _EARLY_CALL.search(target)
+    if (not evidence or evidence['name'] != name or evidence['call'] == name
+            or changes[0][1] != f'addiu $a0, $zero, {evidence["code"]}'):
+        return []
+    part = view(source, name)
+    draft = _EARLY_SOURCE.match(part.body) if part else None
+    if (not draft or draft['call'] != evidence['call']
+            or integer(draft['arg']) != int(evidence['code'])
+            or any(integer(draft[key]) != int(evidence[key]) for key in ('field', 'guard'))):
+        return []
+    declaration = _prototype(part, header, evidence['call'], 'M2C_UNK|s32|int', 'M2C_UNK|s32|void')
+    if not declaration:
+        return []
+    start = part.opening + 1
+    fixed = edit(source, [(*declaration.span('args'), 'void'),
+                          (start + draft.start('arg'), start + draft.end('arg'), '')])
+    return [('measured_guard_exit_without_inferred_argument', fixed)]

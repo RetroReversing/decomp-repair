@@ -64,8 +64,21 @@ _EVENT_DRAFT = re.compile(
 )
 
 
+_LOOP_TARGET = re.compile(
+    rf'jal (?P<prepare>{IDENT})\nmove \$a0, \$zero\nandi \$a2, \$s0, 255\n'
+    rf'move \$a0, \$a2\nmove \$a1, \$a2\njal (?P<call>{IDENT})\naddiu \$a3, \$zero, 1\n'
+    r'addiu \$s0, \$s0, 1\nandi \$v0, \$s0, 65535\nbeqz \$v0, \d+\nandi \$a2, \$s0, 255'
+)
+_LOOP_DRAFT = re.compile(
+    rf'(?P<prepare>{IDENT})\(0\);\s*(?P<first>^[ \t]*(?P<byte>{IDENT}) = 0 & (?P<mask>{NUMBER});\n)'
+    rf'\s*do \{{\n(?P<indent>[ \t]+)(?P<call>{IDENT})\((?P=byte), (?P=byte), (?P=byte), 1\);\s*'
+    rf'(?P<index>{IDENT}) \+= 1;\n(?P<last>[ \t]*(?P=byte) = (?P=index) & (?P=mask);\n)'
+    rf'\s*\}} while \(!\((?P=index) & (?P<stop>{NUMBER})\)\);', re.M,
+)
+
+
 def variants(source, name, header, rows):
-    if not 34 <= len(rows) <= 85:
+    if not 34 <= len(rows) <= 120:
         return []
     changed = {normalized_integer_lines((left, right)) for marker, left, right in rows if marker != ' '}
     if not changed:
@@ -86,6 +99,8 @@ def variants(source, name, header, rows):
           and (f'sh $v0, {hit["halfword"]}($v1)', '') in changed
           and ('', f'sh $v0, {hit["halfword"]}($v1)') in changed):
         family, fixed = 'measured_global_pointer_before_update', _global(part, header, hit)
+    elif (changed == {('andi $a2, $s0, 255', 'move $a2, $zero')} and (hit := _LOOP_TARGET.search(target))):
+        family, fixed = 'measured_repeated_call_byte_mask', _loop_byte(part, hit)
     elif (hit := _EVENT_TARGET.search(target)):
         wanted, trial = normalized_integer_lines(rows[0][1:])
         wanted_frame = re.fullmatch(r'addiu \$sp, \$sp, -(\d+)', wanted)
@@ -201,4 +216,24 @@ def _event(part, name, header, target, padding):
         (start, start + head.end(),
          f'\n    struct {{ s16 event_tag; void *event_payload; s32 event_tail[{padding // 4}]; }} {record};'),
         (start + draft.start(), start + draft.end(), fixed),
+    ])
+
+def _loop_byte(part, target):
+    draft = _LOOP_DRAFT.search(part.body)
+    if (not draft or draft['prepare'] != target['prepare'] or draft['call'] != target['call']
+            or integer(draft['mask']) != 255 or integer(draft['stop']) != 65535):
+        return None
+    index, byte = draft['index'], draft['byte']
+    lead = part.body[:draft.start()]
+    if (index == byte or not re.search(rf'\bs32 {index};', lead)
+            or len(re.findall(rf'\b{index}\b', part.body)) != 5
+            or len(re.findall(rf'\b{byte}\b', part.body)) != 6
+            or not re.search(rf'\b{index} = 0;', lead) or re.search(r'\b(?:goto|volatile|asm)\b', part.body)):
+        return None
+    start = part.opening + 1
+    insert = start + draft.start('indent')
+    return edit(part.source, [
+        (start + draft.start('first'), start + draft.end('first'), ''),
+        (insert, insert, f'{draft["indent"]}{byte} = {index} & {draft["mask"]};\n'),
+        (start + draft.start('last'), start + draft.end('last'), ''),
     ])

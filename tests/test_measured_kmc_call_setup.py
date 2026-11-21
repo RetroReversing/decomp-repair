@@ -150,3 +150,40 @@ void f(void *queue, void *input, s32 delay) {
     assert 'post(queue + 32, (s16 *) &__repair_event, delay);' in fixed
     assert not variants(source, 'f', '#define event_tag something', rows)
     assert not variants(source.replace('void *sp14', 'void *sp18').replace('sp14 =', 'sp18 ='), 'f', '', rows)
+
+
+def test_repeated_call_masks_the_counter_in_the_loop_body():
+    rows = diff('''
+jal prepare
+move $a0, $zero
+andi $a2, $s0, 255
+move $a0, $a2
+move $a1, $a2
+jal visit
+addiu $a3, $zero, 1
+addiu $s0, $s0, 1
+andi $v0, $s0, 65535
+beqz $v0, 36
+andi $a2, $s0, 255
+''', {})
+    rows[2] = ('|', 'andi $a2, $s0, 255', 'move $a2, $zero')
+    source = '''
+void f(void) {
+    s32 index;
+    s32 byte;
+    index = 0;
+    prepare(0);
+    byte = 0 & 255;
+    do {
+        visit(byte, byte, byte, 1);
+        index += 1;
+        byte = index & 255;
+    } while (!(index & 65535));
+}
+'''
+    [(label, fixed)] = variants(source, 'f', '', rows)
+    assert label == 'measured_repeated_call_byte_mask'
+    assert 'do {\n        byte = index & 255;\n        visit' in fixed
+    assert fixed.count('byte =') == 1
+    assert not variants(source.replace('index += 1;', 'index += 2;'), 'f', '', rows)
+    assert not variants(source.replace('prepare(0);', 'prepare(0); mutate(&index);'), 'f', '', rows)
