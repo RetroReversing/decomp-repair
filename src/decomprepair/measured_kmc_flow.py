@@ -61,7 +61,60 @@ _INDIRECT_SOURCE = re.compile(
 )
 
 
+_GUARDED_STORE = re.compile(
+    rf'(?m)^(?P<indent>[ \t]+)if \(\(\(s32\) (?P<key>{IDENT}) >= (?P<low>{NUMBER})\) && '
+    rf'\(\((?P<value>{IDENT}) = (?P<first>{NUMBER}), \(\(\(s32\) (?P=key) < (?P<mid>{NUMBER})\) != 0\)\)'
+    rf' \|\| \((?P=value) = (?P<second>{NUMBER}), \(\(\(s32\) (?P=key) < (?P<high>{NUMBER})\) != 0\)\)\)\) '
+    rf'\{{\n[ \t]+(?P<field>M2C_FIELD\({IDENT}, s16 \*, (?P<offset>{NUMBER})\)) = (?P=value);\n(?P=indent)\}}'
+)
+
+
+def _guarded_constant_stores(source, name, rows):
+    """Expose both stores so KMC can allocate the halfword value in the target register."""
+    changes = [(mark, target, current) for mark, target, current in rows if mark != ' ']
+    if not 3 <= len(changes) <= 8 or any(mark != 'r' for mark, _, _ in changes):
+        return None
+    if not (part := view(source, name)):
+        return None
+    hits = list(_GUARDED_STORE.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    if not integer(hit['low']) < integer(hit['mid']) < integer(hit['high']):
+        return None
+    local = re.escape(hit['value'])
+    declaration_pattern = re.compile(rf'(?m)^[ \t]*s16[ \t]+{local};[ \t]*\n')
+    declarations = list(declaration_pattern.finditer(part.clean, part.opening + 1, hit.start()))
+    if (len(declarations) != 1 or len(re.findall(rf'\b{local}\b', part.body)) != 4
+            or re.search(r'/[*/]', source[hit.start():hit.end()])):
+        return None
+    stores = [store for _, op, _ in changes
+              if (store := re.fullmatch(rf'sh (\$\w+), ({NUMBER})\(\$\w+\)', op))
+              and integer(store[2]) == integer(hit['offset'])]
+    if len(stores) != 1:
+        return None
+    loads = {integer(load[1]) for _, op, _ in changes if (load := re.fullmatch(
+        rf'addiu {re.escape(stores[0][1])}, \$zero, ({NUMBER})', op))}
+    if loads != {integer(hit['first']), integer(hit['second'])} or len(loads) != 2:
+        return None
+    indent, key, low, mid, high, field, first, second = (
+        hit[key] for key in ('indent', 'key', 'low', 'mid', 'high', 'field', 'first', 'second'))
+    declaration = declarations[0]
+    if re.search(r'/[*/]', source[declaration.start():declaration.end()]):
+        return None
+    return edit(source, [(*declaration.span(), ''), (*hit.span(), (
+        f'{indent}if ((s32) {key} >= {low}) {{\n'
+        f'{indent}    if ((s32) {key} < {mid}) {{\n'
+        f'{indent}        {field} = {first};\n'
+        f'{indent}    }} else if ((s32) {key} < {high}) {{\n'
+        f'{indent}        {field} = {second};\n'
+        f'{indent}    }}\n'
+        f'{indent}}}'))])
+
+
 def variants(source, name, header, rows):
+    if candidate := _guarded_constant_stores(source, name, rows):
+        return [('guarded_constant_stores', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']

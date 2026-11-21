@@ -165,7 +165,45 @@ def _stage_layout(part, name, header, rows, asm):
     return edit(part.source, edits)
 
 
+def _next_record_field(source, name, rows):
+    """Remove a stride counted once in the pointer step and again in the member."""
+    if '__repair_record_' not in source:
+        return None
+    changed = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changed) != 1 or (index := changed[0]) + 1 >= len(rows):
+        return None
+    mark, target, candidate = rows[index]
+    load = re.fullmatch(rf'(lhu \$\w+, )(?P<offset>{NUMBER})\((?P<base>\$\w+)\)', target)
+    if mark != 'i' or not load:
+        return None
+    actual = re.fullmatch(re.escape(load[1]) + rf'({NUMBER})\({re.escape(load["base"])}\)', candidate)
+    step = re.fullmatch(rf'addiu \$\w+, {re.escape(load["base"])}, ({NUMBER})', rows[index + 1][1])
+    if not actual or not step or not (part := view(source, name)):
+        return None
+    stride = integer(step[1])
+    if not 2 <= stride <= 4096 or integer(load['offset']) != stride or integer(actual[1]) != 2 * stride:
+        return None
+    pattern = re.compile(
+        rf'\b(?P<ptr>{IDENT})\s*\+=\s*(?P<count>{NUMBER})\s*;\s*'
+        rf'if\s*\(\(\((?P<record>__repair_record_(?P=ptr))\s*\*\)\s*(?P=ptr)\)\s*->'
+        rf'(?P<field>field_{stride:X})\s*!=\s*0\s*\)')
+    edits = []
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
+        ptr, record = hit['ptr'], hit['record']
+        declarations = part.clean[:part.opening]
+        if (2 * integer(hit['count']) != stride
+                or not re.search(rf'\bextern\s+u16\s*\*\s*{ptr}\s*;', declarations)):
+            continue
+        layout = re.search(rf'typedef struct\s*\{{([^{{}}]+)\}}\s*{record}\s*;', declarations)
+        if (layout and re.match(r'\s*unsigned short field_0\s*;', layout[1])
+                and re.search(rf'\bunsigned short field_{stride:X}\s*;', layout[1])):
+            edits.append((*hit.span('field'), 'field_0'))
+    return edit(source, edits) if len(edits) == 1 else None
+
+
 def variants(source, name, header, rows, asm):
+    if fixed := _next_record_field(source, name, rows):
+        return [('next_record_field_after_advance', fixed)]
     if not 25 <= len(rows) <= 72 or 'M2C_FIELD' not in source or not (part := view(source, name)):
         return []
     if 'bnel' in asm and (fixed := _record_scan(part, name, header, asm)):

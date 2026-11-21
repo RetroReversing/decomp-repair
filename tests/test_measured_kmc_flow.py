@@ -135,3 +135,29 @@ void f(void *handle, s32 extra) {
     assert family == 'measured_post_indirect_call_update'
     assert fixed.index('8)(handle, 3, extra);') < fixed.index('remaining -= step;')
     assert not variants(source.replace('keep(remaining)', 'keep(&remaining)'), 'f', '', rows)
+
+
+def test_guarded_constant_stores_preserve_comparisons_and_the_shared_field():
+    source = """void f(void *obj, u32 key) {
+    s16 result;
+    if (((s32) key >= 10) && ((result = 50, (((s32) key < 12) != 0)) || (result = 60, (((s32) key < 14) != 0)))) {
+        M2C_FIELD(obj, s16 *, 24) = result;
+    }
+}
+"""
+    rows = [
+        ('r', 'addiu $v0, $zero, 50', 'addiu $a0, $zero, 50'),
+        ('r', 'addiu $v0, $zero, 0x3c', 'addiu $a0, $zero, 0x3c'),
+        ('r', 'sh $v0, 0x18($a0)', 'sh $a0, 0x18($a1)'),
+    ]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'guarded_constant_stores'
+    assert 'if ((s32) key >= 10)' in fixed
+    assert 'if ((s32) key < 12)' in fixed
+    assert 'else if ((s32) key < 14)' in fixed
+    assert 'M2C_FIELD(obj, s16 *, 24) = 50;' in fixed
+    assert 'M2C_FIELD(obj, s16 *, 24) = 60;' in fixed
+    assert 'result' not in fixed
+    assert not variants(source.replace('24)', '28)'), 'f', '', rows)
+    assert not variants(source.replace('s16 result;', 's16 result; use(&result);'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:2])
