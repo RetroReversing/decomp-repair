@@ -133,42 +133,47 @@ def variants(source, name):
         local = re.search(rf'\b[A-Za-z_]\w*[ \t*]+\**{symbol}\s*[;=,\[]', clean[opening:end])
         if len(uses) < USES or kind is None or local or line_end < 0:
             continue
-        pointer = PREFIX+symbol
-        declaration = (line_end+1, line_end+1, f'    {kind} *{pointer};\n')
-
-        def inside(use, region):
-            return region[0] <= use[0] and use[1] <= region[1]
-
-        def nested(use):
-            return sum(1 for r in loops if inside(use, r)) > 1
-
-        def outer(region):
-            return not any(r != region and r[0] <= region[0] and region[1] <= r[1] for r in loops)
-
-        def build(chosen, anchor):
-            """The variant that replaces `chosen`, with the assignment on the line `anchor` starts."""
-            if len(chosen) < 2:
-                return None
-            line = clean.rfind('\n', 0, anchor)+1
-            indent = re.match(r'[ \t]*', clean[line:]).group()
-            edits = [declaration, (line, line, f'{indent}{pointer} = &{symbol};\n')]
-            edits += [(a, b, pointer) for a, b in chosen]
-            return _edit(source, start, end, edits)
-
-        def first(chosen):
-            """Where the assignment goes: before the outermost loop holding the first use, else before its line."""
-            at = chosen[0][0]
-            held = [r for r in loops if inside(chosen[0], r) and outer(r)]
-            return held[0][0] if held else at
-
-        options = [build(uses, first(uses)), build([u for u in uses if not nested(u)], first([u for u in uses if not nested(u)] or uses))
-                   if [u for u in uses if not nested(u)] else None]
-        for region in (r for r in loops if outer(r)):
-            held = [u for u in uses if inside(u, region)]
-            for anchor in _anchors(clean, region[0]):
-                options.append(build([u for u in held if not nested(u)], anchor))
-                options.append(build(held, anchor))
-        for text in options:
-            if text and text != source and ('hoist', text) not in result:
+        for text in _scopes(source, clean, (start, end), loops, symbol, kind, uses, line_end):
+            if text != source and ('loop_address_hoist', text) not in result:
                 result.append(('loop_address_hoist', text))
-    return list(dict.fromkeys(result))[:LIMIT]
+    return result[:LIMIT]
+
+
+def _scopes(source, clean, span, loops, symbol, kind, uses, line_end):
+    """The variants for one global: the local replacing `uses` (the spans of its `&symbol`) in each scope."""
+    start, end = span
+    pointer = PREFIX+symbol
+    declaration = (line_end+1, line_end+1, f'    {kind} *{pointer};\n')
+
+    def inside(use, region):
+        return region[0] <= use[0] and use[1] <= region[1]
+
+    def nested(use):
+        return sum(1 for r in loops if inside(use, r)) > 1
+
+    def outer(region):
+        return not any(r != region and r[0] <= region[0] and region[1] <= r[1] for r in loops)
+
+    def build(chosen, anchor):
+        """The variant that replaces `chosen`, with the assignment on the line `anchor` starts."""
+        if len(chosen) < 2:
+            return None
+        line = clean.rfind('\n', 0, anchor)+1
+        indent = re.match(r'[ \t]*', clean[line:]).group()
+        edits = [declaration, (line, line, f'{indent}{pointer} = &{symbol};\n')]
+        edits += [(a, b, pointer) for a, b in chosen]
+        return _edit(source, start, end, edits)
+
+    def first(chosen):
+        """Where the assignment goes: before the outermost loop holding the first use, else before its line."""
+        held = [r for r in loops if inside(chosen[0], r) and outer(r)]
+        return held[0][0] if held else chosen[0][0]
+
+    flat = [u for u in uses if not nested(u)]
+    options = [build(uses, first(uses)), build(flat, first(flat or uses))]
+    for region in (r for r in loops if outer(r)):
+        held = [u for u in uses if inside(u, region)]
+        for anchor in _anchors(clean, region[0]):
+            options.append(build([u for u in held if not nested(u)], anchor))
+            options.append(build(held, anchor))
+    return [text for text in options if text]
