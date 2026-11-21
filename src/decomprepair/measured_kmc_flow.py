@@ -232,7 +232,68 @@ def _byte_subtraction_carrier(source, name, rows):
     return edit(source, [(*hit.span(), f'{indent}{result} = {hit["left"]};\n{indent}{result} -= {hit["right"]};')])
 
 
+def _inline_interpolated_product(source, name, rows):
+    """Keep an interpolation as the multiply operand when its result register differs."""
+    add = re.compile(r'add\.s (\$f\d+), (\$f\d+), (\$f\d+)')
+    mul = re.compile(r'mul\.s (\$f\d+), (\$f\d+), (\$f\d+)')
+    witnesses = []
+    for index, (a_mark, a_target, a_current) in enumerate(rows[:-1]):
+        if a_mark != 'r':
+            continue
+        following = index + 1
+        marker, branch, current = rows[following]
+        # The multiply can be in the delay slot of a branch shared by both builds.
+        if marker == ' ' and branch == current and branch.startswith(('beq ', 'bne ')):
+            following += 1
+        if following >= len(rows):
+            continue
+        m_mark, m_target, m_current = rows[following]
+        if m_mark != 'r':
+            continue
+        a, b, c, d = [pattern.fullmatch(op) for pattern, op in
+                      ((add, a_target), (add, a_current), (mul, m_target), (mul, m_current))]
+        if (a and b and c and d and a.groups()[1:] == b.groups()[1:] and a[1] != b[1]
+                and c.groups()[:2] == d.groups()[:2] and c[3] == a[1] and d[3] == b[1]):
+            witnesses.append(a)
+    if (len(witnesses) != 1 or any(mark not in (' ', 'r') for mark, _, _ in rows)
+            or not (part := view(source, name))):
+        return None
+    table = rf'(?P<table>{IDENT})\[(?P<index>{IDENT})\]'
+    interpolation = (rf'\(\s*\(\s*1\.0[fF]\s*-\s*(?P<mix>{IDENT})\s*\)\s*\*\s*{table}\s*'
+                     r'\+\s*(?P=mix)\s*\*\s*(?P=table)\[(?P=index)\s*\+\s*1\]\s*\)')
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]+)(?P<temp>{IDENT})\s*=\s*(?P<blend>{interpolation});\n'
+        rf'(?P=indent)(?P<dst>{IDENT})\s*=\s*(?P<gain>{IDENT})\s*\*\s*(?P=temp);')
+    matches = list(pattern.finditer(part.clean, part.opening + 1, part.end))
+    if len(matches) != 1:
+        return None
+    hit = matches[0]
+    names = {hit['temp'], hit['dst'], hit['gain'], hit['mix']}
+    floats = {var.strip() for decl in re.findall(rf'\bf32\s+({IDENT}(?:\s*,\s*{IDENT})*)\s*;', part.body)
+              for var in decl.split(',')}
+    if (len(names) != 4 or not names <= floats or re.search(r'/[*/]', source[hit.start():hit.end()])
+            or not part.clean[:hit.start()].rstrip().endswith((';', '{', '}'))
+            or re.search(rf'&\s*{hit["temp"]}\b|\bgoto\b|\bvolatile\s+f32', part.body)):
+        return None
+    # A later read must follow a fresh assignment whose block has not ended.
+    tail = part.clean[hit.end():part.end]
+    active = False
+    scopes = []
+    for token in re.finditer(rf'[{{}}]|\b{hit["temp"]}\b', tail):
+        if token[0] == '{':
+            scopes.append(active)
+        elif token[0] == '}':
+            active = scopes.pop() if scopes else False
+        elif re.match(r'\s*=(?!=)', tail[token.end():]):
+            active = tail[:token.start()].rstrip().endswith((';', '{', '}'))
+        elif not active:
+            return None
+    return edit(source, [(*hit.span(), f'{hit["indent"]}{hit["dst"]} = {hit["gain"]}*{hit["blend"]};')])
+
+
 def variants(source, name, header, rows):
+    if candidate := _inline_interpolated_product(source, name, rows):
+        return [('measured_inline_interpolated_product', candidate)]
     if candidate := _byte_subtraction_carrier(source, name, rows):
         return [('measured_byte_subtraction_carrier', candidate)]
     if candidate := _float_scale_carrier(source, name, rows):

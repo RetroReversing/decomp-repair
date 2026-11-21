@@ -237,3 +237,33 @@ def test_byte_subtraction_reuses_the_signed_result_instead_of_the_pointer():
     assert not variants(source.replace('+ 130', '+ 132'), 'f', '', rows)
     assert not variants(source.replace('use(result)', 'use(pointer)'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:-1])
+
+
+def test_interpolated_product_preserves_grouping_and_later_temporary_values():
+    source = """extern f32 table[];
+f32 f(int i) {
+    f32 gain, mix, tmp, out;
+    gain = 2.0f;
+    mix = 0.25f;
+    tmp = ((1.0f-mix)*table[i]+mix*table[i+1]);
+    out = gain * tmp;
+    if (i != 0) {
+        tmp = 1.0f;
+        out += tmp;
+    }
+    return out;
+}
+"""
+    branch = 'bne $a3, $t2, 0x80'
+    rows = [
+        ('r', 'add.s $f2, $f2, $f0', 'add.s $f0, $f2, $f0'),
+        (' ', branch, branch),
+        ('r', 'mul.s $f6, $f6, $f2', 'mul.s $f6, $f6, $f0'),
+    ]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_inline_interpolated_product'
+    assert 'out = gain*((1.0f-mix)*table[i]+mix*table[i+1]);' in fixed
+    assert 'tmp = 1.0f;' in fixed
+    assert not variants(source.replace('return out;', 'return out + tmp;'), 'f', '', rows)
+    assert not variants(source.replace('tmp = ((1.0f', 'if (i)\n    tmp = ((1.0f'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:-1])
