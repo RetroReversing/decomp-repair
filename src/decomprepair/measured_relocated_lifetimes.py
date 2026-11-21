@@ -25,9 +25,66 @@ _CALLBACK_RESET = re.compile(
 )
 
 
+_CONTEXT_SLOT = re.compile(
+    rf'jal (?P<open>{IDENT})\nmove (?P<input>\$s[0-7]), \$a0\n'
+    rf'lui \$a0, %hi\((?P<base>{IDENT})\)\nlw \$a0, %lo\((?P=base)\)\(\$a0\)\n'
+    rf'sw (?P=input), (?P<slot>{NUMBER})\(\$a0\)\nlw \$a1, (?P=slot)\(\$a0\)\n'
+    rf'addiu \$v1, \$zero, (?P<flag>{NUMBER})\nsh \$v1, (?P<flag_off>{NUMBER})?\(\$a0\)\n'
+    rf'lw \$v1, (?P<field>{NUMBER})\(\$a1\)\nsw \$v1, (?P<output>{NUMBER})\(\$a0\)\n'
+    rf'jal (?P<close>{IDENT})\nmove \$a0, \$v0'
+)
+
+
+def _context_slot_reload(source, name, header, rows, changed):
+    if not 1 <= len(changed) <= 8 or not 15 <= len(rows) <= 30 or 'M2C_FIELD' not in source:
+        return None
+    target = _CONTEXT_SLOT.search('\n'.join(row[1] for row in rows if row[1]))
+    if not target or not any(rows[i][1].startswith('lw $a1, ') for i in changed):
+        return None
+    local, slot = '__repair_context', '__repair_context_slot'
+    if local in source + header or not (part := view(source, name)):
+        return None
+    base = target['base']
+    if (not re.search(rf'\bextern\s+void\s*\*\s*{base}\s*;', part.clean[:part.opening])
+            or re.search(rf'\bvolatile\b[^;{{}}\n]*\b{base}\b', header + part.clean[:part.opening])):
+        return None
+    signature = re.search(rf'\bvoid\s+{re.escape(name)}\(void\s*\*\s*(?P<arg>{IDENT})\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+    draft = re.fullmatch(
+        rf'\s*s32 (?P<saved>{IDENT});\s*void \*(?P<reload>{IDENT});\s*'
+        rf'(?P=saved) = {target["open"]}\(\);\s*'
+        rf'(?P<slot>M2C_FIELD\({base}, void \*\*, (?P<slot_off>{NUMBER})\)) = {signature["arg"]};\s*'
+        rf'(?P=reload) = (?P=slot);\s*'
+        rf'M2C_FIELD\({base}, s16 \*, (?P<flag_off>{NUMBER})\) = (?P<flag>{NUMBER});\s*'
+        rf'M2C_FIELD\({base}, s32 \*, (?P<output>{NUMBER})\) = (?:\(s32\) )?'
+        rf'M2C_FIELD\((?P=reload), s32 \*, (?P<field>{NUMBER})\);\s*'
+        rf'{target["close"]}\((?P=saved), (?P=reload)\);\s*}}?\s*',
+        part.body)
+    if not draft or any(integer(draft[key]) != integer(target[key] or '0')
+                        for key in ('flag_off', 'flag', 'output', 'field')):
+        return None
+    if integer(draft['slot_off']) != integer(target['slot']):
+        return None
+    saved, reload = draft['saved'], draft['reload']
+    closing = part.clean.rfind('}', part.opening, part.end)
+    replacement = (f'\n    void *{local};\n    void **{slot};\n    s32 {saved};\n    void *{reload};\n\n'
+                   f'    {saved} = {target["open"]}();\n    {local} = {base};\n'
+                   f'    {draft["slot"]} = {signature["arg"]};\n    {slot} = &{draft["slot"]};\n'
+                   f'    M2C_FIELD({local}, s16 *, {draft["flag_off"]}) = {draft["flag"]};\n'
+                   f'    {reload} = *{slot};\n'
+                   f'    M2C_FIELD({local}, s32 *, {draft["output"]}) = (s32) '
+                   f'M2C_FIELD({reload}, s32 *, {draft["field"]});\n'
+                   f'    {target["close"]}({saved}, {reload});\n')
+    return edit(source, [(part.opening + 1, closing, replacement)])
+
+
 def variants(source, name, header, rows, asm, changed):
     if not asm:
         return []
+    if candidate := _context_slot_reload(source, name, header, rows, changed):
+        return [('stored_context_slot_reload', candidate)]
     if len(changed) == 5 and '__cosf' in source:
         if candidate := _indexed_cosine(source, name, header, rows, asm, changed):
             return [('narrow_index_and_float_call', candidate)]
