@@ -3,7 +3,8 @@
 import re
 
 from .csource import _blank
-from .integer_repair_support import IDENT, edit, integer, view
+from .integer_repair_support import IDENT, INTEGER, NUMBER, edit, integer, split_args, view
+from .pattern_repairs import close
 
 NAME = r'D_[0-9A-Fa-f]{8}'
 REG = r'\$\w+'
@@ -35,6 +36,51 @@ def unused_frame_array(source, name, rows, report):
         replacement = '\n' * source[slice(*hit.span())].count('\n')
         return [('measured_unused_frame_array',edit(source,[(*hit.span(),replacement)]))]
     return []
+
+
+def scoped_frame_array(source, name, rows, report):
+    """Reserve only the observed frame gap, after a call using an unchanged local slot."""
+    gap = report.get('frame_only_gap')
+    if gap not in (8, 16, 24, 32):
+        return None
+    part = view(source, name)
+    fresh = '__repair_stack_padding'
+    if not part or fresh in part.clean or re.search(r'\b(?:volatile|asm|__asm__)\b', part.body):
+        return None
+
+    body = part.clean[part.opening + 1:part.clean.rfind('}', part.opening, part.end)]
+    # A separate scope lets KMC retain the earlier object's offset.
+    calls = re.finditer(rf'(?:^|(?<=[;}}]))\s*(?P<callee>{IDENT})\s*\(', body)
+    for call in calls:
+        start = call.end() - 1
+        end = close(body, start)
+        if not end or body[end:].strip() != ';':
+            continue
+        prefix = body[:call.start()]
+        if prefix.count('{') != prefix.count('}'):
+            continue
+        callee = f'jal {call["callee"]}'
+        matches = [i for i, row in enumerate(rows) if tuple(row) == (' ', callee, callee)]
+        if len(matches) != 1:
+            return None
+        index = matches[0]
+        incoming = [left for marker, left, right in rows[max(0, index - 8):index]
+                    if marker == ' ' and left == right]
+        offsets = {slot['target'] for slot in report['local_operands'] if not slot['delta']}
+        arguments = body[start + 1:end - 1]
+        for position, (begin, finish) in enumerate(split_args(arguments)[:4]):
+            local = re.fullmatch(rf'\s*&\s*({IDENT})\s*', arguments[begin:finish])
+            if not local or not re.search(rf'\b{INTEGER}\s+{local[1]}\s*;', prefix):
+                continue
+            assignment = next((line for line in reversed(incoming) if re.match(rf'\w+ \$a{position},', line)), '')
+            setup = re.fullmatch(rf'addiu \$a{position}, \$sp, ({NUMBER})', assignment)
+            if setup and integer(setup[1]) in offsets:
+                insert = part.clean.index(';', part.opening + 1 + end) + 1
+                addition = ('\n    {\n        /* Inferred frame reservation; original purpose unknown. */'
+                            f'\n        char {fresh}[{gap}];\n    }}')
+                return edit(source, [(insert, insert, addition)])
+        return None
+    return None
 
 
 def copy_witness(rows):
