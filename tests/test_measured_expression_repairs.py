@@ -78,3 +78,33 @@ void f(void *out, u8 *input, s32 n) {
     assert not variants(source.replace('4) = (s32)', '8) = (s32)'), 'f', '', rows)
     assert not variants(source.replace('pixel =', 'keep(&pixel);\n    pixel ='), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:-1])
+
+
+def test_branch_field_updates_remove_the_unused_join_temporary():
+    source = '''
+void f(void *obj) {
+    s32 temp;
+    if (flag) {
+        if (ready) notify();
+        temp = M2C_FIELD(obj, s32 *, 12) & ~4;
+    } else {
+        temp = M2C_FIELD(obj, s32 *, 12) | 4;
+    }
+    M2C_FIELD(obj, s32 *, 12) = temp;
+}
+'''
+    diff = rows(
+        'addiu $v1, $zero, -5|lw $v0, 12($a0)|j f+0x38|and $v0, $v0, $v1|'
+        'lw $v0, 12($a0)|ori $v0, $v0, 4|jr $ra|sw $v0, 12($a0)',
+        'addiu $v0, $zero, -5|lw $v1, 12($a0)|j f+0x38|and $v0, $v1, $v0|'
+        'lw $v0, 12($a0)|ori $v0, $v0, 4|jr $ra|sw $v0, 12($a0)',
+    )
+    [(family, fixed)] = variants(source, 'f', '', diff)
+    assert family == 'measured_branch_field_update'
+    assert 'M2C_FIELD(obj, s32 *, 12) &= ~4;' in fixed
+    assert 'M2C_FIELD(obj, s32 *, 12) |= 4;' in fixed
+    assert 'temp' not in fixed
+    assert 'if (ready) notify();' in fixed
+    assert not variants(source.replace('| 4;', '| 8;'), 'f', '', diff)
+    assert not variants(source.replace('= temp;', '= temp;\n    record(temp);'), 'f', '', diff)
+    assert not variants(source, 'f', '', diff[:-1] + [(' ', 'sw $v0, 16($a0)', 'sw $v0, 16($a0)')])

@@ -189,6 +189,77 @@ def _byte_lane_merge(part, header, rows, changed):
                               (*hit.span(), replacement)])
 
 
+def _branch_field_evidence(rows, changed):
+    if len(changed) != 3:
+        return None
+    first, second, merge = changed
+    if second != first + 1 or merge != first + 3 or merge + 3 >= len(rows):
+        return None
+    if any(rows[i][0] != 'r' for i in changed) or not rows[merge-1][1].startswith('j '):
+        return None
+    offset, mask = None, None
+    for side in (1, 2):
+        mask_op, load_op = sorted((rows[first][side], rows[second][side]))
+        bits = re.fullmatch(rf'addiu ({REG}), \$zero, -({NUM})', mask_op)
+        field = re.fullmatch(rf'lw ({REG}), ({NUM})?\(({REG})\)', load_op)
+        mix = re.fullmatch(rf'and ({REG}), ({REG}), ({REG})', rows[merge][side])
+        if not bits or not field or not mix or {mix[2], mix[3]} != {bits[1], field[1]} or bits[1] == field[1]:
+            return None
+        result, base = mix[1], field[3]
+        observed_offset, observed_mask = integer(field[2] or '0'), integer(bits[2]) - 1
+        if side == 1:
+            offset, mask = observed_offset, observed_mask
+        elif (offset, mask) != (observed_offset, observed_mask):
+            return None
+        if base in {'$sp', '$fp', '$s8'} or not 0 < mask <= 0xffff:
+            return None
+        again = re.fullmatch(rf'lw {re.escape(result)}, ({NUM})?\({re.escape(base)}\)', rows[merge+1][side])
+        set_bit = re.fullmatch(rf'ori {re.escape(result)}, {re.escape(result)}, ({NUM})', rows[merge+2][side])
+        store_row = merge + 3
+        if rows[store_row][side] == 'jr $ra':
+            store_row += 1
+        if store_row >= len(rows):
+            return None
+        store = re.fullmatch(rf'sw {re.escape(result)}, ({NUM})?\({re.escape(base)}\)', rows[store_row][side])
+        if (not again or not set_bit or not store or integer(again[1] or '0') != offset
+                or integer(store[1] or '0') != offset or integer(set_bit[1]) != mask):
+            return None
+    return offset, mask
+
+
+def _branch_field_update(part, header, rows, changed):
+    """Keep a branch's flag update on its field instead of carrying a temporary to the join."""
+    if not (target := _branch_field_evidence(rows, changed)) or 'M2C_FIELD' not in part.body:
+        return None
+    if re.search(r'\b(?:volatile|goto|asm|__asm__|setjmp|longjmp)\b|\b'+IDENT+r'\s*:(?!:)', part.body):
+        return None
+    pattern = re.compile(
+        rf'(?m)^[ \t]*(?P<clear>(?P<temp>{IDENT}) = (?P<field>M2C_FIELD\((?P<base>{IDENT}), '
+        rf'(?:s32|u32) \*, (?P<offset>{NUM})\)) & ~(?P<mask>{NUM});)\s*}}\s*else\s*{{\s*'
+        rf'(?P<set>(?P=temp) = (?P=field) \| (?P<other>{NUM});)\s*}}'
+        rf'(?P<tail>\n[ \t]*(?P=field) = (?P=temp);)'
+    )
+    matches = list(pattern.finditer(part.clean, part.opening + 1, part.end))
+    if len(matches) != 1:
+        return None
+    hit = matches[0]
+    offset, mask = target
+    if (integer(hit['offset']) != offset or integer(hit['mask']) != mask
+            or integer(hit['other']) != mask):
+        return None
+    temp, base = hit['temp'], hit['base']
+    if re.search(rf'(?m)^\s*#\s*define\s+(?:{temp}|{base})\b', header + '\n' + part.clean):
+        return None
+    uses = list(re.finditer(rf'\b{temp}\b', part.body))
+    decls = list(re.finditer(rf'(?m)^[ \t]*(?:s32|u32)\s+{temp}\s*;[ \t]*\n',
+                            part.clean[:hit.start()]))
+    if len(uses) != 4 or len(decls) != 1 or decls[0].start() < part.opening:
+        return None
+    return edit(part.source, [(*decls[0].span(), ''), (*hit.span('tail'), ''),
+                              (*hit.span('clear'), f'{hit["field"]} &= ~{hit["mask"]};'),
+                              (*hit.span('set'), f'{hit["field"]} |= {hit["other"]};')])
+
+
 def variants(source, name, header, rows):
     changed = [index for index,(marker,_,_) in enumerate(rows) if marker != ' ']
     if not 1 <= len(changed) <= 6 or not (part := view(source,name)):
@@ -203,4 +274,6 @@ def variants(source, name, header, rows):
         return [('measured_staged_negation',candidate)]
     if candidate := _byte_lane_merge(part,header,rows,changed):
         return [('measured_byte_lane_merge',candidate)]
+    if candidate := _branch_field_update(part, header, rows, changed):
+        return [('measured_branch_field_update', candidate)]
     return []

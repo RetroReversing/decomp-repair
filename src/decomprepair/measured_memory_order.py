@@ -194,6 +194,66 @@ def _measured_snapshot(part, name, rows, changed, resolve, header):
             or _link_before_clears(part, name, rows, *args))
 
 
+def _stage_scan_sentinel(part, header, rows, changed):
+    """Name a loop sentinel before the pointer copy that the target schedules after it."""
+    fresh = '__repair_scan_sentinel'
+    if (len(changed) != 2 or changed[1] != changed[0] + 2 or fresh in part.source + header
+            or re.search(r'\b(?:volatile|goto|asm|__asm__)\b', part.body)):
+        return None
+    begin, end = changed
+    old, new = rows[begin], rows[end]
+    if old[0] != 'o' or new[0] != 'o' or old[1] or new[2] or old[2] != new[1]:
+        return None
+    move = re.fullmatch(rf'move ({REG}), ({REG})', new[1])
+    sentinel = re.fullmatch(r'addiu (\$\w+), \$zero, -(?:1|0x1)', rows[begin+1][1])
+    if not move or not sentinel or sentinel[1] in move.groups():
+        return None
+    ptr_register = re.escape(move[1])
+    witness = rf'lw (?P<value>{REG}), (?P<offset>{NUM})\({ptr_register}\)'
+    offsets = set()
+    for i in range(end + 1, min(len(rows)-1, end + 28)):
+        target = rows[i][1]
+        if load := re.fullmatch(witness, target):
+            if re.fullmatch(rf'bne {re.escape(load["value"])}, {re.escape(sentinel[1])}, {NUM}', rows[i+1][1]):
+                offsets.add(integer(load['offset']))
+    if len(offsets) != 1:
+        return None
+    offset = offsets.pop()
+    loop = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<ptr>{IDENT}) = {IDENT};\n[ \t]*do\s*{{')
+    candidates = []
+    for hit in loop.finditer(part.clean, part.opening+1, part.end):
+        ptr = hit['ptr']
+        prefix = part.clean[part.opening+1:hit.start()].rstrip()
+        if prefix and prefix[-1] not in ';{}':
+            continue
+        brace = close(part.clean, hit.end()-1, '{', '}')
+        if not brace:
+            continue
+        field = rf'M2C_FIELD\({ptr}, s32 \*, (?P<off>{NUM})\)'
+        condition = re.match(rf'\s*while \((?P<load>{field}|{IDENT}) != (?P<literal>-1)\);', part.clean[brace:])
+        if not condition:
+            continue
+        if condition['off']:
+            wanted = condition['off']
+        else:
+            local = re.escape(condition['load'])
+            read = re.search(rf'\b{local} = {field};\s*$', part.clean[hit.end():brace-1])
+            if not read:
+                continue
+            wanted = read['off']
+        if integer(wanted) != offset:
+            continue
+        if not re.search(rf'(?m)^[ \t]*(?:void|s32)\s*\*\s*{ptr}\s*;', part.clean[:hit.start()]):
+            continue
+        indent = hit['indent']
+        start_decl = part.opening + 1
+        site = brace + condition.start('literal')
+        candidates.append(edit(part.source, [(start_decl, start_decl, f'\n    s32 {fresh};'),
+                                             (hit.start(), hit.start(), f'{indent}{fresh} = -1;\n'),
+                                             (site, site+2, fresh)]))
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def variants(source, name, rows, *, resolve=None, header=''):
     changed = [i for i,(mark,_,_) in enumerate(rows) if mark != ' ']
     if len(changed) not in (2,4):
@@ -203,6 +263,8 @@ def variants(source, name, rows, *, resolve=None, header=''):
         if (part := read(source,name)) and (candidate := reset_after_call(source,part,rows,changed)):
             return [('measured_call_reset_order',candidate)]
         return []
+    if candidate := _stage_scan_sentinel(part, header, rows, changed):
+        return [('measured_scan_sentinel_order', candidate)]
     if candidate := _measured_snapshot(part, name, rows, changed, resolve, header):
         return [('measured_earlier_word_load', candidate)]
     if candidate := reordered_pair(source,part,rows,changed):

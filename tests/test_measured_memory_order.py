@@ -99,3 +99,29 @@ void f(void *node, void *queue) {
     assert not variants(source.replace('s16 *, 10', 's16 *, 12'), 'f', rows)
     assert not variants(source, 'f', rows[:-1] + [same('sw $a0, 8($a1)')])
     assert not variants(source, 'f', rows[:1] + [('o', '', load), *rows[2:4], ('o', load, ''), *rows[5:]])
+
+
+def test_scan_sentinel_is_materialized_before_the_pointer_copy():
+    source = '''
+void f(void *obj) {
+    void *cursor;
+    if (M2C_FIELD(obj, s32 *, 8) != -1) {
+        cursor = obj;
+        do {
+            cursor += 4;
+        } while (M2C_FIELD(cursor, s32 *, 8) != -1);
+    }
+}
+'''
+    move = 'move $v1, $a0'
+    diff = [
+        ('o', '', move), same('addiu $a3, $zero, -1'), ('o', move, ''),
+        same('addiu $v1, $v1, 4'), same('lw $v0, 8($v1)'), same('bne $v0, $a3, 0xc'), same('nop'),
+    ]
+    [(family, fixed)] = variants(source, 'f', diff)
+    assert family == 'measured_scan_sentinel_order'
+    assert '__repair_scan_sentinel = -1;\n        cursor = obj;' in fixed
+    assert 'while (M2C_FIELD(cursor, s32 *, 8) != __repair_scan_sentinel);' in fixed
+    assert 'if (M2C_FIELD(obj, s32 *, 8) != -1)' in fixed
+    assert not variants(source.replace('s32 *, 8) != -1);', 's32 *, 12) != -1);'), 'f', diff)
+    assert not variants(source, 'f', diff[:-2] + [same('bne $v0, $a2, 0xc'), same('nop')])
