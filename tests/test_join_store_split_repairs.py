@@ -28,7 +28,7 @@ block_13:
 
 
 def test_the_update_is_stored_on_each_arm():
-    out = repair.variants(M2C, 'f')[0]
+    out = repair.variants(M2C, 'f')[0][1]
     assert 'gSceneType = gSceneType + 1;' in out
     assert 'gSceneType = gSceneType - 1;' in out
     assert 'gSceneType = var_s1;' not in out
@@ -52,7 +52,7 @@ def test_one_feed_is_no_join():
 
 
 def test_an_arm_that_jumps_to_the_join_stores_directly_too():
-    out = repair.variants(M2C, 'f')[0]
+    out = repair.variants(M2C, 'f')[0][1]
     assert 'var_s1 = gSceneType + 1;' not in out
     assert out.count('gSceneType = gSceneType + 1;') == 2
     assert out.count('func();') == 2 and 'goto' not in out
