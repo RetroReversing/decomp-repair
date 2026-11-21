@@ -140,3 +140,35 @@ void f(s32 x, s32 y) {
     assert 'show(((u8 *)&table)[col], y);' in fixed
     [(family, _)] = variants(source.replace('* 10', '* 12'), 'f', '', rows, RESOLVE)
     assert family == 'measured_byte_table_index'
+
+
+def test_two_calls_share_the_corrected_byte_buffer_displacement():
+    ops = (
+        'sll $s1, $s2, 1', 'addu $s1, $s1, $s2', 'sll $s1, $s1, 3',
+        'lui $s0, %hi(buffer)', 'addiu $s0, $s0, %lo(buffer)', 'move $a0, $s2', 'jal init',
+        'addu $a1, $s1, $s0', 'addiu $s0, $s0, -12',
+        'lui $a0, %hi(table)', 'addu $a0, $a0, $s2', 'lbu $a0, %lo(table)($a0)',
+        'addu $a1, $s1, $s0', 'jal copy', 'addiu $a2, $zero, 24',
+    )
+    rows = measured(ops)
+    change(rows, 2, 'sll $s1, $s1, 5')
+    change(rows, 8, 'addiu $s0, $s0, -48')
+    rows.insert(9, ('>', '', 'sll $s2, $s2, 2'))
+    change(rows, 10, 'lui $a0, %hi(last)')
+    change(rows, 12, 'lbu $a0, %lo(last)($a0)')
+    source = '''
+extern s32 table;
+extern s32 buffer;
+void f(s32 index) {
+    s32 displacement;
+    displacement = index * 24;
+    init(index, displacement + &buffer);
+    copy(*(&table + index), displacement + (&buffer - 12), 24);
+}
+'''
+    [(_, fixed)] = variants(source, 'f', '', rows, RESOLVE)
+    assert '((u8 *)&table)[index]' in fixed
+    assert fixed.count('(u8 *)&buffer') == 2
+    assert 'extern s32 buffer;' in fixed
+    [(_, narrow)] = variants(source.replace('buffer - 12', 'buffer - 13'), 'f', '', rows, RESOLVE)
+    assert '(u8 *)&buffer' not in narrow

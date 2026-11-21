@@ -1,3 +1,5 @@
+import pytest
+
 from decomprepair.kmc_cast_repairs import variants
 
 LOADS = [
@@ -93,8 +95,9 @@ def test_indirect_byte_array_requires_one_read_with_relocation_evidence():
                         [(' ', 'lui $v1, %hi(label)', 'lui $v1, %hi(label)')] + rows)
 
 
-def test_unsigned_halfword_load_preserves_the_byte_stride():
-    rows = [('|', 'lhu $v0, %lo(table)($at)', 'lb $v0, %lo(table)($at)')]
+@pytest.mark.parametrize('original_load', ('lb', 'lbu'))
+def test_unsigned_halfword_load_preserves_the_byte_stride(original_load):
+    rows = [('|', 'lhu $v0, %lo(table)($at)', f'{original_load} $v0, %lo(table)($at)')]
     patched = BYTE_ARRAY_SOURCE.replace('*(table + index)', '*(u16 *)(table + index)')
     assert variants(BYTE_ARRAY_SOURCE, 'read', '', rows) == [('kmc_unsigned_halfword_array_load', patched)]
     assert not variants(BYTE_ARRAY_SOURCE, 'read', '', rows, ('-fstrict-aliasing',))

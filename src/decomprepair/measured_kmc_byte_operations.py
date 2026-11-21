@@ -55,6 +55,14 @@ _CLAMP_SOURCE = re.compile(
     rf' (?P<stride>{NUMBER})\)\) & 0xFFFF\)\), (?P=row)\);\s*'
 )
 
+_SHARED_BUFFER = re.compile(
+    r'sll \$s1, \$s2, (?P<lead>\d+)\naddu \$s1, \$s1, \$s2\nsll \$s1, \$s1, (?P<shift>\d+)\n'
+    rf'lui \$s0, %hi\((?P<base>{IDENT})\)\naddiu \$s0, \$s0, %lo\((?P=base)\)\nmove \$a0, \$s2\n'
+    rf'jal (?P<prepare>{IDENT})\naddu \$a1, \$s1, \$s0\naddiu \$s0, \$s0, -(?P<delta>\d+)\n'
+    rf'lui \$a0, %hi\((?P<table>{IDENT})\)\naddu \$a0, \$a0, \$s2\nlbu \$a0, %lo\((?P=table)\)\(\$a0\)\n'
+    rf'addu \$a1, \$s1, \$s0\njal (?P<consume>{IDENT})\naddiu \$a2, \$zero, (?P<length>\d+)'
+)
+
 
 def variants(source, name, header, rows, resolve=None):
     if not 12 <= len(rows) <= 30 or not any(mark != ' ' for mark, _, _ in rows):
@@ -111,6 +119,8 @@ def _table_index(part, _name, header, rows, target):
     changes = [(start, end, f'((u8 *)&{symbol})[{index}]')]
     if buffer := _scaled_buffer(part, header, rows, end, index):
         changes.append((*buffer.span('type'), 'u8'))
+    else:
+        changes.extend(_shared_buffer_casts(part, rows, start, end, index, symbol))
     return edit(part.source, changes)
 
 
@@ -137,6 +147,46 @@ def _scaled_buffer(part, header, rows, after, index):
     ):
         return None
     return re.search(rf'(?m)^\s*extern\s+(?P<type>M2C_UNK|s32|u32)\s+{base}\s*;', part.clean[:part.opening])
+
+
+def _shared_buffer_casts(part, rows, before, after, index, table):
+    if not re.fullmatch(IDENT, index):
+        return []
+    aligned = list(zip(*(normalized_integer_lines(row[side] for row in rows) for side in (1, 2))))
+    trace = '\n'.join(left for left, _ in aligned if left)
+    if not (target := _SHARED_BUFFER.search(trace)) or target['table'] != table:
+        return []
+    base, prepare, consume = (target[k] for k in ('base', 'prepare', 'consume'))
+    shift, lead, delta, width = (int(target[k]) for k in ('shift', 'lead', 'delta', 'length'))
+    if not (0 < lead < 8 and 0 < shift < 8 and 0 < delta <= 8191 and base != table
+            and width == (((1 << lead) + 1) << shift)):
+        return []
+    prior_shift = re.compile(rf'sll (\$s[0-7]), \1, {shift + 2}')
+    prior_delta = re.compile(rf'addiu (\$s[0-7]), \1, -{delta * 4}')
+    if not any(left == f'sll $s1, $s1, {shift}' and prior_shift.fullmatch(right) for left, right in aligned):
+        return []
+    if not any(left == f'addiu $s0, $s0, -{delta}' and prior_delta.fullmatch(right) for left, right in aligned):
+        return []
+    if not re.search(rf'(?m)^\s*extern\s+(?:M2C_UNK|s32|u32)\s+{base}\s*;', part.clean[:part.opening]):
+        return []
+    lead_source = re.search(
+        rf'\b(?P<stride>{IDENT})\s*=\s*{index}\s*\*\s*(?P<width>{NUMBER});\s*'
+        rf'{prepare}\({index},\s*(?P=stride)\s*\+\s*(?P<first>&{base})\);\s*{consume}\(\s*$',
+        part.clean[part.opening + 1:before],
+    )
+    if not lead_source or integer(lead_source['width']) != width:
+        return []
+    stride = lead_source['stride']
+    tail_source = re.match(
+        rf',\s*{stride}\s*\+\s*\((?P<second>&{base})\s*-\s*(?P<delta>{NUMBER})\),\s*(?P<width>{NUMBER})\);',
+        part.clean[after:part.end],
+    )
+    if not tail_source or integer(tail_source['delta']) != delta or integer(tail_source['width']) != width:
+        return []
+    return [
+        (part.opening + 1 + lead_source.start('first'), part.opening + 1 + lead_source.start('first'), '(u8 *)'),
+        (after + tail_source.start('second'), after + tail_source.start('second'), '(u8 *)'),
+    ]
 
 
 def _flag_registers(target, candidate, trace):
