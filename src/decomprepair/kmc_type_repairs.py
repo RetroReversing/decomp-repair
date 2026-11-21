@@ -80,6 +80,50 @@ def float_forward(source, name, header, part, rows):
     return edit(source, [(*signature.span(1), signature[3]), (*prototype.span(1), signature[3])])
 
 
+def saved_for_argument(rows):
+    """One changed instruction that differs only in a register: the target reads a saved register where ours reads an
+    argument register (`subu $a1,$s0,$a1` against `subu $a1,$a0,$a1`)."""
+    for marker, left, right in rows:
+        if marker == ' ':
+            continue
+        a, b = re.split(r'[\s,]+', left.strip()), re.split(r'[\s,]+', right.strip())
+        if len(a) != len(b) or a[0] != b[0]:
+            continue
+        differing = [(x, y) for x, y in zip(a, b) if x != y]
+        if len(differing) == 1 and re.fullmatch(r'\$s[0-7]', differing[0][0]) and re.fullmatch(r'\$a[0-3]', differing[0][1]):
+            return True
+    return False
+
+
+def widen_sign_local(source, part):
+    """GCC 2.7 gives a 16-bit (or 8-bit) signed local its sign-extension as a pseudo of its own, and cse then lets every
+    later reader, the subtraction as well as the call argument, share that copy, which the allocator puts in the argument
+    register. The target's reader still uses the variable's own register: the variable there was a full word. Only a
+    local that is assigned integer literals that fit its type is widened, so the program means the same."""
+    found = []
+    for declaration in re.finditer(rf'\b(s16|s8)\s+({IDENT})\s*(?:=\s*([-+]?(?:0[xX][0-9a-fA-F]+|[0-9]+)))?\s*;', part.body):
+        kind, name, initial = declaration.groups()
+        limit = 0x7FFF if kind == 's16' else 0x7F
+        name_re = re.escape(name)
+        if re.search(rf'&\s*{name_re}\b|\b{name_re}\s*(?:\+\+|--)|(?:\+\+|--)\s*{name_re}\b', part.body):
+            continue
+        values = [initial] if initial else []
+        bad = False
+        for assignment in re.finditer(rf'(?<![\w.>])\b{name_re}\s*((?:[-+*/%&|^]|<<|>>)?=)(?!=)\s*([^;]*);', part.body):
+            literal = re.fullmatch(r'[-+]?(?:0[xX][0-9a-fA-F]+|[0-9]+)', assignment[2].strip())
+            if assignment.start() == declaration.start() or (declaration.start() <= assignment.start() < declaration.end()):
+                continue
+            if assignment[1] != '=' or not literal:
+                bad = True
+                break
+            values.append(assignment[2].strip())
+        if bad or not values or any(abs(int(v, 0)) > limit for v in values):
+            continue
+        start = part.opening+1+declaration.start(1)
+        found.append(edit(source, [(start, start+len(kind), 's32')]))
+    return found[:4]
+
+
 def variants(source, name, header, rows):
     if not rows or not (part := view(source, name)) or re.search(r'\b(?:volatile|asm|__asm__)\b', part.body):
         return []
@@ -88,4 +132,6 @@ def variants(source, name, header, rows):
         result.append(('kmc_byte_counter', candidate))
     if candidate := float_forward(source, name, header, part, rows):
         result.append(('kmc_float_forward_prototype', candidate))
+    if saved_for_argument(rows):
+        result += [('kmc_widen_sign_local', candidate) for candidate in widen_sign_local(source, part)]
     return result
