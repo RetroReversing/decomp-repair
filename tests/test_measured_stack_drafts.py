@@ -126,3 +126,50 @@ void f(s8 *result, s16 *arg) {
     assert candidate.index('__m2c_copy_flags = 0') < candidate.index('__m2c_copy_cursor = replies')
     assert not rewrite(source, 'f', asm.replace('5($sp)','7($sp)'))
     assert not rewrite(source.replace('sp5 << 8','sp5 << 7'), 'f', asm)
+
+    field = 'M2C_FIELD(&state, u8 *, 64)'
+    relocated = source.replace('extern u8 count;', 'extern M2C_UNK state;').replace(
+        'M2C_UNK *src;', 'void *src;').replace('src = &replies;', 'src = &replies + 12;').replace('(s32) count', f'(s32) {field}')
+    load = '\nlui $v0, %hi(state + 64)\nlbu $v0, %lo(state + 64)($v0)\n'
+    cursor = '\nlui $t0, %hi(replies + 12)\naddiu $t0, $t0, %lo(replies + 12)\n'
+    relocated_asm = load + cursor + asm + load
+    def resolve(name):
+        return {'state': 0x80010000}.get(name)
+    fixed = rewrite(relocated, 'f', relocated_asm, resolve=resolve)
+    assert 'extern u8 D_80010040;' in fixed
+    assert '__m2c_copy_i < D_80010040' in fixed
+    assert '__m2c_copy_cursor = (u8 *)&replies + 12;' in fixed
+    assert not rewrite(relocated, 'f', relocated_asm, resolve=lambda _: None)
+    assert not rewrite(relocated, 'f', load + cursor + asm, resolve=resolve)
+
+
+def test_relocated_packet_with_payload_recovers_the_stack_copy():
+    source = PACKET.replace('extern s8 destination;', 'extern M2C_UNK destination;').replace(
+        's8 page)', 's8 page, u8 *payload)').replace(
+        '    dst = &destination;\n    counter = 3;\n    ready = 2;',
+        '    u8 sp4;\n    M2C_UNK spC;\n    u8 *read;\n    u8 *write;\n'
+        '    read = payload;\n    dst = &destination + 12;\n    write = &sp4;\n'
+        '    M2C_FIELD(&destination, s32 *, 80) = 1;'
+    ).replace('    sp3 = page;', '    sp3 = page;\n    do { *write = *read; write += 1; read += 1; } '
+              'while ((s32) write < (s32) &spC);\n    counter = 3;')
+    asm = '''addiu $a2, $a2, %lo(destination + 12)
+sw $v0, %lo(destination + 80)($at)
+addiu $v0, $zero, 14
+sb $v0, 0($sp)
+addiu $v0, $zero, 21
+sb $v0, 1($sp)
+addiu $v0, $zero, 29
+sb $v0, 2($sp)
+sb $a0, 3($sp)
+addiu $v1, $sp, 4
+addiu $a3, $sp, 12
+lbu $v0, 0($a1)
+sb $v0, 0($v1)
+''' + copy_asm('$sp', '$a2', 3) + '''
+addiu $v0, $zero, 241
+sb $v0, 12($a2)
+'''
+    fixed = rewrite(source, 'f', asm)
+    assert 'for (__m2c_copy_i = 4; __m2c_copy_i < 12;' in fixed
+    assert 'M2C_FIELD(__m2c_copy_dst, u8 *, 0xC)' in fixed
+    assert not rewrite(source, 'f', asm.replace('$a3, $sp, 12', '$a3, $sp, 16'))

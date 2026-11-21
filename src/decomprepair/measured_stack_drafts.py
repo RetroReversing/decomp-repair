@@ -2,7 +2,7 @@
 
 import re
 
-from . import formatted_stack_draft, message_frame_drafts
+from . import channel_status_drafts, formatted_stack_draft, message_frame_drafts
 from .integer_repair_support import IDENT, NUMBER, integer, view
 from .mips import abi_register_names
 from .unaligned_stack_drafts import MEMORY, stack_copy
@@ -25,8 +25,9 @@ OUTGOING = re.compile(
 )
 INCOMING = re.compile(
     rf'(?P<out>{IDENT}) = (?P<arg>{IDENT}); (?P<flags>{IDENT}) = 0; '
-    rf'(?P<input>{IDENT}) = &(?P<source>{IDENT}); (?P<index>{IDENT}) = 0; '
-    rf'if \(\(s32\) (?P<count>{IDENT}) > 0\) {{ (?P<bytes>{IDENT}) = (?P=arg) \+ 2; do {{ '
+    rf'(?P<input>{IDENT}) = (?:\(char \*\))?&(?P<source>{IDENT})(?: \+ (?P<offset>{NUMBER}))?; '
+    rf'(?P<index>{IDENT}) = 0; '
+    rf'if \(\(s32\) (?P<count>{IDENT}|M2C_FIELD\(&(?P<count_base>{IDENT}), u8 \*, (?P<count_off>{NUMBER})\)) > 0\) {{ (?P<bytes>{IDENT}) = (?P=arg) \+ 2; do {{ '
     r'sp0 = M2C_UNALIGNED32\(M2C_FIELD\((?P=input), M2C_UNK \*, 0\)\); '
     r'sp4 = M2C_UNALIGNED32\(M2C_FIELD\((?P=input), M2C_UNK \*, 4\)\); '
     rf'(?P<status>{IDENT}) = \(u32\) \(sp2 & (?P<mask>{NUMBER})\) >> (?P<shift>{NUMBER}); '
@@ -103,6 +104,8 @@ def applies(asm):
     if ('swr' in asm and 'lwr' in asm
             and (stack_copy(asm, (('lbu', 4), ('lbu', 5), ('lbu', 6))) or _outgoing_copy(_lines(asm)))):
         return True
+    if channel_status_drafts.RESULT in asm and channel_status_drafts.evidence(_lines(asm)):
+        return True
     if 'osCreateMesgQueue' in asm and message_frame_drafts.evidence(_lines(asm)):
         return True
     if 'nor' in asm and formatted_stack_draft.target(_lines(asm)):
@@ -133,10 +136,14 @@ def _body(part):
 
 
 _RELOCATED_PACKET = re.compile(
+    rf'(?:(?P<read>{IDENT}) = (?P<payload>{IDENT}); )?'
     rf'(?P<dest>{IDENT}) = (?:\(char \*\))?&(?P<base>{IDENT}) \+ (?P<offset>{NUMBER}); '
-    rf'(?P<loop>{IDENT}) = 3; M2C_FIELD\(&(?P=base), s32 \*, (?P<ready>{NUMBER})\) = 1; '
+    rf'(?:(?P<write>{IDENT}) = &sp4; |(?P<clear>{IDENT}) = 3; )'
+    rf'M2C_FIELD\(&(?P=base), s32 \*, (?P<ready>{NUMBER})\) = 1; '
     rf'sp0 = (?P<byte0>{NUMBER}); sp1 = (?P<byte1>{NUMBER}); sp2 = (?P<byte2>{NUMBER}); sp3 = (?P<arg>{IDENT}); '
-    r'do { \*(?P=dest) = 0; (?P=loop) -= 1; (?P=dest) \+= 1; } while \((?P=loop) >= 0\); '
+    rf'(?:do {{ \*(?P=write) = \*(?P=read); (?P=write) \+= 1; (?P=read) \+= 1; }} '
+    rf'while \(\(s32\) (?P=write) < \(s32\) &spC\); (?P<counter>{IDENT}) = 3; )?'
+    rf'do {{ \*(?P=dest) = 0; (?P<loop>{IDENT}) -= 1; (?P=dest) \+= 1; }} while \((?P=loop) >= 0\); '
     r'M2C_FIELD\((?P=dest), s8 \*, 0\) = M2C_UNALIGNED32\(sp0\); '
     r'M2C_FIELD\((?P=dest), M2C_UNK \*, 4\) = M2C_UNALIGNED32\(sp4\); '
     r'M2C_FIELD\((?P=dest), M2C_UNK \*, 8\) = M2C_UNALIGNED32\(sp8\); '
@@ -150,8 +157,13 @@ def _relocated_packet(part, name, context, loc, body, end, lines):
         return None
     signature = re.search(PARAMS.format(name=re.escape(name)), part.clean[:part.opening])
     expected = {f'sp{i}': 's8' for i in range(4)} | {match['dest']: 's8*', match['loop']: 's32'}
+    payload = match['payload']
+    if payload:
+        expected.update({'sp4': 'u8', 'spC': 'M2C_UNK', match['read']: 'u8*', match['write']: 'u8*'})
     base = match['base']
-    if (loc != expected or not signature or signature['parameters'] != f's8 {match["arg"]}'
+    params = f's8 {match["arg"]}' + (f', u8 *{payload}' if payload else '')
+    if (loc != expected or not signature or signature['parameters'] != params
+            or match['loop'] != (match['counter'] if payload else match['clear'])
             or not re.search(rf'\bextern M2C_UNK {base};', part.clean[:part.opening])
             or re.search(rf'\bvolatile\b[^;{{}}\n]*\b{base}\b', context)):
         return None
@@ -167,19 +179,28 @@ def _relocated_packet(part, name, context, loc, body, end, lines):
             or not any(integer(num) == integer(match['end']) for _, num in re.findall(
                 rf'addiu (\$\w+), \$zero, ({NUMBER})\nsb \1, (?:0x[cC]|12)\(\$\w+\)', text))):
         return None
+    if payload:
+        copied = re.search(r'lbu (\$\w+), (?:0x0|0)?\(\$a1\)\nsb \1, (?:0x0|0)?\(\$\w+\)', text)
+        if not copied or not all(re.search(rf'addiu \$\w+, \$sp, (?:0x{slot:X}|{slot})(?:\n|$)', text, re.I)
+                                 for slot in (4, 12)):
+            return None
     p = P
     initial = ''.join(f'    {p}packet.bytes[{i}] = {value};\n' for i, value in enumerate(values))
+    source_decl = f'    u8 *{p}src;\n' if payload else ''
+    fill = (f'    {p}src = {payload};\n'
+            f'    for ({p}i = 4; {p}i < 12; {p}i++) {p}packet.bytes[{p}i] = *{p}src++;\n') if payload else ''
+    counter = f'    {p}i = 3;\n'
+    before, after = ('', counter) if payload else (counter, '')
     return (part.source[:signature.start()] + f'''typedef struct {{ u8 bytes[12]; }} {p}packet_t;
 {signature['signature']} {{
     {p}packet_t {p}packet;
     s32 {p}i;
     s8 *{p}dst;
-
+{source_decl}
     {p}dst = (char *)&{base} + {match['offset']};
-    {p}i = 3;
-    M2C_FIELD(&{base}, s32 *, {match['ready']}) = 1;
+{before}    M2C_FIELD(&{base}, s32 *, {match['ready']}) = 1;
 {initial}    {p}packet.bytes[3] = {match['arg']};
-    do {{
+{fill}{after}    do {{
         *{p}dst = 0;
         {p}i -= 1;
         {p}dst += 1;
@@ -230,7 +251,7 @@ def _packet(part, name, context, loc, body, end):
 }}''' + part.source[end+1:])
 
 
-def _reply(part, name, context, loc, body, end):
+def _reply(part, name, context, loc, body, end, lines, resolve):
     match = INCOMING.fullmatch(body)
     signature = re.search(PARAMS.format(name=re.escape(name)), part.clean[:part.opening])
     if not match or not signature:
@@ -240,13 +261,40 @@ def _reply(part, name, context, loc, body, end):
         return None
     types = {'sp0': 'M2C_UNK', 'sp4': 'u8', match['out']: 's16*', match['input']: 'M2C_UNK*',
              match['flags']: 's8', match['index']: 's32', match['bytes']: 'void*', match['status']: 'u32'}
+    if match['offset']:
+        types[match['input']] = 'void*'
     if loc != types or len(types) != 8 or integer(match['mask']) > 255 or integer(match['shift']) > 7:
         return None
-    decl = _external(part, context, match['source'], 'M2C_UNK')
-    if not decl:
-        return None
+    source = match['source']
+    count = match['count']
+    prefix = part.source[:signature.start()]
+    if match['count_base']:
+        if not match['offset'] or not resolve:
+            return None
+        count_base, count_off = match['count_base'], integer(match['count_off'])
+        text = '\n'.join(' '.join(line.split()) for line in lines)
+        bound = rf'lui (\$\w+), %hi\({count_base} \+ ({NUMBER})\)\nlbu \1, %lo\({count_base} \+ \2\)\(\1\)'
+        offsets = [integer(offset) for _, offset in re.findall(bound, text)]
+        cursor = rf'lui (\$\w+), %hi\({source} \+ ({NUMBER})\)\naddiu \1, \1, %lo\({source} \+ \2\)'
+        if not any(integer(value) == integer(match['offset']) for _, value in re.findall(cursor, text)):
+            return None
+        base = resolve(count_base)
+        if offsets != [count_off, count_off] or base is None or not 0 <= base + count_off <= 0xffffffff:
+            return None
+        count = f'D_{base + count_off:08X}'
+        if re.search(rf'\b{count}\b', part.clean + context):
+            return None
+        prefix += f'extern u8 {count};\n'
+        source = f'(u8 *)&{source} + {match["offset"]}'
+    else:
+        if match['offset']:
+            return None
+        decl = _external(part, context, source, 'M2C_UNK')
+        if not decl:
+            return None
+        prefix = part.source[:decl.start()] + f'extern u8 {source}[];' + part.source[decl.end():signature.start()]
     p = P
-    return (part.source[:decl.start()] + f'extern u8 {match["source"]}[];' + part.source[decl.end():signature.start()]
+    return (prefix
             + f'''typedef struct {{ u8 bytes[8]; }} {p}reply_t;
 typedef struct {{ u16 word; u8 status; u8 error; }} {p}output_t;
 {signature['signature']} {{
@@ -255,8 +303,8 @@ typedef struct {{ u16 word; u8 status; u8 error; }} {p}output_t;
     {p}reply_t {p}reply;
     int {p}i;
     u8 {p}flags = 0;
-    {p}cursor = {match['source']};
-    for ({p}i = 0; {p}i < {match['count']}; {p}i++, {p}cursor += 8, {p}out++) {{
+    {p}cursor = {source};
+    for ({p}i = 0; {p}i < {count}; {p}i++, {p}cursor += 8, {p}out++) {{
         {p}reply = *({p}reply_t *){p}cursor;
         {p}out->error = ({p}reply.bytes[2] & {match['mask']}) >> {match['shift']};
         if ({p}out->error == 0) {{
@@ -297,8 +345,11 @@ def _words(part, name, context, loc, body, end, lines):
 }}''' + part.source[end+1:])
 
 
-def rewrite(source, name, asm, context=''):
+def rewrite(source, name, asm, context='', resolve=None):
     """Leave drafts with incomplete copy or source evidence to ordinary generation."""
+    if channel_status_drafts.RESULT in source and channel_status_drafts.RESULT in asm:
+        if fixed := channel_status_drafts.rewrite(source, name, context, _lines(asm)):
+            return fixed
     if 'osCreateMesgQueue' in source and 'osCreateMesgQueue' in asm:
         if fixed := message_frame_drafts.rewrite(source, name, context, _lines(asm)):
             return fixed
@@ -318,5 +369,5 @@ def rewrite(source, name, asm, context=''):
         return (_packet(part, name, context, loc, body, end)
                 or _relocated_packet(part, name, context, loc, body, end, lines))
     if (copy := stack_copy(asm, (('lbu', 4), ('lbu', 5), ('lbu', 6)))) and copy[0] == 0:
-        return _reply(part, name, context, loc, body, end)
+        return _reply(part, name, context, loc, body, end, lines, resolve)
     return _words(part, name, context, loc, body, end, lines)
