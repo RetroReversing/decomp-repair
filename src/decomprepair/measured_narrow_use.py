@@ -228,3 +228,47 @@ def byte_backedge_variants(source, name, rows):
             part.clean, hit.end() + tail.start(), end + latch.end())]
         result.append((BYTE_BACKEDGE, edit(source, edits)))
     return result[:4]
+
+
+BOOLEAN_BYTE = 'boolean_byte_carrier'
+
+
+def _boolean_byte_evidence(rows):
+    boolean = re.compile(rf'(?:sltu ({REG}), \$zero, {REG}|sltiu ({REG}), {REG}, 1)')
+    for compare, copy in zip(rows, rows[1:]):
+        if compare[1] != compare[2] or not (test := boolean.fullmatch(compare[1])):
+            continue
+        reg = test[1] or test[2]
+        move = re.fullmatch(rf'move ({REG}), {re.escape(reg)}', copy[1])
+        if move and copy[2] == f'andi {move[1]}, {reg}, 0xff':
+            return True
+    return False
+
+
+def boolean_byte_carriers(source, name, rows):
+    """Give a comparison result a byte local when the target copies it without a mask."""
+    from .integer_repair_support import locals_for
+
+    if not _boolean_byte_evidence(rows) or not (part := view(source, name)):
+        return []
+    pattern = re.compile(
+        rf'(?<=[;{{}}])\s*(?P<value>{IDENT})\s*=\s*[^;{{}}?:=!<>]+(?:==|!=)\s*(?:0x[0-9a-fA-F]+|\d+)\s*;'
+        rf'\s*(?P<flag>{IDENT})\s*=\s*(?P<cast>\(\s*u8\s*\)\s*)(?P=value)\s*;'
+    )
+    words = {decl['name']: decl for decl in locals_for(part) if decl['type'] == 's32'}
+    result = []
+    for match in pattern.finditer(part.clean, part.opening + 1, part.end):
+        flag, value = match['flag'], match['value']
+        decl = words.get(flag)
+        if not decl or value == flag or value not in words or decl.end() > match.start():
+            continue
+        uses = re.findall(rf'\b{flag}\b', part.body)
+        resets = re.findall(rf'(?<=[;{{}}])\s*{flag}\s*=\s*0\s*;', part.body)
+        tests = re.findall(rf'\b{flag}\s*&\s*(?:0[xX][fF]{{2}}|255)\b', part.body)
+        if len(resets) != 1 or not tests or len(uses) != 3 + len(tests):
+            continue
+        # The declared byte still only receives zero or a comparison result.
+        start, end = match.span('cast')
+        if source[start:end] == match['cast']:
+            result.append((BOOLEAN_BYTE, edit(source, [(*decl.span('type'), 'u8'), (start, end, '')])))
+    return result[:4]
