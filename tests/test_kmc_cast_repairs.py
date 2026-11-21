@@ -124,3 +124,30 @@ s32 read(s32 index) {
     assert not variants(source.replace('marker = 255', 'marker = 127'), 'read', '', rows)
     assert not variants(source, 'read', 'extern s8 marker;', rows)
     assert not variants(source, 'read', '', rows[:3] + [rows[3], rows[3], rows[4]])
+
+
+def test_unsigned_byte_store_repairs_only_proven_byte_destinations():
+    source = '''extern s8 flag;
+void update(void *record) {
+    M2C_FIELD(record, s8 *, 0x28) = 255;
+    M2C_FIELD(record, s8 *, 0x29) = 255;
+    M2C_FIELD(record, s8 *, 0x2A) = 255;
+    flag = 0xFF;
+}
+'''
+    constant = ('i', 'addiu $v0, $zero, 0xff', 'addiu $v0, $zero, -1')
+    rows = [constant]
+    for instruction in ('sb $v0, 0x28($s1)', 'j update+0x40', 'sb $v0, 0x29($s1)'):
+        rows.append((' ', instruction, instruction))
+    rows += [constant, (' ', 'lui $at, %hi(flag)', 'lui $at, %hi(flag)'),
+             (' ', 'sb $v0, %lo(flag)($at)', 'sb $v0, %lo(flag)($at)')]
+    expected = source.replace('s8 *, 0x28', 'u8 *, 0x28').replace('s8 *, 0x29', 'u8 *, 0x29')
+    expected = expected.replace('flag =', '*(u8 *)&flag =')
+    assert variants(source, 'update', '', rows) == [('kmc_unsigned_byte_store', expected)]
+    volatile_local = source.replace('    flag =', '    volatile int status;\n    flag =')
+    assert variants(volatile_local, 'update', '', rows) == [
+        ('kmc_unsigned_byte_store', expected.replace('    *(u8 *)', '    volatile int status;\n    *(u8 *)')),
+    ]
+    assert not variants(source, 'update', '', [constant, (' ', 'sw $v0, 0x28($s1)', 'sw $v0, 0x28($s1)')])
+    assert not variants(source, 'update', '', [constant, (' ', 'lui $v0, 1', 'lui $v0, 1'), *rows[1:2]])
+    assert not variants(source.replace('extern s8 flag;', ''), 'update', '', rows[4:])
