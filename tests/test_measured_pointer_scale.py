@@ -699,3 +699,20 @@ void f(s32 index) {
     assert not variants(source.replace('padding[56]', 'padding[60]', 1), 'f', '', rows)
     assert not variants(source + '\nLeft other;', 'f', '', rows)
     assert not variants(source, 'f', 'extern Left first[];', rows)
+
+
+def test_call_stride_recognizes_an_early_address_before_stack_argument_stores():
+    source = 'extern M2C_UNK table;\nvoid f(u16 i) { send(12, (i * 104) + &table, i, 0, 0, 0); }'
+    before = ['lui $s3, %hi(table)', 'addiu $s3, $s3, %lo(table)']
+    after = ['addiu $a0, $zero, 12', 'addu $a1, $a1, $s3', 'move $a3, $zero',
+             'sh $zero, ($s1)', 'sw $zero, 16($sp)', 'sw $zero, 20($sp)', 'sw $zero, 24($sp)',
+             'jal send', 'sw $zero, 28($sp)']
+    rows = [(' ', op, op) for op in before]
+    rows.append(('i', 'sll $a1, $a1, 3', 'sll $a1, $a1, 5'))
+    rows.extend((' ', op, op) for op in after)
+    fixed = dict(variants(source, 'f', '', rows))['measured_scaled_global_call']
+    assert 'send(12, (i * 104) + (u8 *)&table, i, 0, 0, 0);' in fixed
+    for index in (3, 5, len(rows) - 1):
+        bad = rows[:]
+        bad[index] = (' ', 'move $a1, $zero', 'move $a1, $zero')
+        assert not variants(source, 'f', '', bad)
