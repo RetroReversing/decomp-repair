@@ -51,7 +51,10 @@ def variants(source, name, *, asm=None, arch=None, header='', callees='', requir
         checked = kinds[:1] if selected_call is not None else kinds[:4]
         if arch != 'mips' or not all(_integer_parameter(k, context) for k in checked):
             return []
-        incoming = _incoming_calls(asm)
+        if selected_call is None:
+            incoming = _incoming_calls(asm)
+        else:
+            incoming = {selected_call: {0}} if _entry_a0_reaches(asm, selected_call) else {}
         if not incoming:
             return []
     outside = clean[:span[0]] + clean[span[1]:]
@@ -381,17 +384,38 @@ def _entry_a0_reaches(asm, callee, *, first_only=False):
     if not sites or (not first_only and len(sites) != 1):
         return False
     call = sites[0]
-    if any(src > call and dest <= call for src, dest in destinations.items()):
-        return False
-    registers = {'a0': 0}
-    for row in [*rows[:call], rows[call + 1]]:
+    pending = [(0, True)]
+    seen = set()
+    reached = False
+
+    def preserves_a0(row):
         op, *args = row.split(None, 1)
-        operands = args[0] if args else ''
-        if op in mips_regions.CONDITIONAL | {'b', 'j'}:
+        registers = {'a0': 0}
+        return _transfer(registers, op, args[0] if args else '') and registers.get('a0') == 0
+
+    while pending:
+        pc, incoming = pending.pop()
+        if pc >= len(rows) or (pc, incoming) in seen:
             continue
-        if not _transfer(registers, op, operands) or registers.get('a0') != 0:
+        seen.add((pc, incoming))
+        if len(seen) > mips_return_paths.LIMIT:
             return False
-    return True
+        op = rows[pc].split()[0]
+        if op in mips_regions.CALLS | mips_regions.CONDITIONAL | mips_regions.JUMPS:
+            delayed = incoming and preserves_a0(rows[pc + 1])
+            if pc == call:
+                if not delayed:
+                    return False
+                reached = True
+            if op in mips_regions.CALLS:
+                pending.append((pc + 2, False))
+            elif pc in destinations:
+                pending.append((destinations[pc], delayed))
+                if op in mips_regions.CONDITIONAL:
+                    pending.append((pc + 2, incoming if op.endswith('l') else delayed))
+        elif op != 'break':
+            pending.append((pc + 1, incoming and preserves_a0(rows[pc])))
+    return reached
 
 
 def _missing_caller_argument(source, name, header, asm, callee, *, memory_wrapper=False):
@@ -450,12 +474,19 @@ def _relocated_shift_count(rows, changes):
         want, have = map(argument.fullmatch, rows[i][1:])
         if not want or not have or int(want['reg']) != int(have['reg']) + 1 or want['op'] != have['op']:
             return None
-        if want['value'] == have['value']:
+        # A paired high/low address or load represents one shifted argument.
+        symbol = re.search(rf'%lo\(({IDENT}(?: [+-] {NUMBER})?)\)', want['value'])
+        paired = symbol and i - 1 in changes and list(rows[i - 1][1:]) == [
+            f"lui $a{row['reg']}, %hi({symbol[1]})" for row in (want, have)
+        ]
+        if not paired and want['value'] == have['value']:
             continue
-        low = re.fullmatch(rf"\$a{want['reg']}, %lo\(({IDENT})\)", want['value'])
-        if (want['op'] != 'addiu' or not low or i - 1 not in changes
-                or have['value'] != f"$a{have['reg']}, %lo({low[1]})"
-                or list(rows[i - 1][1:]) != [f"lui $a{reg}, %hi({low[1]})" for reg in (want['reg'], have['reg'])]):
+        low_operands = {
+            'addiu': "$a{reg}, %lo({symbol})",
+            'lw': "%lo({symbol})($a{reg})",
+        }.get(want['op'])
+        if (not paired or low_operands is None
+                or any(row['value'] != low_operands.format(reg=row['reg'], symbol=symbol[1]) for row in (want, have))):
             return None
         relocations += 1
     return relocations if len(changes) - relocations <= 3 else None
