@@ -31,11 +31,11 @@ def _norm(text):
 
 
 def _parameters(part):
-    signature = re.search(r'\([^()]*\)\s*$', part.clean[:part.opening])
+    signature = re.search(r'\(([^()]*)\)\s*$', part.clean[:part.opening])
     if not signature:
         return {}
     found = {}
-    for text in signature[0][1:-1].split(','):
+    for text in signature[1].split(','):
         match = re.fullmatch(rf'\s*({TYPE})\s+({IDENT})\s*', text)
         if match:
             found[match[2]] = _norm(match[1])
