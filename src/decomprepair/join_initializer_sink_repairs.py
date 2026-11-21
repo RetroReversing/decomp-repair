@@ -34,7 +34,7 @@ def _int(text):
 
 
 def _statement(clean, at):
-    """(then_start, then_end, else_start, else_end) of the `if (...) {..} else {..}` starting at `at`, else None."""
+    """(then_start, then_end, else_start, else_end, statement_end) of the `if (...) {..} [else {..}]` at `at`, else None."""
     m = re.compile(r'\s*if\s*\(').match(clean, at)
     if not m:
         return None
@@ -51,13 +51,55 @@ def _statement(clean, at):
         return None
     m = re.compile(r'\s*else\s*\{').match(clean, then_end)
     if not m:
-        return None
+        return then_start, then_end, None, None, then_end  # no else
     else_start = m.end() - 1
     else_end = close(clean, else_start, '{', '}')
-    return (then_start, then_end, else_start, else_end) if else_end else None
+    return (then_start, then_end, else_start, else_end, else_end) if else_end else None
 
 
-def variants(source, name):
+def _enclosing(clean, at, lo):
+    """Start of the innermost `{` block around `at`, searching back no further than `lo`."""
+    depth = 0
+    for pos in range(at - 1, lo - 1, -1):
+        if clean[pos] == '}':
+            depth += 1
+        elif clean[pos] == '{':
+            if depth == 0:
+                return pos
+            depth -= 1
+    return lo
+
+
+def _assigned_before_goto(clean, var, region_start, goto_at):
+    """True when the innermost block around a `goto` (inside `region_start..`) assigns `var` before it."""
+    block = _enclosing(clean, goto_at, region_start)
+    return re.search(rf'\b{var}\s*=(?!=)', clean[block:goto_at]) is not None
+
+
+def _joins(clean, var, parts, statement_end, end):
+    """(label_at, label_name, gotos_region) for each way the statement reaches a label V is then read from."""
+    then_start, then_end, else_start, else_end, _ = parts
+    found = []
+    arms = ((else_start, else_end, then_start, then_end), (then_start, then_end, else_start, else_end))
+    for inside_start, inside_end, goto_start, goto_end in (arms if else_start is not None else ()):
+        label = re.search(rf'(?m)^[ \t]*({IDENT}):', clean[inside_start:inside_end])
+        if label and f'goto {label[1]};' in clean[goto_start:goto_end]:
+            # a join inside one arm, reached by a `goto` from the other: V must not be read anywhere else
+            if not re.search(rf'\b{var}\b', clean[inside_start:inside_start + label.start()]) \
+                    and not re.search(rf'\b{var}\b', clean[statement_end:end]):
+                found.append((inside_start + label.start(), label[1], goto_start, goto_end, 'arm'))
+    # a join after the whole statement (`if (c) {T; goto L;} [else {..}] M; L: R`): V is read only from L on
+    tail = re.search(rf'(?m)^[ \t]*({IDENT}):', clean[statement_end:end])
+    if tail and not re.search(r'\b(?:case|default)\b', tail[0]) and tail[1] not in ('default',):
+        at = statement_end + tail.start()
+        between = clean[statement_end:at]
+        if (f'goto {tail[1]};' in clean[parts[0]:statement_end] and not re.search(rf'\b{var}\b', between)
+                and not re.search(r'\b(?:goto|return)\b|[{}]', between)):
+            found.append((at, tail[1], parts[0], statement_end, 'after'))
+    return found
+
+
+def variants(source, name, _depth=0):
     span = find(source, name)
     if not span:
         return []
@@ -67,39 +109,52 @@ def variants(source, name):
     if not end:
         return []
     result = []
+    firsts = []
     for hit in ASSIGN.finditer(clean, opening, end):
         var, value = hit['var'], hit['value']
-        parts = _statement(clean, hit.end())
+        # the `if` may follow other simple statements that never mention V (no braces, labels or jumps)
+        at = hit.end()
+        parts = _statement(clean, at)
+        while not parts:
+            step = re.compile(rf'[ \t]*(?!if\b)(?!{IDENT}:)[^{{}};\n]*;[ \t]*\n').match(clean, at)
+            if not step or re.search(rf'\b{var}\b|\b(?:goto|return)\b', step[0]):
+                break
+            at = step.end()
+            parts = _statement(clean, at)
         if not parts:
             continue
-        then_start, then_end, else_start, else_end = parts
-        stop = else_end
-        if re.search(rf'\b{var}\b', clean[hit.end():then_start]) or re.search(rf'\b{var}\b', clean[stop:end]):
-            continue  # read in the condition, or after the join
-        then = clean[then_start:then_end]
-        if any(not re.match(r'\s*=(?!=)', then[m.end():]) for m in re.finditer(rf'\b{var}\b', then)):
-            continue  # the then-branch reads it
-        label = re.search(rf'(?m)^[ \t]*({IDENT}):', clean[else_start:else_end])
-        if not label or f'goto {label[1]};' not in then:
-            continue
-        label_at = else_start + label.start()
-        if re.search(rf'\b{var}\b', clean[else_start:label_at]):
-            continue
-        indent = re.match(r'[ \t]*', clean[label_at:])[0]
-        sunk = source[:hit.start()] + source[hit.end():label_at] + indent + f'{var} = {value};\n' + source[label_at:]
-        if sunk == source:
-            continue
-        children = [sunk]
-        literal = _literal(source, clean, opening, end, value)
-        if literal is not None:
-            children.append(sunk.replace(f'{var} = {value};', f'{var} = {literal};', 1))
-            children[-1] = _uses(children[-1], value, literal)
-        children.append(_unsigned_stores(children[-1], name, var))
-        for child in children:
-            if child != source and (FAMILY, child) not in result:
-                result.append((FAMILY, child))
-        break
-    return result
+        statement_end = parts[4]
+        cond = clean[at:parts[0]]
+        if re.search(rf'\b{var}\b', cond):
+            continue  # read in the condition
+        for label_at, label, goto_start, goto_end, kind in _joins(clean, var, parts, statement_end, end):
+            gotos = [m.start() for m in re.finditer(rf'goto {label};', clean[goto_start:goto_end])]
+            if (len(re.findall(rf'goto {label};', clean[opening:end])) != len(gotos)
+                    or any(not _assigned_before_goto(clean, var, goto_start, goto_start + g) for g in gotos)):
+                continue  # another jump to the label, or a goto that doesn't assign V first
+            then = clean[goto_start:goto_end]
+            if kind == 'arm' and any(not re.match(r'\s*=(?!=)', then[m.end():]) for m in re.finditer(rf'\b{var}\b', then)):
+                continue  # the arm with the goto reads V
+            indent = re.match(r'[ \t]*', clean[label_at:])[0]
+            sunk = (source[:hit.start()] + source[hit.end():at] + source[at:label_at]
+                    + indent + f'{var} = {value};\n' + source[label_at:])
+            literal = _literal(source, clean, opening, end, value)
+            children = [sunk]
+            if literal is not None:
+                lit = _uses(sunk.replace(f'{var} = {value};', f'{var} = {literal};', 1), value, literal)
+                children.append(lit)
+            children.append(_unsigned_stores(children[-1], name, var))
+            for child in children:
+                if child != source and (FAMILY, child) not in result:
+                    result.append((FAMILY, child))
+            firsts.append(children[0])
+            break
+    if _depth < 2:  # several constants: the next one's sink applied to each first sink
+        for first in firsts:
+            for _, child in variants(first, name, _depth + 1):
+                if child != source and (FAMILY, child) not in result:
+                    result.append((FAMILY, child))
+    return result[:12]
 
 
 def _literal(source, clean, opening, end, value):
