@@ -31,8 +31,10 @@ _MEMCPY = re.compile(
 )
 
 
-def variants(source, name, asm, header, toolchain):
-    """Yield at most one repair for a generated draft with an evidenced broken call."""
+def variants(source, name, asm, header, toolchain, *, resolve=None):
+    """Yield at most one evidence-based repair before the draft's first compile."""
+    if not source:
+        return []
     if '.L' in source and (candidate := rename_local_calls(source, name, asm, header)):
         return [('initial_external_call_labels', candidate)]
     if toolchain == 'gcc-2.7.2-kmc' and 'memcpy' in source:
@@ -43,10 +45,27 @@ def variants(source, name, asm, header, toolchain):
 
         if candidate := ido_indirect_event.rewrite(source, name, asm, header):
             return [('ido_indirect_event', candidate)]
-        return (stack_variants(source, name, asm, header)
+        return (baseline_variants(source, name, asm, header, toolchain, resolve=resolve)
                 or ido_strided_cursor.rewrite(source, name, asm, header)
                 or ido_cursor_drafts.variants(source, name, asm, header))
-    return []
+    return baseline_variants(source, name, asm, header, toolchain, resolve=resolve)
+
+
+def baseline_variants(source, name, asm, header, toolchain, *, resolve=None):
+    """Try measured repairs shared by fresh drafts and broken saved baselines."""
+    if toolchain == 'gcc-2.7.2-kmc':
+        from . import heap_span_drafts
+
+        if candidate := heap_span_drafts.rewrite(source, name, asm, header):
+            return [(heap_span_drafts.FAMILY, candidate)]
+        return []
+    if toolchain != 'ido-7.1':
+        return []
+    from . import ido_mapped_poll
+
+    if candidate := ido_mapped_poll.rewrite(source, name, asm, header, resolve):
+        return [(ido_mapped_poll.FAMILY, candidate)]
+    return stack_variants(source, name, asm, header)
 
 
 def stack_variants(source, name, asm, header):
