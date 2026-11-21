@@ -88,3 +88,72 @@ def rewrite_global_guard(source, name, asm):
     if not draft or draft['result'] in (flag, value):
         return None
     return edit(source, [(start, end, f'\n    if ({flag} == 0) {{\n        return 0;\n    }}\n    return {value};\n')])
+
+
+RESULT_COPY = 'shared_result_copy'
+
+
+def _result_copy_evidence(rows):
+    """The skipped-loop path and the loop exit should copy the same register."""
+    registers = r'\$(?:a[0-3]|s[0-7]|v[01])'
+    move = re.compile(rf'move ({registers}), ({registers}|\$zero)')
+    skipped = set()
+    for i, (_, target, candidate) in enumerate(rows):
+        want, actual = move.fullmatch(target), move.fullmatch(candidate)
+        if not want or not actual or want[1] == actual[1]:
+            continue
+        if (i and actual[2] == '$zero' and want[2] != '$zero'
+                and rows[i - 1][1] == rows[i - 1][2]
+                and rows[i - 1][1].startswith('beqz ')):
+            skipped.add(want.groups() + (actual[1],))
+        if i + 1 < len(rows) and want[2] == actual[2] != '$zero':
+            _, wanted_branch, actual_branch = rows[i + 1]
+            if (want.groups() + (actual[1],) in skipped
+                    and wanted_branch.startswith(f'bnez {want[1]}, ')
+                    and actual_branch.startswith(f'bnez {actual[1]}, ')):
+                return True
+    return False
+
+
+def result_copy_variants(source, name, rows):
+    """Share the result copy after the outer guard when both skip paths agree."""
+    from .integer_repair_support import IDENT, edit, locals_for, view
+
+    if not _result_copy_evidence(rows) or not (part := view(source, name)):
+        return []
+    prefix = re.compile(
+        rf'(?<=[;{{}}])\s*(?P<flag>{IDENT})\s*=\s*0\s*;'
+        rf'\n[ \t]*if\s*\(\s*{IDENT}\s*!=\s*NULL\s*\)\s*{{'
+        rf'\s*(?P<result>{IDENT})\s*=\s*(?P=flag)\s*;'
+        rf'\s*if\s*\(\s*M2C_FIELD\(\s*{IDENT}\s*,\s*void\s*\*\*\s*,\s*(?:0x[0-9a-fA-F]+|\d+)\s*\)'
+        rf'\s*!=\s*NULL\s*\)\s*{{'
+    )
+    locals_by_name = {decl['name']: decl for decl in locals_for(part)}
+    variants = []
+    for entry in prefix.finditer(part.clean, part.opening + 1, part.end):
+        result, flag = entry['result'], entry['flag']
+        if result == flag or not all(key in locals_by_name and locals_by_name[key].start() < entry.start()
+                                    for key in (result, flag)):
+            continue
+        end = close(part.clean, entry.end() - 1, '{', '}')
+        if end is None:
+            continue
+        exit_copy = re.match(
+            rf'(?P<outer_close>\s*}})(?P<else>\s*else\s*{{)\s*(?P<label>{IDENT})\s*:(?P<copy_indent>\s*)'
+            rf'{result}\s*=\s*{flag}\s*;(?P<close>\s*}})\s*if\s*\(\s*{result}\s*==\s*0\s*\)',
+            part.clean[end:],
+        )
+        if not exit_copy:
+            continue
+        label = exit_copy['label']
+        if not re.search(rf'(?<=[;}}])\s*goto\s+{label}\s*;\s*}}$', part.clean[entry.end():end]):
+            continue
+        # Both skip paths retain the initialized flag. The loop path already
+        # jumps to the copy, so moving the label preserves its exit as well.
+        edits = [(end + exit_copy.start(field), end + exit_copy.end(field), '') for field in ('else', 'close')]
+        indent = exit_copy['outer_close'].rsplit('\n', 1)[-1][:-1]
+        start, stop = (end + index for index in exit_copy.span('copy_indent'))
+        if source[start:stop] == exit_copy['copy_indent'] and '\n' in exit_copy['copy_indent']:
+            edits.append((start, stop, '\n' + indent))
+        variants.append((RESULT_COPY, edit(source, edits)))
+    return variants

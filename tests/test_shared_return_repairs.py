@@ -49,3 +49,42 @@ nop
     assert 'if (ready == 0) {\n        return 0;\n    }\n    return queue;' in fixed
     assert rewrite_global_guard(source, 'get_value', asm.replace('beqz', 'bnez')) is None
     assert rewrite_global_guard(source.replace('result = queue;', 'result = other;'), 'get_value', asm) is None
+
+
+def test_share_measured_result_copy_at_the_exit():
+    from decomprepair.shared_return_repairs import result_copy_variants
+
+    source = """void f(void) {
+    s32 flag;
+    s32 result;
+    flag = 0;
+    if (obj != NULL) {
+        result = flag;
+        if (M2C_FIELD(obj, void **, 0x14) != NULL) {
+            if (check(obj)) flag = 1;
+            goto done;
+        }
+    } else {
+done:
+        result = flag;
+    }
+    if (result == 0) {
+        fallback();
+    }
+}
+"""
+    rows = [
+        (' ', 'beqz $v0, 0x40', 'beqz $v0, 0x40'),
+        ('r', 'move $v0, $s3', 'move $v1, $zero'),
+        (' ', 'nop', 'nop'),
+        ('r', 'move $v0, $s3', 'move $v1, $s3'),
+        ('r', 'bnez $v0, 0x50', 'bnez $v1, 0x50'),
+    ]
+    [(family, candidate)] = result_copy_variants(source, 'f', rows)
+    assert family == 'shared_result_copy'
+    assert '}\ndone:\n    result = flag;\n    if (result == 0)' in candidate
+    assert 'goto done;' in candidate
+    assert not result_copy_variants(source, 'f', rows[1:])
+    assert not result_copy_variants(source, 'f', rows[:-1])
+    assert not result_copy_variants(source.replace('goto done;', 'fallback();'), 'f', rows)
+    assert not result_copy_variants(source.replace('s32 flag;', 'volatile s32 flag;'), 'f', rows)
