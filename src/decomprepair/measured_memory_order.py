@@ -399,15 +399,71 @@ def _preheader_global_store_order(part, rows, changed, header):
     return edit(part.source, [(line_start, end + 1, ''), (hit.start(), hit.start(), statement)])
 
 
+def _indexed_base_before_stride(part, rows, changed, header):
+    """Capture the nested base load before calculating an indexed byte offset."""
+    if len(changed) != 5:
+        return None
+    i = changed[0]
+    if changed != [i, i + 1, i + 3, i + 4, i + 5] or i + 8 >= len(rows):
+        return None
+    symbol = re.fullmatch(rf'lui \$v0, %hi\(({IDENT})\)', rows[i][1])
+    if not symbol:
+        return None
+    name = symbol[1]
+    window = rows[i:i + 9]
+    if (window[0][2] != f'lui $a0, %hi({name})'
+            or window[1][1:] != (f'lw $v0, %lo({name})($v0)', f'lw $a0, %lo({name})($a0)')
+            or not re.fullmatch(r'andi \$v1, \$s[0-7], 0xffff', window[2][1])
+            or window[3] != ('o', '', 'sll $v0, $v1, 2')
+            or window[4] != ('r', 'lw $a0, ($v0)', 'lw $a0, ($a0)')
+            or window[5] != ('o', 'sll $v0, $v1, 2', '')
+            or window[6][1] != 'addu $v0, $v0, $v1'):
+        return None
+    scaled = re.fullmatch(r'sll (\$s[0-7]), \$v0, 3', window[7][1])
+    if not scaled or window[8][1] != f'addu $v1, {scaled[1]}, $a0':
+        return None
+    shape = re.compile(
+        rf'(?m)^{IDENT}:\s*\n(?P<indent>[ \t]+)(?P<stride>{IDENT})\s*=\s*'
+        rf'\(\s*(?P<counter>{IDENT})\s*&\s*(?P<mask>{NUM})\s*\)\s*\*\s*(?P<factor>{NUM})\s*;\s*'
+        rf'(?P<cursor>{IDENT})\s*=\s*(?P=stride)\s*\+\s*'
+        rf'(?P<load>M2C_FIELD\(\s*{name}\s*,\s*s32\s*\*\s*,\s*0\s*\))\s*;')
+    hits = list(shape.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    if integer(hit['mask']) != 0xFFFF or integer(hit['factor']) != 40:
+        return None
+    context = part.clean + '\n' + header
+    names = '|'.join((name, hit['counter'], hit['cursor'], hit['stride']))
+    if (re.search(r'\brepair_index_base\b', context)
+            or re.search(r'\b(?:volatile|asm|__asm__)\b', part.body)
+            or re.search(rf'(?m)^\s*#\s*define\s+(?:{names}|s32)\b', context)
+            or re.search(r'\btypedef\b[^;\n]*\bvolatile\b[^;\n]*\bs32\s*;', context)
+            or re.search(rf'\bvolatile\b[^;{{}}\n]*\b(?:{names})\b', context)):
+        return None
+    declaration = re.search(rf'(?m)^(?P<indent>[ \t]*)s32\s+{hit["stride"]}\s*;', part.body)
+    if not declaration or not re.search(rf'\bextern\s+void\s*\*\s*{name}\s*;', part.clean[:part.opening]):
+        return None
+    at = hit.start('indent')
+    declare = part.opening + 1 + declaration.end()
+    load = part.source[slice(*hit.span('load'))]
+    return edit(part.source, [(declare, declare, f'\n{declaration["indent"]}s32 repair_index_base;'),
+                             (at, at, f'{hit["indent"]}repair_index_base = {load};\n'),
+                             (*hit.span('load'), 'repair_index_base')])
+
+
 def variants(source, name, rows, *, resolve=None, header=''):
     changed = [i for i,(mark,_,_) in enumerate(rows) if mark != ' ']
-    if len(changed) not in (2, 3, 4):
+    if len(changed) not in (2, 3, 4, 5):
         return []
     part = view(source,name)
     if part is None:
         if (part := read(source,name)) and (candidate := reset_after_call(source,part,rows,changed)):
             return [('measured_call_reset_order',candidate)]
         return []
+    if len(changed) == 5:
+        candidate = _indexed_base_before_stride(part, rows, changed, header)
+        return [('measured_indexed_base_before_stride', candidate)] if candidate else []
     if len(changed) == 3:
         if candidate := _publish_after_empty_loop(part, name, rows, changed, resolve, header):
             return [('measured_empty_loop_before_publish', candidate)]
