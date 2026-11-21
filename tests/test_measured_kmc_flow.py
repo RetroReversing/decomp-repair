@@ -369,3 +369,38 @@ def test_float_sum_destination_preserves_operand_order_and_scope():
     assert 'if (enabled)\n        { square = total + square; total = square; }' in candidate
     assert not variants(source.replace('return total;', 'return total + square;'), 'probe', '', rows)
     assert not variants(source, 'probe', '', list(reversed(rows)))
+
+
+def test_packed_color_channels_requires_the_complete_register_swap():
+    source = """void probe(Color *out, u32 input) {
+    u32 value = input;
+    u32 red, blue, alpha;
+    alpha = 0xff000000U;
+    red = (value >> 1) << 16;
+    blue = (255U - value) | 64U;
+    value = red | alpha;
+    alpha = 0x7f800000U;
+    red >>= 1;
+    value |= blue;
+    blue >>= 1;
+    out->first = value;
+    out->second = (blue | alpha) | red;
+}"""
+    rows = [
+        ('r', 'srl $v0, $a0, 1', 'srl $v1, $a0, 1'),
+        ('r', 'sll $v0, $v0, 0x10', 'sll $v1, $v1, 0x10'),
+        ('r', 'addiu $v1, $zero, 0xff', 'addiu $v0, $zero, 0xff'),
+        ('r', 'subu $v1, $v1, $a0', 'subu $v0, $v0, $a0'),
+        ('r', 'ori $v1, $v1, 0x40', 'ori $v0, $v0, 0x40'),
+        ('r', 'or $a0, $v0, $a1', 'or $a0, $v1, $a1'),
+        (' ', 'lui $a1, 0x7f80', 'lui $a1, 0x7f80'),
+        ('r', 'srl $v0, $v0, 1', 'srl $v1, $v1, 1'),
+        ('r', 'or $a0, $a0, $v1', 'or $a0, $a0, $v0'),
+        ('r', 'srl $v1, $v1, 1', 'srl $v0, $v0, 1'),
+    ]
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_packed_color_channels'
+    assert 'do { red = (value >> 1) << 16; } while (0);' in candidate
+    assert 'out->second = (red | alpha) | blue;' in candidate
+    assert not variants(source.replace('255U', '254U'), 'probe', '', rows)
+    assert not variants(source, 'probe', '', rows[:-1])
