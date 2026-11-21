@@ -141,7 +141,7 @@ def _read_declaration(part, header, symbol, uses):
     return found
 
 
-def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=None):
+def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=None, *, require_cast=False):
     product = rf'\((?P<value>.+) \* (?P<scale>{NUMBER})\)'
     patterns = (
         re.compile(rf'&(?P<table>{IDENT}) \+ {product}', re.S),
@@ -149,6 +149,8 @@ def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=Non
     )
     matches = []
     for deref in re.compile(r'\*\(').finditer(part.clean, part.opening + 1, part.end):
+        if require_cast and not re.search(rf'\(\s*{kind}\s*\)\s*$', part.clean[max(part.opening, deref.start() - 16):deref.start()]):
+            continue
         end = close(part.clean, deref.end() - 1)
         if not end or WRITE_SUFFIX.match(part.clean, end):
             continue
@@ -297,12 +299,24 @@ def _relocated_scaled_load(part, header, rows, row, register, amount):
             if preceding != 'jr $ra' and not re.fullmatch(rf'jal {IDENT}', preceding):
                 return None
         if not (load := re.fullmatch(
-            rf'(lh|lhu|lb|lbu) (\$\w+), %lo\({base[2]}{re.escape(base[3])}\)\({re.escape(base[1])}\)', rows[load_row][side]
+            rf'(lh|lhu|lb|lbu|lw) (\$\w+), %lo\({base[2]}{re.escape(base[3])}\)\({re.escape(base[1])}\)', rows[load_row][side]
         )):
             return None
         high.append(base.groups())
         low.append(load.groups())
-    if high[0][0] != high[1][0] or low[0] != low[1]:
+    if high[0][0] != high[1][0] or low[0][1] != low[1][1]:
+        return None
+    if low[0][0] == 'lbu' and low[1][0] == 'lw':
+        # A previous scalar declaration made both the stride and the byte load word-sized.
+        value = re.escape(low[0][1])
+        if (high[0] != high[1] or load_row != row + 3 or amount < 2
+                or any(entry[0] != ' ' or entry[1] != entry[2] for entry in rows[row + 1:load_row])
+                or any(mark not in (' ', 'o') for i, (mark, _, _) in enumerate(rows) if i not in local)
+                or not any(a == b and re.fullmatch(rf'sb {value}, .+', a)
+                           for _, a, b in rows[load_row + 1:load_row + 3])):
+            return None
+        return _inline_scale(part, header, {high[0][1]}, 'u8', 1, byte_shift=amount, require_cast=True)
+    if low[0] != low[1] or low[0][0] == 'lw':
         return None
     if high[1][2] and high[0][1] != high[1][1]:
         return None

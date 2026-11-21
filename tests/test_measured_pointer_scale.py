@@ -411,3 +411,18 @@ def test_measured_call_scales_offset_after_loading_a_halfword_pointer():
     assert 'read(values + 1, 7)' in fixed
     assert not variants(source.replace('u16 *', 'u8 *'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[1:])
+
+
+def test_byte_table_recovers_load_width_and_stride_with_matched_byte_store():
+    source = ('extern M2C_UNK table;\nvoid f(s32 i, u8 *dst) {\n'
+              '    *dst = (u8) *(&table + ((i & 255) * 24));\n}')
+    rows = [('o', 'addiu $a0, $zero, 20', ''), ('o', '', 'addiu $a0, $zero, 20'),
+            ('i', 'sll $v1, $v1, 3', 'sll $v1, $v1, 5')]
+    rows += [(' ', op, op) for op in ('lui $v0, %hi(table)', 'addu $v0, $v0, $v1')]
+    rows += [('|', 'lbu $v0, %lo(table)($v0)', 'lw $v0, %lo(table)($v0)'),
+             (' ', 'j done', 'j done'), (' ', 'sb $v0, ($a0)', 'sb $v0, ($a0)')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_relocated_array_scale']
+    assert 'extern u8 table[];' in fixed
+    assert '*dst = (u8) table[(i & 255) * 24];' in fixed
+    assert not variants(source.replace('(u8) ', ''), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:-1])
