@@ -293,3 +293,35 @@ def test_float_lookup_preserves_a_bias_after_converting_the_parameter():
         'extern f32 table[];\nf32 f(f32 x) {\n    return table[((s32) x - 0x100) & 0xFFF];\n}'
     )
     assert not variants(source.replace('0x100', 'bias'), 'f', '', rows)
+
+
+def test_halfword_lookup_in_call_delay_slot_keeps_nested_index_and_byte_stride():
+    source = ('extern M2C_UNK entries;\n'
+              'void f(void) { consume(*(&entries + (select(3) * 12))); }')
+    rows = [
+        ('i', 'sll $v0, $v0, 2', 'sll $v0, $v0, 4'),
+        ('i', 'lui $a0, %hi(entries)', 'lui $a0, %hi(entries+0x2)'),
+        (' ', 'addu $a0, $a0, $v0', 'addu $a0, $a0, $v0'),
+        (' ', 'jal consume', 'jal consume'),
+        ('i', 'lhu $a0, %lo(entries)($a0)', 'lhu $a0, %lo(entries+0x2)($a0)'),
+    ]
+    spill = 'sw $ra, 0x10($sp)'
+    scheduled = rows[:1] + [(' ', spill, spill)] + rows[1:]
+    fixed = dict(variants(source, 'f', '', scheduled))['measured_relocated_array_scale']
+    assert 'extern u8 entries[];' in fixed
+    assert 'consume(*(u16 *)(entries + (select(3)) * 12));' in fixed
+    assert not variants(source, 'f', '', rows[:-1] + [('i', rows[-1][1], 'lhu $a0, %lo(entries+4)($a0)')])
+
+
+def test_halfword_table_can_have_an_odd_stride_with_a_one_bit_shift():
+    source = 'extern M2C_UNK entries;\nu16 f(void) { return *(&entries + (select(3) * 6)); }'
+    rows = [
+        ('i', 'sll $v0, $v0, 1', 'sll $v0, $v0, 3'),
+        ('i', 'lui $at, %hi(entries)', 'lui $at, %hi(entries+2)'),
+        (' ', 'addu $at, $at, $v0', 'addu $at, $at, $v0'),
+        ('i', 'lhu $v0, %lo(entries)($at)', 'lhu $v0, %lo(entries+2)($at)'),
+    ]
+    assert 'return *(u16 *)(entries + (select(3)) * 6);' in dict(
+        variants(source, 'f', '', rows))['measured_relocated_array_scale']
+    assert 'return entries[select(3)];' in dict(
+        variants(source.replace('* 6', '* 2'), 'f', '', rows))['measured_relocated_array_scale']
