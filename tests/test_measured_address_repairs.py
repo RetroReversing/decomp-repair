@@ -98,3 +98,21 @@ addiu $sp, $sp, 0x18
     assert 'dispatch(arg0, (char *)&state + 0x40);' in patch
     assert rewrite_byte_offsets(source, 'f', target, 's32 dispatch(void *);') is None
     assert rewrite_byte_offsets(source, 'f', target, '#define arg0 1') is None
+
+
+def test_indexed_relocation_keeps_byte_scaling_and_the_word_load():
+    from decomprepair.measured_address_repairs import byte_offsets_apply, rewrite_byte_offsets
+
+    source = 'extern M2C_UNK state;\ns32 f(s32 i) { return *(&state + 0x8200 + (i * 4)); }'
+    target = '''sll $v0, $v0, 2
+lui $at, %hi(state + 0x8200)
+addu $at, $at, $v0
+lw $v0, %lo(state + (0x8200 & 0xFFFF))($at)
+'''
+    assert byte_offsets_apply(target)
+    fixed = rewrite_byte_offsets(source, 'f', target)
+    assert fixed and '*(s32 *)((char *)&state + 0x8200 + (i * 4))' in fixed
+    assert rewrite_byte_offsets(source, 'f', target.replace('sll $v0, $v0, 2', 'sll $v0, $v0, 3')) is None
+    assert rewrite_byte_offsets(source, 'f', target.replace('addu $at, $at, $v0', 'addu $at, $at, $v1')) is None
+    assert rewrite_byte_offsets(source, 'f', target.replace('0x8200 & 0xFFFF', '0x8240 & 0xFFFF')) is None
+    assert rewrite_byte_offsets(source.replace('i * 4','i * 8'), 'f', target) is None

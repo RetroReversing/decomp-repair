@@ -5,6 +5,7 @@ import re
 from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, edit, integer, view
 from .kmc_operand_repairs import ADDU
+from .pattern_repairs import close
 from .target_constant_repairs import LITERAL
 
 REG = r'\$\w+'
@@ -179,8 +180,54 @@ def _offset_pairs(asm):
     return lines, pairs
 
 
+def _indexed_word_pairs(lines):
+    pairs = set()
+    for i, line in enumerate(lines[:-2]):
+        top = _OFFSET_HIGH.fullmatch(line)
+        if not top:
+            continue
+        base = re.escape(top['reg'])
+        add = re.fullmatch(rf'addu {base}, {base}, (?P<index>\$\w+)', lines[i + 1])
+        bottom = re.fullmatch(
+            rf'lw {REG}, %lo\(({IDENT}) \+ (?:(?P<plain>{NUMBER})|\((?P<masked>{NUMBER}) & 0xFFFF\))\)\({base}\)',
+            lines[i + 2])
+        if (not add or not bottom or add['index'] == top['reg'] or top['base'] != bottom[1]
+                or integer(top['off']) != integer(bottom['plain'] or bottom['masked'])):
+            continue
+        index = re.escape(add['index'])
+        # The index must still hold a word-scaled value at the address add.
+        for previous in reversed(lines[max(0, i - 12):i]):
+            if re.match(r'^(?:[bj]\w*\s|\.L)', previous):
+                break
+            if re.match(rf'\w+ {index},', previous):
+                if re.fullmatch(rf'sll {index}, {index}, (?:2|0x2)', previous):
+                    pairs.add((top['base'], integer(top['off'])))
+                break
+    return pairs
+
+
+def _indexed_word_offset(part, header, pairs):
+    hits = []
+    for deref in re.compile(r'\*\(&(?P<base>'+IDENT+r') \+ (?P<off>'+NUMBER+r') \+ \(').finditer(
+            part.clean, part.opening + 1, part.end):
+        base, offset = deref['base'], integer(deref['off'])
+        if (base, offset) not in pairs or not re.search(rf'\bextern\s+M2C_UNK\s+{base}\s*;', part.clean[:part.opening]):
+            continue
+        if re.search(rf'\b{base}\b', _blank(header)):
+            continue
+        index_close = close(part.clean, deref.end() - 1)
+        if not index_close or part.clean[index_close:index_close + 1] != ')':
+            continue
+        if (not re.search(r' \* (?:4|0x4)\)$', part.clean[deref.end():index_close])
+                or re.match(r'\s*(?:=(?!=)|[-+*/%&|^]=|\+\+|--)', part.clean[index_close + 1:])):
+            continue
+        hits.append((*deref.span(), f"*(s32 *)((char *)&{base} + {deref['off']} + ("))
+    return edit(part.source, hits) if len(hits) == 1 else None
+
+
 def byte_offsets_apply(asm):
-    return bool(_offset_pairs(asm)[1])
+    lines, pairs = _offset_pairs(asm)
+    return bool(pairs or _indexed_word_pairs(lines))
 
 
 def _wrapper_offset(source, part, name, header, target, hit, replacement):
@@ -208,11 +255,14 @@ def rewrite_byte_offsets(source, name, asm, header=''):
     if 'M2C_UNK' not in source or '&' not in source:
         return None
     lines, pairs = _offset_pairs(asm)
-    if not pairs or not (part := view(source, name)):
+    if not lines or not (part := view(source, name)):
         return None
     if re.search(r'\b(?:volatile|asm|__asm__)\b', part.body):
         return None
 
+    if indexed := _indexed_word_pairs(lines):
+        if candidate := _indexed_word_offset(part, header, indexed):
+            return candidate
     edits = []
     wrapper = _SECOND_ARG.fullmatch('\n'.join(lines)) if len(lines) == 9 else None
     for hit in _BYTE_ADDR.finditer(part.clean, part.opening + 1, part.end):
