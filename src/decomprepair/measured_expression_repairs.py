@@ -2,8 +2,9 @@
 
 import re
 
+from . import local_flow, measured_branch_shapes
 from .csource import _blank
-from .integer_repair_support import IDENT, edit, integer, view
+from .integer_repair_support import IDENT, edit, integer, locals_for, view
 
 REG = r'\$\w+'
 NUM = r'(?:0[xX][0-9a-fA-F]+|\d+)'
@@ -190,6 +191,8 @@ def _byte_lane_merge(part, header, rows, changed):
 
 
 def _branch_field_evidence(rows, changed):
+    if len(changed) == 5:
+        return _branch_field_common_store(rows, changed)
     if len(changed) != 3:
         return None
     first, second, merge = changed
@@ -227,16 +230,43 @@ def _branch_field_evidence(rows, changed):
     return offset, mask
 
 
-def _branch_field_update(part, header, rows, changed):
+def _branch_field_common_store(rows, changed):
+    first = changed[0]
+    if changed != [first, *range(first + 3, first + 7)] or any(rows[i][0] != 'r' for i in changed):
+        return None
+    target = []
+    for side in (1, 2):
+        block = [rows[at][side] for at in range(first, first + 7)]
+        bits = re.fullmatch(rf'addiu ({REG}), \$zero, -({NUM})', block[0])
+        read = re.fullmatch(rf'lw ({REG}), ({NUM})?\(({REG})\)', block[1])
+        if not bits or not read or not block[2].startswith('j '):
+            return None
+        set_, clear, merge, store = block[3:]
+        update = re.fullmatch(rf'ori ({REG}), {re.escape(read[1])}, ({NUM})', set_)
+        if not update or update[1] == bits[1] or read[3] in {'$sp', '$fp', '$s8'}:
+            return None
+        result, offset, base = map(re.escape, (update[1], read[2] or '', read[3]))
+        if (clear != f'lw {update[1]}, {read[2] or ""}({read[3]})'
+                or merge != f'and {update[1]}, {update[1]}, {bits[1]}'
+                or not re.fullmatch(rf'sw {result}, {offset}\({base}\)', store)):
+            return None
+        mask = integer(update[2])
+        if not 0 < mask <= 0xffff or integer(bits[2]) != mask + 1:
+            return None
+        target.append((integer(read[2] or '0'), mask, read[3]))
+    return target[0][:2] if target[0] == target[1] else None
+
+
+def _branch_field_update(part, name, header, rows, changed):
     """Keep a branch's flag update on its field instead of carrying a temporary to the join."""
     if not (target := _branch_field_evidence(rows, changed)) or 'M2C_FIELD' not in part.body:
         return None
     if re.search(r'\b(?:volatile|goto|asm|__asm__|setjmp|longjmp)\b|\b'+IDENT+r'\s*:(?!:)', part.body):
         return None
     pattern = re.compile(
-        rf'(?m)^[ \t]*(?P<clear>(?P<temp>{IDENT}) = (?P<field>M2C_FIELD\((?P<base>{IDENT}), '
-        rf'(?:s32|u32) \*, (?P<offset>{NUM})\)) & ~(?P<mask>{NUM});)\s*}}\s*else\s*{{\s*'
-        rf'(?P<set>(?P=temp) = (?P=field) \| (?P<other>{NUM});)\s*}}'
+        rf'(?m)^[ \t]*(?P<first>(?P<temp>{IDENT}) = (?P<field>M2C_FIELD\((?P<base>{IDENT}), '
+        rf'(?:s32|u32) \*, (?P<offset>{NUM})\)) (?P<op>& ~|\| )(?P<mask>{NUM});)\s*}}\s*else\s*{{\s*'
+        rf'(?P<second>(?P=temp) = (?P=field) (?P<other_op>& ~|\| )(?P<other>{NUM});)\s*}}'
         rf'(?P<tail>\n[ \t]*(?P=field) = (?P=temp);)'
     )
     matches = list(pattern.finditer(part.clean, part.opening + 1, part.end))
@@ -245,7 +275,7 @@ def _branch_field_update(part, header, rows, changed):
     hit = matches[0]
     offset, mask = target
     if (integer(hit['offset']) != offset or integer(hit['mask']) != mask
-            or integer(hit['other']) != mask):
+            or integer(hit['other']) != mask or hit['op'] == hit['other_op']):
         return None
     temp, base = hit['temp'], hit['base']
     if re.search(rf'(?m)^\s*#\s*define\s+(?:{temp}|{base})\b', header + '\n' + part.clean):
@@ -253,11 +283,22 @@ def _branch_field_update(part, header, rows, changed):
     uses = list(re.finditer(rf'\b{temp}\b', part.body))
     decls = list(re.finditer(rf'(?m)^[ \t]*(?:s32|u32)\s+{temp}\s*;[ \t]*\n',
                             part.clean[:hit.start()]))
-    if len(uses) != 4 or len(decls) != 1 or decls[0].start() < part.opening:
+    if len(decls) != 1 or decls[0].start() < part.opening:
         return None
-    return edit(part.source, [(*decls[0].span(), ''), (*hit.span('tail'), ''),
-                              (*hit.span('clear'), f'{hit["field"]} &= ~{hit["mask"]};'),
-                              (*hit.span('set'), f'{hit["field"]} |= {hit["other"]};')])
+    changes = [(*hit.span('tail'), '')]
+    if len(uses) == 4:
+        changes.append((*decls[0].span(), ''))
+    else:
+        declaration = next((d for d in locals_for(part) if d['name'] == temp), None)
+        flow = local_flow.analyze(part.source, name, declarations=[declaration]) if declaration else None
+        at = hit.end('tail') - len(f'{hit["field"]} = {temp};')
+        join = flow.at(at) if flow else None
+        if not join or any(temp in flow.nodes[i].live for i in join.successors):
+            return None
+    for group, op, number in (('first', 'op', 'mask'), ('second', 'other_op', 'other')):
+        operator = '&= ~' if hit[op] == '& ~' else '|= '
+        changes.append((*hit.span(group), f'{hit["field"]} {operator}{hit[number]};'))
+    return edit(part.source, changes)
 
 
 def variants(source, name, header, rows):
@@ -274,6 +315,6 @@ def variants(source, name, header, rows):
         return [('measured_staged_negation',candidate)]
     if candidate := _byte_lane_merge(part,header,rows,changed):
         return [('measured_byte_lane_merge',candidate)]
-    if candidate := _branch_field_update(part, header, rows, changed):
+    if candidate := _branch_field_update(part, name, header, rows, changed):
         return [('measured_branch_field_update', candidate)]
-    return []
+    return measured_branch_shapes.variants(part, name, header, rows, changed)
