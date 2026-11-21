@@ -3,7 +3,7 @@
 import re
 
 from .csource import _blank
-from .integer_repair_support import IDENT, NUMBER, edit, view
+from .integer_repair_support import IDENT, NUMBER, edit, integer, view
 
 FAMILY = 'measured_narrow_use'
 REG = r'\$\w+'
@@ -89,9 +89,47 @@ def _zero_store_width(source, name, rows):
     return [('measured_zero_store_width', edit(source, [(offset + start, offset + end, kind)]))]
 
 
+def _stage_masked_halfword_or(source, name, rows):
+    """Stage a halfword mask before the same value is merged and stored."""
+    changes = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changes) != 1 or (i := changes[0]) < 3 or i + 2 >= len(rows):
+        return []
+    a, b = (re.fullmatch(rf'or ({REG}), ({REG}), (\$a[0-3])', rows[i][1]),
+            re.fullmatch(rf'or ({REG}), (\$a[0-3]), ({REG})', rows[i][2]))
+    if not a or not b or a.groups() != (b[1], b[3], b[2]):
+        return []
+    mask = re.fullmatch(rf'andi {re.escape(a[2])}, {re.escape(a[2])}, ({NUMBER})', rows[i - 1][1])
+    load = re.fullmatch(rf'lhu {re.escape(a[2])}, ({NUMBER})\(({REG})\)', rows[i - 3][1])
+    store = re.fullmatch(rf'sh {re.escape(a[1])}, ({NUMBER})\(({REG})\)', rows[i + 2][1])
+    if not mask or not load or not store or load.groups() != store.groups():
+        return []
+    if not (part := view(source, name)) or re.search(r'\b(?:volatile|asm|__asm__)\b', part.body):
+        return []
+    pattern = (
+        rf', (?P<temp>{IDENT}) = (?P<expr>\((?P<field>M2C_FIELD\({IDENT}, u16 \*, (?P<offset>{NUMBER})\))'
+        rf' & (?P<mask>{NUMBER})\) \| (?P<arg>{IDENT})), (?P=field) = (?P=temp),'
+    )
+    edits = []
+    for hit in re.finditer(pattern, part.body):
+        if integer(hit['offset']) != integer(load[1]) or integer(hit['mask']) != integer(mask[1]):
+            continue
+        if not re.search(rf'\bu16 {hit["temp"]};', part.body):
+            continue
+        if not re.search(rf'\bu16 {hit["arg"]}\s*(?=[,)])', part.clean[:part.opening]):
+            continue
+        start, end = (part.opening + 1 + pos for pos in hit.span('expr'))
+        if source[start:end] != hit['expr']:
+            continue
+        text = f'{hit["field"]} & {hit["mask"]}, {hit["temp"]} |= {hit["arg"]}'
+        edits.append((start, end, text))
+    return [('measured_masked_halfword_or', edit(source, edits))] if len(edits) == 1 else []
+
+
 def variants(source, name, rows):
     """Offer narrowing repairs separately so the next diff can guide the search."""
     if candidate := _zero_store_width(source, name, rows):
+        return candidate
+    if candidate := _stage_masked_halfword_or(source, name, rows):
         return candidate
     if not any('andi ' in row[1] for row in rows):
         return []

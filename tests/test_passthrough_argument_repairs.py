@@ -690,3 +690,30 @@ void f(void *object) {
     assert not proposals([9, 10])  # No instruction may enter a delay slot.
     assert not proposals([9, 99])
     assert not proposals([9])
+
+
+def test_forwarding_repairs_the_order_of_two_saved_entry_arguments():
+    source = '''s32 write_bytes(u32); /* extern */
+void f(s32 dest, s32 offset, u32 count) {
+    s32 saved_dest;
+    s32 saved_offset;
+    u32 len;
+
+    saved_offset = offset;
+    saved_dest = dest;
+    len = count;
+    write_bytes(len);
+    consume(saved_offset, saved_dest);
+}
+'''
+    saves = ['sw $s2, 0x40($sp)', 'move $s2, $a0', 'sw $s3, 0x44($sp)', 'move $s3, $a1']
+    rows = [(mark, a, b) for mark, a, b in zip(('i', 'r', 'i', 'r'), saves, saves[2:] + saves[:2])]
+    rows += [(' ', 'move $s1, $a2', 'move $s1, $a2'), ('r', 'move $a1, $s1', 'move $a0, $s1'),
+             (' ', 'sw $ra, 0x4c($sp)', 'sw $ra, 0x4c($sp)'), (' ', 'jal write_bytes', 'jal write_bytes'),
+             (' ', 'nop', 'nop')]
+    asm = '\n'.join(row[1] for row in rows)
+    header = 'typedef int s32; typedef unsigned int u32;'
+    [(_, fixed)] = p.shifted_call_variants(source, 'f', header, asm, rows)
+    assert 'write_bytes(dest, len)' in fixed
+    assert fixed.index('saved_dest = dest') < fixed.index('saved_offset = offset')
+    assert not p.shifted_call_variants(source, 'f', header, 'move $a0, $zero\n' + asm, rows)
