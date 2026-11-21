@@ -864,7 +864,60 @@ def _paired_call_setup(part, rows):
             for family, hit, text in edits if part.source[slice(*hit.span())] == hit[0]][:2]
 
 
+def _sentinel_entry_step(source, name, rows):
+    """Put an initial halfword cursor advance on the loop entry edge."""
+    changed = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changed) != 2:
+        return None
+    old, new = changed
+    if old == 0 or new != old + 2 or new + 3 >= len(rows) or rows[old][1] or rows[new][2]:
+        return None
+    target = re.fullmatch(r'addiu (\$s[0-7]), \1, (?:2|0x2)', rows[new][1])
+    if not target or not re.fullmatch(
+        rf'addiu {re.escape(target[1])}, {re.escape(target[1])}, (?:2|4|0x2|0x4)', rows[old][2]
+    ):
+        return None
+    if not re.fullmatch(rf'beq \$\w+, \$\w+, {NUMBER}', rows[old - 1][1]):
+        return None
+    sentinel = r'ori \$s[0-7], \$zero, (?:0x[fF]{4}|65535)'
+    call = re.fullmatch(rf'jal ({IDENT})', rows[new + 1][1])
+    if (not re.fullmatch(sentinel, rows[old + 1][1]) or not call
+            or not re.fullmatch(rf'lhu \$a0, (?:0|0x0)?\({re.escape(target[1])}\)', rows[new + 3][1])):
+        return None
+    if not (part := view(source, name)) or re.search(r'\b(?:volatile|asm|__asm__|goto)\b', part.body):
+        return None
+    loop = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<cursor>{IDENT}) = (?P<byte>\(char \*\))?(?P<base>{IDENT})'
+        r' \+ (?P<initial>1|2|0x1|0x2);\n'
+        r'(?P=indent)do \{\n'
+        rf'(?P<bodyindent>[ \t]+)(?P<call>{call[1]}\((?P<value>{IDENT}), {IDENT}\);)\n'
+        r'(?P=bodyindent)(?P<load>(?P=value) = \*\(u16 \*\)(?P=cursor);)\n'
+        r'(?P=bodyindent)(?P<step>(?P=cursor) \+= (?:2|0x2);)\n'
+        r'(?P=indent)\} while \((?P=value) != (?:0x[Ff]{4}|65535)\);'
+    )
+    changes = []
+    for hit in loop.finditer(part.clean, part.opening + 1, part.end):
+        cursor, base, value = (hit[key] for key in ('cursor', 'base', 'value'))
+        candidate_bytes = integer(hit['initial']) * (1 if hit['byte'] else 2)
+        if candidate_bytes != integer(rows[old][2].rsplit(' ', 1)[1]):
+            continue
+        if not re.search(rf'\bu16\s*\*\s*{base}\s*(?=[,)])', part.clean[:part.opening]):
+            continue
+        if not re.search(rf'\bchar\s*\*\s*{cursor}\s*;', part.body) or len(re.findall(rf'\b{cursor}\b', part.body)) != 4:
+            continue
+        if not re.search(rf'\bu16 {value};', part.body) or source[hit.start():hit.end()] != hit[0]:
+            continue
+        indent, inner = hit['indent'], hit['bodyindent']
+        text = (f'{indent}{cursor} = (char *){base};\n{indent}do {{\n'
+                f'{inner}{hit["step"]}\n{inner}{hit["call"]}\n{inner}{hit["load"]}\n'
+                f'{indent}}} while ({value} != 0xFFFF);')
+        changes.append((*hit.span(), text))
+    return edit(source, changes) if len(changes) == 1 else None
+
+
 def variants(source, name, header, rows):
+    if 'char *' in source and (candidate := _sentinel_entry_step(source, name, rows)):
+        return [('measured_sentinel_entry_step', candidate)]
     if candidate := _loaded_halfword_call_offset(source, name, header, rows):
         return [('measured_loaded_halfword_call_offset', candidate)]
     if candidate := _call_byte_offset(source, name, rows):
