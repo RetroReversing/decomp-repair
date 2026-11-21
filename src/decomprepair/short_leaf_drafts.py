@@ -25,11 +25,18 @@ VARARGS_SPILL = re.compile(
     r'sw \$a0, (?:0x0|0)?\(\$sp\)\nsw \$a1, (?:0x4|4)\(\$sp\)\n'
     r'sw \$a2, (?:0x8|8)\(\$sp\)\njr \$ra\nsw \$a3, (?:0x[cC]|12)\(\$sp\)'
 )
-PATTERNS = (SQUARE_ROOT, HALFWORD_STORE, BIT_RETURN, FRAMED_RETURN, VARARGS_SPILL)
+INDEXED_STACK_HALFWORD = re.compile(
+    rf'lw \$v0, (?P<base>{NUMBER})\(\$a0\)\nandi \$a1, \$a1, (?:0x[fF]{{4}}|65535)\n'
+    rf'sll \$a1, \$a1, (?P<shift>{NUMBER})\naddu \$v0, \$a1, \$v0\n'
+    r'sh \$a2, (?:0x0|0)?\(\$v0\)\nlw \$v0, (?P=base)\(\$a0\)\naddu \$v0, \$a1, \$v0\n'
+    r'sh \$a3, (?:0x2|2)\(\$v0\)\nlw \$v0, (?P=base)\(\$a0\)\n'
+    r'lhu \$v1, (?:0x12|18)\(\$sp\)\naddu \$a1, \$a1, \$v0\njr \$ra\nsh \$v1, (?:0x4|4)\(\$a1\)'
+)
+PATTERNS = (SQUARE_ROOT, HALFWORD_STORE, BIT_RETURN, FRAMED_RETURN, VARARGS_SPILL, INDEXED_STACK_HALFWORD)
 
 
 def _target(asm):
-    if not asm or len(asm) > 900 or asm.count('\n') > 12:
+    if not asm or len(asm) > 1500 or asm.count('\n') > 15:
         return None
     text = '\n'.join(' '.join(line.split()) for line in _lines(asm)
                      if not line.startswith(('glabel ', 'endlabel ')))
@@ -48,6 +55,9 @@ def variants(source, name, asm, header=''):
     start = part.opening + 1
     end = part.clean.rfind('}', start, part.end)
     body = part.clean[start:end]
+    if key is INDEXED_STACK_HALFWORD:
+        fixed = _indexed_stack_halfword(part, name, header, target, body)
+        return [('indexed_stack_halfword', fixed)] if fixed else []
     if key is VARARGS_SPILL:
         fixed = varargs_signature_repairs.empty_home_leaf(source, name)
         return [(varargs_signature_repairs.FAMILY, fixed)] if fixed else []
@@ -97,3 +107,37 @@ def variants(source, name, asm, header=''):
     pad = result['space'].rsplit('\n', 1)[-1]
     replacement = result['space'] + f'if ({result["condition"]}) return 1;\n{pad}return 0;' + result['tail']
     return [('measured_mask_boolean_return', edit(source, [(start, end, replacement)]))]
+
+
+def _indexed_stack_halfword(part, name, header, target, body):
+    """An out-of-register argument is a word, loaded as its halfword at byte two."""
+    if re.search(rf'\b{re.escape(name)}\s*\(', header):
+        return None
+    signature = re.search(
+        rf'\bvoid\s+{re.escape(name)}\(void \*(?P<obj>{IDENT}), (?P<index_type>s32) (?P<index>{IDENT}), '
+        rf's16 (?P<first>{IDENT}), s16 (?P<second>{IDENT}), (?P<stack_type>u16) (?P<stack>{IDENT})\)\s*$',
+        part.clean[:part.opening])
+    if not signature:
+        return None
+    obj, index, first, second, stack = (signature[key] for key in ('obj', 'index', 'first', 'second', 'stack'))
+    field = rf'M2C_FIELD\({obj}, s32 \*, (?P<base>{NUMBER})\)'
+    draft = re.fullmatch(
+        rf'\s*s32 (?P<local>{IDENT});\s*(?P=local) = (?P<scale_expr>\({index} & (?P<mask>{NUMBER})\) '
+        rf'\* (?P<stride>{NUMBER}));\s*\*(?P<cast>\(s16 \*\))?\((?P=local) \+ {field}\) = {first};\s*'
+        rf'M2C_FIELD\(\(\s*(?P=local) \+ M2C_FIELD\({obj}, s32 \*, (?P=base)\)\), s16 \*, (?P<two>{NUMBER})\)'
+        rf' = {second};\s*M2C_FIELD\(\(\s*(?P=local) \+ M2C_FIELD\({obj}, s32 \*, (?P=base)\)\), '
+        rf'u16 \*, (?P<four>{NUMBER})\) = (?P<value>{stack});\s*',
+        body)
+    shift = integer(target['shift'])
+    if (not draft or not 1 <= shift <= 8 or integer(draft['stride']) != 1 << shift
+            or integer(draft['base']) != integer(target['base']) or integer(draft['mask']) != 65535
+            or integer(draft['two']) != 2 or integer(draft['four']) != 4):
+        return None
+    start = part.opening + 1
+    fixes = [(*signature.span('index_type'), 'u16'), (*signature.span('stack_type'), 's32'),
+             (start + draft.start('scale_expr'), start + draft.end('scale_expr'), f'{index} << {shift}'),
+             (start + draft.start('value'), start + draft.end('value'), f'((u16 *)&{stack})[1]')]
+    if not draft['cast']:
+        first_deref = body.index('*(', draft.end('scale_expr'))
+        fixes.append((start + first_deref + 1, start + first_deref + 1, '(s16 *)'))
+    return edit(part.source, fixes)
