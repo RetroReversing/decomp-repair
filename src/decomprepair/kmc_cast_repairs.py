@@ -96,14 +96,18 @@ def _array_read(part, context, named, relocated):
     return hits[0] if len(hits) == 1 else None
 
 
+def _byte_immediate_register(wanted, actual):
+    immediate = re.fullmatch(rf'addiu ({REGISTER}), \$zero, (?:0[xX][fF][fF]|255)', wanted)
+    if immediate and re.fullmatch(rf'addiu {re.escape(immediate[1])}, \$zero, -(?:0x1|1)', actual):
+        return re.escape(immediate[1])
+    return None
+
+
 def _unsigned_ff_store(part, context, rows, i):
     """Tie the positive byte literal to its original relocated byte store."""
     _, wanted, actual = rows[i]
-    immediate = re.fullmatch(rf'addiu ({REGISTER}), \$zero, (?:0[xX][fF][fF]|255)', wanted)
-    if not immediate or not re.fullmatch(rf'addiu {re.escape(immediate[1])}, \$zero, -(?:0x1|1)', actual):
+    if not (reg := _byte_immediate_register(wanted, actual)):
         return None
-
-    reg = re.escape(immediate[1])
     store = re.compile(rf'sb {reg}, %lo\(({IDENT})\)\({REGISTER}\)')
     return_slot = False
     for marker, op, previous in rows[i + 1:i + 5]:
@@ -213,14 +217,12 @@ def truncated_literal(source, part, rows):
 
 def byte_store_sites(rows):
     """Find byte destinations using the same immediate's low bits in both builds."""
-    immediate = re.compile(rf'addiu ({REGISTER}), \$zero, (?:0xff|255)')
     operand = rf'(%lo\(({IDENT})\)|-?(?:0x[\da-f]+|\d+))\({REGISTER}\)'
     sites = set()
     for i, (_, target, candidate) in enumerate(rows):
-        match = immediate.fullmatch(target)
-        if not match or candidate != f'addiu {match[1]}, $zero, -1':
+        if not (register := _byte_immediate_register(target, candidate)):
             continue
-        byte_store = re.compile(rf'sb {re.escape(match[1])}, {operand}')
+        byte_store = re.compile(rf'sb {register}, {operand}')
         delay_slot = False
         for marker, want, have in rows[i+1:i+6]:
             if marker != ' ' or want != have:
@@ -228,7 +230,7 @@ def byte_store_sites(rows):
             if sink := byte_store.fullmatch(want):
                 address, name = sink.groups()
                 sites.add(name if name else int(address, 0))
-            elif not want.startswith(('lui ', 'j ')) or want.startswith(f'lui {match[1]},'):
+            elif not want.startswith(('lui ', 'j ')) or re.match(rf'lui {register},', want):
                 break
             if delay_slot:
                 break
