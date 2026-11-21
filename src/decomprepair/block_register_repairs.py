@@ -224,7 +224,36 @@ def _for_loops(source, name):
             continue
         condition = source[paren + 1:stop - 1].strip()
         inner = clean[brace + 1:body_end - 1]
-        step = re.search(rf'(?P<v>{IDENT})\s*(?:\+\+|\+=\s*1|=\s*\1\s*\+\s*1)\s*;\s*$', inner)
+        step = re.search(rf'(?:(?P<v>{IDENT})\s*(?:\+\+|\+=\s*1|=\s*(?P=v)\s*\+\s*1)|\+\+\s*(?P<prefix>{IDENT}))\s*;\s*$', inner)
+        if step and step['prefix']:
+            # Make the prefix spelling available to the same checks as the postfix one.
+            var = step['prefix']
+        elif step:
+            var = step['v']
+        else:
+            continue
+        # A saved search can write the back edge as (i + 1) <= N after i has already
+        # advanced. A head test of i < N restores the same iteration count when it
+        # starts at zero and the body cannot change or expose i.
+        shifted = re.fullmatch(rf'\(\s*{re.escape(var)}\s*\+\s*1\s*\)\s*<=\s*(?P<n>\d+)(?P<suffix>[uU]?)', condition)
+        before = clean[opening:start]
+        immediate = re.search(rf'(?<![\w.>]){re.escape(var)}\s*=\s*0\s*;\s*$', before)
+        body_without_step = inner[:step.start()]
+        limit = int(shifted['n']) if shifted else 0
+        altered = re.search(rf'(?:\+\+|--|&)\s*{re.escape(var)}\b|\b{re.escape(var)}\s*(?:\+\+|--|[+*/%&|^\-]?=(?!=))', body_without_step)
+        local = re.search(rf'\b(?:u32|s32|unsigned\s+int|int)\s+{re.escape(var)}\s*;', clean[opening:start])
+        address_taken = re.search(rf'&\s*{re.escape(var)}\b', clean[opening:end])
+        if (shifted and immediate and local and not address_taken and 0 < limit <= 127 and not altered
+                and not re.search(r'\bcontinue\b', body_without_step)):
+            init_start = opening + immediate.start()
+            semicolon = stop + clean[stop:end].index(';') + 1
+            head = f'for ({var} = 0; {var} < {shifted["n"]}{shifted["suffix"]}; ++{var}) {{'
+            result.append(_edit(source, [(init_start, brace + 1, head),
+                                         (brace + 1 + step.start(), semicolon, '}')]))
+            if len(result) >= LIMIT:
+                break
+        if shifted or step['prefix']:
+            continue
         if not step or re.search(r'\bcontinue\b', inner) or not re.search(r'\b' + step['v'] + r'\b', condition):
             continue
         var = step['v']
