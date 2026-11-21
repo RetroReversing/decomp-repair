@@ -162,7 +162,12 @@ def _sorted_runs(lines):
     return out
 
 
+FIELD = re.compile(rf'\bM2C_FIELD\(\s*({ID})\s*,\s*({ID})\s*\*\s*,\s*({NUM})\s*\)')
+
+
 def variants(source, name, asm=''):
+    # m2c's own field macro, written out as the cast chain the readers below know (the macro line itself has no match)
+    source = FIELD.sub(lambda m: f'(*({m[2]} *)((char *)({m[1]}) + {m[3]}))', source)
     span = find(source, name)
     if not span:
         return []
@@ -218,6 +223,7 @@ def variants(source, name, asm=''):
     count, rest = divmod(int(test_obj[2:], 16) - bases[test_var][1], steps[test_var][0])
     if rest or not 2 <= count <= 64:
         return []
+    pointees = {m[2]: m[1] for m in re.finditer(rf'(?m)^[ \t]*({ID})[ \t]*\*[ \t]*({ID})[ \t]*;', before) if m[1] in SIZES}
     cursors = set(bases)  # (a cursor set up before the loop that the loop doesn't step is not understood)
     if cursors != set(steps) or len(cursors) < 2:
         return []
@@ -228,9 +234,12 @@ def variants(source, name, asm=''):
         shift = stride if number > step_line else 0
         hits = []
         pattern = (rf'\*\(({ID}(?:\s+{ID})?)\s*\*\)\s*\(\s*\(char\s*\*\)\s*\(\s*(?:\(unsigned short\)\s*)?{re.escape(var)}\s*\)\s*\+\s*({NUM})\s*\)'
-                   rf'|\*\(({ID})\s*\*\)\s*{re.escape(var)}\b')
+                   rf'|\*\(({ID})\s*\*\)\s*{re.escape(var)}\b'
+                   rf'|(?<![\w)\]*])\*\s*{re.escape(var)}\b(?!\s*(?:\[|\+\+|--))')
         for m in re.finditer(pattern, line):
-            hits.append((m.start(), m.end(), m[1] or m[3], _int(m[2]) + shift if m[2] else shift))
+            kind = m[1] or m[3] or pointees.get(var)
+            if kind:  # (a plain `*cursor` is read at the type the cursor is declared with)
+                hits.append((m.start(), m.end(), kind, _int(m[2]) + shift if m[2] else shift))
         return hits
 
     # every mention of a cursor must be a plain access (or its own step / the end test)
