@@ -141,7 +141,7 @@ def narrow_array_loads(source, header, part, rows, flags):
         return []
     for index in changes:
         wanted, actual = map(NARROW_LOAD.fullmatch, rows[index][1:])
-        if (wanted and actual and wanted['op'] in ('lbu', 'lhu') and actual['op'] == 'lb'
+        if (wanted and actual and (wanted['op'], actual['op']) in (('lbu', 'lb'), ('lhu', 'lb'), ('lhu', 'lbu'))
                 and (wanted['reg'], wanted['operand']) == (actual['reg'], actual['operand'])):
             break
     else:
