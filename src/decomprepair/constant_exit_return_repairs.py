@@ -25,6 +25,44 @@ IDENT = r'[A-Za-z_]\w*'
 NUMBER = r'-?\s*(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*'
 
 
+def _guarded_binary_return(source, clean, opening, end):
+    """Split a null guard and a trailing cleanup from a shared binary return."""
+    entry = re.search(rf'(?m)^(?P<indent>[ \t]*)(?P<var>{IDENT})\s*=\s*0\s*;\s*'
+                      rf'if\s*\(\s*(?P<ptr>{IDENT})\s*!=\s*NULL\s*\)\s*{{', clean[opening:end])
+    if not entry:
+        return None
+    prefix = clean[opening + 1:opening + entry.start()].rstrip()
+    if prefix.count('{') != prefix.count('}') or (prefix and prefix[-1] not in ';}'):
+        return None
+    block_start = opening + entry.end() - 1
+    block_end = close(clean, block_start, '{', '}')
+    result, pointer = entry['var'], entry['ptr']
+    if not block_end or not re.fullmatch(rf'\s*return\s+{result}\s*;\s*}}\s*', clean[block_end:end]):
+        return None
+    body = clean[opening + 1:end - 1]
+    if (len(re.findall(rf'\b{result}\b', body)) != 5
+            or not re.search(rf'(?m)^\s*s32\s+{result}\s*;', body)
+            or re.search(r'\b(?:goto|asm|__asm__|volatile)\b', body)):
+        return None
+    tail = re.search(rf'(?m)^(?P<indent>[ \t]*){result}\s*=\s*1\s*;\s*'
+                     rf'if\s*\(\s*(?P<flag>M2C_FIELD\(\s*{pointer}\s*,\s*u8\s*\*\s*,\s*{NUMBER}\s*\))'
+                     rf'\s*!=\s*0\s*\)\s*{{\s*(?P<call>{IDENT}\(\s*{pointer}\s*\));\s*'
+                     rf'{result}\s*=\s*0\s*;\s*}}\s*$', clean[block_start + 1:block_end - 1])
+    if not tail:
+        return None
+    # Balance the prefix so the final assignment and test are in the outer guard.
+    middle = clean[block_start + 1:block_start + 1 + tail.start()]
+    if middle.count('{') != middle.count('}'):
+        return None
+    flag = source[block_start + 1 + tail.start('flag'):block_start + 1 + tail.end('flag')]
+    call = source[block_start + 1 + tail.start('call'):block_start + 1 + tail.end('call')]
+    indent, inner = entry['indent'], tail['indent']
+    head = f'{indent}if ({pointer} == NULL) return 0;\n{indent}{{'
+    ending = f'{inner}if ({flag} == 0) return 1;\n{inner}{call};\n{indent}}}\n{indent}return 0;\n}}'
+    return (source[:opening + entry.start()] + head
+            + source[block_start + 1:block_start + 1 + tail.start()] + ending + source[end:])
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -39,7 +77,8 @@ def variants(source, name):
     tail = re.search(r'\{\s*(?P<var>' + IDENT + r')\s*=\s*(?P<value>' + NUMBER
                      + r')\s*;\s*\}\s*return\s+(?P=var)\s*;\s*\}\s*$', body)
     if not tail:
-        return []
+        transformed = _guarded_binary_return(source, clean, opening, end)
+        return [(FAMILY, transformed)] if transformed else []
     var = tail['var']
     arm_open = opening + tail.start()
     arm_close = close(clean, arm_open, '{', '}')
