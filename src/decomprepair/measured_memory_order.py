@@ -349,6 +349,56 @@ def _publish_after_empty_loop(part, name, rows, changed, resolve, header):
     return edit(snapshot, [(start + loop.start(), start + loop.end(), block)])
 
 
+def _preheader_global_store_order(part, rows, changed, header):
+    """Move a plain global clear ahead of a pointer publish before a loop."""
+    if len(changed) != 4 or changed != list(range(changed[0], changed[0] + 4)):
+        return None
+    reset_hi, reset_lo, publish_hi, publish_lo = [rows[i][1] for i in changed]
+    if [rows[i][2] for i in changed] != [publish_hi, publish_lo, reset_hi, reset_lo]:
+        return None
+    reset = re.fullmatch(rf'sw \$zero, %lo\(({IDENT})\)\(\$at\)', reset_lo)
+    publish = re.fullmatch(rf'sw \$a[0-3], %lo\(({IDENT})\)\(\$at\)', publish_lo)
+    if not reset or not publish:
+        return None
+    clear, pointer = reset[1], publish[1]
+    if clear == pointer or (reset_hi, publish_hi) != (f'lui $at, %hi({clear})', f'lui $at, %hi({pointer})'):
+        return None
+    shape = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*){pointer}\s*=\s*&(?P<address>{IDENT})\s*;\s*'
+        rf'(?P<cursor>{IDENT})\s*=\s*&(?P=address)\s*;\s*(?P<counter>{IDENT})\s*=\s*0\s*;\s*'
+        rf'(?P<clear>{clear}\s*=\s*0\s*;)\s*(?=do\s*{{)')
+    hits = list(shape.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    address, cursor, counter = (hit[key] for key in ('address', 'cursor', 'counter'))
+    if len({address, cursor, counter, clear, pointer}) != 5:
+        return None
+    declarations = part.clean[:part.opening]
+    prefix = part.clean[part.opening + 1:hit.start()].rstrip()
+    if ('{' in prefix or '}' in prefix or prefix[-1:] != ';'
+            or not re.search(rf'\bextern\s+s32\s+{clear}\s*;', declarations)
+            or not re.search(rf'\bextern\s+s32\s*\*\s*{pointer}\s*;', declarations)
+            or not re.search(rf'\bextern\s+s32\s*\*\s*{address}\s*;', declarations)
+            or not re.search(rf'(?m)^[ \t]*s32\s*\*\s*{cursor}\s*;', prefix)
+            or not re.search(rf'(?m)^[ \t]*s32\s+{counter}\s*;', prefix)):
+        return None
+    context = header + '\n' + part.clean
+    names = '|'.join((address, cursor, counter, clear, pointer, 's32'))
+    if re.search(rf'(?m)^\s*#\s*define\s+(?:{names})\b', context) or re.search(
+            r'\b(?:volatile|asm|__asm__|_Atomic|goto)\b', context):
+        return None
+    if re.search(r'/[*/]', part.source[hit.start():hit.end()]):
+        return None
+    indent = hit['indent']
+    start, end = hit.span('clear')
+    line_start = part.source.rfind('\n', hit.start(), start) + 1
+    if part.source[line_start:start] != indent or part.source[end:end + 1] != '\n':
+        return None
+    statement = part.source[line_start:end + 1]
+    return edit(part.source, [(line_start, end + 1, ''), (hit.start(), hit.start(), statement)])
+
+
 def variants(source, name, rows, *, resolve=None, header=''):
     changed = [i for i,(mark,_,_) in enumerate(rows) if mark != ' ']
     if len(changed) not in (2, 3, 4):
@@ -366,6 +416,8 @@ def variants(source, name, rows, *, resolve=None, header=''):
         return [('measured_scan_sentinel_order', candidate)]
     if candidate := _measured_snapshot(part, name, rows, changed, resolve, header):
         return [('measured_earlier_word_load', candidate)]
+    if candidate := _preheader_global_store_order(part, rows, changed, header):
+        return [('measured_preheader_global_stores', candidate)]
     if candidate := reordered_pair(source,part,rows,changed):
         return [('measured_comma_load_order',candidate)]
     if candidate := reset_after_call(source,part,rows,changed):
