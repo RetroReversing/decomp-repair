@@ -57,3 +57,10 @@ def test_an_assignment_that_reads_the_old_value_or_no_store_is_left_alone():
     reads = DRAFT.replace('        temp_v0 = D_800E1550 + 1;', '        temp_v1_2 = temp_v1_2 + 1;\n        temp_v0 = D_800E1550 + 1;')
     assert not [t for f, t in g.variants(reads, 'f') if 'D_800E1554 = 1 <<' in t]
     assert g.variants('void f(void) { int a; a = 1; }', 'f') == []
+
+
+def test_read_modify_write_is_not_a_lifetime_boundary():
+    for update in ('temp_v1_2++;', '--temp_v1_2;', 'temp_v1_2 += 1;'):
+        source = DRAFT.replace('        temp_v0 = D_800E1550 + 1;',
+                               f'        {update}\n        temp_v0 = D_800E1550 + 1;')
+        assert not any('D_800E1554 = 1 <<' in child for _, child in g.variants(source, 'f'))
