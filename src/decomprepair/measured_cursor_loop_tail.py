@@ -41,8 +41,53 @@ def _pointer_local(part, identifier):
     return prefix.count('{') == prefix.count('}') + 1
 
 
+def _capture_current_node(source, name, rows):
+    """Preserve the current call argument while advancing the cursor in its delay slot."""
+    if not any(mark != ' ' for mark, _, _ in rows):
+        return None
+    target = '\n'.join(row[1] for row in rows if row[1])
+    edge = re.search(
+        rf'move \$a0, (?P<reg>\$s[0-7])\njal (?P<callee>{IDENT})\n'
+        rf'lw (?P=reg), (?P<offset>0x[0-9a-f]+|[1-9]\d*)\((?P=reg)\)\n'
+        r'bnez (?P=reg), [^\n]+\nmove \$a0, (?P=reg)', target)
+    if not edge or not (part := view(source, name)):
+        return None
+    signature = re.search(rf'\b{re.escape(name)}\s*\(\s*void\s*\*\s*({IDENT})\s*\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+    argument = signature[1]
+    callee = edge['callee']
+    body = re.fullmatch(
+        rf'\s*void\s*\*\s*(?P<current>{IDENT})\s*;\s*void\s*\*\s*(?P<cursor>{IDENT})\s*;'
+        rf'\s*(?P=cursor)\s*=\s*{argument}\s*;\s*if\s*\(\s*(?P=cursor)\s*!=\s*NULL\s*\)\s*{{'
+        rf'\s*if\s*\(\s*(?P=current)\s*\)\s*{{\s*(?P=current)\s*=\s*(?P=cursor)\s*;\s*}}'
+        rf'\s*else\s*{{\s*(?P=current)\s*=\s*(?P=cursor)\s*;\s*}}\s*do\s*{{'
+        rf'\s*(?P=cursor)\s*=\s*\*\s*\(\s*\(\s*void\s*\*\*\s*\)\s*\(\s*'
+        rf'\(\s*\(\s*char\s*\*\s*\)\s*(?P=cursor)\s*\)\s*\+\s*(?P<offset>0x[0-9a-fA-F]+|[1-9]\d*)\s*\)\s*\)\s*;'
+        rf'\s*{callee}\s*\(\s*(?P=current)\s*\)\s*;\s*(?P=current)\s*=\s*(?P=cursor)\s*;\s*}}'
+        rf'\s*while\s*\(\s*(?P=cursor)\s*!=\s*NULL\s*\)\s*;\s*}}\s*}}\s*',
+        part.clean[part.opening + 1:part.end])
+    if (not body or len({body['current'], body['cursor'], argument}) != 3
+            or int(body['offset'], 0) != int(edge['offset'], 0)):
+        return None
+    if re.search(rf'(?m)^\s*#\s*define\s+(?:{body["current"]}|{body["cursor"]}|{argument}|{callee}|NULL)\b', part.clean):
+        return None
+    current = body['current']
+    rewritten = (
+        f'\n    if ({argument} != NULL) do {{\n'
+        f'        void *{current} = {argument};\n'
+        f'        {argument} = *((void **)(((char *){argument}) + {body["offset"]}));\n'
+        f'        {callee}({current});\n'
+        f'    }} while ({argument} != NULL);\n'
+    )
+    return edit(source, [(part.opening + 1, part.clean.rfind('}', part.opening, part.end), rewritten)])
+
+
 def variants(source, name, rows):
     """Try the guarded cursor loop only when the target moves the cursor in the likely slot."""
+    if candidate := _capture_current_node(source, name, rows):
+        return [('measured_linked_loop_current_node', candidate)]
     if 'continue' not in source or not any('beql ' in row[1] for row in rows):
         return []
     target = '\n'.join(' '.join(row[1].split()) for row in rows if row[1])
