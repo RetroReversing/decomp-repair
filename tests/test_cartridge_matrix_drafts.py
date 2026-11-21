@@ -226,3 +226,12 @@ def test_dma_poll_preserves_both_length_registers_and_default_return():
     assert '*_m2c_cart_length = size - 1;' in candidate
     assert not kmc_cartridge_io.rewrite(DMA_C.replace('size - 1', 'size'), 'f', DMA_ASM, resolve=resolve)
     assert not kmc_cartridge_io.rewrite(DMA_C, 'f', DMA_ASM, resolve={'dram': 0xA4600004}.get)
+
+
+def test_inlined_diagnostic_literals_restore_relocated_addresses():
+    raw = READ_C.replace('&file_name, &error_text', '"source", "message"')
+    symbols = {'window': 0xA0000000, 'file_name': 0x80100100, 'error_text': 0x80100200}
+    result = kmc_cartridge_io.rewrite(raw, 'f', READ_ASM, resolve=symbols.get)
+    assert 'extern s32 file_name;' in result and 'extern s32 error_text;' in result
+    assert 'report_error(&file_name, &error_text, 44)' in result
+    assert not kmc_cartridge_io.rewrite(raw, 'f', READ_ASM, resolve={'window': symbols['window']}.get)
