@@ -135,3 +135,40 @@ keep: { return input & 0xFF; }
     assert family == 'measured_narrow_case_byte'
     assert 's32 f(char input)' in fixed and 'return (u8)input;' in fixed
     assert not variants(source, 'f', 's32 f(s32 input);', rows)
+
+
+def test_masked_pointer_search_uses_word_table_entries():
+    from decomprepair.measured_kmc_scalar_shapes import variants
+
+    source = '''
+u8 f(s32 wanted) {
+    s32 index;
+    s32 found;
+    void *entry;
+    index = 0;
+    found = 0;
+    do {
+        entry = *(((index & 0xFFFF) * 4) + ((char *)&owner + 16));
+        if ((entry != NULL) && (M2C_FIELD(entry, s32 *, 4) == wanted)) { found = 1; }
+        index += 1;
+    } while (!found);
+    return 0;
+}
+'''
+    ops = [
+        'move $t0, $zero', 'move $a2, $zero', 'lui $t1, %hi(table)',
+        'addiu $t1, $t1, %lo(table)', 'andi $v0, $a2, 65535',
+        'sll $v0, $v0, 2', 'addu $v0, $v0, $t1', 'lw $a1, ($v0)',
+        'beql $a1, $zero, 56', 'addiu $a2, $a2, 1', 'lw $v0, 4($a1)',
+        'beql $v0, $a0, 52', 'addiu $t0, $zero, 1',
+    ]
+    rows = [(' ', op, op) for op in ops] + [(' ', 'nop', 'nop')] * 16
+    rows[0] = ('r', ops[0], ops[1])
+    rows[1] = ('r', ops[1], ops[0])
+    rows[7] = ('|', ops[7], 'lb $a1, ($v0)')
+    symbols = {'owner': 100, 'table': 116}
+    [(label, fixed)] = variants(source, 'f', '', rows, resolve=symbols.get)
+    assert label == 'measured_masked_pointer_search'
+    assert 'entry = *(void **)' in fixed
+    assert not variants(source, 'f', '', rows, resolve={'owner': 100, 'table': 120}.get)
+    assert not variants(source.replace('0xFFFF) * 4', '0xFFFF) * 8'), 'f', '', rows, resolve=symbols.get)
