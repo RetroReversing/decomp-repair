@@ -169,3 +169,24 @@ void f(u16 *data) {
     assert fixed.count('*((n & 0xFFFF) + data)') == 2
     assert not variants(source, 'f', '', rows[:-1])
     assert not variants(source.replace('== 0', '= 0'), 'f', '', rows)
+
+
+def test_repeated_word_table_requires_two_measured_reads_and_no_other_uses():
+    source = """extern M2C_UNK table;
+int scan(int index, int other) {
+    return *(&table + (index * 4)) + *(&table + (other * 4));
+}
+"""
+    access = [
+        ('i', 'sll $v0, $v0, 2', 'sll $v0, $v0, 4'),
+        (' ', 'lui $at, %hi(table)', 'lui $at, %hi(table)'),
+        (' ', 'addu $at, $at, $v0', 'addu $at, $at, $v0'),
+        (' ', 'lw $v0, %lo(table)($at)', 'lw $v0, %lo(table)($at)'),
+    ]
+    [(family, candidate)] = variants(source, 'scan', '', access * 2)
+    assert family == 'measured_repeated_word_table'
+    assert 'extern M2C_UNK table[];' in candidate
+    assert 'return table[index] + table[other];' in candidate
+    assert not variants(source, 'scan', 'extern int table;', access * 2)
+    assert not variants(source.replace('return ', 'observe(&table); return '), 'scan', '', access * 2)
+    assert not variants(source, 'scan', '', access + [(' ', 'nop', 'nop')] * 2)
