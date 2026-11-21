@@ -56,3 +56,22 @@ def test_stage_subtracted_product_when_two_matched_load_product_pairs_are_swappe
     assert not repeated_products(source.replace('in, f32 *, 12', 'in, f32 *, 28'), 'f', rows)
     assert not repeated_products(source.replace('second =', 'second = gain; second ='), 'f', rows)
     assert not repeated_products(source, 'f', rows[:-1])
+
+
+def test_stage_left_field_for_two_swapped_comparison_loads():
+    from decomprepair.float_intermediate_repairs import repeated_products
+
+    source = '''s32 f(void *a, void *b) {
+    f32 limit;
+    limit = M2C_FIELD(b, f32 *, 0);
+    if (M2C_FIELD(a, f32 *, 40) < limit) { return 1; }
+    return 0;
+}'''
+    first, second = 'lwc1 $f0, 0x28($s0)', 'lwc1 $f2, ($s1)'
+    compare = 'c.lt.s $f0, $f2'
+    rows = [('i', first, second), ('i', second, first), (' ', compare, compare)]
+    fixed = dict(repeated_products(source, 'f', rows))['staged_float_comparison_load']
+    assert 'repair_compare_left = M2C_FIELD(a, f32 *, 40);' in fixed
+    assert 'if (repair_compare_left < limit)' in fixed
+    assert not repeated_products(source, 'f', rows[:-1])
+    assert not repeated_products(source.replace('40', '44'), 'f', rows)

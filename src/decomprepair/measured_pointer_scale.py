@@ -518,25 +518,84 @@ def _call_byte_offset(source, name, rows):
     return None
 
 
+def _preloaded_base(rows, before, register):
+    """Identify the nearest write to the saved register as a matching relocation pair."""
+    reg = re.escape(register)
+    low = re.compile(rf'addiu {reg}, {reg}, %lo\(({IDENT})\)')
+    for i in range(before - 1, 0, -1):
+        marker, target, candidate = rows[i]
+        if not any(re.match(rf'\w+ {reg},', op) for op in (target, candidate)):
+            continue
+        if marker == ' ' and target == candidate and (binding := low.fullmatch(target)):
+            high = f'lui {register}, %hi({binding[1]})'
+            if tuple(rows[i - 1]) == (' ', high, high):
+                return binding[1]
+        break
+    return None
+
+
+def _preloaded_word_offset(part, header, rows, row, register):
+    """Remove duplicate word scaling when a shared offset also forms a saved cursor."""
+    if row == 0 or row + 2 >= len(rows) or sum(mark != ' ' for mark, _, _ in rows) != 1:
+        return None
+    shift = SHIFT.fullmatch(rows[row][1])
+    masked = rf'andi {re.escape(shift[2])}, \$\w+, (?:65535|0x[fF]{{4}})'
+    if not re.fullmatch(masked, rows[row - 1][1]):
+        return None
+    add = re.fullmatch(rf'addu (\$\w+), {re.escape(register)}, (\$\w+)', rows[row + 1][1])
+    if not add or not re.fullmatch(rf'lw \$\w+, (?:0|0x0)?\({re.escape(add[1])}\)', rows[row + 2][1]):
+        return None
+    table_base = _preloaded_base(rows, row, add[2])
+    if not table_base:
+        return None
+    edits = []
+    pattern = re.compile(
+        rf'(?m)^\s*(?P<offset>{IDENT}) = (?P<index>{IDENT})(?P<scale> \* (?:4|0x4));'
+        rf'\s*(?P<cursor>{IDENT}) = (?P=offset) \+ &(?P<table>{IDENT});'
+    )
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
+        offset, index, cursor, table = (hit[key] for key in ('offset', 'index', 'cursor', 'table'))
+        if table != table_base or not re.search(rf'\bu16 {index};', part.body):
+            continue
+        if not re.search(rf'\bs32 {offset};', part.body) or not re.search(rf'\bs32 \*{cursor};', part.body):
+            continue
+        uses = re.findall(rf'\*\({offset} \+ &({IDENT})\)', part.body)
+        if not uses or len(re.findall(rf'\b{offset}\b', part.body)) != len(uses) + 3:
+            continue
+        if any(not _read_declaration(part, header, symbol, 1) for symbol in [table, *uses]):
+            continue
+        edits.append((*hit.span('scale'), ''))
+    return edit(part.source, edits) if len(edits) == 1 else None
+
+
 def _scaled_global_call(part, header, rows, row, register, amount):
     """The shifted byte index and a relocated base are passed as one argument."""
-    if not re.fullmatch(r'\$a[0-3]', register) or row + 4 >= len(rows):
+    if not re.fullmatch(r'\$a[0-3]', register) or row + 3 >= len(rows):
         return None
-    hi, lo, add = (entry[1] for entry in rows[row + 1:row + 4])
-    if any(mark != ' ' or a != b for mark, a, b in rows[row + 1:row + 4]):
-        return None
+    following = rows[row + 1:row + 4]
+    hi, lo, add = (entry[1] for entry in following)
     base = re.fullmatch(rf'lui (\$v[01]), %hi\(({IDENT})\)', hi)
-    if (not base or lo != f'addiu {base[1]}, {base[1]}, %lo({base[2]})'
-            or add != f'addu {register}, {register}, {base[1]}'):
-        return None
-    for i, (mark, want, have) in enumerate(rows[row + 4:row + 8], row + 4):
+    if (base and lo == f'addiu {base[1]}, {base[1]}, %lo({base[2]})'
+            and add == f'addu {register}, {register}, {base[1]}'
+            and all(mark == ' ' and a == b for mark, a, b in following)):
+        table, call_start = base[2], row + 4
+    else:
+        saved = re.fullmatch(rf'addu {re.escape(register)}, {re.escape(register)}, (\$s[0-7])', hi)
+        if not saved or tuple(following[0]) != (' ', hi, hi):
+            return None
+        table = _preloaded_base(rows, row, saved[1])
+        if not table:
+            return None
+        call_start = row + 2
+    for i, (mark, want, have) in enumerate(rows[call_start:call_start + 4], call_start):
         if mark != ' ' or want != have:
             return None
         if callee := re.fullmatch(rf'jal ({IDENT})', want):
             if i + 1 >= len(rows):
                 return None
             marker, slot, current_slot = rows[i + 1]
-            if marker != ' ' or slot != current_slot or not re.fullmatch(rf'nop|sw \$\w+, {NUMBER}\(\$sp\)', slot):
+            safe_slot = rf'nop|sw \$\w+, {NUMBER}\(\$sp\)|addiu (?!{re.escape(register)},)\$a[0-3], \$zero, {NUMBER}'
+            if marker != ' ' or slot != current_slot or not re.fullmatch(safe_slot, slot):
                 return None
             break
         if not re.fullmatch(rf'(?:sw \$\w+, {NUMBER}\(\$sp\)|move \$a[0-3], \$zero)', want):
@@ -545,7 +604,7 @@ def _scaled_global_call(part, header, rows, row, register, amount):
             return None
     else:
         return None
-    if not _read_declaration(part, header, base[2], 1):
+    if not _read_declaration(part, header, table, 1):
         return None
     sites = list(calls(part, callee[1]))
     if len(sites) != 1:
@@ -554,7 +613,7 @@ def _scaled_global_call(part, header, rows, row, register, amount):
     args = part.clean[start:end]
     # Require all earlier source arguments to be simple, so commas identify this slot.
     prefix = rf'(?:\s*(?:{IDENT}|{NUMBER})\s*,){{{register[-1]}}}'
-    hit = re.match(rf'{prefix}\s*\({IDENT} \* (?P<stride>{NUMBER})\) \+ (?P<base>&{base[2]})\s*(?=,|$)', args)
+    hit = re.match(rf'{prefix}\s*\({IDENT} \* (?P<stride>{NUMBER})\) \+ (?P<base>&{table})\s*(?=,|$)', args)
     if not hit or not (stride := integer(hit['stride'])) or stride & -stride != 1 << amount:
         return None
     pos = start + hit.start('base')
@@ -620,6 +679,8 @@ def variants(source, name, header, rows):
     if part is None:
         return []
     for row, register, amount in shifts:
+        if amount == 2 and (candidate := _preloaded_word_offset(part, header, rows, row, register)):
+            return [('measured_preloaded_word_offset', candidate)]
         if candidate := _scaled_global_call(part, header, rows, row, register, amount):
             return [('measured_scaled_global_call', candidate)]
         if candidate := _indirect_halfword_table(part, header, rows, row, register, amount):
