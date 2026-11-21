@@ -82,6 +82,8 @@ _CASE_SOURCE = _shape('''
 
 
 def variants(source, name, header, rows, *, resolve=None, flags=()):
+    if len(rows) == 29:
+        return _loop_pointer_table(source, name, rows, resolve)
     if len(rows) not in (8, 10, 11, 13, 14):
         return []
     changes = [(left, right) for mark, left, right in rows if mark != ' ']
@@ -206,3 +208,39 @@ def _case_byte(part, name, header, _resolve, evidence):
     return (u8){arg};
 '''
     return edit(part.source, [(*signature.span('type'), 'char'), (part.opening + 1, part.end - 1, fixed)])
+
+
+def _loop_pointer_table(source, name, rows, resolve):
+    """Recover a word-sized table entry in a masked search loop."""
+    if not resolve:
+        return []
+    target = '\n'.join(normalized_integer_lines(left for _, left, _ in rows if left))
+    evidence = re.search(
+        rf'lui \$t1, %hi\((?P<table>{IDENT})\)\naddiu \$t1, \$t1, %lo\((?P=table)\)\n'
+        r'andi \$v0, \$a2, 65535\nsll \$v0, \$v0, 2\naddu \$v0, \$v0, \$t1\n'
+        r'lw \$a1, \(\$v0\)\nbeql \$a1, \$zero, \d+\naddiu \$a2, \$a2, 1\n'
+        r'lw \$v0, 4\(\$a1\)\nbeql \$v0, \$a0, \d+\naddiu \$t0, \$zero, 1', target,
+    )
+    changes = [normalized_integer_lines((left, right)) for marker, left, right in rows if marker != ' ']
+    if (not evidence or ('lw $a1, ($v0)', 'lb $a1, ($v0)') not in changes
+            or len(changes) != 3):
+        return []
+    part = view(source, name)
+    end = close(part.clean, part.opening, '{', '}') if part else None
+    if not end:
+        return []
+    part.end = end
+    load = re.search(
+        rf'(?P<result>{IDENT}) = (?P<star>\*)\(\(\((?P<index>{IDENT}) & 0xFFFF\) \* 4\) \+ '
+        rf'\(\(char \*\)&(?P<base>{IDENT}) \+ (?P<offset>{NUMBER})\)\);', part.body,
+    )
+    if (not load or not re.search(rf'\bvoid \*{load["result"]}\s*;', part.body)
+            or not re.search(rf'\bdo\s*\{{[^{{}}]*{re.escape(load[0])}', part.body)
+            or not re.search(rf'\b{load["index"]}\s*\+=\s*1;', part.body)
+            or not re.search(rf'\b{load["result"]}\s*!=\s*NULL', part.body)):
+        return []
+    base = resolve(load['base'])
+    if base is None or base + integer(load['offset']) != resolve(evidence['table']):
+        return []
+    pos = part.opening + 1 + load.end('star')
+    return [('measured_masked_pointer_search', edit(source, [(pos, pos, '(void **)')]))]
