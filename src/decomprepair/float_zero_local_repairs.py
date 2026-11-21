@@ -62,12 +62,12 @@ def loop_variants(source, name, asm, header=''):
         array = match['array']
         definition = (rf'(?:^|[;{{])\s*(?:f32|float)\s+{array}\s*'
                       r'\[\s*(?:[3-9]|[1-9][0-9]+)\s*\]\s*;')
-        declarations = re.findall(rf'(?:f32|float)\s+{array}\s*\[', part.body)
+        declarations = re.findall(rf'\b(?:f32|float)\s+{array}\s*\[', part.body)
         if len(declarations) != 1 or not re.search(definition, part.clean[part.opening:match.start()]):
             continue
         loop_open = part.clean.find('{', match.start(), match.start('gap'))
         end = close(part.clean, loop_open, '{', '}')
-        if not end:
+        if not end or re.search(r'(?m)^\s*[A-Za-z_]\w*\s*:', part.clean[match.end():end]):
             continue
         zero_store = rf'\b{array}\s*\[\s*{{index}}\s*\]\s*=\s*(?P<zero{{index}}>0\.0f)\s*;'
         triples = re.compile(r'\s*'.join(zero_store.format(index=index) for index in (2, 1, 0)))
