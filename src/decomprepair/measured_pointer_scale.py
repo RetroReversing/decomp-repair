@@ -216,6 +216,40 @@ def _repeated_word_table(part, header, rows, shifts):
     return candidates
 
 
+def _indirect_halfword_table(part, header, rows, row, register, amount):
+    """Type a local cursor selected from several tables before one indexed read."""
+    if amount != 1 or row + 2 >= len(rows):
+        return None
+    added = re.fullmatch(rf'addu {re.escape(register)}, {re.escape(register)}, \$s[0-7]', rows[row + 1][1])
+    if not added or rows[row + 1][1] != rows[row + 1][2]:
+        return None
+    address = re.escape(f'({register})')
+    load = re.fullmatch(rf'lhu (\$a[0-3]), {address}', rows[row + 2][1])
+    if not load or not re.fullmatch(rf'lhu {re.escape(load[1])}, (?:2|0x2){address}', rows[row + 2][2]):
+        return None
+    picks = []
+    for decl in re.finditer(rf'\b(?P<type>M2C_UNK)\s*\*\s*(?P<ptr>{IDENT})\s*;', part.body):
+        ptr = decl['ptr']
+        assignments = list(re.finditer(rf'\b{ptr}\s*=\s*(?P<address>&(?P<table>{IDENT}))\s*;', part.body))
+        lookup = list(re.finditer(rf'\*\(\((?P<index>[^;{{}}=]+?) \* (?:2|0x2)\) \+ {ptr}\)', part.body))
+        if len(assignments) < 2 or len(lookup) != 1:
+            continue
+        if len(re.findall(rf'\b{ptr}\b', part.body)) != len(assignments) + 2:
+            continue
+        if any(not _read_declaration(part, header, hit['table'], 1) for hit in assignments):
+            continue
+        use = lookup[0]
+        index = use['index']
+        if (close(f'({index})', 0) != len(index) + 2 or WRITE_SUFFIX.match(part.body, use.end())
+                or re.search(r'\+\+|--', index)):
+            continue
+        fixes = [(*decl.span('type'), 'u16'), (*use.span(), f'{ptr}[{index}]')]
+        fixes.extend((hit.start('address'), hit.start('address'), '(u16 *)') for hit in assignments)
+        offset = part.opening + 1
+        picks.append([(offset + a, offset + b, text) for a, b, text in fixes])
+    return edit(part.source, picks[0]) if len(picks) == 1 else None
+
+
 def _float_record_load(part, header, rows, row, register, amount):
     """A float field load needs the original byte stride and no integer conversion."""
     if amount < 2 or row + 4 >= len(rows):
@@ -485,6 +519,8 @@ def variants(source, name, header, rows):
     if part is None:
         return []
     for row, register, amount in shifts:
+        if candidate := _indirect_halfword_table(part, header, rows, row, register, amount):
+            return [('measured_indirect_halfword_table', candidate)]
         if candidate := _float_record_load(part, header, rows, row, register, amount):
             return [('measured_float_record_scale', candidate)]
         if candidate := _relocated_scaled_load(part, header, rows, row, register, amount):

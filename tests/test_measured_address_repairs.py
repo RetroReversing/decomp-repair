@@ -116,3 +116,17 @@ lw $v0, %lo(state + (0x8200 & 0xFFFF))($at)
     assert rewrite_byte_offsets(source, 'f', target.replace('addu $at, $at, $v0', 'addu $at, $at, $v1')) is None
     assert rewrite_byte_offsets(source, 'f', target.replace('0x8200 & 0xFFFF', '0x8240 & 0xFFFF')) is None
     assert rewrite_byte_offsets(source.replace('i * 4','i * 8'), 'f', target) is None
+
+
+def test_saved_global_displacement_is_measured_in_bytes_at_one_call():
+    source = ('extern M2C_UNK timer;\ns32 f(void) {\n'
+              '    start(&timer);\n    return count(&timer - 8);\n}')
+    rows = [(' ', op, op) for op in ('lui $s0, %hi(timer)', 'addiu $s0, $s0, %lo(timer)',
+                                      'move $a0, $s0', 'jal start', 'nop', 'jal count')]
+    rows += [('i', 'addiu $a0, $s0, -8', 'addiu $a0, $s0, -0x20')]
+    assert variants(source, 'f', '', rows) == [
+        ('measured_saved_global_call_offset', source.replace('count(&timer', 'count((u8 *)&timer'))]
+    assert not variants(source, 'f', '', rows[1:])
+    assert not variants(source, 'f', '', rows[:3] + [(' ', 'move $s0, $zero', 'move $s0, $zero')] + rows[3:])
+    assert not variants(source, 'f', 'extern u32 timer;', rows)
+    assert not variants(source.replace('- 8', '- 4'), 'f', '', rows)

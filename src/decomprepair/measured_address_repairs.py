@@ -3,7 +3,7 @@
 import re
 
 from .csource import _blank
-from .integer_repair_support import IDENT, NUMBER, edit, integer, view
+from .integer_repair_support import IDENT, NUMBER, calls, edit, integer, view
 from .kmc_operand_repairs import ADDU
 from .pattern_repairs import close
 from .target_constant_repairs import LITERAL
@@ -131,12 +131,60 @@ def reciprocal_links(source, part, changes):
     return edit(source,[(*hit.span(),source[slice(*hit.span('next'))]+hit['gap']+source[slice(*hit.span('prev'))])])
 
 
+def _saved_global_call_offset(part, header, rows, change):
+    """Recover byte units for an argument formed from a saved global address."""
+    i, _, left, right = change
+    step = re.compile(rf'addiu \$a0, (?P<reg>\$s[0-7]), (?P<off>-?{NUMBER})')
+    want, have = map(step.fullmatch, (left, right))
+    if i < 3 or not want or not have or want['reg'] != have['reg']:
+        return None
+    target, candidate = (integer(match['off'].lstrip('-')) * (-1 if match['off'].startswith('-') else 1)
+                         for match in (want, have))
+    if not target or candidate != 4 * target:
+        return None
+    marker, target_call, candidate_call = rows[i - 1]
+    callee = re.fullmatch(rf'jal ({IDENT})', target_call)
+    if marker != ' ' or not callee or target_call != candidate_call:
+        return None
+    register = re.escape(want['reg'])
+    binding = re.compile(rf'addiu {register}, {register}, %lo\((?P<base>{IDENT})\)')
+    for j in range(i - 2, max(0, i - 12), -1):
+        op = rows[j][1]
+        if anchor := binding.fullmatch(op):
+            base = anchor['base']
+            high = f'lui {want["reg"]}, %hi({base})'
+            if tuple(rows[j - 1]) != (' ', high, high) or tuple(rows[j]) != (' ', op, op):
+                return None
+            break
+        if re.match(rf'(?:b\w*|j|jr|jalr)\s|\w+ {register},', op):
+            return None
+    else:
+        return None
+    if (not re.search(rf'\bextern\s+M2C_UNK\s+{base}\s*;', part.clean[:part.opening])
+            or re.search(rf'\b{base}\b', _blank(header))
+            or re.search(rf'\b{IDENT}[\s*]+{base}\s*(?=[=;,)\[])', part.clean[part.opening:part.end])):
+        return None
+    matches = []
+    for start, end in calls(part, callee[1]):
+        actual = part.clean[start:end]
+        expr = re.fullmatch(rf'\s*(?P<base>&\s*{base})\s*(?P<sign>[+-])\s*(?P<offset>{NUMBER})\s*', actual)
+        if not expr or part.source[start:end] != actual:
+            continue
+        offset = integer(expr['offset'])
+        if (offset if expr['sign'] == '+' else -offset) == target:
+            at = start + expr.start('base')
+            matches.append((at, at, '(u8 *)'))
+    return edit(part.source, matches) if len(matches) == 1 else None
+
+
 def variants(source, name, header, rows, symbols=None):
     changes = [(i,marker,left,right) for i,(marker,left,right) in enumerate(rows) if marker != ' ']
     if (not 1 <= len(changes) <= 6 or not (part := view(source,name))
             or re.search(r'\b(?:volatile|asm|__asm__)\b',part.body)):
         return []
     if len(changes) == 1:
+        if candidate := _saved_global_call_offset(part, header, rows, changes[0]):
+            return [('measured_saved_global_call_offset', candidate)]
         _,_,left,right = changes[0]
         return [('measured_address_add',candidate) for candidate in address_add(source,part,left,right)]
     if candidate := relocation_binding(source,header,part,rows,changes,symbols):
