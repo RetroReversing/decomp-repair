@@ -195,3 +195,87 @@ def variants(source, name):
     order = {REASSIGN: 0, FRESH: 1, MERGE: 2, SWAP: 3}
     result.sort(key=lambda item: order[item[0]])
     return result[:LIMIT]
+
+
+GUARDED_REUSE = 'guarded_loop_counter_reuse'
+
+
+def _guarded_register_evidence(rows):
+    """Look for a counter whose zero, increment, and unsigned bound use different registers."""
+    saved = r'\$s[0-7]'
+    caller = r'\$(?:a[0-3]|t[0-9]|v[01])'
+    zero = re.compile(rf'move ({saved}), \$zero')
+    step = re.compile(rf'addiu ({saved}), \1, 1')
+    step_actual = re.compile(rf'addiu ({caller}), \1, 1')
+    for i, (_, target, expected) in enumerate(rows):
+        want, actual = step.fullmatch(target), step_actual.fullmatch(expected)
+        if not want or not actual or i + 1 >= len(rows):
+            continue
+        _, limit_wanted, limit_actual = rows[i + 1]
+        if (not re.fullmatch(rf'sltu \$\w+, {re.escape(want[1])}, \$\w+', limit_wanted)
+                or limit_actual != limit_wanted.replace(f', {want[1]},', f', {actual[1]},', 1)):
+            continue
+        for _, reset, reset_actual in rows[max(0, i - 24):i]:
+            match = zero.fullmatch(reset)
+            if match and match[1] == want[1] and reset_actual == f'move {actual[1]}, $zero':
+                return True
+    return False
+
+
+def _guarded_loop_starts(part, declarations):
+    preamble = re.compile(
+        rf'(?<=[;{{}}])\s*(?P<var>{IDENT})\s*=\s*0\s*;'
+        rf'(?P<setup>(?:\s*[^;{{}}]+;){{0,{BETWEEN}}})'
+        rf'\s*if\s*\([^;{{}}]+\)\s*{{'
+        rf'(?P<inside>(?:\s*{IDENT}\s*=[^;{{}}]+;){{0,{BETWEEN}}})\s*$'
+    )
+    for loop in _loops(part.clean, part.opening, part.end):
+        if not part.clean.startswith('do', loop[0]):
+            continue
+        earliest = max(part.opening + 1, loop[0] - 800)
+        before = preamble.search(part.clean, earliest, loop[0])
+        if not before:
+            continue
+        var = before['var']
+        if var not in declarations or declarations[var].end() > before.start():
+            continue
+        condition = _condition(part.clean, loop)
+        if not condition or not re.match(rf'\(\s*{var}\s*<', condition) or not _stepped(part.clean, var, loop):
+            continue
+        if (_mentions(part.clean, var, before.start('setup'), loop[0])
+                or re.search(r'\b(?:goto|return|break|continue|case|default|do|for|while|if|else|switch)\b',
+                             before['setup'] + before['inside'])
+                or re.search(r'\b(?:goto|break|continue|case|default|asm|__asm__)\b|(?<=[;{}])\s*\w+\s*:',
+                             part.clean[loop[0]:loop[1]])):
+            continue
+        close = re.match(r'\s*}', part.clean[loop[1]:part.end])
+        if close:
+            start = before.start('var')
+            end = loop[1] + close.end()
+            yield var, (start, end, _mentions(part.clean, var, start, end))
+
+
+def guarded_reuse_variants(source, name, rows):
+    """Reuse the next guarded loop's counter when its reset makes the old value dead."""
+    from .call_lifetime_repairs import block_path
+    from .integer_repair_support import locals_for, view
+
+    if not _guarded_register_evidence(rows) or not (part := view(source, name)):
+        return []
+    declarations = {decl['name']: decl for decl in locals_for(part)}
+    regions = list(_guarded_loop_starts(part, declarations))
+    result = []
+    for (old, first), (new, second) in zip(regions, regions[1:]):
+        if old == new or first[1] > second[0] or part.clean[first[1]:second[0]].strip():
+            continue
+        if declarations[old]['type'] != declarations[new]['type'] or declarations[new].end() > first[0]:
+            continue
+        scope = block_path(part, declarations[new].start())
+        if block_path(part, first[0])[:len(scope)] != scope:
+            continue
+        if (_mentions(part.clean, new, first[0], first[1])
+                or _mentions(part.clean, old, first[1], part.end)
+                or re.search(rf'&\s*\(*\s*(?:{old}|{new})\b', part.body)):
+            continue
+        result.append((GUARDED_REUSE, _apply(source, _rename(first, new))))
+    return result[:4]
