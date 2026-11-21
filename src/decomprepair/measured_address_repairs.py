@@ -109,6 +109,44 @@ def address_add(source, part, left, right):
     return list(dict.fromkeys(result))[:3]
 
 
+def _masked_loop_address(part, rows, change):
+    """Expose a masked pointer offset as a word add when only its operands differ."""
+    i, _, left, right = change
+    target, candidate = map(ADDU.fullmatch, (left, right))
+    if i < 2 or not target or not candidate or target[2] == target[3]:
+        return None
+    dest, offset, base = target.groups()
+    if candidate.groups() != (dest, base, offset):
+        return None
+    mask, shift = rows[i - 2:i]
+    if any(mark != ' ' or a != b for mark, a, b in (mask, shift)):
+        return None
+    index_reg = re.escape(offset)
+    bound = re.fullmatch(rf'andi {index_reg}, {REG}, ({NUMBER})', mask[1])
+    scale = re.fullmatch(rf'sll {index_reg}, {index_reg}, ([1-5])', shift[1])
+    if not bound or integer(bound[1]) not in (255, 65535) or not scale:
+        return None
+    edits = []
+    for hit in re.finditer(
+        rf'\b(?P<dst>{IDENT})\s*=\s*(?P<sum>(?P<byteoffset>\(\({IDENT} & (?P<mask>{NUMBER})\) '
+        rf'\* (?P<step>{NUMBER})\)) \+ (?P<base>{IDENT}))\s*;', part.body
+    ):
+        if integer(hit['mask']) != integer(bound[1]) or integer(hit['step']) != 1 << int(scale[1]):
+            continue
+        if not re.search(rf'\bvoid\s*\*\s*{hit["base"]}\s*(?=[,)])', part.clean[:part.opening]):
+            continue
+        if not re.search(rf'\bvoid\s*\*\s*{hit["dst"]}\s*;', part.body[:hit.start()]):
+            continue
+        if re.search(rf'\b{IDENT}[\s*]+{hit["base"]}\s*(?=[=;,)\[])', part.body):
+            continue
+        start, end = hit.span('sum')
+        offset = part.opening + 1
+        if part.source[offset + start:offset + end] == hit['sum']:
+            replacement = f'(void *)({hit["byteoffset"]} + (u32){hit["base"]})'
+            edits.append((offset + start, offset + end, replacement))
+    return edit(part.source, edits) if len(edits) == 1 else None
+
+
 def reciprocal_links(source, part, changes):
     (i,_,left,right),(j,_,left_next,right_next) = changes
     a,b = STORE.fullmatch(left),STORE.fullmatch(left_next)
@@ -185,6 +223,8 @@ def variants(source, name, header, rows, symbols=None):
     if len(changes) == 1:
         if candidate := _saved_global_call_offset(part, header, rows, changes[0]):
             return [('measured_saved_global_call_offset', candidate)]
+        if candidate := _masked_loop_address(part, rows, changes[0]):
+            return [('measured_masked_loop_address', candidate)]
         _,_,left,right = changes[0]
         return [('measured_address_add',candidate) for candidate in address_add(source,part,left,right)]
     if candidate := relocation_binding(source,header,part,rows,changes,symbols):
