@@ -5,6 +5,7 @@ import re
 from . import mips_regions
 from .csource import _blank
 from .integer_repair_support import IDENT, INTEGER, NUMBER, calls, edit, integer, split_args, view
+from .mips import normalized_integer_lines
 from .pattern_repairs import close
 
 
@@ -21,6 +22,9 @@ def variants(source, name, header, toolchain, rows):
     if not toolchain.startswith(('gcc-2.7.2-kmc', 'ido-7.1')):
         return []
     changes = [(i, want, have) for i, (kind, want, have) in enumerate(rows) if kind != ' ']
+    if toolchain.startswith('ido-7.1') and len(changes) == 4:
+        candidate = _split_update_base(source, name, header, rows)
+        return [('ido_split_counter_update_base', candidate)] if candidate else []
     if not 1 <= len(changes) <= 3 or any(not want or not have for _, want, have in changes):
         return []
     if toolchain.startswith('ido-7.1') and len(changes) == 2:
@@ -199,3 +203,42 @@ def _short_call(source, name, header, rows, changes):
     at = part.opening + 1
     return edit(source, [(at + body.start('drop'), at + body.end('drop'), ''),
                          (prototype.start('params') + params[1][1], prototype.end('params'), '')])
+
+_UPDATE_BASE = re.compile(
+    r'addiu \$sp, \$sp, -8\nmove \$a3, \$a0\nlw \$a2, (?P<count>\d+)\(\$a3\)\n'
+    r'addiu \$t6, \$a2, 1\nsw \$t6, (?P=count)\(\$a3\)\n'
+    r'sll \$t7, \$a2, 2\naddu \$t8, \$a0, \$t7\nsw \$a1, \d+\(\$t8\)\n'
+    r'b \.L28\nnop\naddiu \$sp, \$sp, 8\njr \$ra\nnop'
+)
+
+
+def _split_update_base(source, name, header, rows):
+    if len(rows) != 13 or rows[1][2]:
+        return None
+    target = normalized_integer_lines(left for _, left, _ in rows)
+    old = normalized_integer_lines(right for _, _, right in rows)
+    if not _UPDATE_BASE.fullmatch('\n'.join(target)):
+        return None
+    expected = (target[0], '', target[2].replace('$a3', '$a0'), target[3],
+                target[4].replace('$a3', '$a0'), *target[5:8], 'b .L24', *target[9:])
+    alias = '__repair_counter_base'
+    if old != expected or alias in source or alias in header or not (part := _function(source, name)):
+        return None
+    sig = re.search(rf'\bvoid\s+{re.escape(name)}\s*\(\s*(?P<kind>{IDENT})\s*\*\s*(?P<base>{IDENT}),'
+                    rf'\s*{IDENT}\s*\*\s*(?P<element>{IDENT})\s*\)\s*$', part.clean[:part.opening])
+    if not sig:
+        return None
+    base, element = sig['base'], sig['element']
+    body = re.fullmatch(
+        rf'\s*register\s+s32\s+(?P<index>{IDENT});(?P<gap>\s*)'
+        rf'(?P=index)\s*=\s*(?P<read>{base})->(?P<field>{IDENT});\s*'
+        rf'(?P<write>{base})->(?P=field)\s*=\s*(?P=index)\s*\+\s*1;\s*'
+        rf'{base}->(?P<array>{IDENT})\[(?P=index)\]\s*=\s*{element};\s*', part.body)
+    if not body or len({base, element, body['index'], body['field'], body['array']}) != 5:
+        return None
+    start = part.opening + 1
+    return edit(source, [
+        (start + body.start('gap'), start + body.start('gap'), f'\n    register {sig["kind"]} *{alias} = {base};'),
+        (start + body.start('read'), start + body.end('read'), alias),
+        (start + body.start('write'), start + body.end('write'), alias),
+    ])

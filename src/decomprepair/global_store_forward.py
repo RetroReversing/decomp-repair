@@ -48,7 +48,7 @@ def _forwards(lines, globals_):
         if not m or m[1] in globals_:
             continue
         local, expr = m[1], m[2]
-        if re.search(rf'[+\-*/&|^]=|\+\+|--', text) or re.search(rf'(?:^|[(,=;{{!~?:]|\breturn)\s*&\s*{local}\b', '\n'.join(lines), re.M):
+        if re.search(r'[+\-*/&|^]=|\+\+|--', text) or re.search(rf'(?:^|[(,=;{{!~?:]|\breturn)\s*&\s*{local}\b', '\n'.join(lines), re.M):
             continue
         writes = [i for i, other in enumerate(lines)
                   if re.search(rf'(?<![\w.>])\s*{local}\s*(?:[-+*/&|^%]|<<|>>)?=(?!=)', other)
