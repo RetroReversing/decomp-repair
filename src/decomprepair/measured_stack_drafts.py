@@ -2,7 +2,7 @@
 
 import re
 
-from . import formatted_stack_draft
+from . import formatted_stack_draft, message_frame_drafts
 from .integer_repair_support import IDENT, NUMBER, integer, view
 from .mips import abi_register_names
 from .unaligned_stack_drafts import MEMORY, stack_copy
@@ -103,6 +103,8 @@ def applies(asm):
     if ('swr' in asm and 'lwr' in asm
             and (stack_copy(asm, (('lbu', 4), ('lbu', 5), ('lbu', 6))) or _outgoing_copy(_lines(asm)))):
         return True
+    if 'osCreateMesgQueue' in asm and message_frame_drafts.evidence(_lines(asm)):
+        return True
     if 'nor' in asm and formatted_stack_draft.target(_lines(asm)):
         return True
     return asm.count('($sp)') >= 6 and 'sll' in asm and _word_copy(_lines(asm))
@@ -128,6 +130,63 @@ def _body(part):
         locals_[hit['name']] = hit['type'] + ('*' if hit['pointer'] else '')
         body = body[hit.end():]
     return locals_, body, end
+
+
+_RELOCATED_PACKET = re.compile(
+    rf'(?P<dest>{IDENT}) = (?:\(char \*\))?&(?P<base>{IDENT}) \+ (?P<offset>{NUMBER}); '
+    rf'(?P<loop>{IDENT}) = 3; M2C_FIELD\(&(?P=base), s32 \*, (?P<ready>{NUMBER})\) = 1; '
+    rf'sp0 = (?P<byte0>{NUMBER}); sp1 = (?P<byte1>{NUMBER}); sp2 = (?P<byte2>{NUMBER}); sp3 = (?P<arg>{IDENT}); '
+    r'do { \*(?P=dest) = 0; (?P=loop) -= 1; (?P=dest) \+= 1; } while \((?P=loop) >= 0\); '
+    r'M2C_FIELD\((?P=dest), s8 \*, 0\) = M2C_UNALIGNED32\(sp0\); '
+    r'M2C_FIELD\((?P=dest), M2C_UNK \*, 4\) = M2C_UNALIGNED32\(sp4\); '
+    r'M2C_FIELD\((?P=dest), M2C_UNK \*, 8\) = M2C_UNALIGNED32\(sp8\); '
+    rf'M2C_FIELD\((?P=dest), s8 \*, 0xC\) = (?P<end>{NUMBER});'
+)
+
+
+def _relocated_packet(part, name, context, loc, body, end, lines):
+    match = _RELOCATED_PACKET.fullmatch(body)
+    if not match:
+        return None
+    signature = re.search(PARAMS.format(name=re.escape(name)), part.clean[:part.opening])
+    expected = {f'sp{i}': 's8' for i in range(4)} | {match['dest']: 's8*', match['loop']: 's32'}
+    base = match['base']
+    if (loc != expected or not signature or signature['parameters'] != f's8 {match["arg"]}'
+            or not re.search(rf'\bextern M2C_UNK {base};', part.clean[:part.opening])
+            or re.search(rf'\bvolatile\b[^;{{}}\n]*\b{base}\b', context)):
+        return None
+    text = '\n'.join(' '.join(line.split()) for line in lines)
+    for op, offset in (('addiu', match['offset']), ('sw', match['ready'])):
+        region = re.findall(rf'{op} [^\n]+%lo\({base} \+ (?:\()?({NUMBER})(?: & 0xFFFF\))?\)', text)
+        if integer(offset) not in map(integer, region):
+            return None
+    dests = re.findall(rf'addiu (\$\w+), \$zero, ({NUMBER})\nsb \1, ({NUMBER})?\(\$sp\)', text)
+    values = [integer(match[f'byte{i}']) for i in range(3)]
+    if ([(integer(offset or '0'), integer(value)) for _, value, offset in dests] != list(enumerate(values))
+            or not re.search(r'sb \$a0, (?:0x3|3)\(\$sp\)', text)
+            or not any(integer(num) == integer(match['end']) for _, num in re.findall(
+                rf'addiu (\$\w+), \$zero, ({NUMBER})\nsb \1, (?:0x[cC]|12)\(\$\w+\)', text))):
+        return None
+    p = P
+    initial = ''.join(f'    {p}packet.bytes[{i}] = {value};\n' for i, value in enumerate(values))
+    return (part.source[:signature.start()] + f'''typedef struct {{ u8 bytes[12]; }} {p}packet_t;
+{signature['signature']} {{
+    {p}packet_t {p}packet;
+    s32 {p}i;
+    s8 *{p}dst;
+
+    {p}dst = (char *)&{base} + {match['offset']};
+    {p}i = 3;
+    M2C_FIELD(&{base}, s32 *, {match['ready']}) = 1;
+{initial}    {p}packet.bytes[3] = {match['arg']};
+    do {{
+        *{p}dst = 0;
+        {p}i -= 1;
+        {p}dst += 1;
+    }} while ({p}i >= 0);
+    *({p}packet_t *){p}dst = {p}packet;
+    M2C_FIELD({p}dst, u8 *, 0xC) = {match['end']};
+}}''' + part.source[end+1:])
 
 
 def _packet(part, name, context, loc, body, end):
@@ -240,6 +299,9 @@ def _words(part, name, context, loc, body, end, lines):
 
 def rewrite(source, name, asm, context=''):
     """Leave drafts with incomplete copy or source evidence to ordinary generation."""
+    if 'osCreateMesgQueue' in source and 'osCreateMesgQueue' in asm:
+        if fixed := message_frame_drafts.rewrite(source, name, context, _lines(asm)):
+            return fixed
     if 'u8 sp' in source and 'nor' in asm and (target := formatted_stack_draft.target(_lines(asm))):
         if fixed := formatted_stack_draft.rewrite(source, name, context, target):
             return fixed
@@ -253,7 +315,8 @@ def rewrite(source, name, asm, context=''):
     loc, body, end = _body(part)
     lines = _lines(asm)
     if _outgoing_copy(lines):
-        return _packet(part, name, context, loc, body, end)
+        return (_packet(part, name, context, loc, body, end)
+                or _relocated_packet(part, name, context, loc, body, end, lines))
     if (copy := stack_copy(asm, (('lbu', 4), ('lbu', 5), ('lbu', 6)))) and copy[0] == 0:
         return _reply(part, name, context, loc, body, end)
     return _words(part, name, context, loc, body, end, lines)
