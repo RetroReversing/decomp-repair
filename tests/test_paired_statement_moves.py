@@ -228,3 +228,40 @@ void f(void) {
     g(2);
 }'''
     assert any(c.index('c64 = 0x64;') > c.index('do { g(1); } while (0);') for _, c in wrapped_call_splits(source, 'f', limit=200))
+
+
+MATRIX = '''void f(float *m, float s, float c) {
+    m[0] = c;
+    m[1] = s * c;
+    m[2] = -s;
+    m[3] = 0.0f;
+}'''
+
+
+def test_stores_to_different_constant_cells_of_one_array_swap():
+    moved = [source for source in single_moves(MATRIX, 'f')]
+    assert any(source.index('m[2]') < source.index('m[1]') for source in moved)
+    assert any(source.index('m[3]') < source.index('m[0]') for source in moved)
+
+
+def test_stores_that_could_overlap_stay_ordered():
+    same_cell = MATRIX.replace('m[1] = s * c', 'm[0] = s * c')
+    assert all(source.index('m[0] = c') < source.index('m[0] = s') for source in single_moves(same_cell, 'f'))
+    reads_memory = MATRIX.replace('m[1] = s * c', 'm[1] = m[3]')
+    assert all(source.index('m[1] = m[3]') < source.index('m[3] = 0') for source in single_moves(reads_memory, 'f'))
+    reads_global = 'extern float g;\n' + MATRIX.replace('m[1] = s * c', 'm[1] = g')
+    assert all(source.index('m[1] = g') < source.index('m[3] = 0') for source in single_moves(reads_global, 'f'))
+    other_array = MATRIX.replace('m[2] = -s', 'n[2] = -s').replace('float *m', 'float *m, float *n')
+    assert all(source.index('n[2]') > source.index('m[1]') for source in single_moves(other_array, 'f'))
+
+
+def test_locals_initialised_by_a_call_are_not_globals():
+    source = '''void f(float *m, float x) {
+    float c = cosf(x);
+    float s = sinf(x);
+    m[0] = c;
+    m[1] = s;
+    m[2] = c * s;
+}'''
+    moved = single_moves(source, 'f')
+    assert any(candidate.index('m[2]') < candidate.index('m[0]') for candidate in moved)
