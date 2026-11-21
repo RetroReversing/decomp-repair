@@ -35,3 +35,9 @@ def test_refused_when_the_copy_is_not_equivalent_to_the_parameter():
     assert not variants(late, 'walk')  # the local holds something before the copy
     nested = SOURCE.replace('    var_s4 = arg2;\n', '    if (arg3) { var_s4 = arg2; }\n')
     assert not variants(nested, 'walk')  # not at the top level
+
+
+def test_the_last_parameter_can_be_the_one_copied():
+    last = SOURCE.replace('var_s4 = arg2;', 'var_s4 = arg3;').replace('arg3 == 0', 'arg2 == 0')
+    (_, candidate), = variants(last, 'walk')
+    assert 'arg3 &= 0xFFFCFFFF;' in candidate and 'var_s4' not in candidate
