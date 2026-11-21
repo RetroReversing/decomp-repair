@@ -608,3 +608,13 @@ def test_float_call_forwards_entry_argument_before_stack_output():
     raw_asm = asm.replace('jal distance', 'jal func_80001234')
     assert not p.shifted_call_variants(source, 'f', '', raw_asm, rows)
     assert p.shifted_call_variants(source, 'f', '', raw_asm, rows, resolve={'distance': 0x80001234}.get)
+
+    for formals, expected_type in [('f32 *item', 'f32 *'), ('s32 item, u32 limit', 's32')]:
+        typed = source.replace('s32 item', formals)
+        [(_, fixed)] = p.shifted_call_variants(typed, 'f', '', asm, rows)
+        assert f'f32 distance({expected_type}, u16 *);' in fixed
+        assert f'void f({formals})' in fixed
+        assert 'distance(item, &marker);' in fixed
+    assert not p.shifted_call_variants(source.replace('s32 item', 'f32 item'), 'f', '', asm, rows)
+    assert p.shifted_call_variants(source, 'f', 'void f(s32 item);', asm, rows)
+    assert not p.shifted_call_variants(implicit, 'f', 'void f(void);', asm, rows)

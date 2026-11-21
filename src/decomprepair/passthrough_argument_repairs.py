@@ -461,10 +461,13 @@ def _forward_stack_output(source, name, header, asm, callee, resolve):
     entry_carries_argument = _entry_a0_reaches(asm, callee) or (
         address is not None and _entry_a0_reaches(asm, f'func_{address:08X}'))
     if (not entry_carries_argument or not (part := view(source, name))
-            or re.search(rf'\b(?:{callee}|{name})\s*\(', _blank(header))):
+            or re.search(rf'\b{callee}\s*\(', _blank(header))):
         return None
+    gpr_type = r'(?:[su]32\b|(?:void|f32|[su](?:8|16|32))\s*\*)'
     signature = re.search(
-        rf'\bvoid\s+{re.escape(name)}\s*\((?P<formal>void|s32\s+(?P<arg>{IDENT}))\)\s*$',
+        rf'\bvoid\s+{re.escape(name)}\s*\((?P<formal>void|'
+        rf'(?P<kind>{gpr_type})[ \t]*(?P<arg>{IDENT})'
+        rf'(?:\s*,\s*{gpr_type}[ \t]*{IDENT}){{0,3}})\)\s*$',
         part.clean[:part.opening],
     )
     sites = list(calls(part, callee))
@@ -484,11 +487,13 @@ def _forward_stack_output(source, name, header, asm, callee, resolve):
     arg = signature['arg'] or '__repair_incoming'
     changes = [(start, start, f'{arg}, ')]
     if signature['arg'] is None:
-        if re.search(rf'\b{arg}\b', part.clean + header):
+        if (re.search(rf'\b{arg}\b', part.clean + header)
+                or re.search(rf'\b{re.escape(name)}\s*\(', _blank(header))):
             return None
         changes.append((*signature.span('formal'), f's32 {arg}'))
     pos = prototypes[0].start('types')
-    return edit(source, [(pos, pos, 's32, '), *changes])
+    arg_type = signature['kind'] or 's32'
+    return edit(source, [(pos, pos, f'{arg_type}, '), *changes])
 
 
 def _shifted_memory_wrapper(source, name, header, asm, rows, changes):
