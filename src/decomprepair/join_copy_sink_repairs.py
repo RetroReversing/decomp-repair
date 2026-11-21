@@ -29,7 +29,8 @@ one test, with the copy at the end of each arm:
 
 The copy has to stay on both arms: with one definition the compiler folds it into its source and the move is gone.
 Seen on a function that was 15 points from exact with only `$v0`/`$v1` differing, exact with this shape. Offered
-when both copies are the same statement and nothing else jumps to the label.
+when both copies are the same statement (or the first is the zero m2c folded in, `v = 0;`, for
+`v = x;` right after `x = 0;`) and nothing else jumps to the label.
 """
 import re
 
@@ -54,6 +55,15 @@ def _joined(cond):
         if depth == 0 and match[0] not in '()':
             return f'({cond})'
     return cond
+
+
+def _zero_copy(before, early, joined):
+    """True when `early` is `v = 0;` and `joined` is `v = x;` with `x = 0;` the statement just before the guard.
+
+    m2c folds a known zero into the first copy (`var_v0 = 0;`) but leaves the label's as it was (`var_v0 = var_s3;`);
+    they are the same copy, so the sunk one is the label's."""
+    first, second = re.fullmatch(r'(\w+) = 0;', early), re.fullmatch(r'(\w+) = (\w+);', joined)
+    return bool(first and second and first[1] == second[1] and re.search(rf'\b{second[2]}\s*=\s*0\s*;\s*$', before))
 
 
 def variants(source, name):
@@ -96,7 +106,10 @@ def variants(source, name):
         # the second arm: the label, then the same copy
         landing = re.compile(r'\s*' + label + r':\s*(?P<copy>[^;{}]+;)\s*$').match(clean, other_open + 1, other_end - 1)
         copy = ' '.join(clean[first.start('copy'):first.end('copy')].split())
-        if not landing or ' '.join(clean[landing.start('copy'):landing.end('copy')].split()) != copy:
+        if not landing:
+            continue
+        joined = ' '.join(clean[landing.start('copy'):landing.end('copy')].split())
+        if joined != copy and not _zero_copy(clean[:at], copy, joined):
             continue
         if len(re.findall(r'\bgoto\s+' + label + r'\s*;', clean[span[0]:span[1]])) != 1:
             continue
@@ -104,7 +117,7 @@ def variants(source, name):
         ind = re.match(r'[ \t]*', clean[line:])[0]
         body = source[inner_open + 1:jump.start()].rstrip()
         body = ''.join(l[4:] if l.startswith(ind + '        ') else l for l in body.splitlines(keepends=True))
-        text = ' '.join(source[first.start('copy'):first.end('copy')].split())
+        text = ' '.join(source[landing.start('copy'):landing.end('copy')].split())
         replacement = (f'if ({_joined(outer)} && {_joined(inner)}) {{' + body.rstrip() + '\n'
                        f'{ind}    {text}\n{ind}}} else {{\n{ind}    {text}\n{ind}}}')
         result.append((FAMILY, source[:at] + replacement + source[other_end:]))

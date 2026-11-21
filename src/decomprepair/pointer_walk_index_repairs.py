@@ -171,6 +171,91 @@ def _indexed_variants(source, name):
     return result[:4]
 
 
+SCALAR_SIZE = {'s8': 1, 'u8': 1, 'char': 1, 's16': 2, 'u16': 2, 'short': 2, 's32': 4, 'u32': 4, 'int': 4,
+               'f32': 4, 'float': 4}
+
+
+def _byte_cursor_variants(source, name):
+    """m2c's once-only walk over scalar globals with byte cursors, as the indexed `for` the game wrote.
+
+    A loop that ran once (`for (i = 0; i < 1U; i++)` over `ARR[i]`, with each array named by its first element)
+    comes out as counters and `char *` cursors that all step each pass and a `while (counter == 0)` test:
+
+        var_s2 = 0;
+        var_s1 = &D_800C4474;
+        var_s0 = &D_800C4470;
+        do {
+            ... *(s32 *)var_s0 ... *(s32 *)var_s1 ...
+            var_s1 += 4;
+            var_s2 += 1;
+            var_s0 += 4;
+        } while (var_s2 == 0);
+
+    The cursors are set up before the loop, ahead of the constants the game hoists, so the scheduler orders the
+    setup differently (an N64 function, GCC 2.7.2: 195 with the walk, 15 with the indexed loop, and exact with the
+    indexed loop and the copy at the join). The bound has to be unsigned, `< 1U`: `< 1` is a different compare.
+    Offered only when the meaning is unchanged: the counter starts at 0 and steps by one (so the walk runs once),
+    each cursor starts at a scalar global's address and steps by that scalar's size, and every use is a plain read
+    of that type through it that nothing after the loop depends on.
+    """
+    span = find(source, name)
+    if not span:
+        return []
+    clean = _blank(source)
+    result = []
+    for do in re.finditer(r'\bdo\s*{', clean[span[0]:span[1]]):
+        opening = span[0] + do.end() - 1
+        end = close(clean, opening, '{', '}')
+        tail = re.match(r'\s*while\s*\(\s*(' + ID + r')\s*==\s*0[uU]?\s*\)\s*;', clean[end:span[1]]) if end else None
+        if not tail:
+            continue
+        counter, loop_end = tail[1], end + tail.end()
+        before = clean[span[0]:span[0] + do.start()]
+        run = re.search(rf'(?:[ \t]*{ID}\s*=\s*(?:0|&\s*{ID})\s*;[ \t]*\n?)+[ \t]*$', before)
+        if not run:
+            continue
+        inits = re.findall(rf'({ID})\s*=\s*(0|&\s*({ID}))\s*;', run[0])
+        cursors = {c: (g or None) for c, value, g in inits if value != '0'}
+        zeros = [c for c, value, _ in inits if value == '0']
+        if zeros != [counter] or not cursors or len(cursors) != len(inits) - 1 or counter in cursors:
+            continue
+        types = {}
+        for cursor, glob in cursors.items():
+            decl = _decl(source, glob, '')
+            kind = _norm(decl[1]) if decl else ''
+            if kind not in SCALAR_SIZE or len(re.findall(rf'\b{re.escape(glob)}\b', clean[span[0]:span[1]])) != 1:
+                break
+            types[cursor] = kind
+        else:
+            body = clean[opening + 1:end - 1]
+            steps = re.search(r'(?:\s*(?:' + '|'.join(rf'{re.escape(c)}\s*\+=\s*{SCALAR_SIZE[types[c]]}' for c in cursors)
+                              + rf'|{re.escape(counter)}\s*\+=\s*1)\s*;)+\s*$', body)
+            if not steps or sorted(re.findall(rf'({ID})\s*\+=', steps[0])) != sorted([counter, *cursors]):
+                continue
+            inner = body[:steps.start()]
+            if (re.search(r'\b(?:continue|break|goto)\b', inner)
+                    or re.search(rf'\b{counter}\b', inner + clean[loop_end:span[1]])
+                    or any(re.search(rf'\b{re.escape(c)}\b', clean[loop_end:span[1]]) for c in cursors)):
+                continue
+            body_src = source[opening + 1:opening + 1 + steps.start()]
+            ok = True
+            for cursor, glob in cursors.items():
+                kind = types[cursor]
+                read = re.compile(rf'\*\s*\(\s*{re.escape(kind)}\s*\*\s*\)\s*{re.escape(cursor)}\b(?!\s*[\[+\-])')
+                if len(read.findall(inner)) != len(re.findall(rf'\b{re.escape(cursor)}\b', inner)):
+                    ok = False
+                    break
+                body_src = read.sub(f'(({kind} *)&{cursors[cursor]})[{counter}]', body_src)
+            if not ok:
+                continue
+            start = span[0] + run.start()
+            start = start + len(re.match(r'[ \t]*', source[start:]).group()) if source[start] in ' \t' else start
+            indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, span[0] + do.start()) + 1:]).group()
+            loop = f'for ({counter} = 0; {counter} < 1U; {counter}++) {{' + body_src.rstrip() + '\n' + indent + '}'
+            result.append((FAMILY, source[:start] + loop + source[loop_end:]))
+    return result[:2]
+
+
 def frame_variants(source, name):
     """Try a combined indexed loop and frame cleanup before the indexed-only variant."""
     if not without_unused_padding(source, name):
@@ -181,4 +266,4 @@ def frame_variants(source, name):
 
 def variants(source, name):
     # Keep both hypotheses available to callers that rank ordinary rewrite families.
-    return frame_variants(source, name) or _indexed_variants(source, name)
+    return (frame_variants(source, name) or _indexed_variants(source, name)) + _byte_cursor_variants(source, name)
