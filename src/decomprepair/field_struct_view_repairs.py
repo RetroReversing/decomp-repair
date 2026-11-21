@@ -10,17 +10,71 @@ without `__typeof__` rejects the candidate.
 """
 import re
 
+from .csource import find
 from .integer_repair_support import view
 
 FAMILY = 'field_struct_view'
 SITE_FAMILY = 'field_pointer_site'
-FAMILIES = (FAMILY, SITE_FAMILY)
+PRINTED_FAMILY = 'field_struct_view_printed'
+FAMILIES = (FAMILY, SITE_FAMILY, PRINTED_FAMILY)
 SITE_LIMIT = 24
 
 POINTER_FORM = '#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))'
 POINTER_SITE = '#define M2C_FIELD_PTR(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))'
 MEMBER_FORM = ('#define M2C_FIELD(expr, type_ptr, offset) '
                '(((struct { __typeof__(*(type_ptr)0) v; } *)((s8 *)(expr) + (offset)))->v)')
+
+
+PRINTED = re.compile(r'\*\(\((s8|u8|s16|u16|s32|u32|f32|void \*) \*\) (\(\(\(char \*\) ([A-Za-z_]\w*)\) \+ '
+                     r'(?:0x[0-9A-Fa-f]+|\d+)\))\)')
+
+
+def printed_variants(source, name):
+    """The same member form for the printed spelling a saved source carries: `*((T *) (((char *) base) + off))`.
+
+    A source a search saved has lost the `M2C_FIELD` macro, so `variants` never fires on it. Each dereference becomes
+    `(((Field_T *) (((char *) base) + off))->v)` of a one-member struct typedef put before the function. On a camera
+    function (KMC gcc 2.7.2) the member form on every access took the cleaned source from 8,535 to 6,105 (163 differing
+    instructions; the same score as declaring the real struct), and 8,620 to 7,010 on its first saved best, while on
+    the raw saved best it made it worse (8,805 to 12,336): the first scheduler's order of a load past a store to
+    memory outside any struct is what changes, so this offers every access, only the stores, only the loads, and
+    each base pointer's accesses alone; the judge decides."""
+    if POINTER_FORM in source or MEMBER_FORM in source:
+        return []
+    part = view(source, name)
+    if not part:
+        return []
+    sites = list(PRINTED.finditer(part.clean, part.opening, part.end))
+    if not sites:
+        return []
+
+    def is_store(site):
+        return bool(re.match(r'\s*(?:[-+*/|&^]|<<|>>)?=(?!=)', part.clean[site.end():site.end() + 6]))
+
+    def build(chosen):
+        types, edits = {}, []
+        for site in chosen:
+            kind = site[1]
+            label = 'Field_' + re.sub(r'\W', '_', kind).strip('_')
+            types[label] = kind
+            edits.append((site.start(), site.end(), f'((({label} *) {site[2]})->v)'))
+        header = ''.join(f'typedef struct {{ {kind} v; }} {label};\n' for label, kind in sorted(types.items()))
+        return edit_source(source, edits, find(source, name)[0], header)
+    groups = [sites, [site for site in sites if is_store(site)], [site for site in sites if not is_store(site)]]
+    groups += [[site for site in sites if site[3] == base] for base in dict.fromkeys(site[3] for site in sites)][:6]
+    seen, result = set(), []
+    for group in groups:
+        key = tuple(site.start() for site in group)
+        if group and key not in seen:
+            seen.add(key)
+            result.append((PRINTED_FAMILY, build(group)))
+    return result
+
+
+def edit_source(source, edits, definition, header):
+    for start, end, text in sorted(edits, reverse=True):
+        source = source[:start] + text + source[end:]
+    return source[:definition] + header + source[definition:]
 
 
 def variants(source, name):
