@@ -190,3 +190,31 @@ void apply(s32 input) {
     assert 'i = 2;' in fixed and '} while ((u8)i < 9);\n    i++;' in fixed
     assert fixed.index('__repair_before_publish =') < fixed.index('M2C_FIELD(&published')
     assert not variants(source.replace('ret = create(input);', 'ret = create(i);'), 'apply', rows)
+
+
+def test_move_a_global_clear_before_the_preheader_pointer_publish():
+    source = """\
+extern s32 head;
+extern s32 *tail;
+extern s32 *storage;
+void f(void) {
+    s32 *cursor;
+    s32 index;
+    tail = &storage;
+    cursor = &storage;
+    index = 0;
+    head = 0;
+    do {
+        consume(cursor, index);
+    } while (++index < 4);
+}
+"""
+    target = ['lui $at, %hi(head)', 'sw $zero, %lo(head)($at)',
+              'lui $at, %hi(tail)', 'sw $a1, %lo(tail)($at)']
+    rows = [('i', want, have) for want, have in zip(target, target[2:] + target[:2])]
+    [(family, fixed)] = variants(source, 'f', rows)
+    assert family == 'measured_preheader_global_stores'
+    assert 'head = 0;\n    tail = &storage;\n    cursor = &storage;' in fixed
+    assert not variants(source.replace('index = 0;', 'index = read_tail();'), 'f', rows)
+    assert not variants(source, 'f', rows, header='extern volatile s32 head;')
+    assert not variants(source.replace('    tail = &storage;', '    if (ready)\n        tail = &storage;'), 'f', rows)
