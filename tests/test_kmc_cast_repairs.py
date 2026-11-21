@@ -91,3 +91,36 @@ def test_indirect_byte_array_requires_one_read_with_relocation_evidence():
     assert not variants(BYTE_ARRAY_SOURCE, 'read', '', rows[:-1] + [('|', 'lbu $v0, ($a2)', 'lb $v0, ($a3)')])
     assert not variants(BYTE_ARRAY_SOURCE.replace('publish(label);', 'publish(*(label + index));'), 'read', '',
                         [(' ', 'lui $v1, %hi(label)', 'lui $v1, %hi(label)')] + rows)
+
+
+def test_unsigned_halfword_load_preserves_the_byte_stride():
+    rows = [('|', 'lhu $v0, %lo(table)($at)', 'lb $v0, %lo(table)($at)')]
+    patched = BYTE_ARRAY_SOURCE.replace('*(table + index)', '*(u16 *)(table + index)')
+    assert variants(BYTE_ARRAY_SOURCE, 'read', '', rows) == [('kmc_unsigned_halfword_array_load', patched)]
+    assert not variants(BYTE_ARRAY_SOURCE, 'read', '', rows, ('-fstrict-aliasing',))
+    assert not variants(BYTE_ARRAY_SOURCE, 'read', '', [
+        ('|', 'lhu $v0, %lo(table)($at)', 'lb $v0, %lo(label)($at)'),
+    ])
+
+
+def test_unsigned_byte_load_and_literal_store_are_proposed_together():
+    source = '''extern char table[];
+extern s8 marker;
+s32 read(s32 index) {
+    marker = 255;
+    return *(table + index);
+}
+'''
+    rows = [
+        BYTE_ARRAY_LOAD,
+        ('i', 'addiu $v0, $zero, 0xff', 'addiu $v0, $zero, -1'),
+        (' ', 'lui $at, %hi(marker)', 'lui $at, %hi(marker)'),
+        (' ', 'jr $ra', 'jr $ra'),
+        (' ', 'sb $v0, %lo(marker)($at)', 'sb $v0, %lo(marker)($at)'),
+    ]
+    fixed = source.replace('extern char', 'extern unsigned char').replace('extern s8', 'extern unsigned char')
+    assert variants(source, 'read', '', rows) == [('kmc_unsigned_byte_load_and_store', fixed)]
+    assert not variants(source, 'read', '', rows[:-1])
+    assert not variants(source.replace('marker = 255', 'marker = 127'), 'read', '', rows)
+    assert not variants(source, 'read', 'extern s8 marker;', rows)
+    assert not variants(source, 'read', '', rows[:3] + [rows[3], rows[3], rows[4]])
