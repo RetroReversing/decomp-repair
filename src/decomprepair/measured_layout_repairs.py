@@ -16,25 +16,44 @@ DECL = re.compile(r'\b(?:char|s8|u8|unsigned\s+char)\s+(?P<name>(?:frame|padding
                   r'\[\s*(?P<count>0x[0-9a-fA-F]+|\d+)\s*\]\s*;')
 
 
+def _unused_outer_arrays(part):
+    for hit in DECL.finditer(part.clean, part.opening + 1, part.end):
+        prefix = part.clean[part.opening + 1:hit.start()]
+        if (prefix.count('{') == prefix.count('}')
+                and (not prefix.rstrip() or prefix.rstrip()[-1] == ';')
+                and len(re.findall(rf'\b{hit["name"]}\b', part.body)) == 1
+                and not re.search(r'/[*/]', part.source[slice(*hit.span())])):
+            yield hit
+
+
 def unused_frame_array(source, name, rows, report):
-    """A known unused array can account for the exact excess frame size."""
+    """Adjust an unused byte array when saved registers witness the frame delta."""
     delta = report.get('frame_delta')
-    if (delta not in (-4,-8,-16,-24,-32) or report.get('saved_deltas') != [delta]
-            or report.get('local_deltas') not in ([],[0])
-            or any(mark not in (' ','s') for mark,_,_ in rows)):
+    if (delta not in (-32, -24, -16, -8, -4, 8, 16, 24, 32)
+            or report.get('saved_deltas') != [delta] or report.get('local_deltas') not in ([], [0])):
         return []
-    part = view(source,name)
+    part = view(source, name)
     if not part:
         return []
-    for hit in DECL.finditer(part.clean,part.opening+1,part.end):
-        prefix = part.clean[part.opening+1:hit.start()]
-        if (integer(hit['count']) != -delta or prefix.count('{') != prefix.count('}')
-                or (prefix.rstrip() and prefix.rstrip()[-1] != ';')
-                or len(re.findall(rf'\b{hit["name"]}\b',part.body)) != 1
-                or re.search(r'/[*/]',source[slice(*hit.span())])):
+    if delta > 0:
+        # Other instructions can still differ. Only a unanimous save delta and
+        # unchanged local offsets support extending the existing reservation.
+        arrays = list(_unused_outer_arrays(part))
+        if len(arrays) != 1 or not any(mark == 's' for mark, _, _ in rows):
+            return []
+        hit = arrays[0]
+        count = integer(hit['count'])
+        if not 1 <= count <= 64:
+            return []
+        return [('measured_grow_unused_frame_array',
+                 edit(source, [(*hit.span('count'), str(count + delta))]))]
+    if any(mark not in (' ', 's') for mark, _, _ in rows):
+        return []
+    for hit in _unused_outer_arrays(part):
+        if integer(hit['count']) != -delta:
             continue
         replacement = '\n' * source[slice(*hit.span())].count('\n')
-        return [('measured_unused_frame_array',edit(source,[(*hit.span(),replacement)]))]
+        return [('measured_unused_frame_array', edit(source, [(*hit.span(), replacement)]))]
     candidate = _trim_generated_frame_view(part, -delta)
     return [('measured_trim_frame_view', candidate)] if candidate else []
 

@@ -58,3 +58,25 @@ def test_trim_generated_overlay_without_touching_referenced_views():
     assert not unused_frame_array(source.replace('use(m2c_initial_frame.view_sp34.value)', 'use(m2c_initial_frame.bytes)'),
                                   'f', rows, report)
     assert not unused_frame_array(source, 'f', rows, {**report, 'local_deltas': [4]})
+
+
+def test_grow_existing_unused_byte_array_with_independent_instruction_differences():
+    source = """void f(void) {
+    s32 header;
+    u8 padding[8];
+    read_header(&header);
+}
+"""
+    rows = [
+        ('s', 'addiu $sp, $sp, -80', 'addiu $sp, $sp, -64'),
+        ('s', 'sw $ra, 76($sp)', 'sw $ra, 60($sp)'),
+        ('r', 'move $a0, $s0', 'move $a1, $s0'),
+    ]
+    report = {'frame_delta': 16, 'saved_deltas': [16], 'local_deltas': [0]}
+    assert unused_frame_array(source, 'f', rows, report) == [
+        ('measured_grow_unused_frame_array', source.replace('padding[8]', 'padding[24]'))]
+    assert not unused_frame_array(source, 'f', rows, dict(report, local_deltas=[16]))
+    assert not unused_frame_array(source, 'f', rows, dict(report, saved_deltas=[0, 16]))
+    assert not unused_frame_array(source.replace('&header', 'padding'), 'f', rows, report)
+    assert not unused_frame_array(source.replace('u8 padding[8];', 'u8 padding[8]; u8 pad[8];'),
+                                  'f', rows, report)
