@@ -220,12 +220,14 @@ def _relocated_scaled_load(part, header, rows, row, register, amount):
         mark, wanted, current = rows[row + 1]
         if mark == ' ' and wanted == current and re.fullmatch(rf'sw \$ra, {NUMBER}\(\$sp\)', wanted):
             rows = rows[:row + 1] + rows[row + 2:]
-    changed = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
-    if len(changed) not in (2, 3) or changed[0] != row or changed[-1] not in (row + 3, row + 4):
+    load_row = row + 3
+    if load_row < len(rows) and rows[load_row][1].startswith(('jr ', 'jal ')):
+        load_row += 1
+    if load_row >= len(rows) or rows[load_row][0] == ' ':
         return None
-    if len(changed) == 3 and changed[1] != row + 1:
-        return None
-    load_row = changed[-1]
+    local = {row, load_row}
+    if rows[row + 1][0] != ' ':
+        local.add(row + 1)
     high, low = [], []
     for side in (1, 2):
         addend = r'(?:\+(?:0x2|2))?' if side == 2 else ''
@@ -253,6 +255,10 @@ def _relocated_scaled_load(part, header, rows, row, register, amount):
     kind, width = {'lh': ('s16', 2), 'lhu': ('u16', 2), 'lb': ('s8', 1), 'lbu': ('u8', 1)}[low[0][0]]
     if width == 1 and (amount < 2 or high[1][2]):
         return None
+    # A matching halfword relocation pair identifies the access even with other differences.
+    if any(mark != ' ' and i not in local for i, (mark, _, _) in enumerate(rows)):
+        if width != 2 or not high[1][2] or any(rows[i][0] != ' ' for i in range(row + 2, load_row)):
+            return None
     return _inline_scale(part, header, {high[0][1]}, kind, width, byte_shift=amount)
 
 
@@ -458,15 +464,17 @@ def variants(source, name, header, rows):
     part = view(source, name)
     if part is None:
         return []
+    for row, register, amount in shifts:
+        if candidate := _relocated_scaled_load(part, header, rows, row, register, amount):
+            return [('measured_relocated_array_scale', candidate)]
     if len(shifts) > 1:
         return _repeated_word_table(part, header, rows, shifts)
     row, register, amount = shifts[0]
-    if sum(mark != ' ' for mark, _, _ in rows) == 1 and amount >= 2 and (bases := _scale_bases(rows, row, register)):
+    if sum(mark not in (' ', 'r') for mark, _, _ in rows) == 1 and amount >= 2 and (
+            bases := _scale_bases(rows, row, register) & _scale_bases(rows, row, register, side=2)):
         candidate = _inline_scale(part, header, bases) if amount == 2 else _shared_shift(part, header, bases, amount)
         if candidate:
             return [('measured_duplicate_word_scale', candidate)]
-    if candidate := _relocated_scaled_load(part, header, rows, row, register, amount):
-        return [('measured_relocated_array_scale', candidate)]
     if amount != 2:
         return []
     if candidate := _float_table(part, name, header, rows):

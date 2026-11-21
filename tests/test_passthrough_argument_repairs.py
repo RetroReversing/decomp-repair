@@ -583,3 +583,28 @@ void update(void *context) {
     for edited in (source.replace('**, 16)', '**, 20)'),
                    source.replace('= M2C_FIELD(result, void **, 16);', '= M2C_FIELD(result, void **, 16);\n use(item);')):
         assert not p.shifted_call_variants(edited, 'update', '', asm, rows)
+
+
+def test_float_call_forwards_entry_argument_before_stack_output():
+    source = ('f32 distance(u16 *); /* extern */\n'
+              'void f(s32 item) {\n    u16 marker;\n'
+              '    f32 result;\n    result = distance(&marker);\n    save(result, item);\n}')
+    target = ['addiu $sp, $sp, -0x18', 'sw $ra, 0x14($sp)', 'jal distance',
+              'addiu $a1, $sp, 0x10', 'jal save', 'nop',
+              'lw $ra, 0x14($sp)', 'jr $ra', 'addiu $sp, $sp, 0x18']
+    rows = [('r', op, op.replace('$a1', '$a0')) if i == 3 else (' ', op, op)
+            for i, op in enumerate(target)]
+    asm = '\n'.join(target)
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == p.FAMILY
+    assert 'f32 distance(s32, u16 *);' in fixed
+    assert 'distance(item, &marker);' in fixed
+    implicit = source.replace('s32 item', 'void').replace('save(result, item)', 'save(result)')
+    [(_, fixed)] = p.shifted_call_variants(implicit, 'f', '', asm, rows)
+    assert 'void f(s32 __repair_incoming)' in fixed
+    assert 'distance(__repair_incoming, &marker);' in fixed
+    assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n' + asm, rows)
+    assert not p.shifted_call_variants(source, 'f', 'f32 distance(s32, u16 *);', asm, rows)
+    raw_asm = asm.replace('jal distance', 'jal func_80001234')
+    assert not p.shifted_call_variants(source, 'f', '', raw_asm, rows)
+    assert p.shifted_call_variants(source, 'f', '', raw_asm, rows, resolve={'distance': 0x80001234}.get)
