@@ -35,7 +35,7 @@ DRAFT = re.compile(rf'''
     ''', re.X)
 
 
-def stack_copy(asm):
+def stack_copy(asm, views=(('lhu', 4), ('lbu', 6), ('lbu', 7))):
     """(stack offset, input register) for a fixed-frame eight-byte copy with overlapping reloads."""
     if not all(op in asm for op in ('lwl', 'lwr', 'swl', 'swr')):
         return None
@@ -70,7 +70,7 @@ def stack_copy(asm):
         reloads = {(m[1], integer(m[3] or '0')) for line in lines[index+9:]
                    if (m := MEMORY.fullmatch(line)) and m[4] == '$sp'}
         advance = re.compile(rf'addiu\s+{re.escape(bases[0])},\s*{re.escape(bases[0])},\s*({NUMBER})')
-        if ({('lhu', slot+4), ('lbu', slot+6), ('lbu', slot+7)} <= reloads
+        if ({(op, slot+offset) for op, offset in views} <= reloads
                 and any(integer(hit[1]) == 8 for line in lines[index+9:] if (hit := advance.fullmatch(line)))):
             copies.append((slot, bases[0]))
     return copies[0] if len(copies) == 1 else None
