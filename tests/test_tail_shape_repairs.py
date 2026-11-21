@@ -147,3 +147,33 @@ endlabel f
     assert not leading.variants(source, 'f', asm.replace('jalr $v0', 'jalr $v1'))
     assert not leading.variants(source, 'f', asm.replace('jalr $v0', 'move $a0, $zero\njalr $v0'))
     assert not leading.variants(source.replace('callback(0);', 'if (ready) callback(0);'), 'f', asm)
+
+
+def test_leading_argument_of_a_wrapper_that_swaps_the_other_two():
+    source = """\
+extern s32 target(s32, s32);
+void f(s32 arg1, s32 arg2) {
+    target(arg2, arg1);
+}
+"""
+    asm = """\
+glabel f
+addiu $sp, $sp, -0x18
+sw $ra, 0x10($sp)
+addu $v0, $a1, $zero
+addu $a1, $a2, $zero
+jal target
+addu $a2, $v0, $zero
+lw $ra, 0x10($sp)
+jr $ra
+addiu $sp, $sp, 0x18
+endlabel f
+"""
+    [(family, fixed)] = leading.variants(source, 'f', asm)
+    assert family == leading.FAMILY
+    assert 'target(s32, s32, s32);' in fixed
+    assert 'void f(s32 arg0, s32 arg1, s32 arg2)' in fixed
+    assert 'target(arg0, arg2, arg1);' in fixed
+    assert not leading.variants(source, 'f', asm.replace('$a2, $v0, $zero', '$a2, $a1, $zero'))
+    assert not leading.variants(source, 'f', asm.replace('$v0, $a1, $zero', '$a0, $a1, $zero'))
+    assert not leading.variants(source.replace('target(arg2, arg1);', 'target(arg2, arg1); other();'), 'f', asm)

@@ -69,6 +69,46 @@ def _indirect_zero_wrapper(source, clean, name, params_open, params_close, openi
                          (proto, proto, 's32, '), (literal, literal, 'arg0, ')])
 
 
+def _swaps_trailing_arguments(asm):
+    """Prove that the call leaves a0 untouched and sends entry a2/a1 in reverse order."""
+    ops = [(op, re.sub(r'\s+', '', args)) for op, args in _instructions(asm)]
+    if len(ops) != 9 or ops[4][0] != 'jal':
+        return False
+    frame, save, _, _, _, _, restore, ret, finish = ops
+    if (frame[0] != 'addiu' or not re.fullmatch(r'\$sp,\$sp,-(?:0x[\da-fA-F]+|\d+)', frame[1])
+            or finish != ('addiu', frame[1].replace('-', ''))
+            or save[0] != 'sw' or not re.fullmatch(r'\$ra,(?:0x[\da-fA-F]+|\d+)\(\$sp\)', save[1])
+            or restore != ('lw', save[1]) or ret != ('jr', '$ra')):
+        return False
+    provenance = {'$a1': '$a1', '$a2': '$a2'}
+    for op, args in (ops[2], ops[3], ops[5]):
+        move = re.fullmatch(r'(\$(?:a[12]|v[01]|t[0-9])),(\$\w+)(,\$zero)?', args)
+        if not move or move[2] not in provenance or (op, bool(move[3])) not in {
+                ('move', False), ('addu', True), ('or', True)}:
+            return False
+        provenance[move[1]] = provenance[move[2]]
+    return provenance['$a1'] == '$a2' and provenance['$a2'] == '$a1'
+
+
+def _reordered_wrapper(source, clean, name, params_open, params_close, opening, end, names, asm):
+    if names != ['arg1', 'arg2'] or not _swaps_trailing_arguments(asm):
+        return None
+    body = re.fullmatch(rf'\s*(?:return\s+)?(?P<callee>{IDENT})\s*\(\s*(?P<arg>arg2)\s*,\s*arg1\s*\)\s*;\s*',
+                        clean[opening + 1:end - 1])
+    if not body or body['callee'] == name:
+        return None
+    callee = re.escape(body['callee'])
+    protos = list(re.finditer(
+        rf'(?m)^[ \t]*(?:extern\s+)?{IDENT}\s+{callee}\s*\(\s*(?P<first>{IDENT})\s*,\s*{IDENT}\s*\)\s*;',
+        clean[:params_open]))
+    if len(protos) != 1 or re.search(rf'(?m)^\s*#\s*define\s+(?:{callee}|arg[012]|s32)\b', clean):
+        return None
+    at = protos[0].start('first')
+    call = opening + 1 + body.start('arg')
+    return edit(source, [(params_open + 1, params_open + 1, 's32 arg0, '),
+                         (at, at, 's32, '), (call, call, 'arg0, ')])
+
+
 def variants(source, name, asm):
     span = find(source, name)
     if not span:
@@ -89,6 +129,9 @@ def variants(source, name, asm):
         return []
     missing = int(first[1])
     names = [re.search(IDENT + r'\s*$', p)[0].strip() for p in params]
+    candidate = _reordered_wrapper(source, clean, name, params_open, params_close, opening, end, names, asm)
+    if candidate:
+        return [(FAMILY, candidate)]
     # the call that forwards every parameter, in order
     body = clean[opening:end]
     for call in re.finditer(r'\b(' + IDENT + r')\s*\(', body):
