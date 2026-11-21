@@ -41,3 +41,10 @@ def test_parallel_cursor_rewrites_fixed_displacements():
 ])
 def test_parallel_cursor_requires_stable_relation(old, new):
     assert not variants(SOURCE.replace(old, new), 'scan')
+
+
+
+def test_parallel_cursor_rejects_shadowed_base_pointer():
+    source = SOURCE.replace('    lead =', '    { unsigned short *base = words;\n    lead =')
+    source = source.replace('while (i < n);', 'while (i < n); }')
+    assert not variants(source, 'scan')
