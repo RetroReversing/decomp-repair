@@ -545,7 +545,7 @@ def shifted_call_variants(source, name, header, asm, rows):
         relocations = _relocated_shift_count(rows, local)
         if relocations is not None and i - local[0] <= 4 + relocations:
             nearby.append((call[1], i, local))
-        elif (i + 1 in local and _shifted_byte_reload(rows, changes, i + 1)
+        elif (i + 1 in local and _shifted_narrow_reload(rows, changes, i + 1)
               and (candidate_source := _missing_caller_argument(source, name, header, asm, call[1]))):
             return [(FAMILY, candidate_source)]
     if len(nearby) != 1:
@@ -561,10 +561,10 @@ def shifted_call_variants(source, name, header, asm, rows):
     return []
 
 
-def _shifted_byte_reload(rows, changes, slot):
-    """An earlier byte calculation and the call delay slot use the same shifted argument."""
-    load = re.fullmatch(rf'lbu \$a1, ({NUMBER})\((\$\w+)\)', rows[slot][1])
+def _shifted_narrow_reload(rows, changes, slot):
+    """An earlier byte or halfword calculation and the call reload use the same shifted argument."""
+    load = re.fullmatch(rf'(lbu|lhu) \$a1, ({NUMBER})\((\$\w+)\)', rows[slot][1])
     if not load or rows[slot][2] != rows[slot][1].replace('$a1,', '$a0,', 1):
         return False
-    return any(i < slot - 1 and re.fullmatch(rf'lbu \$a1, {load[1]}\(\$\w+\)', rows[i][1])
+    return any(i < slot - 1 and re.fullmatch(rf'{load[1]} \$a1, {load[2]}\(\$\w+\)', rows[i][1])
                and rows[i][2] == rows[i][1].replace('$a1,', '$a0,', 1) for i in changes)

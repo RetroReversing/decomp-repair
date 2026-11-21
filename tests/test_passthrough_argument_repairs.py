@@ -464,3 +464,21 @@ s32 f(void) {
     assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n'+asm, rows)
     rows[0] = ('r', 'lbu $a1, 16($v1)', 'lbu $a0, 16($v1)')
     assert not p.shifted_call_variants(source, 'f', '', asm, rows)
+
+
+def test_halfword_reload_supports_the_same_proven_argument_forwarding():
+    source = '''M2C_UNK send(u16); /* extern */
+s32 f(void) {
+    send(read_word());
+    return 1;
+}
+'''
+    target = ['lhu $a1, 8($v1)', 'slt $v0, $a1, $v0', 'addiu $v0, $a1, 1',
+              'jal send', 'lhu $a1, 8($v0)', 'jr $ra', 'nop']
+    rows = [('r', op, op.replace('$a1', '$a0')) if '$a1' in op else (' ', op, op) for op in target]
+    asm = '\n'.join(target)
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert 'send(__repair_incoming, read_word());' in fixed
+    rows[0] = ('r', 'lbu $a1, 8($v1)', 'lbu $a0, 8($v1)')
+    assert not p.shifted_call_variants(source, 'f', '', asm, rows)
