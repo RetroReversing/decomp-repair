@@ -128,10 +128,53 @@ def byte_offset(part, left, right):
     return edits if len(edits) == 1 else []
 
 
+def unsigned_byte_store(part, rows, changes):
+    """Use an unsigned byte access when the target materializes the same high-bit byte."""
+    immediates = [(i, a, b) for i, a, b in changes if rows[i][0] == 'i']
+    if len(immediates) != 1 or any(rows[i][0] not in ('i', 'r') for i, _, _ in changes):
+        return None
+    index, left, right = immediates[0]
+    want = re.fullmatch(rf'addiu ({REG}), \$zero, ({NUMBER})', left)
+    have = re.fullmatch(rf'addiu ({REG}), \$zero, -({NUMBER})', right)
+    if not want or not have or want[1] != have[1]:
+        return None
+    value = integer(want[2])
+    if not 128 <= value <= 255 or integer(have[2]) != 256 - value:
+        return None
+
+    tail = rows[index+1:index+4]
+    if len(tail) < 2:
+        return None
+    high = re.fullmatch(rf'lui ({REG}), %hi\(({IDENT})\)', tail[0][1])
+    if not high or high[1] == want[1]:
+        return None
+    base, symbol = high.groups()
+    expected = f'sb {want[1]}, %lo({symbol})({base})'
+    store = 2 if tail[1][1] == 'jr $ra' else 1
+    if len(tail) <= store or tail[store][1] != expected or any(
+        kind != ' ' or a != b for kind, a, b in tail[:store+1]
+    ):
+        return None
+
+    declaration = rf'(?m)^\s*extern\s+(?:s8|signed\s+char)\s+{symbol}\s*;'
+    if not re.search(declaration, part.clean[:part.opening]):
+        return None
+    assignment = re.compile(rf'(?m)^[ \t]*(?P<name>{symbol})\s*=\s*(?P<value>{NUMBER})\s*;')
+    sites = list(assignment.finditer(part.clean, part.opening+1, part.end))
+    if (len(sites) != 1 or integer(sites[0]['value']) != value
+            or len(re.findall(rf'\b{symbol}\b', part.body)) != 1):
+        return None
+    return edit(part.source, [(*sites[0].span('name'), f'*(unsigned char *)&{symbol}')])
+
+
 def variants(source, name, rows):
     changes = [(index, left, right) for index,(marker,left,right) in enumerate(rows) if marker != ' ']
-    if (not 1 <= len(changes) <= 2 or any(rows[i][0] != 'i' or left == right for i,left,right in changes)
+    if (not 1 <= len(changes) <= 2 or not any(rows[i][0] == 'i' for i, _, _ in changes)
             or not (part := view(source,name)) or re.search(r'\b(?:volatile|asm|__asm__)\b',part.body)):
+        return []
+    if candidate := unsigned_byte_store(part, rows, changes):
+        return [('measured_unsigned_byte_store', candidate)]
+    if any(rows[i][0] != 'i' or left == right for i,left,right in changes):
         return []
     if patches := call_arguments(part,rows,changes):
         return [('measured_call_literal',edit(source,patches))]

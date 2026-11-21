@@ -45,3 +45,28 @@ def test_byte_offsets_use_the_same_access_width_direction_and_base():
     rows = [('i','lw $v0, 0x18($v1)','lw $v0, 0x10($v1)')]
     assert variants(source,'f',rows) == [('measured_byte_offset',source.replace('0x10','0x18'))]
     assert not variants(source,'f',[('i','lw $v0, 0x18($sp)','lw $v0, 0x10($sp)')])
+
+
+def test_unsigned_store_preserves_the_byte_with_an_unsigned_access():
+    source = '''
+extern s8 flag;
+void f(void) {
+    flag = 0xAB;
+}
+'''
+    rows = [
+        ('i', 'addiu $v0, $zero, 0xab', 'addiu $v0, $zero, -0x55'),
+        (' ', 'lui $at, %hi(flag)', 'lui $at, %hi(flag)'),
+        (' ', 'jr $ra', 'jr $ra'),
+        (' ', 'sb $v0, %lo(flag)($at)', 'sb $v0, %lo(flag)($at)'),
+    ]
+    [(family, fixed)] = variants(source, 'f', rows)
+    assert family == 'measured_unsigned_byte_store'
+    assert 'extern s8 flag;' in fixed
+    assert '*(unsigned char *)&flag = 0xAB;' in fixed
+    assert not variants(source, 'f', rows[:-1])
+    assert not variants(source, 'f', [(*rows[0][:2], 'addiu $v0, $zero, -1'), *rows[1:]])
+    assert not variants(source.replace('0xAB', '0xAA'), 'f', rows)
+    assert not variants(source.replace('flag =', 's8 flag;\n    flag ='), 'f', rows)
+    assert not variants(source.replace('extern s8', 'extern volatile s8'), 'f', rows)
+    assert family in dict(variants(source, 'f', [('r', 'or $a0, $a0, $v1', 'or $v0, $v0, $v1'), *rows]))
