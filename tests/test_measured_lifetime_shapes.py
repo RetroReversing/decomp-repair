@@ -89,3 +89,32 @@ void f(int object, int mode) {
     assert not measured(source, target, changes, 'ido-7.1', 'int work(int, int, int);')
     assert not measured(source.replace('+ 136', '+ 132'), target, changes, 'ido-7.1')
     assert not measured(source.replace(', object);', ', mode);'), target, changes, 'ido-7.1')
+
+
+def test_ido_counter_update_binds_only_the_two_counter_accesses():
+    target = (
+        'addiu $sp, $sp, -8', 'move $a3, $a0', 'lw $a2, 0x40($a3)',
+        'addiu $t6, $a2, 1', 'sw $t6, 0x40($a3)', 'sll $t7, $a2, 2',
+        'addu $t8, $a0, $t7', 'sw $a1, 0x10($t8)', 'b .L28',
+        'nop', 'addiu $sp, $sp, 8', 'jr $ra', 'nop',
+    )
+    rows = [(' ', op, op) for op in target]
+    rows[1] = ('<', target[1], '')
+    rows[2] = ('r', target[2], 'lw $a2, 0x40($a0)')
+    rows[4] = ('r', target[4], 'sw $t6, 0x40($a0)')
+    rows[8] = ('i', target[8], 'b .L24')
+    source = '''
+void insert(EntryList *list, Entry *item) {
+    register s32 index;
+    index = list->count;
+    list->count = index + 1;
+    list->items[index] = item;
+}
+'''
+    [(family, fixed)] = repairs.variants(source, 'insert', '', 'ido-7.1', rows)
+    assert family == 'ido_split_counter_update_base'
+    assert 'register EntryList *__repair_counter_base = list;' in fixed
+    assert fixed.count('__repair_counter_base->count') == 2
+    assert 'list->items[index] = item;' in fixed
+    assert not repairs.variants(source.replace('index + 1', 'index + 2'), 'insert', '', 'ido-7.1', rows)
+    assert not repairs.variants(source, 'insert', '', 'gcc-2.7.2-kmc', rows)
