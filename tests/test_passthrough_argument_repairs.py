@@ -46,3 +46,30 @@ def test_a_callee_given_no_arguments_gets_all_of_the_callers_at_once():
               '}\n')
     texts = [t for _, t in p.variants(source, 'func_8007AA40')]
     assert any('func_8007A974(arg0, arg1, arg2);' in t for t in texts)
+
+
+def test_literal_wrapper_restores_the_unwritten_incoming_argument():
+    source = '''M2C_UNK g(M2C_UNK); /* extern */
+void f(void) {
+    g(2);
+}
+'''
+    asm = '''addiu $sp, $sp, -0x18
+sw $ra, 0x10($sp)
+jal g
+addiu $a1, $zero, 0x2
+lw $ra, 0x10($sp)
+jr $ra
+addiu $sp, $sp, 0x18
+'''
+    fixed = p.missing_entry_argument(source, 'f', asm)
+    assert fixed
+    assert 'M2C_UNK g(s32, M2C_UNK);' in fixed
+    assert 'void f(s32 arg0)' in fixed
+    assert 'g(arg0, 2);' in fixed
+    assert p.missing_entry_argument(source, 'f', asm.replace('0x2\n', '3\n')) is None
+    assert p.missing_entry_argument(source, 'f', asm.replace('$a1', '$a0')) is None
+    assert p.missing_entry_argument(source, 'f', asm, 'void g(s32);') is None
+    assert p.missing_entry_argument(source.replace('g(2)', 'g(0)'), 'f',
+                                    asm.replace('addiu $a1, $zero, 0x2', 'addu $a1, $zero, $zero'))
+    assert p.missing_entry_argument(source.replace('g(2)', 'g(-1)'), 'f', asm.replace(' 0x2\n', ' -0x1\n'))
