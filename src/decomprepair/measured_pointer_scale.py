@@ -133,15 +133,15 @@ def _scale_bases(rows, row, register, side=1):
     return result
 
 
-def _read_declaration(part, header, symbol, uses):
-    found = re.search(rf'\bextern M2C_UNK {symbol};', part.clean[:part.opening])
+def _read_declaration(part, header, symbol, uses, *, kind='M2C_UNK'):
+    found = re.search(rf'\bextern {kind} {symbol};', part.clean[:part.opening])
     if (not found or re.search(rf'\b{symbol}\b', header)
             or len(re.findall(rf'\b{symbol}\b', part.clean)) != uses + 1):
         return None
     return found
 
 
-def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=None, *, require_cast=False):
+def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=None, *, require_cast=False, declared='M2C_UNK'):
     product = rf'\((?P<value>.+) \* (?P<scale>{NUMBER})\)'
     patterns = (
         re.compile(rf'&(?P<table>{IDENT}) \+ {product}', re.S),
@@ -164,7 +164,7 @@ def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=Non
         if byte_shift is not None and scale & -scale != 1 << byte_shift:
             continue
         table = hit['table']
-        declaration = _read_declaration(part, header, table, 1)
+        declaration = _read_declaration(part, header, table, 1, kind=declared)
         if declaration and not re.search(r'/[*/]', part.source[deref.start():end]):
             if width > 1 and scale != width:
                 # The odd part of the byte stride also survives in the target.
@@ -568,12 +568,71 @@ def _preloaded_word_offset(part, header, rows, row, register):
     return edit(part.source, edits) if len(edits) == 1 else None
 
 
+def _guarded_halfword_table(part, header, rows, row, register, amount):
+    """Recover the halfword being tested when the draft reads a whole word."""
+    if row + 4 >= len(rows):
+        return None
+    high, add, load, branch = rows[row + 1:row + 5]
+    if any(mark != ' ' or a != b for mark, a, b in (high, add, branch)):
+        return None
+    base = re.fullmatch(rf'lui (\$\w+), %hi\(({IDENT})\)', high[1])
+    if not base or add[1] != f'addu {base[1]}, {base[1]}, {register}':
+        return None
+    address = re.escape(f'%lo({base[2]})({base[1]})')
+    halfword = re.fullmatch(rf'lhu (\$\w+), {address}', load[1])
+    if not halfword or load[2] != f'lw {halfword[1]}, %lo({base[2]})({base[1]})':
+        return None
+    if not re.fullmatch(rf'b(?:eqz|nez) {re.escape(halfword[1])}, .+', branch[1]):
+        return None
+    declaration = _read_declaration(part, header, base[2], 1, kind='s32')
+    if not declaration:
+        return None
+    pattern = rf'\bif\s*\(\*\(&{base[2]} \+ \((?P<index>{IDENT}) \* (?P<stride>{NUMBER})\)\) [!=]= 0\)'
+    hit = re.search(pattern, part.body)
+    if not hit or not (stride := integer(hit['stride'])) or stride & -stride != 1 << amount:
+        return None
+    return _inline_scale(part, header, {base[2]}, 'u16', 2, byte_shift=amount, declared='s32')
+
+
 def _scaled_global_call(part, header, rows, row, register, amount):
     """The shifted byte index and a relocated base are passed as one argument."""
-    if not re.fullmatch(r'\$a[0-3]', register) or row + 3 >= len(rows):
+    if not re.fullmatch(r'\$a[0-3]', register) or row + 2 >= len(rows):
         return None
     following = rows[row + 1:row + 4]
-    hi, lo, add = (entry[1] for entry in following)
+    first, second = (entry[1] for entry in following[:2])
+    delay_call = re.fullmatch(rf'jal ({IDENT})', first)
+    if delay_call:
+        add = re.fullmatch(rf'addu {re.escape(register)}, {re.escape(register)}, (\$v[01])', second)
+        if not add or any(mark != ' ' or a != b for mark, a, b in following[:2]):
+            return None
+        table = _preloaded_base(rows, row, add[1])
+        callee = delay_call
+    else:
+        binding = _scaled_call_binding(rows, row, register, following)
+        if not binding:
+            return None
+        table, callee = binding
+    if not table or not (
+        _read_declaration(part, header, table, 1)
+        or (delay_call and _read_declaration(part, header, table, 1, kind='s32'))
+    ):
+        return None
+    sites = list(calls(part, callee[1]))
+    if len(sites) != 1:
+        return None
+    start, end = sites[0]
+    args = part.clean[start:end]
+    # Require all earlier source arguments to be simple, so commas identify this slot.
+    prefix = rf'(?:\s*(?:{IDENT}|{NUMBER})\s*,){{{register[-1]}}}'
+    hit = re.match(rf'{prefix}\s*\({IDENT} \* (?P<stride>{NUMBER})\) \+ (?P<base>&{table})\s*(?=,|$)', args)
+    if not hit or not (stride := integer(hit['stride'])) or stride & -stride != 1 << amount:
+        return None
+    pos = start + hit.start('base')
+    return edit(part.source, [(pos, pos, '(u8 *)')])
+
+
+def _scaled_call_binding(rows, row, register, following):
+    hi, lo, add = ([entry[1] for entry in following] + [''])[:3]
     base = re.fullmatch(rf'lui (\$v[01]), %hi\(({IDENT})\)', hi)
     if (base and lo == f'addiu {base[1]}, {base[1]}, %lo({base[2]})'
             and add == f'addu {register}, {register}, {base[1]}'
@@ -604,20 +663,7 @@ def _scaled_global_call(part, header, rows, row, register, amount):
             return None
     else:
         return None
-    if not _read_declaration(part, header, table, 1):
-        return None
-    sites = list(calls(part, callee[1]))
-    if len(sites) != 1:
-        return None
-    start, end = sites[0]
-    args = part.clean[start:end]
-    # Require all earlier source arguments to be simple, so commas identify this slot.
-    prefix = rf'(?:\s*(?:{IDENT}|{NUMBER})\s*,){{{register[-1]}}}'
-    hit = re.match(rf'{prefix}\s*\({IDENT} \* (?P<stride>{NUMBER})\) \+ (?P<base>&{table})\s*(?=,|$)', args)
-    if not hit or not (stride := integer(hit['stride'])) or stride & -stride != 1 << amount:
-        return None
-    pos = start + hit.start('base')
-    return edit(part.source, [(pos, pos, '(u8 *)')])
+    return table, callee
 
 
 def _loaded_halfword_call_offset(source, name, header, rows):
@@ -673,16 +719,21 @@ def variants(source, name, header, rows):
         return [('measured_pointer_step', candidate)]
     if '* 2' in source and 'u16 *' in source and (candidate := _halfword_scans(source, name, rows)):
         return [('measured_halfword_scan_scale', candidate)]
-    if 'extern M2C_UNK ' not in source or not (shifts := _word_shifts(rows)):
+    if not (shifts := _word_shifts(rows)):
         return []
     part = view(source, name)
     if part is None:
         return []
     for row, register, amount in shifts:
-        if amount == 2 and (candidate := _preloaded_word_offset(part, header, rows, row, register)):
-            return [('measured_preloaded_word_offset', candidate)]
+        if candidate := _guarded_halfword_table(part, header, rows, row, register, amount):
+            return [('measured_guarded_halfword_table', candidate)]
         if candidate := _scaled_global_call(part, header, rows, row, register, amount):
             return [('measured_scaled_global_call', candidate)]
+    if 'extern M2C_UNK ' not in source:
+        return []
+    for row, register, amount in shifts:
+        if amount == 2 and (candidate := _preloaded_word_offset(part, header, rows, row, register)):
+            return [('measured_preloaded_word_offset', candidate)]
         if candidate := _indirect_halfword_table(part, header, rows, row, register, amount):
             return [('measured_indirect_halfword_table', candidate)]
         if candidate := _float_record_load(part, header, rows, row, register, amount):

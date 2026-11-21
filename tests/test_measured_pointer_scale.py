@@ -462,3 +462,26 @@ def test_call_pointer_scale_uses_a_preloaded_base_and_unchanged_other_argument()
     assert 'send((i * 12) + (u8 *)&blocks, 11)' in fixed
     overwrites = (' ', 'addiu $a0, $zero, 11', 'addiu $a0, $zero, 11')
     assert not variants(source, 'f', '', rows[:-1] + [overwrites])
+
+
+def test_guarded_halfword_read_recovers_stride_from_an_explicit_word_declaration():
+    source = 'extern s32 records;\nvoid f(s32 i) { if (*(&records + (i * 24)) == 0) stop(); }'
+    rows = [('i', 'sll $v0, $v0, 3', 'sll $v0, $v0, 5')]
+    rows += [(' ', op, op) for op in ('lui $at, %hi(records)', 'addu $at, $at, $v0')]
+    rows += [('|', 'lhu $v0, %lo(records)($at)', 'lw $v0, %lo(records)($at)'),
+             (' ', 'bnez $v0, 32', 'bnez $v0, 32')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_guarded_halfword_table']
+    assert 'extern u8 records[];' in fixed
+    assert 'if (*(u16 *)(records + i * 24) == 0)' in fixed
+    assert not variants(source, 'f', '', rows[:-1])
+    assert not variants(source, 'f', 'extern s32 records;', rows)
+
+
+def test_call_record_pointer_is_formed_in_the_delay_slot():
+    source = 'extern s32 records;\nvoid f(s32 i) { send(6, (i * 24) + &records); }'
+    rows = [(' ', op, op) for op in ('lui $v0, %hi(records)', 'addiu $v0, $v0, %lo(records)')]
+    rows += [('i', 'sll $a1, $a1, 3', 'sll $a1, $a1, 5')]
+    rows += [(' ', op, op) for op in ('jal send', 'addu $a1, $a1, $v0')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_scaled_global_call']
+    assert 'send(6, (i * 24) + (u8 *)&records)' in fixed
+    assert not variants(source, 'f', '', rows[1:])
