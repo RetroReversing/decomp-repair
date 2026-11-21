@@ -13,6 +13,8 @@ by the local pass, so how a draft names and scopes its variables decides which v
   register for all of them. 470 -> 280.
 - `do_while_to_for`: `i = 0; do { ...; i++; } while (c);` becomes `for (i = 0; c; i++) { ... }`, which gcc tests
   at the loop head with no copy of the test before the loop. 1130 -> 770 (with the loop's pointer declared outside).
+  The init is also offered left where it was, as `for (; c; i++)`: gcc emits a header init right before the loop,
+  after the pointer declarations in front of it. 80 -> 20.
 
 Each rewrite only renames, inlines or re-spells: what is computed does not change (the for-loop form assumes the
 condition holds on entry, which the judge settles). Proposals only; the compiler and the byte judge decide.
@@ -240,6 +242,11 @@ def _for_loops(source, name):
                  (clean.rfind('\n', brace, brace + 1 + step.start()) if clean[brace:brace + 1 + step.start()].count('\n') else brace + 1 + step.start(),
                   semicolon, f'\n{indent}}}')]
         result.append(_edit(source, edits))
+        # The init stays a statement of its own: gcc places a for-header init right before the loop, after the
+        # loop's pointer declarations, and the game's code had it before them (80 -> 20 on the N64 function).
+        kept = [e for e in edits if e[0] != opening + init.start()]
+        kept[0] = (start, brace + 1, f'for (; {condition}; {var}++) {{')
+        result.append(_edit(source, kept))
         if len(result) >= LIMIT:
             break
     return result

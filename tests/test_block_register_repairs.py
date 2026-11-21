@@ -95,6 +95,17 @@ def test_a_do_while_counter_loop_becomes_a_for():
     assert not any('for (i = 0; i < 2' in t for f, t in blocks.variants(withcontinue, 'f') if f == blocks.FOR)
 
 
+def test_the_counter_init_can_stay_a_statement_of_its_own():
+    # N64: the init before the loop's pointer declaration, not in the for header, moved a `move $s4, $zero` to
+    # where the target has it (80 -> 20).
+    source = ('void f(void) {\n    s32 i;\n\n    i = 0;\n    {\n        volatile u8 *mode = (u8 *)&G;\n'
+              '        do {\n            use(mode[0]);\n            i += 1;\n        } while (i < 2);\n    }\n}\n')
+    texts = [t for f, t in blocks.variants(source, 'f') if f == blocks.FOR]
+    assert any('i = 0;\n    {\n        volatile u8 *mode = (u8 *)&G;\n        for (; i < 2; i++) {\n            use(mode[0]);\n        }\n' in t
+               for t in texts)
+    assert any('for (i = 0; i < 2; i++) {' in t for t in texts)
+
+
 def test_nothing_to_offer_without_loops_or_pointers():
     assert not blocks.variants('void g(void) { h(); }\n', 'g')
     assert not families('void g(void) { asm("nop"); }\n')
