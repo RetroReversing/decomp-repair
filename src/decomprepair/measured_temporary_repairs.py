@@ -98,6 +98,79 @@ def null_guard_alias(source, part, rows):
     return None
 
 
+def _shift_carrier(rows):
+    changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if len(changes) != 2 or changes[1] - changes[0] not in (1, 3):
+        return None
+    first, second = changes
+    shift = re.compile(rf'srl ({REG}), ({REG}), ({NUMBER})')
+    mask = re.compile(rf'andi ({REG}), ({REG}), (?:0x1|1)')
+    want, have = map(shift.fullmatch, rows[first][1:])
+    want_mask, have_mask = map(mask.fullmatch, rows[second][1:])
+    if (not all((want, have, want_mask, have_mask)) or want[1] == have[1]
+            or want[2] != have[2] or integer(want[3]) != integer(have[3])
+            or want_mask[1] != have_mask[1] or want_mask[2] != want[1] or have_mask[2] != have[1]):
+        return None
+    if second == first + 3:
+        test, branch = (rows[i][1] for i in (first + 1, first + 2))
+        origin = re.escape(want[2])
+        if (want[2] in (want[1], have[1]) or not re.fullmatch(rf'andi {origin}, {origin}, {NUMBER}', test)
+                or not re.fullmatch(rf'beqz {origin}, \S+', branch)):
+            return None
+    if want[1] == want[2] == '$v0':
+        return integer(want[3]), True
+    if want[1] == want_mask[1]:
+        return integer(want[3]), False
+    return None
+
+
+def _staged_getter(source, part, amount):
+    if not 0 < amount < 8:
+        return None
+    hit = re.fullmatch(
+        rf'\s*(?P<type>s32) (?P<result>{IDENT});\s*(?P=result) = 0;\s*'
+        rf'if \([^{{}};]+\) {{\s*(?P<calc>(?P=result) = \((?P<fn>{IDENT})\(\) >> '
+        rf'(?P<amount>{NUMBER})\) & 1;)\s*}}\s*return (?P=result)(?P<mask> & (?:0xFF|255));\s*',
+        part.clean[part.opening + 1:part.clean.rfind('}', part.opening, part.end)])
+    if not hit or integer(hit['amount']) != amount or not re.search(
+            rf'\bu32\s+{hit["fn"]}\s*\(\s*\)\s*;', part.clean[:part.opening]):
+        return None
+    result = hit['result']
+    start = part.opening + 1
+    a, b = hit.span('calc')
+    indent = re.search(r'[^\n]*$', part.clean[:start + a])[0]
+    replacement = f'{result} = {hit["fn"]}();\n{indent}{result} >>= {hit["amount"]};\n{indent}{result} &= 1;'
+    return edit(source, [(start + a, start + b, replacement),
+                         (start + hit.start('type'), start + hit.end('type'), 'u8'),
+                         (start + hit.start('mask'), start + hit.end('mask'), '')])
+
+
+def staged_shift_mask(source, part, rows):
+    """Give the shift and mask the shared local shown by the target."""
+    if not (gap := _shift_carrier(rows)):
+        return None
+    amount, call_result = gap
+    if call_result:
+        return _staged_getter(source, part, amount)
+
+    pattern = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<result>{IDENT}) = \((?P<status>{IDENT}) >> '
+                         rf'(?P<amount>{NUMBER})\) & 1;')
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
+        result, status = hit['result'], hit['status']
+        if integer(hit['amount']) != amount or result == status:
+            continue
+        decl = re.search(rf'\b(?P<typ>s32)\s+{result}\s*;', part.body)
+        if not decl or not re.search(rf'\bu32\s+{status}\s*;', part.body):
+            continue
+        if len(re.findall(rf'\b{result}\s*=(?!=)', part.body)) != 1 or re.search(rf'&\s*{result}\b', part.body):
+            continue
+        replacement = f"{hit['indent']}{result} = {status} >> {hit['amount']};\n{hit['indent']}{result} &= 1;"
+        at = part.opening + 1
+        return edit(source, [(*hit.span(), replacement),
+                             (at + decl.start('typ'), at + decl.end('typ'), 'u32')])
+    return None
+
+
 def variants(source, name, rows):
     part = view(source,name)
     if part is None:
@@ -106,4 +179,6 @@ def variants(source, name, rows):
         return [('measured_direct_load_return',candidate)]
     if candidate := null_guard_alias(source,part,rows):
         return [('measured_null_guard_alias',candidate)]
+    if candidate := staged_shift_mask(source,part,rows):
+        return [('measured_staged_shift_mask',candidate)]
     return []
