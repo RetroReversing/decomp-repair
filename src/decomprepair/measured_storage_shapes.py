@@ -2,7 +2,13 @@
 
 import re
 
-from . import measured_call_stride, measured_draft_shapes, measured_indexed_storage, measured_relocated_lifetimes
+from . import (
+    measured_call_stride,
+    measured_draft_shapes,
+    measured_indexed_storage,
+    measured_relocated_indices,
+    measured_relocated_lifetimes,
+)
 from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, calls, edit, integer, view
 from .mips_returns import instructions
@@ -17,16 +23,19 @@ def variants(source, name, header, rows, asm, *, big_endian):
     for family in (measured_draft_shapes, measured_indexed_storage):
         if choices := family.variants(source, name, header, rows, asm):
             return choices
+    if choices := measured_relocated_indices.variants(source, name, header, rows, changed):
+        return choices
+    candidate = None
     if len(changed) == 1 and big_endian:
         label, candidate = 'wide_sdk_return_store', _wide_return(source, name, header, rows, asm, changed[0])
     elif len(changed) == 2:
         label, candidate = 'staged_pointer_advance', _pointer_advance(source, name, rows, changed)
     elif len(changed) == 3:
         label, candidate = 'cursor_after_word_copy', _cursor(source, name, rows, changed)
-    else:
-        return (measured_relocated_lifetimes.variants(source, name, header, rows, asm, changed)
-                + measured_call_stride.variants(source, name, header, rows, changed))
-    return [(label, candidate)] if candidate else []
+    if candidate:
+        return [(label, candidate)]
+    return (measured_relocated_lifetimes.variants(source, name, header, rows, asm, changed)
+            + measured_call_stride.variants(source, name, header, rows, changed))
 
 
 def _pointer_advance(source, name, rows, changed):

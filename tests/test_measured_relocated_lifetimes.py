@@ -85,3 +85,32 @@ sb $zero, 3($v1)'''
     assert 'M2C_FIELD(__repair_reset_second, s8 *, 1) = __repair_reset_invalid;' in fixed
     assert not repairs.variants(source, 'f', '', rows, asm.replace('%lo(onStop)', '%lo(onOther)'), big_endian=True)
     assert not repairs.variants(source.replace('s8 *, 3)', 's8 *, 5)'), 'f', '', rows, asm, big_endian=True)
+
+
+def test_reload_the_stored_context_slot_through_its_address():
+    source = '''extern void *context;
+void update(void *input) {
+    s32 saved;
+    void *item;
+    saved = begin_update();
+    M2C_FIELD(context, void **, 12) = input;
+    item = M2C_FIELD(context, void **, 12);
+    M2C_FIELD(context, s16 *, 4) = 2;
+    M2C_FIELD(context, s32 *, 16) = (s32) M2C_FIELD(item, s32 *, 8);
+    end_update(saved, item);
+}
+'''
+    target = [
+        'sw $ra, 16($sp)', 'jal begin_update', 'move $s0, $a0', 'lui $a0, %hi(context)',
+        'lw $a0, %lo(context)($a0)', 'sw $s0, 12($a0)', 'lw $a1, 12($a0)', 'addiu $v1, $zero, 2',
+        'sh $v1, 4($a0)', 'lw $v1, 8($a1)', 'sw $v1, 16($a0)', 'jal end_update', 'move $a0, $v0',
+        'jr $ra', 'nop',
+    ]
+    rows = [('r', op, 'move $a1, $s0') if op == 'lw $a1, 12($a0)' else (' ', op, op) for op in target]
+    [(family, fixed)] = repairs.variants(source, 'update', '', rows, '\n'.join(target), big_endian=True)
+    assert family == 'stored_context_slot_reload'
+    assert '__repair_context_slot = &M2C_FIELD(context, void **, 12);' in fixed
+    assert 'M2C_FIELD(__repair_context, s16 *, 4) = 2;\n    item = *__repair_context_slot;' in fixed
+    assert 'end_update(saved, item);' in fixed
+    assert not repairs.variants(source.replace('s16 *, 4) = 2', 's16 *, 6) = 2'),
+                                                'update', '', rows, '\n'.join(target), big_endian=True)
