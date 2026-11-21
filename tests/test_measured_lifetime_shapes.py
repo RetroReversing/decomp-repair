@@ -5,7 +5,7 @@ KMC = 'gcc-2.7.2-kmc'
 
 def measured(source, target, changes, compiler=KMC, header=''):
     rows = [('r', op, changes[i]) if i in changes else (' ', op, op) for i, op in enumerate(target)]
-    return repairs.variants(source, 'f', header, compiler, rows)
+    return repairs.variants(source + '\n', 'f', header, compiler, rows)
 
 
 def test_guard_bypasses_the_result_copy():

@@ -8,6 +8,14 @@ from .integer_repair_support import IDENT, INTEGER, NUMBER, calls, edit, integer
 from .pattern_repairs import close
 
 
+def _function(source, name):
+    part = view(source, name)
+    if part and (end := close(part.clean, part.opening, '{', '}')):
+        part.end = end
+        return part
+    return None
+
+
 def variants(source, name, header, toolchain, rows):
     """Offer a single structural edit for a small, specific instruction difference."""
     if not toolchain.startswith(('gcc-2.7.2-kmc', 'ido-7.1')):
@@ -39,7 +47,7 @@ def _guarded_return(source, name, rows, change):
             or not re.fullmatch(r'move \$v0, \$s[0-7]', rows[copy // 4][1])
             or not re.fullmatch(r'lw \$ra, .+\(\$sp\)', rows[at // 4][1])):
         return None
-    part = view(source, name)
+    part = _function(source, name)
     if not part:
         return None
     tail = re.search(rf'(?m)^(?P<indent>[ \t]*)}}[ \t]*\n[ \t]*return\s+(?P<local>{IDENT});\s*$', part.body)
@@ -85,7 +93,7 @@ def _post_call_reset(source, name, rows, changes):
                               for i in range(second + 1, call_at)):
         return None
     name_at_call = rows[call_at][1].split()[1]
-    part = view(source, name)
+    part = _function(source, name)
     if not part or len(list(calls(part, name_at_call))) != 1:
         return None
     # Match only straight-line statements directly ahead of a result-bearing call.
@@ -131,7 +139,7 @@ def _float_carrier(source, name, changes):
     if (constant != f'mtc1 $at, {keep}' or loaded != f'mtc1 $at, {reuse}'
             or not store.startswith(f'swc1 {keep}, ') or stored != store.replace(keep + ',', reuse + ',', 1)):
         return None
-    part = view(source, name)
+    part = _function(source, name)
     if not part:
         return None
     narrow, wide = r'(?:f32|float)', r'(?:f64|double)'
@@ -171,7 +179,7 @@ def _short_call(source, name, header, rows, changes):
             or any(not re.fullmatch(r'sw \$ra, .+\(\$sp\)', row[1]) for row in rows[first + 1:last - 2])
             or re.search(rf'\b{callee}\s*\(', _blank(header))):
         return None
-    part = view(source, name)
+    part = _function(source, name)
     if not part:
         return None
     signature = re.search(rf'\b{re.escape(name)}\s*\(\s*(?:{INTEGER}|M2C_UNK)\s+(?P<a>{IDENT}),\s*'
