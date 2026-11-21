@@ -373,3 +373,74 @@ s32 f(s32 context) {
     assert fixed == source.replace('search(1)', 'search(context, 1)')
     assert not p.shifted_call_variants(source.replace('search(context, 2)', 'search(2)'), 'f', '', asm, rows)
     assert not p.shifted_call_variants(source.replace('search(1)', 'search(3)'), 'f', '', asm, rows)
+
+
+def test_shifted_call_uses_only_paths_that_reach_the_selected_case():
+    source = '''
+s32 left();
+s32 right();
+void f(int context, int flags) {
+    switch (mode) {
+    case 0:
+        left(context, flags & 0xFFFF);
+        return;
+    case 1:
+        right(flags & 0xFFFF);
+        return;
+    }
+}
+'''
+    target = [
+        'bnez $v0, .Lright', 'nop',
+        'jal left', 'andi $a1, $a1, 0xFFFF',
+        'j .Lend', 'nop',
+        'jal right', 'andi $a1, $a1, 0xFFFF',
+        'jr $ra', 'nop',
+    ]
+    labels = {6: '.Lright:\n', 8: '.Lend:\n'}
+
+    def assembly(instructions):
+        return '\n'.join(f'{labels.get(i, "")}/* {i*4:06X} {0x80000000+i*4:08X} 00000000 */ {op}'
+                         for i, op in enumerate(instructions))
+
+    rows = [(' ', op, op) for op in target]
+    rows[7] = ('r', target[7], 'andi $a0, $a1, 0xFFFF')
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', assembly(target), rows)
+    assert family == 'passthrough_argument'
+    assert 'right(context, flags & 0xFFFF);' in fixed
+    assert 'left(context, flags & 0xFFFF);' in fixed
+
+    # A live predecessor that called left, or a delay-slot write on the path
+    # to right, destroys the evidence for forwarding the entry argument.
+    assert not p.shifted_call_variants(source, 'f', '', assembly(target[:4]+['j .Lright']+target[5:]), rows)
+    assert not p.shifted_call_variants(source, 'f', '', assembly(target[:1]+['move $a0, $zero']+target[2:]), rows)
+    annulled = ['beqzl $v0, .Lend', 'move $a0, $zero', 'j .Lright', 'nop', *target[4:]]
+    assert p.shifted_call_variants(source, 'f', '', assembly(annulled), rows)
+
+
+def test_shifted_global_word_load_restores_missing_formal():
+    source = '''
+s32 allocate(s32); /* extern */
+extern s32 capacity;
+s32 f(void) {
+    result = allocate(capacity);
+    return 0;
+}
+'''
+    rows = [
+        ('r', 'lui $a1, %hi(capacity)', 'lui $a0, %hi(capacity)'),
+        ('r', 'lw $a1, %lo(capacity)($a1)', 'lw $a0, %lo(capacity)($a0)'),
+        (' ', 'jal allocate', 'jal allocate'),
+        (' ', 'nop', 'nop'),
+    ]
+    asm = '\n'.join(row[1] for row in rows)
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert 's32 f(s32 __repair_incoming)' in fixed
+    assert 's32 allocate(s32, s32);' in fixed
+    assert 'result = allocate(__repair_incoming, capacity);' in fixed
+
+    for load in ('lw $a0, %lo(capacity)($a1)', 'lw $a0, %lo(other)($a0)'):
+        bad_rows = [rows[0], ('r', rows[1][1], load), *rows[2:]]
+        assert not p.shifted_call_variants(source, 'f', '', asm, bad_rows)
+    assert not p.shifted_call_variants(source, 'f', 's32 allocate(s32);', asm, rows)
