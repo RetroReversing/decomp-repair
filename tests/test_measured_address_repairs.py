@@ -130,3 +130,16 @@ def test_saved_global_displacement_is_measured_in_bytes_at_one_call():
     assert not variants(source, 'f', '', rows[:3] + [(' ', 'move $s0, $zero', 'move $s0, $zero')] + rows[3:])
     assert not variants(source, 'f', 'extern u32 timer;', rows)
     assert not variants(source.replace('- 8', '- 4'), 'f', '', rows)
+
+
+def test_masked_loop_address_exposes_commuted_machine_add_in_integer_units():
+    source = ('void f(void *base) {\n    void *entry;\n    s32 i;\n'
+              '    for (i = 0; i < 9; i++) {\n'
+              '        entry = ((i & 0xFFFF) * 4) + base;\n        free(entry);\n    }\n}')
+    rows = [(' ', op, op) for op in ('andi $v0, $s0, 0xffff', 'sll $v0, $v0, 2')]
+    rows += [('r', 'addu $s1, $v0, $s2', 'addu $s1, $s2, $v0')]
+    result = dict(variants(source, 'f', '', rows))['measured_masked_loop_address']
+    assert 'entry = (void *)(((i & 0xFFFF) * 4) + (u32)base);' in result
+    assert not variants(source.replace('void *base', 'u16 *base'), 'f', '', rows)
+    assert not variants(source.replace(') * 4)', ') * 8)'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[1:])
