@@ -652,3 +652,41 @@ def test_guarded_forward_uses_the_resolved_call_label_for_entry_proof():
     assert 'effect(void *, s32, s32)' in fixed
     assert 'effect(object, data, 0)' in fixed
     assert not p.shifted_call_variants(source, 'f', '', raw, rows, resolve={'effect': 0x80003000}.get)
+
+
+def test_switch_forwarding_requires_all_rom_entries_to_preserve_the_proven_argument():
+    source = '''s32 effect(u8); /* extern */
+void f(void *object) {
+    switch (kind) {
+    case 2:
+        effect(mode);
+        break;
+    }
+}
+'''
+    code = [
+        'sltiu $v0, $v1, 2', 'beqz $v0, .Lend', 'sll $v0, $v1, 2',
+        'lui $at, %hi(jtbl_80003000)', 'addu $at, $at, $v0',
+        'lw $v0, %lo(jtbl_80003000)($at)', 'jr $v0', 'nop',
+        'move $a0, $zero', 'jal effect', 'lbu $a1, 8($s0)',
+        'sb $zero, 8($s0)', 'jr $ra', 'nop',
+    ]
+    base = 0x80001000
+    raw = '\n'.join(('.Lend:\n' if i == 12 else '') + f'/* {i*4:06X} {base+i*4:08X} 00000000 */ {op}'
+                    for i, op in enumerate(code))
+    rows = [('r', op, op.replace('$a1', '$a0')) if i == 10 else (' ', op, op)
+            for i, op in enumerate(code)]
+
+    def reader(indices):
+        return lambda symbol, n: b''.join((base + i*4).to_bytes(4, 'big') for i in indices) if (
+            symbol == 'jtbl_80003000' and n == 8) else None
+
+    def proposals(indices):
+        return p.shifted_call_variants(source, 'f', '', raw, rows, read_data=reader(indices), big_endian=True)
+
+    [(_, fixed)] = proposals([9, 12])
+    assert 'effect(void *, u8)' in fixed and 'effect(object, mode)' in fixed
+    assert not proposals([8, 9])  # One case overwrites the incoming argument.
+    assert not proposals([9, 10])  # No instruction may enter a delay slot.
+    assert not proposals([9, 99])
+    assert not proposals([9])
