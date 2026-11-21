@@ -5,6 +5,7 @@ judge, never an equivalence proof or permission to reassociate floating arithmet
 """
 import re
 
+from .call_lifetime_repairs import block_path
 from .integer_repair_support import IDENT, edit, refs, view
 
 LIMIT = 6
@@ -63,3 +64,124 @@ def variants(source, name):
                 if len(result) >= LIMIT:
                     return result
     return result
+
+
+REPEATED_FLOAT_PRODUCT = 'repeated_float_product_staging'
+F32_REG = r'\$f\d+'
+FLOAT_LITERAL = r'(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?[fF]'
+
+
+def _multiply_conversion_sites(rows):
+    """Count matching multiply/convert/transfer chains with different register use."""
+    mul = re.compile(rf'mul\.s ({F32_REG}), ({F32_REG}), ({F32_REG})')
+    convert = re.compile(rf'trunc\.w\.s ({F32_REG}), ({F32_REG})')
+    move = re.compile(rf'mfc1 (\$\w+), ({F32_REG})')
+    count = 0
+    for product, cast, transfer in zip(rows, rows[1:], rows[2:]):
+        a, b = (mul.fullmatch(op) for op in product[1:])
+        c, d = (convert.fullmatch(op) for op in cast[1:])
+        e, f = (move.fullmatch(op) for op in transfer[1:])
+        if (a and b and c and d and e and f and a[1] == c[2] and b[1] == d[2]
+                and c[1] == e[2] and d[1] == f[2] and e[1] == f[1] and a[1] != b[1]):
+            count += 1
+    return count
+
+
+def _unused_float_locals(part, before):
+    decl = rf'(?<=[;{{}}])\s*f32\s+(?P<names>{IDENT}(?:\s*,\s*{IDENT})*)\s*;'
+    names = {name for match in re.finditer(decl, part.clean[:before])
+             if block_path(part, match.start('names')) == [part.opening]
+             for name in re.findall(IDENT, match['names'])}
+    unused = sorted(name for name in names if len(re.findall(rf'\b{name}\b', part.body)) == 1)
+    return names, unused
+
+
+def _array_names(part):
+    decl = rf'(?<=[;{{}}])\s*extern\s+f32\s+(?P<arrays>{IDENT}\s*\[\s*\](?:\s*,\s*{IDENT}\s*\[\s*\])*)\s*;'
+    return {name for match in re.finditer(decl, ';' + part.clean[:part.opening])
+            for name in re.findall(IDENT, match['arrays'])}
+
+
+def repeated_products(source, name, rows):
+    """Stage the same interpolation across conversions without reordering products."""
+    if _multiply_conversion_sites(rows) < 2 or not (part := view(source, name)):
+        return []
+    if re.search(r'\b(?:goto|for|while|do|asm|__asm__)\b', part.body):
+        return []
+    # Anchor at a statement so the added assignment never escapes an unbraced arm.
+    anchor = r'(?m)^(?P<indent>[ \t]*)'
+    interpolation = (
+        rf'\(\s*\(\s*1\.0[fF]\s*-\s*(?P<weight>{IDENT})\s*\)\s*\*\s*(?P<left>{IDENT})'
+        rf'\s*\[\s*(?P<index>{IDENT})\s*\]\s*\+\s*(?P=weight)\s*\*\s*(?P<right>{IDENT})'
+        rf'\s*\[\s*(?P=index)(?:\s*\+\s*1)?\s*\]\s*\)'
+    )
+    scaled = re.compile(
+        anchor + rf'(?P<out>\*\s*{IDENT}|{IDENT})\s*=\s*(?P<cast>\(s32\)\s*\()?'
+        rf'(?P<factor>{IDENT})\s*\*\s*(?P<interp>{interpolation})\s*\*\s*'
+        rf'(?P<gain>{FLOAT_LITERAL})(?(cast)\s*\))\s*;'
+    )
+    bridge = re.compile(anchor + rf'(?P<out>{IDENT})\s*=\s*(?P<factor>{IDENT})\s*\*\s*(?P<interp>{interpolation})\s*;')
+    arrays = _array_names(part)
+    groups = {}
+    for m in scaled.finditer(part.clean, part.opening + 1, part.end):
+        if {m['left'], m['right']} <= arrays and part.clean[:m.start()].rstrip()[-1:] in ';{}':
+            key = re.sub(r'\s+', '', m['interp'])
+            groups.setdefault(key, []).append(m)
+    result = []
+    for key, sites in groups.items():
+        if len(sites) != 3:
+            continue
+        a, b, c = sites
+        linked = [m for m in bridge.finditer(part.clean, a.end(), b.start())
+                  if re.sub(r'\s+', '', m['interp']) == key and part.clean[:m.start()].rstrip()[-1:] in ';{}']
+        if len(linked) != 1:
+            continue
+        intermediate = linked[0]
+        names, unused = _unused_float_locals(part, a.start())
+        carrier = intermediate['out']
+        if not unused or {a['weight'], a['factor'], carrier, c['out']} - names:
+            continue
+        if (a['factor'] != intermediate['factor'] or b['factor'] != carrier or c['factor'] != carrier
+                or not a['cast'] or not b['cast'] or c['cast']
+                or not all(re.fullmatch(rf'\*\s*{IDENT}', site['out']) for site in (a, b))):
+            continue
+        temporary = unused[0]
+        edits = [(m.start(), m.end(), _stage_scaled(source, m, temporary)) for m in sites]
+        expr = source[intermediate.start('interp'):intermediate.end('interp')]
+        prefix = intermediate['indent']
+        edits.append((intermediate.start(), intermediate.end(),
+                      f'{prefix}{temporary} = {expr};\n{prefix}{carrier} = {intermediate["factor"]} * {temporary};'))
+        last = _final_interpolation(part, interpolation, c.end(), carrier, arrays)
+        if any(source[start:end] != part.clean[start:end] for start, end, _ in edits):
+            continue
+        if last and source[last[0]:last[1]] == part.clean[last[0]:last[1]]:
+            result.append((REPEATED_FLOAT_PRODUCT, edit(source, edits + [last])))
+        result.append((REPEATED_FLOAT_PRODUCT, edit(source, edits)))
+    return result[:4]
+
+
+def _stage_scaled(source, match, temporary):
+    indent = match['indent']
+    product = source[match.start('factor'):match.end('interp')]
+    cast = '(s32)(' if match['cast'] else ''
+    suffix = ')' if cast else ''
+    return (f'{indent}{temporary} = {product};\n'
+            f'{indent}{match["out"]} = {cast}{temporary} * {match["gain"]}{suffix};')
+
+
+def _final_interpolation(part, interpolation, after, carrier, arrays):
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<out>\*\s*{IDENT})\s*=\s*\(s32\)\s*'
+        rf'\(\s*(?P<interp>{interpolation})\s*\*\s*(?P<gain>{FLOAT_LITERAL})\s*\)\s*;\s*}}\s*$'
+    )
+    last = pattern.search(part.clean, after, part.end)
+    if (not last or {last['left'], last['right']} - arrays
+            or part.clean[:last.start()].rstrip()[-1:] not in ';{}'
+            or re.search(rf'&\s*\(*\s*{carrier}\b', part.body)):
+        return None
+    # There are no subsequent statements, so the old carrier's final value is dead.
+    expr = part.source[last.start('interp') + 1:last.end('interp') - 1]
+    end = part.clean.index(';', last.end('gain')) + 1
+    prefix = last['indent']
+    out = last['out']
+    return last.start(), end, f'{prefix}{carrier} = {expr}; {out} = (s32)({carrier} * {last["gain"]});'
