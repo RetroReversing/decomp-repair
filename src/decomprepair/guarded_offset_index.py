@@ -68,6 +68,46 @@ def _paren_close(text, start):
     return None
 
 
+def _indexed(src_block, count, offset, body):
+    """The loop's block with its offset spelled `count * stride` and the bump moved last, or None."""
+    if not offset:
+        return None
+    steps = list(re.finditer(rf'\b{offset}\s*\+=\s*(?P<stride>{NUM})\s*;', body))
+    bumps = list(re.finditer(rf'\b{count}\s*\+=\s*1\s*;', body))
+    if len(steps) != 1 or len(bumps) != 1:
+        return None
+    rest_count = body
+    for a, b in sorted((steps[0].span(), bumps[0].span()), reverse=True):
+        rest_count = rest_count[:a] + rest_count[b:]
+    if re.search(rf'\b{count}\b', rest_count) or re.search(r'\b(?:goto|continue|break)\b', body):
+        return None
+    reads = list(re.finditer(rf'\b{offset}\b', rest_count))
+    if not reads or any(re.search(r'(?:\+\+|--|&)\s*$', rest_count[:r.start()]) or
+                        re.match(r'\s*(?:\+\+|--|[-+*/%&|^]?=(?!=)|<<=|>>=)', rest_count[r.end():])
+                        for r in reads):
+        return None
+    stride = steps[0]['stride']
+    s_shape = re.fullmatch(
+        rf'(?P<head>\s*){offset}\s*=\s*0\s*;(?P<mid>\s*do\s*\{{)(?P<body>.*)(?P<tail>\}}\s*while\s*\(.*)', src_block, re.S)
+    if not s_shape:
+        return None
+    sb = s_shape['body']
+    lines = sb
+    for a, b in sorted([steps[0].span(), bumps[0].span()], reverse=True):
+        # extend over the statement's own line when it stands alone
+        line_start = lines.rfind('\n', 0, a) + 1
+        if not lines[line_start:a].strip():
+            a = line_start
+            if b < len(lines) and lines[b] == '\n':
+                b += 1
+        lines = lines[:a] + lines[b:]
+    lines = re.sub(rf'\b{offset}\b', f'({count} * {stride})', lines)
+    indent = re.search(r'\n([ \t]*)\S', '\n' + lines.lstrip('\n'))
+    pad = indent[1] if indent else '    '
+    lines = lines.rstrip() + f'\n{pad}{count} += 1;\n' + re.search(r'\n?([ \t]*)$', sb)[1]
+    return s_shape['head'] + s_shape['mid'].lstrip() + lines + s_shape['tail']
+
+
 def _loops(source, span):
     """Each rewritable guarded loop: (start, end, indexed, indexed and guarded on the counter or None, counter)."""
     clean = _blank(source)
@@ -89,101 +129,83 @@ def _loops(source, span):
             continue
         block = clean[block_open + 1:block_close]
         shape = re.fullmatch(
-            rf'\s*(?P<offset>{ID})\s*=\s*0\s*;\s*do\s*\{{(?P<body>.*)\}}\s*while\s*\(\s*{count}\s*<\s*(?P<bound>.+?)\s*\)\s*;\s*',
+            rf'\s*(?:(?P<offset>{ID})\s*=\s*0\s*;\s*)?do\s*\{{(?P<body>.*)\}}\s*while\s*\(\s*{count}\s*<\s*(?P<bound>.+?)\s*\)\s*;\s*',
             block, re.S)
         if not shape or shape['offset'] == count:
             continue
-        offset, body, bound = shape['offset'], shape['body'], shape['bound']
+        bound = shape['bound']
         if _paren_close('(' + bound + ')', 0) != len(bound) + 1:
             continue
-        steps = list(re.finditer(rf'\b{offset}\s*\+=\s*(?P<stride>{NUM})\s*;', body))
-        bumps = list(re.finditer(rf'\b{count}\s*\+=\s*1\s*;', body))
-        if len(steps) != 1 or len(bumps) != 1:
-            continue
-        rest_count = body
-        for a, b in sorted((steps[0].span(), bumps[0].span()), reverse=True):
-            rest_count = rest_count[:a] + rest_count[b:]
-        if re.search(rf'\b{count}\b', rest_count) or re.search(r'\b(?:goto|continue|break)\b', body):
-            continue
-        reads = list(re.finditer(rf'\b{offset}\b', rest_count))
-        if not reads or any(re.search(r'(?:\+\+|--|&)\s*$', rest_count[:r.start()]) or
-                            re.match(r'\s*(?:\+\+|--|[-+*/%&|^]?=(?!=)|<<=|>>=)', rest_count[r.end():])
-                            for r in reads):
-            continue
-        stride = steps[0]['stride']
-        # the body with its steps removed, counter bumped last, offset spelled from the counter
-        src_body = source[block_open + 1:block_close]
-        s_shape = re.fullmatch(
-            rf'(?P<head>\s*){offset}\s*=\s*0\s*;(?P<mid>\s*do\s*\{{)(?P<body>.*)(?P<tail>\}}\s*while\s*\(.*)', src_body, re.S)
-        if not s_shape:
-            continue
-        sb = s_shape['body']
-        cut = sorted([(steps[0].start(), steps[0].end()), (bumps[0].start(), bumps[0].end())], reverse=True)
-        lines = sb
-        for a, b in cut:
-            a2, b2 = a, b
-            # extend over the statement's own line when it stands alone
-            line_start = lines.rfind('\n', 0, a2) + 1
-            if not lines[line_start:a2].strip():
-                a2 = line_start
-                if b2 < len(lines) and lines[b2] == '\n':
-                    b2 += 1
-            lines = lines[:a2] + lines[b2:]
-        lines = re.sub(rf'\b{offset}\b', f'({count} * {stride})', lines)
-        indent = re.search(r'\n([ \t]*)\S', '\n' + lines.lstrip('\n'))
-        pad = indent[1] if indent else '    '
-        lines = lines.rstrip() + f'\n{pad}{count} += 1;\n' + re.search(r'\n?([ \t]*)$', sb)[1]
-        new_block = s_shape['head'] + s_shape['mid'].lstrip() + lines + s_shape['tail']
+        # every loop counts for the guards and the shared counter; only the ones with an indexable offset change
+        new_block = _indexed(source[block_open + 1:block_close], count, shape['offset'], shape['body'])
+        indexed = new_block is not None
+        if new_block is None:
+            new_block = source[block_open + 1:block_close]
         plain = source[hit.start():block_open + 1] + new_block + source[block_close:block_close + 1]
         guarded = None
         cond = source[open_paren + 1:close_paren]
         if _guard_condition(cond, bound):
             guarded = (source[hit.start():open_paren + 1] + f'{count} < {bound.strip()}' +
                        source[close_paren:block_open + 1] + new_block + source[block_close:block_close + 1])
-        found.append((hit.start(), block_close + 1, plain, guarded, count))
+        found.append((hit.start(), block_close + 1, plain, guarded, count, indexed))
     return found
 
 
-def _shared(source, span, loops):
-    """Every loop's counter renamed to one fresh local, or None when a counter's value leaves its loop."""
+def _escapes(clean, span, start, end, count):
+    """True when the counter's value is read outside its own loop (or it is not a plain local), so it can't share."""
+    before, after = clean[span[0]:start], clean[end:span[1]]
+    declared = re.search(rf'(?:s32|int|u32)\s+{count}\s*;', before)
+    if not declared:
+        return True
+    uses = list(re.finditer(rf'\b{count}\b', before))[1:]
+    if any(not re.match(r'\s*=(?!=)', before[m.end():]) for m in uses):
+        return True
+    later = re.search(rf'\b{count}\b', after)
+    return bool(later and not re.match(r'\s*=(?!=)', after[later.end():]))
+
+
+def _shared(source, span, loops, pick):
+    """The loops whose counter's value stays inside them, counted by one fresh local; None when fewer than two.
+
+    A counter read after its loop (a count kept for later, an index used past the loop) keeps its own name, and
+    the others still share: one escaping counter used to stop the whole variant."""
     clean = _blank(source)
     if re.search(rf'\b{FRESH}\b', clean[span[0]:span[1]]):
         return None
-    edits = []
-    for start, end, plain, guarded, count in loops:
-        before, after = clean[span[0]:start], clean[end:span[1]]
-        uses = [m for m in re.finditer(rf'\b{count}\b', before)]
-        declared = re.search(rf'(?:s32|int|u32)\s+{count}\s*;', before)
-        if len(uses) != (1 if declared else 0):
-            if any(not re.match(r'\s*=(?!=)', before[m.end():]) for m in uses[1:] if declared) or not declared:
-                return None
-        later = re.search(rf'\b{count}\b', after)
-        if later and not re.match(r'\s*=(?!=)', after[later.end():]):
-            return None
-        text = guarded or plain
-        edits.append((start, end, re.sub(rf'\b{count}\b', FRESH, text)))
+    sharing = [loop for loop in loops if not _escapes(clean, span, loop[0], loop[1], loop[4])]
+    if len(sharing) < 2:
+        return None
     text = source
-    for start, end, replacement in sorted(edits, reverse=True):
-        text = text[:start] + replacement + text[end:]
+    for loop in sorted(loops, reverse=True):
+        body = pick(loop)
+        if loop in sharing:
+            body = re.sub(rf'\b{loop[4]}\b', FRESH, body)
+        text = text[:loop[0]] + body + text[loop[1]:]
     opening = _blank(text).index('{', span[0])
     return text[:opening + 1] + f'\n    s32 {FRESH};' + text[opening + 1:]
 
 
 def variants(source, name, arch='mips', asm=''):
     """[(family, source)]: every guarded counter loop indexed by its counter; then also guarded on the counter;
-    then with one counter shared by all of them (each loop re-zeroes it, so GCC sees one pseudo whose uses add up)."""
+    then with one counter shared by the loops whose counter stays inside them (each loop re-zeroes it, so GCC sees
+    one pseudo whose uses add up). Loops without an indexable offset still take the guard and the shared counter,
+    so a function mixing m2c's offset loops with plain counted loops gets every loop's use."""
     if not (span := find(source, name)):
         return []
     loops = _loops(source, span)
     if not loops:
         return []
     out = []
-    for family, pick in ((FAMILY, lambda loop: loop[2]), (GUARD_FAMILY, lambda loop: loop[3] or loop[2])):
+    indexed = lambda loop: loop[2]  # noqa: E731
+    guarded = lambda loop: loop[3] or loop[2]  # noqa: E731
+    for family, pick in ((FAMILY, indexed), (GUARD_FAMILY, guarded)):
+        if family == FAMILY and not any(loop[5] for loop in loops):
+            continue
         text = source
         for loop in sorted(loops, reverse=True):
             text = text[:loop[0]] + pick(loop) + text[loop[1]:]
         if text != source and all(text != other for _, other in out):
             out.append((family, text))
-    if len(loops) > 1 and (shared := _shared(source, span, loops)) and all(shared != o for _, o in out):
+    if len(loops) > 1 and (shared := _shared(source, span, loops, guarded)) and all(shared != o for _, o in out):
         out.append((SHARED_FAMILY, shared))
     return out

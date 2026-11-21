@@ -95,7 +95,9 @@ class Flow:
         record = re.match(r'(?:struct|union)(?:\s+'+IDENT+r')?\s*{',text[pos:])
         if record:
             closing = close(text,pos+record.end()-1,'{','}')
-            declaration = re.match(r'\s*'+IDENT+r'\s*;',text[closing:]) if closing else None
+            # `struct T { ... } v;`, or a tag declared alone (m2c's block-scoped `struct Vec { ... };` beside a
+            # struct copy): neither reads nor writes a scalar
+            declaration = re.match(r'\s*(?:'+IDENT+r'\s*)?;',text[closing:]) if closing else None
             if not declaration:
                 raise ValueError('unsupported record declaration')
             return closing+declaration.end()

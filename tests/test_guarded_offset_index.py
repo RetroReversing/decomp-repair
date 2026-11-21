@@ -71,3 +71,41 @@ def test_left_alone_when_the_offset_is_written_or_the_counter_read():
 def test_a_counter_read_after_its_loop_keeps_its_own_name():
     later = DRAFT.replace('    var_s1_2 = 0;\n', '    k(var_s1);\n    var_s1_2 = 0;\n', 1)
     assert g.SHARED_FAMILY not in _only(later)
+
+
+def test_a_plain_counted_loop_takes_the_guard_and_shares_the_counter():
+    # a counted loop with no offset beside its counter, mixed with m2c's offset loop
+    mixed = DRAFT.replace('''        var_v1 = 0;
+        do {
+            h(var_v1 + (*(s32 *)((char *)(arg0) + 0)));
+            var_s1_2 += 1;
+            var_s1 = h(var_v1 + (*(s32 *)((char *)(arg0) + 4)));
+            k(var_s1);
+            var_v1 += 0x18;
+        } while''', '''        do {
+            h(var_s1_2);
+            var_s1_2 += 1;
+        } while''')
+    out = _only(mixed)
+    assert 'if (var_s1_2 < ((*(s16 *)((char *)(arg0) + 0xC)) - 1)) {' in out[g.GUARD_FAMILY]
+    shared = out[g.SHARED_FAMILY]
+    assert 'h(i);' in shared and 'g((i * 0x18) +' in shared
+
+
+def test_an_escaping_counter_keeps_its_name_while_the_others_share():
+    third = DRAFT.replace('''    }
+}
+''', '''    }
+    var_s3 = 0;
+    if ((*(s16 *)((char *)(arg0) + 0xE)) > 0) {
+        do {
+            h(var_s3);
+            var_s3 += 1;
+        } while (var_s3 < (*(s16 *)((char *)(arg0) + 0xE)));
+    }
+    k(var_s3);
+}
+''').replace('    s32 var_v1;\n', '    s32 var_v1;\n    s32 var_s3;\n')
+    shared = _only(third)[g.SHARED_FAMILY]
+    assert 'k(var_s3);' in shared and 'if (var_s3 < (*(s16 *)((char *)(arg0) + 0xE))) {' in shared
+    assert 'g((i * 0x18) +' in shared and 'h((i * 0x18) +' in shared
