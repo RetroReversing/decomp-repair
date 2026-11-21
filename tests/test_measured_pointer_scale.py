@@ -485,3 +485,70 @@ def test_call_record_pointer_is_formed_in_the_delay_slot():
     fixed = dict(variants(source, 'f', '', rows))['measured_scaled_global_call']
     assert 'send(6, (i * 24) + (u8 *)&records)' in fixed
     assert not variants(source, 'f', '', rows[1:])
+
+
+def test_paired_halfword_tables_correct_adjacent_loads_and_keep_byte_stride():
+    source = '''extern M2C_UNK D_80001000;
+extern M2C_UNK D_80001002;
+void f(s32 i) {
+    s32 offset;
+    offset = i * 4;
+    send(*(&D_80001000 + offset), *(&D_80001002 + offset));
+}
+'''
+    rows = [(' ', 'sll $v1, $s1, 4', 'sll $v1, $s1, 4')]
+    for reg, target, current in (('$a0', 'D_80001000', 'D_80001002'), ('$a1', 'D_80001002', 'D_80001004')):
+        add = f'addu {reg}, {reg}, $v1'
+        rows.extend([('i', f'lui {reg}, %hi({target})', f'lui {reg}, %hi({current})'),
+                     (' ', add, add),
+                     ('i', f'lh {reg}, %lo({target})({reg})', f'lh {reg}, %lo({current})({reg})')])
+    rows.append((' ', 'jal send', 'jal send'))
+    fixed = dict(variants(source, 'f', '', rows))['measured_paired_halfword_call_tables']
+    assert 'extern s16 D_80001000;' in fixed and 'extern s16 D_80001002;' in fixed
+    assert 'offset = i * 8;' in fixed
+    assert not variants(source, 'f', '', rows[:-1])
+    assert not variants(source.replace('* 4', '* 8'), 'f', '', rows)
+    assert not variants(source, 'f', 'extern u16 D_80001002;', rows)
+
+
+def test_reordered_call_setup_moves_two_unreferenced_zero_initializations():
+    source = '''void f(void *p) {
+    s32 left;
+    s16 right;
+    if (p) {
+        left = 0;
+        right = 0;
+        start(p, 32, 66, 114);
+        sink(M2C_FIELD(p, s32 *, 0), left, right);
+    }
+}'''
+    first, second = 'move $s2, $zero', 'move $s4, $zero'
+    rows = [('o', '', first), ('o', '', second)]
+    rows += [(' ', op, op) for op in ('addiu $a1, $zero, 0x20', 'addiu $a2, $zero, 0x42',
+                                      'addiu $a3, $zero, 0x72')]
+    rows += [('o', first, ''), ('o', second, ''), (' ', 'jal start', 'jal start'), (' ', 'nop', 'nop')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_call_zero_setup']
+    assert 'start(p, 32, 66, 114);\n        left = 0;\n        right = 0;' in fixed
+    assert not variants(source.replace('start(p', 'start(left'), 'f', '', rows)
+    assert not variants(source.replace(', 66,', ', 6,'), 'f', '', rows)
+
+
+def test_reordered_byte_load_and_dependent_index_follow_the_call():
+    source = '''void f(void *p) {
+    s32 value;
+    s32 index;
+    void *object;
+    if (p != NULL) {
+        value = M2C_FIELD(p, u8 *, 8);
+        index = value * 8;
+        object = create(4, 0, 2);
+        sink(object, index);
+    }
+}'''
+    load = 'lbu $s1, 8($s6)'
+    rows = [('o', '', load), (' ', 'jal create', 'jal create'),
+            (' ', 'addiu $a2, $zero, 2', 'addiu $a2, $zero, 2'), ('o', load, '')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_call_byte_load_setup']
+    assert 'object = create(4, 0, 2);\n        value = M2C_FIELD' in fixed
+    assert not variants(source.replace('create(4', 'create(index'), 'f', '', rows)
+    assert not variants(source.replace('u8 *, 8', 'u8 *, 9'), 'f', '', rows)
