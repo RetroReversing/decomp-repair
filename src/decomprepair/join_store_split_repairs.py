@@ -122,5 +122,5 @@ def variants(source, name):
             out = out[:lo] + text + out[hi:]
         result = source[:start] + out + source[end:]
         if result != source:
-            return [result]
+            return [(FAMILY, result)]
     return []
