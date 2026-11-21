@@ -39,7 +39,7 @@ WORD_RUN = re.compile(
     rf'(?P<local>sp[0-9A-F]+) = M2C_FIELD\(&(?P<base>{IDENT}), s32 \*, (?P<off>{NUMBER})\);'
 )
 WORD_RETURN = re.compile(rf'return \*\(\((?P<index>{IDENT}) \* 4\) \+ sp\);')
-DECL = re.compile(rf'(?P<type>s8|u8|s16|u16|s32|u32|void|M2C_UNK) (?P<pointer>\*)?(?P<name>{IDENT}); ')
+DECL = re.compile(rf'(?P<type>s8|u8|s16|u16|s32|u32|f32|void|M2C_UNK) (?P<pointer>\*)?(?P<name>{IDENT}); ')
 
 
 def _lines(asm):
