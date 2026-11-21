@@ -575,3 +575,15 @@ void f(void) {
     assert 'cursor += 1;' in fixed
     assert not variants(source.replace('*, 8', '*, 12'), 'f', '', rows)
     assert not variants(source.replace('void **cursor', 'void *cursor'), 'f', '', rows)
+
+
+def test_call_stride_uses_argument_register_as_relocated_base():
+    source = 'extern s32 records;\ns32 f(s32 i) { return send((i * 104) + &records, 1); }'
+    rows = [('i', 'sll $v0, $v0, 3', 'sll $v0, $v0, 5')]
+    rows += [(' ', op, op) for op in ('lui $a0, %hi(records)', 'addiu $a0, $a0, %lo(records)',
+                                      'addu $a0, $v0, $a0', 'sw $ra, 16($sp)', 'jal send',
+                                      'addiu $a1, $zero, 1')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_scaled_global_call']
+    assert 'send((i * 104) + (u8 *)&records, 1)' in fixed
+    assert not variants(source, 'f', '', rows[:-1])
+    assert not variants(source.replace('* 104', '* 100'), 'f', '', rows)
