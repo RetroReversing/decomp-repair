@@ -11,6 +11,7 @@ import re
 
 from . import m2cfix
 from .csource import _blank, find
+from .integer_repair_support import edit, view
 from .pattern_repairs import close
 
 FAMILY = 'varargs_signature'
@@ -105,6 +106,20 @@ def store_widths(source, name, asm):
             if text not in [t for _, t in result]:
                 result.append((STORE_FAMILY, text))
     return result[:6]
+
+
+def empty_home_leaf(source, name):
+    """The whole target is the O32 four-register varargs save sequence."""
+    part = view(source, name)
+    if not part or part.clean[part.opening+1:part.clean.rfind('}', part.opening, part.end)].strip():
+        return None
+    pattern = re.compile(
+        rf'\bvoid\s+{re.escape(name)}\s*\(\s*(?P<first>(?:s32|u32|M2C_UNK)\s+{IDENT})'
+        rf'(?P<other>(?:\s*,\s*(?:s32|u32|M2C_UNK)\s+{IDENT}){{3}})\s*\)\s*$')
+    signature = pattern.search(part.clean[:part.opening])
+    if not signature:
+        return None
+    return edit(source, [(*signature.span('other'), ', ...')])
 
 
 def variants(source, name, asm):
