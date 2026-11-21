@@ -2,6 +2,7 @@
 
 import re
 
+from . import mips_return_paths
 from .integer_repair_support import IDENT, NUMBER, edit, integer, view
 from .measured_stack_drafts import _lines
 
@@ -68,8 +69,10 @@ def applies(asm):
 
 def rewrite(source, name, asm, header=''):
     """Give each byte the original cursor advance and preserve big-endian packing."""
-    if 'M2C_FIELD' not in source or PREFIX in source + header or (field := _field(asm)) is None:
+    if 'M2C_FIELD' not in source or PREFIX in source + header:
         return None
+    if (field := _field(asm)) is None:
+        return _variable_word(source, name, asm, header)
     part = view(source, name)
     if not part:
         return None
@@ -93,3 +96,69 @@ def rewrite(source, name, asm, header=''):
         f'\n    u8 {a}, {b};\n    u8 {c}, {d};\n\n{reads}'
         f'    return ((u32){a} << 24) | ({b} << 16) | ({c} << 8) | {d};\n'
     ))])
+
+
+_VARIABLE_WORD = re.compile(
+    r'lbu \$v1, (?:0)?\(\$a1\)\nandi \$v0, \$v1, 255\nsltiu \$v0, \$v0, 128\nbeqz \$v0, \S+\n'
+    r'addiu \$a1, \$a1, 1\nj \S+\nsh \$v1, (?P<slot>\d+)\(\$a0\)\n'
+    r'andi \$v0, \$v1, 127\nsll \$v0, \$v0, 8\nsh \$v0, (?P=slot)\(\$a0\)\n'
+    r'lbu \$v1, (?:0)?\(\$a1\)\naddiu \$a1, \$a1, 1\naddu \$v0, \$v0, \$v1\n'
+    r'sh \$v0, (?P=slot)\(\$a0\)\njr \$ra\n(?:addu \$v0, \$a1, \$zero|move \$v0, \$a1)'
+)
+_VARIABLE_BODY = re.compile(rf'''
+    \s*(?P<width>s16|s32)\s+(?P<high>{IDENT});\s*u8\s+(?P<byte>{IDENT});\s*void\s*\*\s*(?P<next>{IDENT});
+    \s*(?P=byte)\s*=\s*M2C_FIELD\((?P<input>{IDENT}),\s*u8\s*\*,\s*0\);
+    \s*(?P=next)\s*=\s*\(void\s*\*\)\((?P=input)\);
+    \s*(?P=next)\s*=\s*\(void\s*\*\)\(\(char\s*\*\)(?P=next)\s*\+\s*\(s32\)\(1\)\);
+    \s*if\s*\(\(u32\)\s*\((?P=byte)\s*&\s*0x[fF][fF]\)\s*<\s*0x80U\)\s*{{
+    \s*M2C_FIELD\((?P<out>{IDENT}),\s*s16\s*\*,\s*(?P<slot>{NUMBER})\)\s*=\s*\(s16\)\s*(?P=byte);
+    \s*}}\s*else\s*{{
+    \s*(?P=high)\s*=\s*\((?P=byte)\s*&\s*0x7[fF]\)\s*<<\s*8;
+    \s*M2C_FIELD\((?P=out),\s*s16\s*\*,\s*(?P=slot)\)\s*=\s*(?P=high);
+    \s*(?P=next)\s*\+=\s*1;
+    \s*M2C_FIELD\((?P=out),\s*s16\s*\*,\s*(?P=slot)\)\s*=\s*\(s16\)\s*
+    \((?P=high)\s*\+\s*M2C_FIELD\((?P=input),\s*u8\s*\*,\s*1\)\);
+    \s*}}\s*return\s+(?P=next);\s*
+''', re.X)
+
+
+def _variable_word(source, name, asm, header):
+    if '0x80U' not in source or not asm or re.search(rf'\b{re.escape(name)}\s*\(', header):
+        return None
+    graph = mips_return_paths.graph(asm)
+    if not graph or graph[1] != {3: 7, 5: 14}:
+        return None
+    text = '\n'.join(' '.join(row.split()) for row in graph[0])
+    target = _VARIABLE_WORD.fullmatch(re.sub(r'(?<!\w)0x[\da-fA-F]+\b', lambda m: str(int(m[0], 16)), text))
+    part = view(source, name) if target else None
+    if not part:
+        return None
+    start = part.opening + 1
+    end = part.clean.rfind('}', start, part.end)
+    draft = _VARIABLE_BODY.fullmatch(part.clean[start:end])
+    if not draft or integer(draft['slot']) != int(target['slot']):
+        return None
+    cursor, output, high, first, low = (draft[k] for k in ('input', 'out', 'high', 'byte', 'next'))
+    if len({cursor, output, high, first, low}) != 5:
+        return None
+    signature = re.search(rf'\bvoid\s*\*\s*{re.escape(name)}\(\s*void\s*\*\s*{output}\s*,'
+                          rf'\s*(?P<type>void\s*\*)\s*{cursor}\s*\)\s*$', part.clean[:part.opening])
+    if not signature:
+        return None
+    field = f'M2C_FIELD({output}, s16 *, {draft["slot"]})'
+    body = f"""
+    {draft['width']} {high};
+    u8 {first};
+    s32 {low};
+    {first} = *{cursor}++;
+    if ((u32) ({first} & 0xFF) < 0x80U) {{
+        {field} = (s16) {first};
+    }} else {{
+        {high} = ({first} & 0x7F) << 8;
+        {field} = {high};
+        {low} = *{cursor}++;
+        {field} = (s16) ({high} + {low});
+    }}
+    return {cursor};
+"""
+    return edit(source, [(*signature.span('type'), 'u8 *'), (start, end, body)])
