@@ -9,15 +9,16 @@ from .unaligned_stack_drafts import MEMORY
 PREFIX = '__m2c_large_stack_'
 
 
-def _shape(template):
-    """One identifier per role, with subsequent occurrences tied to that role."""
+def _shape(template, *, numbers=()):
+    """Capture each role once and tie its later occurrences to the same token."""
     text = ' '.join(template.split())
     parts = re.split(r'(@[a-z]+)', text)
     seen = set()
     for i, part in enumerate(parts):
         if part.startswith('@'):
             key = part[1:]
-            parts[i] = f'(?P={key})' if key in seen else f'(?P<{key}>{IDENT})'
+            token = NUMBER if key in numbers else IDENT
+            parts[i] = f'(?P={key})' if key in seen else f'(?P<{key}>{token})'
             seen.add(key)
         else:
             parts[i] = re.escape(part)
