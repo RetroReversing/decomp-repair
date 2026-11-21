@@ -21,6 +21,12 @@ import struct
 import capstone
 
 
+def normalized_integer_lines(lines):
+    # Canonicalize numeric operands while preserving relocations and labels.
+    return tuple(re.sub(r'(?<![\w])(-?0x[\da-fA-F]+)\b', lambda m: str(int(m[1], 16)),
+                        ' '.join(line.split())) for line in lines)
+
+
 def abi_register_names(text: str) -> str:
     """m2c recognises ABI names such as $ra; numeric GPRs otherwise look like indirect jumps."""
     names = ('zero at v0 v1 a0 a1 a2 a3 t0 t1 t2 t3 t4 t5 t6 t7 '
