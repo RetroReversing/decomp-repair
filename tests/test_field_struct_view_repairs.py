@@ -20,3 +20,16 @@ def test_a_function_without_fields_or_a_foreign_macro_is_declined():
 def test_the_member_form_is_not_rewritten_again():
     (_, text), = repairs.variants(PREFIX + BODY, 'f')
     assert repairs.variants(text, 'f') == []
+
+
+def test_each_access_can_go_back_to_a_pointer_dereference_stores_first():
+    (_, member), = repairs.variants(PREFIX + BODY, 'f')
+    sites = repairs.site_variants(member, 'f')
+    assert len(sites) == 2 and all(family == repairs.SITE_FAMILY for family, _ in sites)
+    first = sites[0][1]
+    assert repairs.POINTER_SITE in first and 'M2C_FIELD_PTR(a, s32 *, 0x58) =' in first
+    assert 'M2C_FIELD(a, s32 *, 0x5C)' in first and first.count('M2C_FIELD_PTR(') == 1 + 1  # its use, and the define
+
+
+def test_without_the_member_form_there_are_no_site_candidates():
+    assert repairs.site_variants(PREFIX + BODY, 'f') == []
