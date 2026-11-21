@@ -304,3 +304,22 @@ def test_identical_branch_assignments_collapse_plain_and_wrapped_arms():
         assert family == 'measured_identical_branch_assignments'
         assert 'if (a || b)' not in candidate and 'else {' in candidate
     assert not variants(source, 'f', '', [(' ', 'move $t1, $zero', 'move $t1, $zero')])
+
+
+def test_byte_guard_return_keeps_the_zero_exit():
+    source = """int probe(void *p, int n) {
+    if (!p) empty: return 0;
+    if (*(unsigned char *)((char *)p + 8) == 0)
+        return n <= *(unsigned char *)((char *)p + 4);
+    goto empty;
+}"""
+    rows = [
+        ('r', 'lbu $v1, 8($a0)', 'lbu $v0, 8($a0)'),
+        ('r', 'bnez $v1, 0x20', 'bnez $v0, 0x20'),
+    ]
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_byte_guard_return'
+    assert 'int __repair_guard_result = *(unsigned char *)((char *)p + 8);' in candidate
+    assert 'else goto empty; return __repair_guard_result;' in candidate
+    assert not variants(source.replace('empty: return 0;', 'empty: return 1;'), 'probe', '', rows)
+    assert not variants(source.replace('p + 8', 'p + 9'), 'probe', '', rows)
