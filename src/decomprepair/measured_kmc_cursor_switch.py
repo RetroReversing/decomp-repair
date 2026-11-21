@@ -143,7 +143,46 @@ def _separate_label_loop_cursor(source, name, header, rows):
     return possible[0] if len(possible) == 1 else None
 
 
+def _cursor_advance_order(source, name, rows):
+    """Swap two independent pointer advances around an unchanged step."""
+    step = re.compile(rf'addiu (?P<reg>\$\w+), (?P=reg), (?P<stride>{NUMBER})')
+    strides = set()
+    for first, middle, last in zip(rows, rows[1:], rows[2:]):
+        if (first[0] != 'r' or last[0] != 'r' or middle[0] != ' '
+                or first[1:] != last[1:][::-1] or middle[1] != middle[2]):
+            continue
+        a, b, c = map(step.fullmatch, (first[1], middle[1], last[1]))
+        if a and b and c and len({a['reg'], b['reg'], c['reg']}) == 3:
+            amounts = {integer(hit['stride']) for hit in (a, b, c)}
+            if len(amounts) == 1:
+                strides.update(amounts)
+    if len(strides) != 1 or not (part := view(source, name)):
+        return None
+    pointer = (rf'(?P<{{label}}>{IDENT}) = \(s32 \*\) '
+               rf'\(\(\(u8 \*\) (?P={{label}})\) \+ (?P<{{label}}_step>{NUMBER})\);')
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]+){pointer.format(label="first")}\n'
+        rf'(?P=indent)(?P<scalar>{IDENT}) \+= (?P<scalar_step>{NUMBER});\n'
+        rf'(?P=indent){pointer.format(label="last")}')
+    hits = [hit for hit in pattern.finditer(part.clean, part.opening + 1, part.end)
+            if {integer(hit[key]) for key in ('first_step', 'scalar_step', 'last_step')} == strides]
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    names = [hit[key] for key in ('first', 'scalar', 'last')]
+    if (len(set(names)) != 3 or re.search(r'/[*/]', source[hit.start():hit.end()])
+            or any(not re.search(rf'(?m)^[ \t]*s32 \*{var};', part.body) for var in names[::2])
+            or not re.search(rf'(?m)^[ \t]*(?:u8 \*|[su]32 ){names[1]};', part.body)):
+        return None
+    offset = hit.start('first')
+    last = hit.start('last')
+    first_end = source.index('\n', offset)
+    return edit(source, [(offset, first_end, source[last:hit.end()]), (last, hit.end(), source[offset:first_end])])
+
+
 def variants(source, name, header, rows):
+    if fixed := _cursor_advance_order(source, name, rows):
+        return [('measured_cursor_advance_order', fixed)]
     if fixed := _separate_label_loop_cursor(source, name, header, rows):
         return [('measured_label_loop_cursor', fixed)]
     if len(rows) not in (14, 20, 21, 33):
