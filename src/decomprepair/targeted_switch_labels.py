@@ -55,3 +55,66 @@ def variants(source, name, differences):
         if len(candidates) > 1:
             return []  # No source-to-table association for two possible switches.
     return [(FAMILY, candidate) for candidate in candidates if candidate != source]
+
+
+ZERO_BOUND = re.compile(
+    r'^lui (?P<mode>\$\w+), %hi\((?P<selector>[A-Za-z_]\w*)\)\n'
+    r'lw (?P=mode), %lo\((?P=selector)\)\((?P=mode)\)\n'
+    r'addiu \$sp, \$sp, -\w+\n'
+    r'addiu (?P<index>\$\w+), (?P=mode), -(?:0x)?1\n'
+    r'sltiu (?P<guard>\$\w+), (?P=index), (?P<count>0x[0-9a-fA-F]+|[1-9][0-9]*)\n'
+    r'beqz (?P=guard), \.L\w+\n'
+    r'sw \$ra, \w+\(\$sp\)\n'
+    r'sll (?P<offset>\$\w+), (?P=index), (?:0x)?2\n'
+    r'lui (?P<table_base>\$\w+), %hi\((?P<table>[A-Za-z_]\w*)\)\n'
+    r'addu (?P=table_base), (?P=table_base), (?P=offset)\n'
+    r'lw (?P<destination>\$\w+), %lo\((?P=table)\)\((?P=table_base)\)\n'
+    r'jr (?P=destination)\b'
+)
+
+
+def zero_bound_variants(source, name, asm):
+    """Recover a one-based table and remove an unused parameter's spurious home store."""
+    part = view(source, name)
+    if not part or 'sltiu' not in asm:
+        return []
+    assembly = re.sub(r'/\*[^\n]*?\*/', '', asm)
+    instructions = (' '.join(line.split()) for line in assembly.splitlines())
+    prefix = '\n'.join(line for line in instructions if re.match(r'^[a-z][a-z0-9.]* \$', line))
+    target = ZERO_BOUND.match(prefix)
+    if not target:
+        return []
+    body = part.body
+    switch = re.match(
+        rf'^(?:\s*(?:unsigned\s+(?:int|long)|long|int|[su](?:8|16|32))\s+\w+\s*;)*'
+        rf'\s*switch\s*\(\s*{target["selector"]}\s*\)\s*{{',
+        body,
+    )
+    bound = int(target['count'], 0)
+    if not switch or bound < 3:
+        return []
+    brace = part.opening + switch.end()
+    end = close(part.clean, brace, '{', '}')
+    if not end:
+        return []
+    zero = re.compile(r'\s*case\s+(?:0|0[xX]0+)\s*:\s*break\s*;').match(part.clean, brace + 1, end)
+    if not zero:
+        return []
+    scope = [*block_path(part, brace), brace]
+    outer_labels = [hit for hit in re.compile(r'\b(?:case|default)\b').finditer(part.clean, zero.end(), end)
+                    if block_path(part, hit.start()) == scope]
+    cases = [CASE.match(part.clean, hit.start()) for hit in outer_labels]
+    if not cases or not all(cases):
+        return []  # An explicit default or an unevaluated label may handle zero differently.
+    values = {int(case[1], 0) for case in cases}
+    if min(values) != 1 or max(values) != bound:
+        return []
+    definition = re.compile(
+        rf'\b{re.escape(name)}\s*\(\s*(?P<volatile>volatile\s+)'
+        r'(?:unsigned\s+int|u32)\s+(?P<unused>[A-Za-z_]\w*)\s*,'
+    )
+    parameter = list(definition.finditer(part.clean, 0, part.opening))
+    if len(parameter) != 1 or re.search(rf'\b{parameter[0]["unused"]}\b', body):
+        return []
+    candidate = edit(source, [(*zero.span(), ''), (*parameter[0].span('volatile'), '')])
+    return [('switch_zero_bound', candidate)]
