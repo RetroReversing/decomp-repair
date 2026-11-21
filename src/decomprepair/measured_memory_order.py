@@ -85,7 +85,116 @@ def reset_after_call(source, part, rows, changed):
     return None
 
 
-def variants(source, name, rows):
+def _earlier_word_load(rows, changed):
+    if len(changed) != 2:
+        return None
+    first, last = changed
+    earlier, later = rows[first], rows[last]
+    if (earlier[0] != 'o' or later[0] != 'o' or earlier[2] or later[1]
+            or earlier[1] != later[2] or last - first != 3):
+        return None
+    return re.fullmatch(rf'lw ({REG}),\s*({NUM})?\(({REG})\)', earlier[1])
+
+
+def _flags_before_publish(part, rows, first, last, value, offset, pointer, resolve):
+    """Snapshot an object's word before publishing its pointer to a possibly aliased global."""
+    if pointer != '$v0' or first < 2 or last + 2 >= len(rows):
+        return None
+    callee = CALL.fullmatch(rows[first-2][1])
+    high = re.fullmatch(rf'lui ({REG}), %hi\(({IDENT})\)', rows[first+1][1])
+    if not callee or not high or high[1] in (pointer, value):
+        return None
+    if rows[first+2][1] != f'sw {pointer}, %lo({high[2]})({high[1]})':
+        return None
+    imm = re.fullmatch(rf'ori {re.escape(value)}, {re.escape(value)}, ({NUM})', rows[last+1][1])
+    low = re.fullmatch(rf'sw {re.escape(value)}, ({NUM})?\(\$v0\)', rows[last+2][1])
+    if not imm or not low or integer(low[1] or '0') != offset:
+        return None
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<ptr>{IDENT}) = {callee[1]}\([^;\n]+\);\n'
+        rf'(?P<publish>[ \t]*M2C_FIELD\(&(?P<global>{IDENT}), void \*\*, (?P<dest>{NUM})\) = (?P=ptr);)\n'
+        rf'(?P=indent)(?P<field>M2C_FIELD\((?P=ptr), s32 \*, (?P<offset>{NUM})\))'
+        rf' = \(s32\) \((?P=field) \| (?P<mask>{NUM})\);'
+    )
+    matches = []
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
+        if integer(hit['offset']) != offset or integer(hit['mask']) != integer(imm[1]):
+            continue
+        dest = integer(hit['dest'])
+        if resolve:
+            base, address = resolve(hit['global']), resolve(high[2])
+            if base is None or address is None or base + dest != address:
+                continue
+        elif dest or hit['global'] != high[2]:
+            continue
+        matches.append(hit)
+    if len(matches) != 1:
+        return None
+    hit = matches[0]
+    fresh = '__repair_before_publish'
+    if fresh in part.source:
+        return None
+    indent = hit['indent']
+    capture = f'{indent}{fresh} = {hit["field"]};\n'
+    assignment = f' = {fresh} | {hit["mask"]};'
+    return edit(part.source, [(part.opening+1, part.opening+1, f'\n{indent}s32 {fresh};\n'),
+                              (hit.start('publish'), hit.start('publish'), capture),
+                              (hit.end('field'), hit.end(), assignment)])
+
+
+def _link_before_clears(part, name, rows, first, last, value, offset, pointer):
+    """Snapshot a list link across the two halfword clears shown by the target."""
+    if pointer != '$a1' or first == 0 or last + 3 >= len(rows):
+        return None
+    clears = [re.fullmatch(rf'{op} \$zero, ({NUM})?\(\$a0\)', rows[row][1])
+              for row, op in ((first-1, 'sw'), (first+1, 'sh'), (first+2, 'sh'))]
+    store_link = re.fullmatch(rf'sw {re.escape(value)}, ({NUM})?\(\$a0\)', rows[last+1][1])
+    set_tail = re.fullmatch(rf'sw \$a0, ({NUM})?\(\$a1\)', rows[last+3][1])
+    if not all(clears) or not store_link or not set_tail or rows[last+2][1] != 'jr $ra':
+        return None
+    if offset != integer(set_tail[1] or '0'):
+        return None
+    signature = re.search(rf'\bvoid {re.escape(name)}\(void \*(?P<node>{IDENT}), void \*(?P<list>{IDENT})\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+    node, head = signature['node'], signature['list']
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)M2C_FIELD\({node}, s32 \*, (?P<word>{NUM})\) = 0;\n'
+        rf'(?P<clears>[ \t]*M2C_FIELD\({node}, s16 \*, (?P<h1>{NUM})\) = 0;\n'
+        rf'[ \t]*M2C_FIELD\({node}, s16 \*, (?P<h2>{NUM})\) = 0;\n)'
+        rf'[ \t]*M2C_FIELD\({node}, void \*\*, (?P<link>{NUM})\) = '
+        rf'(?P<read>\(void \*\) (?P<field>M2C_FIELD\({head}, void \*\*, (?P<old>{NUM})\)));\n'
+        rf'[ \t]*M2C_FIELD\({head}, void \*\*, (?P<tail>{NUM})\) = {node};'
+    )
+    sites = list(pattern.finditer(part.clean, part.opening + 1, part.end))
+    if len(sites) != 1:
+        return None
+    hit = sites[0]
+    expected = [integer(clear[1] or '0') for clear in clears] + [integer(store_link[1] or '0'), offset, offset]
+    if [integer(hit[key]) for key in ('word', 'h1', 'h2', 'link', 'old', 'tail')] != expected:
+        return None
+    fresh, indent = '__repair_previous_link', hit['indent']
+    if fresh in part.source:
+        return None
+    return edit(part.source, [(part.opening+1, part.opening+1, f'\n{indent}void *{fresh};\n'),
+                              (hit.start('clears'), hit.start('clears'), f'{indent}{fresh} = {hit["field"]};\n'),
+                              (*hit.span('read'), fresh)])
+
+
+def _measured_snapshot(part, name, rows, changed, resolve, header):
+    moved = _earlier_word_load(rows, changed)
+    if (not moved or 'M2C_FIELD' not in part.body
+            or re.search(r'\b(?:asm|__asm__|volatile)\b', part.body)
+            or any(token in header for token in ('__repair_before_publish', '__repair_previous_link'))):
+        return None
+    value, offset, pointer = moved[1], integer(moved[2] or '0'), moved[3]
+    args = (*changed, value, offset, pointer)
+    return (_flags_before_publish(part, rows, *args, resolve)
+            or _link_before_clears(part, name, rows, *args))
+
+
+def variants(source, name, rows, *, resolve=None, header=''):
     changed = [i for i,(mark,_,_) in enumerate(rows) if mark != ' ']
     if len(changed) not in (2,4):
         return []
@@ -94,6 +203,8 @@ def variants(source, name, rows):
         if (part := read(source,name)) and (candidate := reset_after_call(source,part,rows,changed)):
             return [('measured_call_reset_order',candidate)]
         return []
+    if candidate := _measured_snapshot(part, name, rows, changed, resolve, header):
+        return [('measured_earlier_word_load', candidate)]
     if candidate := reordered_pair(source,part,rows,changed):
         return [('measured_comma_load_order',candidate)]
     if candidate := reset_after_call(source,part,rows,changed):

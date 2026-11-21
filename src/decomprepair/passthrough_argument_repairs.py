@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from . import m2cfix
 from .csource import _blank, find
 from .integer_abi import scalar
-from .integer_repair_support import NUMBER, edit, integer
+from .integer_repair_support import NUMBER, edit, integer, view
 from .pattern_repairs import close
 from .target_call_arity_repairs import _instructions
 
@@ -309,9 +309,66 @@ def missing_entry_argument(source, name, asm, header=''):
     ])
 
 
+def _float_wrapper_output(source, name, header, asm, rows, changes):
+    """Recover the unchanged output pointer in a wrapper whose integer save moved."""
+    if len(changes) != 2 or changes[1] != changes[0] + 3:
+        return None
+    first, last = changes
+    earlier, later = rows[first], rows[last]
+    if earlier[0] != 'o' or later[0] != 'o' or earlier[2] or later[1] or earlier[1] != later[2]:
+        return None
+    save = re.fullmatch(rf'sw (\$s[0-7]), {NUMBER}\(\$sp\)', earlier[1])
+    if not save or first < 4 or last + 6 >= len(rows):
+        return None
+    fp_args = []
+    for arg, row in enumerate((first - 4, first - 2, first + 1), 1):
+        fp = re.fullmatch(rf'sdc1 (\$f\d+), {NUMBER}\(\$sp\)', rows[row][1])
+        if not fp or rows[row+1][1] != f'mtc1 $a{arg}, {fp[1]}':
+            return None
+        fp_args.append(fp[1])
+    if not re.fullmatch(rf'sw \$ra, {NUMBER}\(\$sp\)', rows[last+1][1]):
+        return None
+    callee = re.fullmatch(rf'jal ({IDENT})', rows[last+2][1])
+    if not callee or rows[last+3][1] != f'move {save[1]}, $a0':
+        return None
+    store_start = last + 4
+    const = re.fullmatch(rf'lui (\$\w+), {NUMBER}', rows[store_start][1])
+    if const and re.fullmatch(rf'mtc1 {re.escape(const[1])}, \$f\d+', rows[store_start+1][1]):
+        store_start += 2
+    base = re.escape(save[1])
+    stores = [re.fullmatch(rf'swc1 {re.escape(reg)}, ({NUMBER})?\({base}\)', row[1])
+              for reg, row in zip(fp_args, rows[store_start:store_start+3])]
+    if len(stores) != 3 or not all(stores):
+        return None
+    incoming = _incoming_calls(asm)
+    if callee[1] not in incoming or not _allows(callee[1], [0], 1, incoming, header, ''):
+        return None
+    if not (part := view(source, name)):
+        return None
+    signature = re.search(
+        rf'\bvoid\s+{re.escape(name)}\s*\(\s*void\s*\*\s*(?P<out>{IDENT})'
+        rf',\s*f32 ({IDENT}),\s*f32 ({IDENT}),\s*f32 ({IDENT})\)\s*$', part.clean[:part.opening])
+    if not signature or not re.search(rf'(?m)^\s*M2C_UNK {callee[1]}\(\);\s*/\* extern \*/',
+                                      source[:part.opening]):
+        return None
+    out = signature['out']
+    call = re.compile(rf'(?m)^[ \t]*{callee[1]}\((?P<args>)\);')
+    sites = list(call.finditer(part.clean, part.opening + 1, part.end))
+    if len(sites) != 1 or not re.fullmatch(r'\s*', part.clean[part.opening+1:sites[0].start()]):
+        return None
+    fields = re.findall(rf'(?m)^\s*M2C_FIELD\({out}, f32 \*, ({NUMBER})\) = ({IDENT});',
+                        part.clean[sites[0].end():part.end])
+    expected = [(integer(store[1] or '0'), arg) for store, arg in zip(stores, signature.groups()[1:])]
+    if [(integer(offset), var) for offset, var in fields] != expected:
+        return None
+    return edit(source, [(*sites[0].span('args'), out)])
+
+
 def shifted_call_variants(source, name, header, asm, rows):
     """Focus passthrough proposals on a call whose argument setup is shifted down one register."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if candidate := _float_wrapper_output(source, name, header, asm, rows, changes):
+        return [(FAMILY, candidate)]
     if not 1 <= len(changes) <= 6:
         return []
     argument = re.compile(r'(?P<op>lw|lhu|lb|lbu|andi|addiu|move|lui) \$a(?P<reg>[0-3]), (?P<value>.+)')

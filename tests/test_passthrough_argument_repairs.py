@@ -202,3 +202,38 @@ void f(void *context) {
     for case in invalid:
         assert not p.shifted_call_variants(source, 'f', '', asm, case)
     assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n' + asm, rows)
+
+
+def test_float_output_wrapper_passes_the_pointer_kept_live_through_initialization():
+    source = '''
+M2C_UNK init();  /* extern */
+void f(void *out, f32 x, f32 y, f32 z) {
+    init();
+    M2C_FIELD(out, f32 *, 0) = x;
+    M2C_FIELD(out, f32 *, 20) = y;
+    M2C_FIELD(out, f32 *, 40) = z;
+    M2C_FIELD(out, f32 *, 60) = 1.0f;
+}
+'''
+    code = [
+        'addiu $sp, $sp, -48',
+        'sdc1 $f20, 24($sp)', 'mtc1 $a1, $f20',
+        'sdc1 $f22, 32($sp)', 'mtc1 $a2, $f22',
+        'sw $s0, 16($sp)',
+        'sdc1 $f24, 40($sp)', 'mtc1 $a3, $f24',
+        'sw $ra, 20($sp)',
+        'jal init', 'move $s0, $a0',
+        'lui $at, 0x3f80', 'mtc1 $at, $f0',
+        'swc1 $f20, ($s0)', 'swc1 $f22, 20($s0)', 'swc1 $f24, 40($s0)', 'swc1 $f0, 60($s0)',
+    ]
+    rows = [(' ', i, i) for i in code]
+    rows[5] = ('o', code[5], '')
+    rows.insert(8, ('o', '', code[5]))
+    asm = '\n'.join(code)
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert 'init(out);' in fixed
+    assert not p.shifted_call_variants(source, 'f', 'int init(void);', asm, rows)
+    assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n' + asm, rows)
+    assert not p.shifted_call_variants(source.replace('40) = z', '44) = z'), 'f', '', asm, rows)
+    assert not p.shifted_call_variants(source.replace('40) = z', '40) = y'), 'f', '', asm, rows)
