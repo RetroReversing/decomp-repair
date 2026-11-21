@@ -155,7 +155,46 @@ def _early_float_load(source, name, header, rows):
     ])
 
 
+def _float_scale_carrier(source, name, rows):
+    """Let the table value carry the product in both arms."""
+    changes = [(target, current) for mark, target, current in rows if mark != ' ']
+    if not 4 <= len(changes) <= 8 or any(mark not in (' ', 'r') for mark, _, _ in rows):
+        return None
+    loads = re.compile(rf'lwc1 (?P<reg>\$f\d+), (?P<address>%lo\((?P<table>{IDENT})\)\(\$\w+\))')
+    tables = [match for target, current in changes if (match := loads.fullmatch(target))
+              and (other := loads.fullmatch(current)) and match['address'] == other['address']
+              and match['reg'] != other['reg']]
+    if (len(tables) != 2 or tables[0].groups() != tables[1].groups()
+            or not any(target.startswith('mul.s ') and current.startswith('mul.s ') for target, current in changes)
+            or not (part := view(source, name))):
+        return None
+    table = tables[0]['table']
+    if not re.search(rf'\bextern f32 {table}\[\];', part.clean[:part.opening]):
+        return None
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]+)(?P<acc>{IDENT}) = (?P<load>{table}\[{IDENT}\]) \* (?P<factor>{IDENT});')
+    top = list(pattern.finditer(part.clean, part.opening + 1, part.end))
+    if len(top) != 2:
+        return None
+    first, second = top
+    acc, factor, coeff = first['acc'], first['factor'], second['acc']
+    if (second['factor'] != coeff or len({acc, factor, coeff}) != 3
+            or any(not re.search(rf'(?m)^[ \t]*f32 {local};', part.body) for local in (acc, coeff))):
+        return None
+    tail = re.compile(rf'\n(?P<indent>[ \t]+){acc} = {coeff} \* {factor};')
+    final = tail.match(part.clean, second.end())
+    if not final or re.search(rf'\b{coeff}\b', part.clean[final.end():part.end]):
+        return None
+    return edit(source, [
+        (*first.span(), f'{first["indent"]}{acc} = {first["load"]};\n{first["indent"]}{acc} *= {factor};'),
+        (second.start(), final.end(), f'{second["indent"]}{acc} = {second["load"]};\n'
+         f'{final["indent"]}{acc} *= {coeff};\n{final["indent"]}{acc} *= {factor};'),
+    ])
+
+
 def variants(source, name, header, rows):
+    if candidate := _float_scale_carrier(source, name, rows):
+        return [('measured_float_scale_carrier', candidate)]
     if candidate := _early_float_load(source, name, header, rows):
         return [('measured_early_float_field_load', candidate)]
     if candidate := _guarded_constant_stores(source, name, rows):

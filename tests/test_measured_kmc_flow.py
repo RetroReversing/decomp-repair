@@ -185,3 +185,31 @@ def test_early_float_field_load_follows_the_child_pointer_read():
     assert not variants(source.replace('*, 40)', '*, 44)'), 'f', '', rows)
     assert not variants(source.replace(' = 1;', ' = input();'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:-1] + measured(['swc1 $f0, 0x1c($a0)']))
+
+
+def test_float_scale_carrier_stages_both_loads_without_reassociation():
+    source = """extern f32 table[];
+f32 f(int key, int plain, f32 factor) {
+    f32 scale;
+    if (plain) {
+        scale = table[key] * factor;
+    } else {
+        f32 coefficient;
+        coefficient = 0.5f;
+        coefficient = table[key] * coefficient;
+        scale = coefficient * factor;
+    }
+    return scale;
+}
+"""
+    load = ('r', 'lwc1 $f2, %lo(table)($at)', 'lwc1 $f0, %lo(table)($at)')
+    multiply = ('r', 'mul.s $f2, $f2, $f4', 'mul.s $f2, $f0, $f4')
+    literal = ('r', 'mtc1 $at, $f0', 'mtc1 $at, $f2')
+    rows = [load, multiply, literal, load]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_float_scale_carrier'
+    assert 'scale = table[key];\n        scale *= factor;' in fixed
+    assert 'scale = table[key];\n        scale *= coefficient;\n        scale *= factor;' in fixed
+    assert not variants(source, 'f', '', rows[:-1])
+    assert not variants(source.replace('coefficient * factor;', 'coefficient * factor;\n        use(coefficient);'),
+                        'f', '', rows)
