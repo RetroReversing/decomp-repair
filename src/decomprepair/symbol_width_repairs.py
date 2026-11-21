@@ -133,3 +133,56 @@ def guarded_indexed_variants(source, name, asm):
         if len(result) == 2:
             break
     return result
+
+
+SIGNED_HALFWORD_LOAD = 'relocated_signed_halfword_load'
+
+
+def _signed_halfword_symbols(rows):
+    halfword = re.compile(rf'lh (?P<operands>\$\w+, %lo\((?P<symbol>{IDENT})\)\(\$\w+\))')
+    return {read['symbol'] for _, target, candidate in rows
+            if (read := halfword.fullmatch(target)) and candidate == f'lw {read["operands"]}'}
+
+
+def _prioritize_source_offset(part, offset):
+    """Try declaring the source offset first when its initialization is independent."""
+    prefix = re.compile(
+        rf'\s*(?P<counter>s32\s+{IDENT}\s*=\s*0\s*;)'
+        rf'\s*(?P<cursor>s16\s*\*\s*{IDENT}\s*=\s*{IDENT}\s*;)'
+        rf'\s*s32\s+{offset}\s*=\s*0\s*,\s*(?P<other>{IDENT})\s*=\s*0\s*;'
+    ).match(part.clean, part.opening + 1, part.end)
+    if not prefix or part.source[prefix.start():prefix.end()] != prefix[0]:
+        return None
+    indent = re.match(r'\s*', prefix[0])[0]
+    declarations = f'{indent}s32 {offset} = 0; {prefix["cursor"]} {prefix["counter"]} s32 {prefix["other"]} = 0;'
+    return prefix.start(), prefix.end(), declarations
+
+
+def signed_halfword_load_variants(source, name, rows):
+    """Correct a measured word-to-halfword load at the same relocated address."""
+    from .integer_repair_support import edit, view
+
+    symbols = _signed_halfword_symbols(rows)
+    if not symbols or not (part := view(source, name)):
+        return []
+    assignment = re.compile(
+        rf'(?<=[;{{}}])\s*(?P<statement>{IDENT}\s*=\s*\*\s*\(\s*(?P<type>volatile\s+s32)'
+        rf'\s*\*\s*\)\s*\(\s*(?P<symbol>{IDENT})\s*\+\s*(?P<offset>{IDENT})\s*\)\s*;)'
+    )
+    result = []
+    for hit in assignment.finditer(part.clean, part.opening + 1, part.end):
+        if hit['symbol'] not in symbols:
+            continue
+        start, end = hit.span('statement')
+        if source[start:end] != hit['statement']:
+            continue
+        a, b = hit.span('type')
+        signed = source[start:a] + 's16' + source[b:end]
+        # KMC sign-extends a volatile halfword in separate instructions. The
+        # one-shot scope can retain the load position with a plain signed read.
+        stage = (start, end, f'do {{ {signed} }} while (0);')
+        if earlier := _prioritize_source_offset(part, hit['offset']):
+            result.append((SIGNED_HALFWORD_LOAD, edit(source, [earlier, stage])))
+        result.append((SIGNED_HALFWORD_LOAD, edit(source, [stage])))
+        result.append((SIGNED_HALFWORD_LOAD, edit(source, [(a, b, 'volatile s16')])))
+    return result[:6]
