@@ -969,7 +969,56 @@ def _stage_halfword_call_address(source, name, header, rows):
                          (absolute + lo, absolute + hi, 'repair_call_address')])
 
 
+def _byte_index_carrier(source, name, rows):
+    """Repair double scaling and carry the byte address in the incoming index."""
+    changes = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changes) != 5:
+        return None
+    shift, join, load, mask, store = changes
+    if join != shift + 5 or (load, mask, store) != (join + 1, join + 2, join + 4):
+        return None
+    bits = re.fullmatch(rf'ori \$v0, \$v0, ({NUMBER})', rows[mask][1])
+    if (not bits or rows[shift] != ('i', 'sll $v0, $v0, 5', 'sll $v0, $v0, 7')
+            or rows[join] != ('r', 'addu $a1, $a1, $v0', 'addu $v0, $v0, $a1')
+            or rows[load] != ('r', 'lbu $v0, ($a1)', 'lbu $v1, ($v0)')
+            or rows[mask][2] != f'ori $v1, $v1, {bits[1]}'
+            or rows[store] != ('r', 'sb $v0, ($a1)', 'sb $v1, ($v0)')
+            or rows[join - 1][1] != 'sll $a1, $a1, 1' or rows[store - 1][1] != 'jr $ra'):
+        return None
+    if not (part := view(source, name)):
+        return None
+    sig = re.search(rf'\b{re.escape(name)}\s*\(\s*s32\s+({IDENT})\s*,\s*s32\s+({IDENT})\s*\)\s*$',
+                    part.clean[:part.opening])
+    if not sig:
+        return None
+    outer, index = sig.groups()
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)do\s*{{\s*(?P<cursor>{IDENT})\s*=\s*\(void\s*\*\)\s*'
+        rf'\(\({outer}\s*\*\s*(?P<stride>{NUMBER})\)\s*\+\s*'
+        rf'\((?P<base>{IDENT})\s*=\s*&(?P<symbol>{IDENT})\)\);\s*'
+        rf'(?P=cursor)\s*=\s*\(void\s*\*\)\s*\(\(\(char\s*\*\)\s*(?P=cursor)\)\s*\+\s*'
+        rf'\(\(s32\)\s*\({index}\s*\*\s*2\)\)\);\s*}}\s*while\s*\(\s*0\s*\)\s*;'
+        rf'(?=\s*\*(?P=cursor)\s*\|=\s*(?P<bits>{NUMBER})\s*;\s*}})')
+    hit = pattern.search(part.clean, part.opening + 1, part.end)
+    if (not hit or integer(hit['stride']) != 160 or integer(hit['bits']) != integer(bits[1])
+            or rows[shift + 2][1] != f'addiu $v1, $v1, %lo({hit["symbol"]})'):
+        return None
+    prefix = part.clean[part.opening + 1:hit.start()]
+    if not re.fullmatch(rf'\s*s32\s*\*\s*{hit["base"]}\s*;\s*u8\s*\*\s*{hit["cursor"]}\s*;\s*', prefix):
+        return None
+    indent, cursor = hit['indent'], hit['cursor']
+    replacement = ('\n' + indent).join((
+        f'{cursor} = (char *)&{hit["symbol"]} + {outer} * {hit["stride"]};',
+        f'{index} *= 2;',
+        f'{index} += (s32){cursor};',
+        f'{cursor} = (u8 *){index};',
+    ))
+    return edit(source, [(*hit.span(), indent + replacement)])
+
+
 def variants(source, name, header, rows):
+    if candidate := _byte_index_carrier(source, name, rows):
+        return [('measured_byte_index_carrier', candidate)]
     if 'char *' in source and (candidate := _sentinel_entry_step(source, name, rows)):
         return [('measured_sentinel_entry_step', candidate)]
     if candidate := _loaded_halfword_call_offset(source, name, header, rows):
