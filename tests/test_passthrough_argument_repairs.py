@@ -464,3 +464,79 @@ s32 f(void) {
     assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n'+asm, rows)
     rows[0] = ('r', 'lbu $a1, 16($v1)', 'lbu $a0, 16($v1)')
     assert not p.shifted_call_variants(source, 'f', '', asm, rows)
+
+
+def test_halfword_reload_supports_the_same_proven_argument_forwarding():
+    source = '''M2C_UNK send(u16); /* extern */
+s32 f(void) {
+    send(read_word());
+    return 1;
+}
+'''
+    target = ['lhu $a1, 8($v1)', 'slt $v0, $a1, $v0', 'addiu $v0, $a1, 1',
+              'jal send', 'lhu $a1, 8($v0)', 'jr $ra', 'nop']
+    rows = [('r', op, op.replace('$a1', '$a0')) if '$a1' in op else (' ', op, op) for op in target]
+    asm = '\n'.join(target)
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert 'send(__repair_incoming, read_word());' in fixed
+    rows[0] = ('r', 'lbu $a1, 8($v1)', 'lbu $a0, 8($v1)')
+    assert not p.shifted_call_variants(source, 'f', '', asm, rows)
+
+
+def _guarded_halfword(guard, delta, *, subtract=False, update_first=False):
+    mask = 'andi $a1, $a1, 0xffff'
+    condition = 'beqz $a1, .Lreturn' if guard == '!= 0' else 'sltiu $v0, $a1, 2'
+    branch = [condition]
+    if guard != '!= 0':
+        branch.append(f"{'bnez' if subtract else 'beqz'} $v0, .Lreturn")
+    load = '    old = M2C_FIELD(state, u16 *, 12);'
+    update = f"    next = old {'-' if delta < 0 else '+'} 1;"
+    setup = '\n'.join((update, load) if update_first else (load, update))
+    value = '(next & 0xffff) - 1' if subtract else 'next & 0xffff'
+    source = f'''M2C_UNK send(s32); /* extern */
+s32 step(void) {{
+    u16 old;
+    u16 next;
+{setup}
+    if (old {guard}) {{
+        M2C_FIELD(state, u16 *, 12) = next;
+        send({value});
+    }}
+    return 0;
+}}
+'''
+    slot = 'addiu $a1, $a1, -1' if subtract else mask
+    call = ['sh $a1, 12($v1)', *([mask] if subtract else []), 'jal send', slot]
+    target = ['lw $v1, 8($s0)', 'lhu $a1, 12($v1)', *branch, f'addiu $a1, $a1, {delta}', *call,
+              '.Lreturn:', 'move $v0, $zero', 'jr $ra', 'nop']
+    rows = [('r', op, op.replace('$a1', '$a0')) if op == slot else (' ', op, op)
+            for op in target if not op.endswith(':')]
+    instructions = iter(range(len(rows)))
+    asm = '\n'.join(op if op.endswith(':') else
+                    f'/* 000000 {0x80000000+4*next(instructions):08X} 00000000 */ {op}' for op in target)
+    return source, asm, rows
+
+
+def test_guarded_halfword_restores_forwarding_and_sinks_update_after_load():
+    for guard, delta, subtract, first in (('!= 0', -1, False, False), ('< 2U', 1, False, True),
+                                         ('>= 2U', -1, True, True)):
+        source, asm, rows = _guarded_halfword(guard, delta, subtract=subtract, update_first=first)
+        [(family, fixed)] = p.shifted_call_variants(source, 'step', '', asm, rows)
+        assert family == p.FAMILY
+        assert 's32 step(s32 __repair_incoming)' in fixed
+        assert 'send(s32, s32);' in fixed
+        assert f"if (old {guard}) {{\n        next = old {'-' if delta < 0 else '+'} 1;" in fixed
+        assert fixed.count('next = old') == 1
+        assert 'send(__repair_incoming, ' in fixed
+
+
+def test_guarded_halfword_requires_same_field_and_unchanged_first_argument():
+    source, asm, rows = _guarded_halfword('< 2U', 1)
+    for bad_asm in (asm.replace('sh $a1, 12', 'sh $a1, 14'),
+                    asm.replace('lw $v1, 8($s0)', 'move $a0, $zero\nlw $v1, 8($s0)'),
+                    asm.replace('.Lreturn\n', '.Lstore\n').replace('/* 000000 80000014', '.Lstore:\n/* 000000 80000014')):
+        assert not p.shifted_call_variants(source, 'step', '', bad_asm, rows)
+    bad_source = source.replace('old < 2U', 'old < 3U')
+    assert not p.shifted_call_variants(bad_source, 'step', '', asm, rows)
+    assert not p.shifted_call_variants(source, 'step', 'void send(s32);', asm, rows)

@@ -523,6 +523,105 @@ def _repeated_first_call(source, name, header, asm, callee, rows, changes, call)
     return edit(source, [(start, start, f'{caller}, ')])
 
 
+_CONDITIONAL_HALFWORD = re.compile(
+    rf'lhu \$a1, (?P<offset>{NUMBER})\((?P<base>\$\w+)\)\n'
+    rf'(?:sltiu (?P<test>\$\w+), \$a1, (?P<limit>{NUMBER})\n)?'
+    r'(?P<branch>beqz|bnez) (?P<tested>\$\w+), \S+\n'
+    rf'addiu \$a1, \$a1, (?P<delta>-?{NUMBER})\n'
+    r'sh \$a1, (?P=offset)\((?P=base)\)\n'
+    rf'(?:(?P<mask>andi \$a1, \$a1, {NUMBER})\n)?jal (?P<callee>{IDENT})\n'
+    rf'(?P<slot>(?:andi|addiu) \$a1, \$a1, -?{NUMBER})'
+)
+
+
+def _conditional_halfword_update(source, name, header, asm, rows):
+    """Put the update inside its guard and keep the untouched first argument live."""
+    # Before decoding the control flow, require the same call with its narrow argument shifted down.
+    shifted = set()
+    for i, (marker, target, candidate) in enumerate(rows[:-1]):
+        if marker == ' ' and target == candidate and target.startswith('jal '):
+            marker, target_slot, candidate_slot = rows[i + 1]
+            if (marker != ' ' and target_slot.startswith(('andi $a1, $a1, ', 'addiu $a1, $a1, '))
+                    and candidate_slot == target_slot.replace('$a1', '$a0')):
+                shifted.add(target.removeprefix('jal '))
+    if not shifted or not (decoded := mips_return_paths.graph(asm)):
+        return None
+    instructions, destinations = decoded
+    for branch, exit_at in destinations.items():
+        has_limit = branch > 0 and instructions[branch - 1].startswith('sltiu ')
+        start = branch - 1 - has_limit
+        if start < 0 or not 6 <= exit_at - start <= 8:
+            continue
+        block = '\n'.join(' '.join(line.split()) for line in instructions[start:exit_at])
+        target = _CONDITIONAL_HALFWORD.fullmatch(block)
+        if not target or target['callee'] not in shifted:
+            continue
+        if target['tested'] != (target['test'] or '$a1') or target['base'] == '$a1':
+            continue
+        if target['test'] in {'$zero', '$a1', target['base']} or any(
+                start < dest < exit_at for dest in destinations.values()):
+            continue
+        slot_value = _literal_argument(target['slot'].rsplit(' ', 1)[1])
+        if target['mask']:
+            if integer(target['mask'].rsplit(' ', 1)[1]) != 0xFFFF or not target['slot'].startswith('addiu '):
+                continue
+        elif not target['slot'].startswith('andi ') or slot_value != 0xFFFF:
+            continue
+        delta = _literal_argument(target['delta'])
+        if abs(delta) != 1 or (target['mask'] and slot_value != -1):
+            continue
+        condition = ('<' if target['branch'] == 'beqz' else '>=')
+        if target['limit'] is None:
+            condition = '!=' if target['branch'] == 'beqz' else '=='
+        if candidate := _place_halfword_update(
+                source, name, header, asm, target['callee'], integer(target['offset']),
+                condition, integer(target['limit'] or '0'), delta, bool(target['mask'])):
+            return candidate
+    return None
+
+
+def _place_halfword_update(source, name, header, asm, callee, offset, condition, limit, delta, subtract):
+    part = view(source, name)
+    if not part or not (closing := close(part.clean, part.opening, '{', '}')):
+        return None
+    # The generated draft declares two halfword locals. Its assignment may even precede the load.
+    masked = rf'(?P=updated)\s*&\s*(?P<mask>{NUMBER})'
+    arg = rf'\(\s*{masked}\s*\)\s*-\s*1' if subtract else masked
+    body = re.fullmatch(
+        rf'\s*u16\s+(?P<old>{IDENT});\s*u16\s+(?P<updated>{IDENT});\s*'
+        rf'(?P<setup>.+?)'
+        rf'(?P<guard>if\s*\(\s*(?P=old)\s*{condition}\s*(?P<limit>{NUMBER})\s*\)\s*{{)'
+        rf'(?P<indent>\n[ \t]+)(?P<field>M2C_FIELD\([^;\n]+,\s*u16\s*\*,\s*(?P<offset>{NUMBER})\))'
+        rf'\s*=\s*(?P=updated);\s*{callee}\(\s*{arg}\s*\);\s*}}\s*return\s+0;\s*',
+        part.clean[part.opening + 1:closing - 1], re.S)
+    if (not body or body['old'] == body['updated'] or integer(body['offset']) != offset
+            or integer(body['limit']) != limit or integer(body['mask']) != 0xFFFF):
+        return None
+    update = re.escape(body['updated']) + rf'\s*=\s*{re.escape(body["old"])}\s*'
+    update += (r'\+' if delta > 0 else '-') + r'\s*1;'
+    load = rf'{re.escape(body["old"])}\s*=\s*{re.escape(body["field"])};'
+    setup = re.fullmatch(rf'(?:(?P<first>{update})\s*{load}|{load}\s*(?P<second>{update}))\s*', body['setup'])
+    if not setup:
+        return None
+    beginning = part.opening + 1
+    update_start, update_end = setup.span('first' if setup['first'] else 'second')
+    update_start += beginning + body.start('setup')
+    update_end += beginning + body.start('setup')
+    guard_end = beginning + body.end('guard')
+    # Remove the whole old line when the statement has no adjoining code or comment.
+    line_start = source.rfind('\n', beginning, update_start) + 1
+    line_end = source.find('\n', update_end, guard_end)
+    remove = (line_start, line_end + 1) if (
+        line_start >= beginning and line_end >= 0
+        and not source[line_start:update_start].strip() and not source[update_end:line_end].strip()
+    ) else (update_start, update_end)
+    moved = edit(source, [
+        (*remove, ''),
+        (guard_end, guard_end, body['indent'] + source[update_start:update_end]),
+    ])
+    return _missing_caller_argument(moved, name, header, asm, callee)
+
+
 def shifted_call_variants(source, name, header, asm, rows):
     """Focus passthrough proposals on the measured setup for one changed call."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
@@ -530,6 +629,8 @@ def shifted_call_variants(source, name, header, asm, rows):
         return [(FAMILY, candidate)]
     if not 1 <= len(changes) <= 8:
         return []
+    if candidate := _conditional_halfword_update(source, name, header, asm, rows):
+        return [(FAMILY, candidate)]
     if candidate := _shifted_memory_wrapper(source, name, header, asm, rows, changes):
         return [(FAMILY, candidate)]
     nearby = []
@@ -545,7 +646,7 @@ def shifted_call_variants(source, name, header, asm, rows):
         relocations = _relocated_shift_count(rows, local)
         if relocations is not None and i - local[0] <= 4 + relocations:
             nearby.append((call[1], i, local))
-        elif (i + 1 in local and _shifted_byte_reload(rows, changes, i + 1)
+        elif (i + 1 in local and _shifted_narrow_reload(rows, changes, i + 1)
               and (candidate_source := _missing_caller_argument(source, name, header, asm, call[1]))):
             return [(FAMILY, candidate_source)]
     if len(nearby) != 1:
@@ -561,10 +662,10 @@ def shifted_call_variants(source, name, header, asm, rows):
     return []
 
 
-def _shifted_byte_reload(rows, changes, slot):
-    """An earlier byte calculation and the call delay slot use the same shifted argument."""
-    load = re.fullmatch(rf'lbu \$a1, ({NUMBER})\((\$\w+)\)', rows[slot][1])
+def _shifted_narrow_reload(rows, changes, slot):
+    """An earlier byte or halfword calculation and the call reload use the same shifted argument."""
+    load = re.fullmatch(rf'(lbu|lhu) \$a1, ({NUMBER})\((\$\w+)\)', rows[slot][1])
     if not load or rows[slot][2] != rows[slot][1].replace('$a1,', '$a0,', 1):
         return False
-    return any(i < slot - 1 and re.fullmatch(rf'lbu \$a1, {load[1]}\(\$\w+\)', rows[i][1])
+    return any(i < slot - 1 and re.fullmatch(rf'{load[1]} \$a1, {load[2]}\(\$\w+\)', rows[i][1])
                and rows[i][2] == rows[i][1].replace('$a1,', '$a0,', 1) for i in changes)
