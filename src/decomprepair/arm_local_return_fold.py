@@ -173,11 +173,33 @@ def collapse_variants(source, name):
     return [(COLLAPSE, source[:m.start()] + f"return {m['e']};" + source[m.end():])]
 
 
+def combined(source, name):
+    """[(FOLD, source)]: every step that applies, in one child. The steps score 665, 255, 765 and 0 in turn on the
+    function they came from, so a search that keeps only improvements never reaches the last without the others."""
+    text = source
+    for step in (chain_variants, collapse_variants):
+        found = step(text, name)
+        if found:
+            text = found[0][1]
+    found = arm_variants(text, name)
+    if found:
+        text = found[-1][1]
+    found = fold_variants(text, name)
+    if found:
+        text = found[0][1]
+    return [(FOLD, text)] if text != source else []
+
+
 def variants(source, name):
-    out = []
+    out = combined(source, name)
     for step in (chain_variants, arm_variants, collapse_variants, fold_variants):
         out.extend(step(source, name))
     # the collapsed return is what the fold needs, so offer them as one child as well
     for _, collapsed in collapse_variants(source, name):
         out.extend(fold_variants(collapsed, name))
-    return out[:LIMIT * 4]
+    seen, unique = {source}, []
+    for family, text in out:
+        if text not in seen:
+            seen.add(text)
+            unique.append((family, text))
+    return unique[:LIMIT * 4]
