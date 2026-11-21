@@ -131,6 +131,64 @@ def staged_negation(source, part, rows, changed):
     return None
 
 
+def _byte_lane_merge(part, header, rows, changed):
+    """Keep the loaded byte live through the high-lane OR measured before a packed store."""
+    if len(changed) != 1:
+        return None
+    row = changed[0]
+    if rows[row][0] != 'r' or row < 5 or row + 2 >= len(rows):
+        return None
+    op = re.fullmatch(rf'or ({REG}), \1, ({REG})', rows[row][1])
+    if not op:
+        return None
+    byte, flag = (re.escape(value) for value in op.groups())
+    have = re.fullmatch(rf'or ({REG}), \1, {flag}', rows[row][2])
+    if not have or have[1] == op[1]:
+        return None
+    result = re.escape(have[1])
+    window = [target for _, target, _ in rows[row-5:row+3]]
+    if not (re.match(rf'lbu {byte}, ', window[0])
+            and window[1] == f'nor {have[1]}, $zero, {op[1]}'
+            and re.fullmatch(rf'andi {result}, {result}, (?:255|0xff)', window[2])
+            and re.fullmatch(rf'sll {result}, {result}, (?:16|0x10)', window[3])
+            and re.fullmatch(rf'lui {flag}, (?:65280|0xff00)', window[4])
+            and window[6] == f'or {have[1]}, {have[1]}, {op[1]}'
+            and (store := re.fullmatch(rf'sw {result}, ({NUM})\({REG}\)', window[7]))):
+        return None
+
+    fresh = '__repair_inverted_byte'
+    if fresh in part.source + header or re.search(r'\b(?:asm|__asm__|volatile)\b', part.body):
+        return None
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<dst>M2C_FIELD\({IDENT}, s32 \*, (?P<offset>{NUM})\))'
+        rf' = \(s32\) \(\(\(~(?P<byte>{IDENT}) & (?:0x[fF]{{2}}|255)\) << (?:0x10|16)\)'
+        r' \| \((?P=byte) \| 0[xX][fF]{2}000000\)\);'
+    )
+    sites = list(pattern.finditer(part.clean, part.opening+1, part.end))
+    if len(sites) != 1 or integer(sites[0]['offset']) != integer(store[1]):
+        return None
+    hit = sites[0]
+    name, indent = hit['byte'], hit['indent']
+    start = part.opening + 1
+    before = part.clean[start:hit.start()]
+    declaration = re.search(rf'(?m)^[ \t]*(?P<type>u8)\s+{name};', before)
+    initial = re.search(rf'(?m)^[ \t]*{name}\s*=\s*(?P<expr>\*\([^;\n]+\));', before)
+    if (not declaration or not initial or declaration.start() >= initial.start()
+            or len(re.findall(rf'\b{name}\b', part.body)) != 4):
+        return None
+    a, b = initial.span('expr')
+    da, db = declaration.span('type')
+    local_end = start + declaration.end()
+    original = part.source[start+a:start+b]
+    replacement = (f'{indent}{fresh} = (~{name} & 0xFF) << 16;\n'
+                   f'{indent}{name} |= 0xFF000000;\n'
+                   f'{indent}{hit["dst"]} = {fresh} | {name};')
+    return edit(part.source, [(start+da, start+db, 'u32'),
+                              (local_end, local_end, f'\n{indent}u32 {fresh};'),
+                              (start+a, start+b, f'(u8) {original}'),
+                              (*hit.span(), replacement)])
+
+
 def variants(source, name, header, rows):
     changed = [index for index,(marker,_,_) in enumerate(rows) if marker != ' ']
     if not 1 <= len(changed) <= 6 or not (part := view(source,name)):
@@ -143,4 +201,6 @@ def variants(source, name, header, rows):
         return [('measured_scaled_expression',candidate)]
     if candidate := staged_negation(source,part,rows,changed):
         return [('measured_staged_negation',candidate)]
+    if candidate := _byte_lane_merge(part,header,rows,changed):
+        return [('measured_byte_lane_merge',candidate)]
     return []

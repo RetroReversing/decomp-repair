@@ -312,21 +312,33 @@ def missing_entry_argument(source, name, asm, header=''):
 def shifted_call_variants(source, name, header, asm, rows):
     """Focus passthrough proposals on a call whose argument setup is shifted down one register."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
-    if not 1 <= len(changes) <= 3:
+    if not 1 <= len(changes) <= 6:
         return []
     argument = re.compile(r'(?P<op>lw|lhu|lb|lbu|andi|addiu|move|lui) \$a(?P<reg>[0-3]), (?P<value>.+)')
+    relocations = 0
     for i in changes:
         want, have = map(argument.fullmatch, rows[i][1:])
-        if (not want or not have or int(want['reg']) != int(have['reg']) + 1
-                or (want['op'], want['value']) != (have['op'], have['value'])):
+        if (not want or not have or int(want['reg']) != int(have['reg']) + 1 or want['op'] != have['op']):
             return []
+        if want['value'] == have['value']:
+            continue
+        low = re.fullmatch(rf"\$a{want['reg']}, %lo\(({IDENT})\)", want['value'])
+        if (want['op'] != 'addiu' or not low or i - 1 not in changes
+                or have['value'] != f"$a{have['reg']}, %lo({low[1]})"
+                or list(rows[i - 1][1:]) != [f"lui $a{reg}, %hi({low[1]})" for reg in (want['reg'], have['reg'])]):
+            return []
+        # A verified relocation pair is one argument spread over two instructions.
+        relocations += 1
+    if len(changes) - relocations > 3:
+        return []
 
     center = changes[0]
+    reach = 4 + relocations
     nearby = set()
-    for i in range(max(0, center - 1), min(len(rows), center + 5)):
+    for i in range(max(0, center - 1), min(len(rows), center + reach + 1)):
         marker, target, candidate = rows[i]
         call = re.fullmatch(rf'jal ({IDENT})', target)
-        if marker == ' ' and target == candidate and call and all(i - 4 <= j <= i + 1 for j in changes):
+        if marker == ' ' and target == candidate and call and all(i - reach <= j <= i + 1 for j in changes):
             nearby.add(call[1])
     if len(nearby) != 1:
         return []

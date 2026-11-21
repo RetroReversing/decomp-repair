@@ -45,3 +45,36 @@ def test_float_conversion_stays_in_the_same_guard():
     assert 'if (value < neg)' in candidate
     assert not variants(source.replace('f32 neg','volatile f32 neg'),'f','',diff)
     assert not variants(source,'f','',diff[:-1])
+
+
+def test_byte_lane_merge_keeps_the_loaded_byte_live_for_the_high_lane():
+    source = '''
+void f(void *out, u8 *input, s32 n) {
+    u8 pixel;
+    pixel = *(input + n);
+    M2C_FIELD(out, s32 *, 4) = (s32) (((~pixel & 0xFF) << 0x10) | (pixel | 0xFF000000));
+}
+'''
+    code = [
+        'lbu $a0, ($a0)',
+        'nor $v0, $zero, $a0',
+        'andi $v0, $v0, 0xff',
+        'sll $v0, $v0, 0x10',
+        'lui $v1, 0xff00',
+        'or $a0, $a0, $v1',
+        'or $v0, $v0, $a0',
+        'sw $v0, 4($a2)',
+    ]
+    rows = [(' ', inst, inst) for inst in code]
+    rows[5] = ('r', code[5], 'or $v0, $v0, $v1')
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_byte_lane_merge'
+    assert 'u32 pixel;' in fixed
+    assert 'pixel = (u8) *(input + n);' in fixed
+    assert '__repair_inverted_byte = (~pixel & 0xFF) << 16;' in fixed
+    assert 'pixel |= 0xFF000000;' in fixed
+    assert 'M2C_FIELD(out, s32 *, 4) = __repair_inverted_byte | pixel;' in fixed
+    assert not variants(source.replace('<< 0x10', '<< 0x8'), 'f', '', rows)
+    assert not variants(source.replace('4) = (s32)', '8) = (s32)'), 'f', '', rows)
+    assert not variants(source.replace('pixel =', 'keep(&pixel);\n    pixel ='), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:-1])
