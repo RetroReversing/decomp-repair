@@ -2,6 +2,7 @@
 
 import re
 
+from . import inode_cache_drafts
 from .integer_repair_support import IDENT, NUMBER, integer
 
 _REQUEST_COPY = (
@@ -135,6 +136,10 @@ void {name}(unsigned char {arg}) {{
 
 def inode_evidence(lines):
     rows = _rows(lines)
+    return _scan_evidence(rows) or inode_cache_drafts.evidence(rows)
+
+
+def _scan_evidence(rows):
     calls = [line for line in rows if line.startswith(('jal ', 'jalr '))]
     required = {
         'addiu $sp, $sp, -304', 'sw $s0, 272($sp)', 'addiu $s4, $sp, 16',
@@ -148,8 +153,11 @@ def inode_evidence(lines):
 
 
 def inode(part, name, context, loc, body, end, lines):
+    rows = _rows(lines)
+    if fixed := inode_cache_drafts.rewrite(part, name, context, loc, body, end, rows):
+        return fixed
     match = _INODE_BODY.fullmatch(body)
-    if not match or not inode_evidence(lines):
+    if not match or not _scan_evidence(rows):
         return None
     integers = [match[key] for key in ('total', 'status', 'bank', 'wanted', 'first', 'index')]
     arg, result = match['arg'], match['result']
