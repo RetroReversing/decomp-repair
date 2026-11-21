@@ -46,3 +46,45 @@ def variants(source, name):
             if text != source and text not in [t for _, t in result]:
                 result.append((FAMILY, text))
     return result
+
+
+_GLOBAL_GUARD = re.compile(
+    r'lui \$v1, %hi\((?P<flag>[A-Za-z_]\w*)\)\nlw \$v1, %lo\((?P=flag)\)\(\$v1\)\n'
+    r'beqz \$v1, (?P<exit>\.L\w+)\n(?:move \$v0, \$zero|addu \$v0, \$zero, \$zero)\n'
+    r'lui \$v0, %hi\((?P<value>[A-Za-z_]\w*)\)\nlw \$v0, %lo\((?P=value)\)\(\$v0\)\n'
+    r'(?P=exit):\njr \$ra\nnop'
+)
+
+
+def _global_guard(asm):
+    if 'beqz' not in asm or '%hi(' not in asm:
+        return None
+    from .measured_stack_drafts import _lines
+
+    return _GLOBAL_GUARD.fullmatch('\n'.join(' '.join(line.split()) for line in _lines(asm)
+                                             if not line.startswith(('glabel ', 'endlabel '))))
+
+
+def global_guard_applies(asm):
+    return _global_guard(asm) is not None
+
+
+def rewrite_global_guard(source, name, asm):
+    """Expose the zero return on the branch that skips the value load."""
+    if 'return' not in source or not (target := _global_guard(asm)):
+        return None
+    from .integer_repair_support import IDENT, edit, view
+
+    part = view(source, name)
+    if not part or not re.search(rf'\bs32\s+{re.escape(name)}\s*\(\s*void\s*\)\s*$', part.clean[:part.opening]):
+        return None
+    flag, value = target['flag'], target['value']
+    start = part.opening + 1
+    end = part.clean.rfind('}', start, part.end)
+    draft = re.fullmatch(
+        rf's32 (?P<result>{IDENT}); (?P=result) = 0; if \({flag} != 0\) '
+        rf'{{ (?P=result) = {value}; }} return (?P=result);',
+        ' '.join(part.clean[start:end].split()))
+    if not draft or draft['result'] in (flag, value):
+        return None
+    return edit(source, [(start, end, f'\n    if ({flag} == 0) {{\n        return 0;\n    }}\n    return {value};\n')])

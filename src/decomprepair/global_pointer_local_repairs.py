@@ -58,3 +58,58 @@ def variants(source, name):
         if len(result) >= 4:
             break
     return result
+
+
+def _linked_insert(asm):
+    if 'sw' not in asm or '%hi(' not in asm:
+        return None
+    from .integer_repair_support import NUMBER
+    from .measured_stack_drafts import _lines
+
+    lines = '\n'.join(' '.join(line.split()) for line in _lines(asm)
+                      if not line.startswith(('glabel ', 'endlabel ')))
+    return re.fullmatch(
+        rf'lui \$v1, %hi\((?P<global>{IDENT})\)\nlw \$v1, %lo\((?P=global)\)\(\$v1\)\n'
+        rf'lw \$v0, (?P<field>{NUMBER})\(\$v1\)\nsw \$v0, (?:0x0|0)?\(\$a0\)\n'
+        r'jr \$ra\nsw \$a0, (?P=field)\(\$v1\)', lines)
+
+
+def linked_insert_applies(asm):
+    return _linked_insert(asm) is not None
+
+
+def rewrite_linked_insert(source, name, asm, header=''):
+    """Read both the base pointer and old head before storing the new link."""
+    local = '__repair_link_base'
+    if 'M2C_FIELD' not in source or local in source + header or not (target := _linked_insert(asm)):
+        return None
+    from .integer_repair_support import NUMBER, edit, integer, view
+
+    part = view(source, name)
+    if not part:
+        return None
+    signature = re.search(rf'\bvoid\s+{re.escape(name)}\s*\(\s*M2C_UNK\s*\*\s*(?P<arg>{IDENT})\s*\)\s*$',
+                          part.clean[:part.opening])
+    if not signature:
+        return None
+    arg, pointer = signature['arg'], target['global']
+    if arg == pointer:
+        return None
+    start = part.opening + 1
+    end = part.clean.rfind('}', start, part.end)
+    field = rf'M2C_FIELD\({pointer}, M2C_UNK \*\*, (?P<offset>{NUMBER})\)'
+    same_field = rf'M2C_FIELD\({pointer}, M2C_UNK \*\*, (?P=offset)\)'
+    body = ' '.join(part.clean[start:end].split())
+    draft = re.fullmatch(rf'{field} = {arg}; \*{arg} = {same_field};', body)
+    if not draft:
+        draft = re.fullmatch(rf'\*{arg} = {field}; {same_field} = {arg};', body)
+    if not draft or integer(draft['offset']) != integer(target['field']):
+        return None
+    access = f"M2C_FIELD({local}, M2C_UNK **, {draft['offset']})"
+    return edit(source, [(start, end, f'''
+    void *{local};
+
+    {local} = {pointer};
+    *{arg} = {access};
+    {access} = {arg};
+''')])
