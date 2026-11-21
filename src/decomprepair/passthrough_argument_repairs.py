@@ -385,7 +385,11 @@ def _float_wrapper_output(source, name, header, asm, rows, changes):
 
 def _entry_a0_reaches(asm, callee, *, first_only=False, indirect=None):
     """Require the incoming a0 on every route to a selected first call."""
-    if (0 in _incoming_calls(asm).get(callee, ())
+    return _entry_arguments_reach(asm, callee, (0,), first_only=first_only, indirect=indirect)
+
+
+def _entry_arguments_reach(asm, callee, slots, *, first_only=False, indirect=None):
+    if (set(slots) <= _incoming_calls(asm).get(callee, set())
             and not any(op in mips_regions.CONDITIONAL | {'b', 'j'} for op, _ in _instructions(asm))):
         return True
     decoded = mips_return_paths.graph(asm, indirect=indirect)
@@ -400,10 +404,13 @@ def _entry_a0_reaches(asm, callee, *, first_only=False, indirect=None):
     seen = set()
     reached = False
 
-    def preserves_a0(row):
+    expected = {_ARGUMENTS[slot]: slot for slot in slots}
+
+    def preserves_entry(row):
         op, *args = row.split(None, 1)
-        registers = {'a0': 0}
-        return _transfer(registers, op, args[0] if args else '') and registers.get('a0') == 0
+        registers = expected.copy()
+        return _transfer(registers, op, args[0] if args else '') and all(
+            registers.get(reg) == origin for reg, origin in expected.items())
 
     while pending:
         pc, incoming = pending.pop()
@@ -414,7 +421,7 @@ def _entry_a0_reaches(asm, callee, *, first_only=False, indirect=None):
             return False
         op = rows[pc].split()[0]
         if op in mips_regions.CALLS | mips_regions.CONDITIONAL | mips_regions.JUMPS:
-            delayed = incoming and preserves_a0(rows[pc + 1])
+            delayed = incoming and preserves_entry(rows[pc + 1])
             if pc == call:
                 if not delayed:
                     return False
@@ -428,7 +435,7 @@ def _entry_a0_reaches(asm, callee, *, first_only=False, indirect=None):
                 if op in mips_regions.CONDITIONAL:
                     pending.append((pc + 2, incoming if op.endswith('l') else delayed))
         elif op != 'break':
-            pending.append((pc + 1, incoming and preserves_a0(rows[pc])))
+            pending.append((pc + 1, incoming and preserves_entry(rows[pc])))
     return reached
 
 
@@ -849,9 +856,49 @@ def _guarded_shifted_load(rows, changes, call):
                         for i in changes))
 
 
+def _forward_middle_pair(source, name, header, asm, rows, changes, resolve):
+    """Restore two entry arguments omitted ahead of a saved fourth argument."""
+    if len(changes) != 1 or (slot := changes[0]) < 2:
+        return None
+    delay = re.fullmatch(r'move \$a3, (\$s[0-7])', rows[slot][1])
+    call = re.fullmatch(rf'jal ({IDENT})', rows[slot - 1][1])
+    if (not delay or not call or rows[slot][2] != f'move $a1, {delay[1]}'
+            or not re.fullmatch(r'move \$a0, \$s[0-7]', rows[slot - 2][1])
+            or not any(row[1] == f'move {delay[1]}, $a3' for row in rows[:slot - 2])):
+        return None
+    callee = call[1]
+    address = resolve(callee) if resolve is not None else None
+    candidates = [callee] + ([f'func_{address:08X}'] if address is not None else [])
+    if not any(_entry_arguments_reach(asm, candidate, (1, 2)) for candidate in candidates):
+        return None
+    if not _allows(callee, (1, 2), 4, {callee: {1, 2}}, header, '') or not (part := view(source, name)):
+        return None
+    signature = re.search(rf'\b{re.escape(name)}\s*\(([^()]*)\)\s*$', part.clean[:part.opening])
+    params = signature[1].split(',') if signature else []
+    formals = [re.fullmatch(rf'\s*(?P<type>[\w *]+?)\s*(?P<name>{IDENT})\s*', p) for p in params]
+    if len(formals) != 4 or not all(formals):
+        return None
+    if not all(_integer_parameter(formal['type'].strip(), header + '\n' + source) for formal in formals):
+        return None
+    a, b, c, d = (formal['name'] for formal in formals)
+    prototypes = re.findall(rf'(?m)^[ \t]*(?:extern\s+)?{IDENT}\s+{callee}\s*\(([^()]*)\)\s*;',
+                            part.clean[:part.opening])
+    hits = list(re.finditer(rf'\b{callee}\s*\(\s*{a}\s*,\s*(?P<arg>{d})\s*\)\s*;',
+                            part.clean[part.opening + 1:part.end]))
+    if (len(set((a, b, c, d))) != 4 or b in re.findall(IDENT, part.body) or c in re.findall(IDENT, part.body)
+            or len(prototypes) != 1 or prototypes[0].strip() or len(hits) != 1
+            or len(re.findall(rf'\b{callee}\b', part.body)) != 1
+            or re.search(rf'(?m)^\s*#\s*define\s+(?:{callee}|{b}|{c})\b', header + '\n' + part.clean)):
+        return None
+    at = part.opening + 1 + hits[0].start('arg')
+    return edit(source, [(at, at, f'{b}, {c}, ')])
+
+
 def shifted_call_variants(source, name, header, asm, rows, *, resolve=None, read_data=None, big_endian=False):
     """Focus passthrough proposals on the measured setup for one changed call."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if candidate := _forward_middle_pair(source, name, header, asm, rows, changes, resolve):
+        return [(FAMILY, candidate)]
     if forwarded := _saved_entry_forward(source, name, header, asm, rows, changes, resolve):
         return forwarded
     if forwarded := _switch_byte_forward(source, name, header, asm, rows, changes, resolve, read_data, big_endian):

@@ -754,3 +754,27 @@ void f(void *context) {
     assert not p.shifted_call_variants(source, 'f', '', asm.replace('nop', 'move $a0, $zero', 1), rows, resolve=resolve)
     assert not p.shifted_call_variants(source, 'f', '', asm, rows)
     assert not p.shifted_call_variants(source, 'f', 's32 send(s16);', asm, rows, resolve=resolve)
+
+
+def test_restore_two_untouched_middle_arguments():
+    source = """\
+int send();
+int f(void *obj, int first, int second, int count) {
+    if (obj) send(obj, count);
+    return count;
+}
+"""
+    target = [
+        'move $s0, $a0', 'move $s1, $a3', 'beqz $s0, .L8000001C', 'nop',
+        'move $a0, $s0', 'jal send', 'move $a3, $s1', 'jr $ra', 'nop',
+    ]
+    asm = '\n'.join(f'/* 0 {0x80000000 + 4*i:08X} 00000000 */ {op}'
+                    for i, op in enumerate(target)).replace('/* 0 8000001C', '.L8000001C:\n/* 0 8000001C')
+    rows = [(' ', op, op) for op in target]
+    rows[6] = ('r', target[6], 'move $a1, $s1')
+    [(family, fixed)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == p.FAMILY
+    assert 'send(obj, first, second, count);' in fixed
+    assert not p.shifted_call_variants(source, 'f', '', asm.replace('nop', 'move $a2, $zero', 1), rows)
+    assert not p.shifted_call_variants(source, 'f', 'int send(void *, int);', asm, rows)
+    assert not p.shifted_call_variants(source.replace('return count;', 'return first;'), 'f', '', asm, rows)
