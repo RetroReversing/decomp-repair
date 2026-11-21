@@ -47,6 +47,7 @@ class Stmt:
     global_writes: set = field(default_factory=set)
     writes_local: bool = False
     unknown: bool = False
+    slot: tuple = ()  # (base, constant index) of a store whose value reads no memory
 
 
 def _skip_space(text, at, stop):
@@ -176,6 +177,12 @@ def _declared(clean, part):
             found = re.findall(IDENT, piece)
             if found:
                 names.add(found[-1])
+    # a declaration that starts with a call (`f32 c = cosf(x);`) has parentheses the list above stops at: its
+    # name is still the function's own local, not a global
+    for hit in re.finditer(r'(?:^|(?<=[;{}]))\s*(?:register\s+|unsigned\s+|signed\s+|static\s+|const\s+)*'
+                           rf'(?:char|short|int|long|float|double|[su](?:8|16|32|64)|f32|f64|struct\s+\w+)\s*\**\s*({IDENT})\s*=',
+                           body):
+        names.add(hit[1])
     return names
 
 
@@ -212,6 +219,9 @@ def _facts(clean, stmt, locals_, macros):
             stmt.indirect_write = True
         right = text[assignment.end():]
         stmt.indirect_read = bool(UNARY_MEMORY.search(right) or '[' in right or '->' in right)
+        cell = re.fullmatch(rf'({IDENT})\s*\[\s*(0[xX][0-9a-fA-F]+|\d+)\s*\]', left)
+        if cell and text[assignment.start():assignment.end()].strip() == '=' and not stmt.indirect_read:
+            stmt.slot = (cell[1], int(cell[2], 0))
     elif inc:
         target = inc[1] or inc[2]
         stmt.writes = {target}
@@ -235,6 +245,13 @@ def conflict(a, b):
     """Whether swapping two statements could change what the function does (conservative)."""
     if a.unknown or b.unknown:
         return True
+    if (a.slot and b.slot and a.slot[0] == b.slot[0] and a.slot[1] != b.slot[1] and not (a.calls or b.calls)
+            and not (a.global_names | b.global_names) - {a.slot[0]}):
+        # two stores into different constant cells of one array (a matrix, a record of words) whose values read
+        # only locals: they touch different words, so either order writes the same bytes. Only the schedule
+        # differs, and that is what a near match with register-only differences needs to move (a 16-store float
+        # matrix function went 85 -> 0 by reordering its stores alone).
+        return bool((a.writes - {a.slot[0]}) & b.names or (b.writes - {b.slot[0]}) & a.names)
     if a.writes & b.names or b.writes & a.names:
         return True
     if (a.calls and _touches_memory(b)) or (b.calls and _touches_memory(a)):
