@@ -47,3 +47,15 @@ def test_call_temporary_is_inlined_into_the_store_that_reads_it():
     assert any('*(u8 *)(p + 0xC) = (u32)(g(*(u16 *)(p + 0x40)) * 2.0f + 1.0f);' in t and 't = g' not in t for t in out)
     # another call in the reading statement could change the order of evaluation
     assert not [t for _, t in inline.variants(source.replace('(u32)t;', 'h(t);'), 'f') if 't = g' not in t]
+
+
+def test_constant_local_read_once_becomes_a_literal():
+    # an N64 init function: `register unsigned short c1;` set beside other statements, read once in a loop
+    source = ('extern u8 T[];\nvoid f(void) {\n    int i;\n    char c2;\n    register unsigned short c1;\n'
+              '    g(); c2 = 2; c1 = 1;\n    i = 0;\n    do {\n        T[i] = c2;\n        T[i + 1] = c1;\n'
+              '        i++;\n    } while (i < 4);\n}\n')
+    out = [text for _, text in inline.variants(source, 'f')]
+    assert any('T[i] = 2;' in t for t in out)
+    assert any('T[i + 1] = 1;' in t for t in out)
+    # a non-constant read once is still left to `_adjacent`
+    assert not any('T[i] = (g' in t for _, t in inline.variants(source.replace('c2 = 2;', 'c2 = g();'), 'f'))

@@ -11,7 +11,8 @@ from .integer_repair_support import edit, view
 
 FAMILY = 'single_use_inline'
 FAMILIES = (FAMILY,)
-_TYPE = r'(?:unsigned\s+(?:char|short|int)|[su](?:8|16|32)|int|short|char|f32)\s*\**'
+_TYPE = r'(?:register\s+)?(?:unsigned\s+(?:char|short|int)|[su](?:8|16|32)|int|short|char|f32)\s*\**'
+_LITERAL = re.compile(r'-?(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*\Z')
 _PURE = re.compile(r'[\w\s()+\-*/%&|^~<>!.\[\]]+\Z')
 
 
@@ -32,7 +33,8 @@ def _assignments(clean, base, end):
     for decl in re.finditer(rf'(?m)^[ \t]*{_TYPE}\s*(\w+)\s*=\s*([^;{{}}]+);', text):
         yield base + decl.start(), base + decl.end(), decl[1], base + decl.start(2), base + decl.end(2)
     for decl in re.finditer(rf'(?m)^[ \t]*{_TYPE}\s*(\w+)\s*;', text):
-        later = re.search(rf'(?m)^[ \t]*{decl[1]}\s*=\s*([^;{{}}=][^;{{}}]*);', text[decl.end():])
+        # m2c puts one statement on a line; an edited source may not (`c2 = 2; do { f(); } while (0);`)
+        later = re.search(rf'(?m)(?:^[ \t]*|(?<=;)[ \t]+){decl[1]}\s*=\s*([^;{{}}=][^;{{}}]*);', text[decl.end():])
         if later:
             first = decl.end() + later.start()
             yield base + first, base + decl.end() + later.end(), decl[1], base + decl.end() + later.start(1), base + decl.end() + later.end(1)
@@ -75,7 +77,10 @@ def variants(source, name, limit=8):
         if _changed(local, body) or any(_changed(o, body) for o in set(re.findall(r'[A-Za-z_]\w*', expression))):
             continue
         uses = [end + h.start() for h in re.finditer(rf'\b{local}\b', body)]
-        if len(uses) < 2:
+        # A constant read once is still worth spelling out: a literal store in a loop is a movable loop.c hoists
+        # and the scheduler floats up to the previous barrier, a constant local is fixed where it was set (an N64 init
+        # function whose loop stored 2, 100 and 1 matched only with the literals).
+        if len(uses) < (1 if _LITERAL.match(expression) else 2):
             continue
 
         def spelled(position, expression=expression, local=local):
