@@ -77,6 +77,11 @@ From decompdecomp 1.0.10-alpha.2: `permuter_gen` reads MSVC's words (`__int64`, 
 decomp-permuter; `csource` reads conditional compilation (`surely_compiled`, `hidden_by`, `at_file_scope`); and
 `mips` says what's alignment padding (`is_padding`, `ends_in_delay_branch`).
 
+Two families for register near misses in a big switch: `phantom_local_repairs` puts an unused `long long` local at
+the start of a block (GCC 2.7.2 keeps a zero-size CLOBBER for it, which can break an allocation tie by moving one
+insn), nearest `near` (a source line) first; `case_temporary_repairs` splits a local shared by several cases into one
+per case, or merges locals whose cases never meet, only for locals every case assigns before it reads.
+
 ## Indexed record copies
 
 `indexed_record_repairs` proposes bounded compositions for repeated indexed-record copies.
