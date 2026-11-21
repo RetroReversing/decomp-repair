@@ -83,3 +83,89 @@ s32 f(s32 i) {
     assert 'return first[offset] | second[offset];' in fixed
     assert not variants(source.replace('second + offset','second + i'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:-1])
+
+
+def test_typed_cursor_uses_element_step_when_only_delay_slot_is_scaled_twice():
+    source = '''
+void f(s32 *arg, s32 count) {
+    s32 *cursor;
+    cursor = arg;
+    do {
+        *cursor += 7;
+        cursor += 4;
+    } while (--count > 0);
+}
+'''
+    loop = [
+        'move $v0, $zero',
+        'lw $t0, ($a0)',
+        'addiu $t0, $t0, 7',
+        'sw $t0, 0($a0)',
+        'bnez $v0, 0x4',
+    ]
+    rows = [(' ', op, op) for op in loop] + [('i', 'addiu $a0, $a0, 4', 'addiu $a0, $a0, 0x10')]
+    [(family, repaired)] = variants(source, 'f', '', rows)
+    assert family == 'measured_pointer_step'
+    assert repaired == source.replace('cursor += 4;', 'cursor += 1;')
+
+    assert not variants(source.replace('s32 *cursor;', 'u8 *cursor;'), 'f', '', rows)
+    assert not variants(source.replace('*cursor += 7;', 'x += 7;'), 'f', '', rows)
+    assert not variants(source.replace('cursor = arg;', 'escape(&cursor);'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows + [('i', 'li $v0, 1', 'li $v0, 2')])
+    assert not variants(source, 'f', '', rows[:4] + [(' ', 'bnez $v0, 16', 'bnez $v0, 16')] + rows[-1:])
+    assert not variants(source, 'f', '', rows[:3] + [(' ', 'sw $t0, ($a1)', 'sw $t0, ($a1)')] + rows[-2:])
+
+
+def test_duplicated_scale_recovers_signed_halfword_array_at_target_relocation():
+    source = 'extern M2C_UNK wave;\ns16 f(s32 i) { return *(&wave + ((i & 255) * 2)); }'
+    rows = [
+        ('i', 'sll $a0, $a0, 1', 'sll $a0, $a0, 3'),
+        ('i', 'lui $at, %hi(wave)', 'lui $at, %hi(D_80001236)'),
+        (' ', 'addu $at, $at, $a0', 'addu $at, $at, $a0'),
+        (' ', 'jr $ra', 'jr $ra'),
+        ('i', 'lh $v0, %lo(wave)($at)', 'lh $v0, %lo(D_80001236)($at)'),
+    ]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_relocated_array_scale'
+    assert 'extern s16 wave[];' in fixed
+    assert 'return wave[(i & 255)];' in fixed
+    assert not variants(source, 'f', 'extern s32 wave;', rows)
+    assert not variants(source, 'f', '', rows[:-1] + [('i', rows[-1][1], 'lh $v0, %lo(other)($at)')])
+
+
+def test_byte_array_keeps_record_stride_when_the_high_relocation_rounds_to_same_value():
+    source = 'extern M2C_UNK bytes;\nu8 f(s32 i) { return *(&bytes + ((i & 65535) * 0x64)); }'
+    rows = [
+        ('i', 'sll $a0, $a0, 2', 'sll $a0, $a0, 4'),
+        (' ', 'lui $at, %hi(bytes)', 'lui $at, %hi(D_80001233)'),
+        (' ', 'addu $at, $at, $a0', 'addu $at, $at, $a0'),
+        ('i', 'lbu $v0, %lo(bytes)($at)', 'lbu $v0, %lo(D_80001233)($at)'),
+    ]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_relocated_array_scale'
+    assert 'extern u8 bytes[];' in fixed
+    assert 'return bytes[(i & 65535) * 0x64];' in fixed
+    assert not variants(source.replace('0x64', '0x68'), 'f', '', rows)
+
+
+def test_both_halves_of_a_sentinel_scan_drop_explicit_byte_scaling():
+    source = '''
+void f(u16 *data) {
+    s32 n = 0;
+    do { n += 1; } while (*(((n & 0xFFFF) * 2) + data) != 65535);
+    do { n -= 1; } while (*(((n & 0xFFFF) * 2) + data) == 0);
+}
+'''
+    chunk = [
+        (' ', 'andi $v0, $a2, 0xffff', 'andi $v0, $a2, 0xffff'),
+        ('i', 'sll $v0, $v0, 1', 'sll $v0, $v0, 2'),
+        (' ', 'addu $v0, $v0, $a0', 'addu $v0, $v0, $a0'),
+        (' ', 'lhu $v0, ($v0)', 'lhu $v0, ($v0)'),
+    ]
+    rows = (chunk + [(' ', 'bnel $v0, $v1, 0', 'bnel $v0, $v1, 0')]
+            + chunk + [(' ', 'beql $v0, $zero, 20', 'beql $v0, $zero, 20')])
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_halfword_scan_scale'
+    assert fixed.count('*((n & 0xFFFF) + data)') == 2
+    assert not variants(source, 'f', '', rows[:-1])
+    assert not variants(source.replace('== 0', '= 0'), 'f', '', rows)
