@@ -102,3 +102,71 @@ addiu $sp, $sp, 24
     assert p.missing_entry_argument(source, 'f', asm.replace('lui $a1', 'lui $a0')) is None
     assert p.missing_entry_argument(source, 'f', asm.replace('jal finish', 'jal cleanup')) is None
     assert p.missing_entry_argument(source, 'f', asm, 'void load(void *);') is None
+
+
+def test_wrapper_can_forward_a_parameter_before_a_field_loaded_in_the_delay_slot():
+    source = '''M2C_UNK read(s32); /* extern */
+extern void *state;
+void f(void) {
+    read(M2C_FIELD(state, s32 *, 12));
+}
+'''
+    asm = '''lui $v0, %hi(state)
+lw $v0, %lo(state)($v0)
+addiu $sp, $sp, -24
+sw $ra, 16($sp)
+jal read
+lw $a1, 0xC($v0)
+lw $ra, 16($sp)
+jr $ra
+addiu $sp, $sp, 24
+'''
+    patch = p.missing_entry_argument(source, 'f', asm)
+    assert patch
+    assert 'M2C_UNK read(s32, s32);' in patch
+    assert 'read(arg0, M2C_FIELD(state, s32 *, 12));' in patch
+    assert p.missing_entry_argument(source.replace('*, 12', '*, 16'), 'f', asm) is None
+
+
+def test_zero_fill_wrapper_recovers_the_destination_parameter():
+    source = '''M2C_UNK memset(M2C_UNK, M2C_UNK); /* extern */
+void f(void) {
+    memset(0, 24);
+}
+'''
+    asm = '''addiu $sp, $sp, -24
+sw $ra, 16($sp)
+move $a1, $zero
+jal memset
+addiu $a2, $zero, 0x18
+lw $ra, 16($sp)
+jr $ra
+addiu $sp, $sp, 24
+'''
+    patch = p.missing_entry_argument(source, 'f', asm)
+    assert patch
+    assert 'void f(void *arg0)' in patch
+    assert 'memset(arg0, 0, 24);' in patch
+    assert p.missing_entry_argument(source.replace('0, 24', '1, 24'), 'f', asm) is None
+    assert p.missing_entry_argument(source.replace('0, 24', '0, 12'), 'f', asm) is None
+
+
+def test_shifted_call_prioritizes_only_the_untouched_first_parameter():
+    source = '''s32 read();
+void f(int id, void *object) {
+    read(M2C_FIELD(object, s32 *, 8));
+}
+'''
+    rows = [
+        (' ', 'jal read', 'jal read'),
+        ('r', 'lw $a1, 8($a1)', 'lw $a0, 8($a1)'),
+    ]
+    asm = 'jal read\nlw $a1, 8($a1)'
+    [(family, patch)] = p.shifted_call_variants(source, 'f', '', asm, rows)
+    assert family == 'passthrough_argument'
+    assert 'read(id, M2C_FIELD(object, s32 *, 8));' in patch
+    assert not p.shifted_call_variants(source, 'f', '', 'move $a0, $zero\n'+asm, rows)
+    assert not p.shifted_call_variants(source, 'f', '', asm, [
+        rows[0], ('r', 'lw $a1, 8($a1)', 'lw $a0, 12($a1)'),
+    ])
+    assert not p.shifted_call_variants(source, 'f', 's32 read(s32);', asm, rows)

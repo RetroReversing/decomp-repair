@@ -11,6 +11,7 @@ function, with the prototype widened by the caller's type (three N64 functions p
 """
 import collections
 import re
+from dataclasses import dataclass
 
 from . import m2cfix
 from .csource import _blank, find
@@ -25,7 +26,7 @@ FAMILIES = (FAMILY,)
 IDENT = r'[A-Za-z_]\w*'
 
 
-def variants(source, name, *, asm=None, arch=None, header='', callees='', require_evidence=False):
+def variants(source, name, *, asm=None, arch=None, header='', callees='', require_evidence=False, selected_call=None):
     span = find(source, name)
     if not span:
         return []
@@ -66,18 +67,20 @@ def variants(source, name, *, asm=None, arch=None, header='', callees='', requir
         if not closing:
             continue
         args = [a.strip() for a in m2cfix._split_top_level(clean[paren + 1:closing - 1])] if clean[paren + 1:closing - 1].strip() else []
+        if selected_call is not None and call[1] != selected_call:
+            continue
         if incoming is not None and (call[1] not in incoming or calls[call[1]] != 1):
             continue
         if len(args) >= 8:
             continue
-        if not args and call[1] in unprototyped and len([n for n in names[:4] if n]) > 1 and None not in names[:4]:
+        if selected_call is None and not args and call[1] in unprototyped and len([n for n in names[:4] if n]) > 1 and None not in names[:4]:
             # (a callee handed all of the caller's own arguments untouched: nothing loads $a0-$a3 before the call, so
             # m2c drops them all; one N64 function, 40 points off with `f()`, was exact as `f(arg0, arg1, arg2)`,
             # the callee keeping its first `$a` registers live where the caller's saves expected them)
             text = source[:closing - 1] + ', '.join(names[:4]) + source[closing - 1:]
             if (incoming is None or _allows(call[1], range(len(names[:4])), len(names[:4]), incoming, header, callees)):
                 result.append((FAMILY, text))
-        for k, param in enumerate(names[:4]):
+        for k, param in enumerate(names[:1] if selected_call is not None else names[:4]):
             if param is None or k > len(args) or (k < len(args) and args[k] == param) or param in args:
                 continue
             if incoming is not None and not _allows(call[1], [k], len(args)+1, incoming, header, callees):
@@ -220,6 +223,25 @@ _ADDRESS_WRAPPER = re.compile(
     + rf'(?:\njal (?P<followup>{IDENT})\nnop)?' + _RESTORE,
 )
 
+_FIELD_WRAPPER = re.compile(
+    rf'lui \$v0, %hi\((?P<base>{IDENT})\)\nlw \$v0, %lo\((?P=base)\)\(\$v0\)\n'
+    + _FRAME + _CALL + rf'lw \$a1, (?P<offset>{NUMBER})?\(\$v0\)' + _RESTORE,
+)
+_FILL_WRAPPER = re.compile(
+    _FRAME + r'(?:addu \$a1, \$zero, \$zero|move \$a1, \$zero)\n'
+    + rf'jal (?P<callee>memset)\naddiu \$a2, \$zero, (?P<size>{NUMBER})' + _RESTORE,
+)
+
+
+@dataclass(frozen=True)
+class _EntryCall:
+    callee: str
+    arguments: str
+    prototype: str
+    literals: tuple[tuple[str, int], ...] = ()
+    followup: str | None = None
+    incoming: str = 's32'
+
 
 def _literal_argument(text):
     value = integer(text.removeprefix('-'))
@@ -227,16 +249,28 @@ def _literal_argument(text):
 
 
 def _entry_wrapper(asm):
-    """Recognize a direct wrapper that sets only its second argument."""
+    """Describe a wrapper that supplies later arguments without touching the first."""
     if 'jal' not in (asm or ''):
         return None
     text = '\n'.join(f'{op} {" ".join(args.split())}'.rstrip() for op, args in _instructions(asm))
+    word = r's32|M2C_UNK'
     if target := _GLOBAL_WRAPPER.fullmatch(text):
-        return target['callee'], target['global'], None
+        return _EntryCall(target['callee'], target['global'], word)
     if target := _LITERAL_WRAPPER.fullmatch(text):
-        return target['callee'], _literal_argument(target['literal'] or '0'), None
+        literal = _literal_argument(target['literal'] or '0')
+        return _EntryCall(target['callee'], rf'(?P<value>-?{NUMBER})', word, (('value', literal),))
     if target := _ADDRESS_WRAPPER.fullmatch(text):
-        return target['callee'], '&' + target['address'], target['followup']
+        return _EntryCall(target['callee'], '&'+target['address'], r'M2C_UNK \*', followup=target['followup'])
+    if target := _FIELD_WRAPPER.fullmatch(text):
+        base, offset = target['base'], integer(target['offset'] or '0')
+        field = rf'M2C_FIELD\({base}, s32 \*, (?P<offset>{NUMBER})\)'
+        if not offset:
+            field = rf'(?:{field}|\*{base})'
+        return _EntryCall(target['callee'], field, word, (('offset', offset),))
+    if target := _FILL_WRAPPER.fullmatch(text):
+        return _EntryCall(target['callee'], rf'(?P<fill>{NUMBER}),\s*(?P<size>{NUMBER})',
+                          rf'(?:{word}),\s*(?:{word})', (('fill', 0), ('size', integer(target['size']))),
+                          incoming='void *')
     return None
 
 
@@ -249,27 +283,52 @@ def missing_entry_argument(source, name, asm, header=''):
     if not (target := _entry_wrapper(asm)) or not (span := find(source, name)):
         return None
     clean = _blank(source)
-    callee, value, followup = target
-    if re.search(rf'\b{callee}\s*\(', _blank(header)) or re.search(r'\barg0\b', clean[slice(*span)]):
+    callee = target.callee
+    if (re.search(rf'\b{callee}\s*\(|(?m:^[ \t]*#\s*define\s+arg0\b)', _blank(header))
+            or re.search(r'\barg0\b', clean[slice(*span)])):
         return None
-    argument = rf'-?{NUMBER}' if isinstance(value, int) else re.escape(value)
-    tail = rf'\s*{followup}\(\);' if followup else ''
+    tail = rf'\s*{target.followup}\(\);' if target.followup else ''
     wrapper = re.fullmatch(
         rf'\s*void\s+{re.escape(name)}\((?P<params>void)\)\s*{{\s*'
-        rf'{callee}\((?P<args>{argument})\);{tail}\s*}}\s*', clean[slice(*span)])
-    if not wrapper or (isinstance(value, int) and _literal_argument(wrapper['args']) != value):
+        rf'{callee}\((?P<args>{target.arguments})\);{tail}\s*}}\s*', clean[slice(*span)])
+    if not wrapper or any(_literal_argument(wrapper[key] or '0') != value for key, value in target.literals):
         return None
     # Only widen the prototype marked as generated by m2c.
-    kind = r'M2C_UNK \*' if isinstance(value, str) and value.startswith('&') else r's32|M2C_UNK'
     declarations = list(re.finditer(
-        rf'(?m)^[ \t]*M2C_UNK {callee}\((?P<argtype>{kind})\);[ \t]*/\* extern \*/[ \t]*$',
+        rf'(?m)^[ \t]*M2C_UNK {callee}\((?P<argtype>{target.prototype})\);[ \t]*/\* extern \*/[ \t]*$',
         source[:span[0]]))
     if len(declarations) != 1 or len(re.findall(rf'\b{callee}\s*\(', clean)) != 2:
         return None
 
     offset = span[0]
+    space = '' if target.incoming.endswith('*') else ' '
     return edit(source, [
-        (declarations[0].start('argtype'), declarations[0].start('argtype'), 's32, '),
-        (offset + wrapper.start('params'), offset + wrapper.end('params'), 's32 arg0'),
+        (declarations[0].start('argtype'), declarations[0].start('argtype'), f'{target.incoming}, '),
+        (offset + wrapper.start('params'), offset + wrapper.end('params'), f'{target.incoming}{space}arg0'),
         (offset + wrapper.start('args'), offset + wrapper.start('args'), 'arg0, '),
     ])
+
+
+def shifted_call_variants(source, name, header, asm, rows):
+    """Focus passthrough proposals on a call whose argument setup is shifted down one register."""
+    changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if not 1 <= len(changes) <= 3:
+        return []
+    argument = re.compile(r'(?P<op>lw|lhu|lb|lbu|andi|addiu|move|lui) \$a(?P<reg>[0-3]), (?P<value>.+)')
+    for i in changes:
+        want, have = map(argument.fullmatch, rows[i][1:])
+        if (not want or not have or int(want['reg']) != int(have['reg']) + 1
+                or (want['op'], want['value']) != (have['op'], have['value'])):
+            return []
+
+    center = changes[0]
+    nearby = set()
+    for i in range(max(0, center - 1), min(len(rows), center + 5)):
+        marker, target, candidate = rows[i]
+        call = re.fullmatch(rf'jal ({IDENT})', target)
+        if marker == ' ' and target == candidate and call and all(i - 4 <= j <= i + 1 for j in changes):
+            nearby.add(call[1])
+    if len(nearby) != 1:
+        return []
+    return variants(source, name, asm=asm, arch='mips', header=header, require_evidence=True,
+                    selected_call=nearby.pop())
