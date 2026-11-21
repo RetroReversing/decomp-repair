@@ -41,3 +41,49 @@ void f(void *owner) {
     assert not variants(source.replace('0xF4','0xF8'),'f',rows)
     assert not variants(source.replace('if (M2C_FIELD(p','keep(p); if (M2C_FIELD(p'),'f',rows)
     assert not variants(source, 'f', rows[:-1])
+
+
+def test_call_guard_stages_the_shift_in_the_result_byte():
+    source = '''u32 status();
+s32 f(void) {
+    s32 result;
+    result = 0;
+    if (enabled) {
+        result = (status() >> 3) & 1;
+    }
+    return result & 0xFF;
+}
+'''
+    rows = [
+        ('r', 'srl $v0, $v0, 3', 'srl $v1, $v0, 3'),
+        ('r', 'andi $v1, $v0, 1', 'andi $v1, $v1, 1'),
+    ]
+    [(family, fixed)] = variants(source, 'f', rows)
+    assert family == 'measured_staged_shift_mask'
+    assert 'u8 result;' in fixed
+    assert 'result = status();\n        result >>= 3;\n        result &= 1;' in fixed
+    assert 'return result;' in fixed
+    assert not variants(source.replace('>> 3', '>> 9'), 'f', rows)
+    assert not variants(source, 'f', [rows[0], ('r', 'andi $v1, $a0, 1', rows[1][2])])
+
+
+def test_word_shift_uses_the_mask_destination():
+    source = '''s32 f(void) {
+    u32 status;
+    s32 result;
+    status = read_status();
+    result = (status >> 8) & 1;
+    return result;
+}
+'''
+    rows = [
+        ('r', 'srl $a0, $v0, 8', 'srl $v1, $v0, 8'),
+        (' ', 'andi $v0, $v0, 0x80', 'andi $v0, $v0, 0x80'),
+        (' ', 'beqz $v0, .Lexit', 'beqz $v0, .Lexit'),
+        ('r', 'andi $a0, $a0, 1', 'andi $a0, $v1, 1'),
+    ]
+    [(family, fixed)] = variants(source, 'f', rows)
+    assert family == 'measured_staged_shift_mask'
+    assert 'u32 result;' in fixed
+    assert 'result = status >> 8;\n    result &= 1;' in fixed
+    assert not variants(source.replace('return result;', 'return call(&result);'), 'f', rows)
