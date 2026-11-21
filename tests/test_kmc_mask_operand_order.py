@@ -78,3 +78,12 @@ def test_m2c_field_reads_are_pure_and_the_drafts_mask_first_form_is_rewritten():
 def test_the_targets_own_and_is_evidence_even_when_every_register_differs():
     assert mask_evidence(TARGET_FIRST)
     assert not mask_evidence(TARGET_SECOND)  # the mask is the second operand: cse's order, nothing to hide
+
+
+def test_a_macro_elsewhere_in_the_function_does_not_block_the_rewrite():
+    # Drafts call NULL and friends everywhere; only a macro inside the read or the mask makes the identity unsafe.
+    source = M2C.replace('{', '{ if (arg0 != NULL) ', 1).replace(';\n}', '; }\n}')
+    [result] = texts(source, rows=TARGET_FIRST, header='#define NULL ((void *)0)')
+    assert '((M2C_FIELD(arg0, s32 *, 0x58) & -0x1C1) | -0x1C1)' in result
+    assert not texts('unsigned f(unsigned v) { return v & MASK; }', header='#define MASK 0xFFFFFE3F')
+    assert not texts('unsigned f(unsigned v) { return v & ~0x1c0; }', header='#define v read()')
