@@ -2,7 +2,7 @@
 
 import re
 
-from . import channel_status_drafts, formatted_stack_draft, message_frame_drafts
+from . import channel_status_drafts, formatted_stack_draft, message_frame_drafts, stack_io_drafts
 from .integer_repair_support import IDENT, NUMBER, integer, view
 from .mips import abi_register_names
 from .unaligned_stack_drafts import MEMORY, stack_copy
@@ -103,6 +103,9 @@ def applies(asm):
     """Which other cached KMC drafts to regenerate."""
     if ('swr' in asm and 'lwr' in asm
             and (stack_copy(asm, (('lbu', 4), ('lbu', 5), ('lbu', 6))) or _outgoing_copy(_lines(asm)))):
+        return True
+    if ('swr' in asm and 'lbu' in asm and stack_io_drafts.request_evidence(_lines(asm))
+            or stack_io_drafts.INODE_READ in asm and stack_io_drafts.inode_evidence(_lines(asm))):
         return True
     if channel_status_drafts.RESULT in asm and channel_status_drafts.evidence(_lines(asm)):
         return True
@@ -356,7 +359,7 @@ def rewrite(source, name, asm, context='', resolve=None):
     if 'u8 sp' in source and 'nor' in asm and (target := formatted_stack_draft.target(_lines(asm))):
         if fixed := formatted_stack_draft.rewrite(source, name, context, target):
             return fixed
-    if (('M2C_UNALIGNED32(' not in source and '+ sp)' not in source)
+    if (('M2C_UNALIGNED32(' not in source and '+ sp)' not in source and stack_io_drafts.INODE_READ not in source)
             or re.search(r'\b__m2c_copy_\w+\b', source+'\n'+context)
             or re.search(r'^\s*#\s*define\s+(bytes|word|status|error|words)\b', source+'\n'+context, re.M)):
         return None
@@ -365,6 +368,12 @@ def rewrite(source, name, asm, context='', resolve=None):
         return None
     loc, body, end = _body(part)
     lines = _lines(asm)
+    if stack_io_drafts.INODE_READ in source and (fixed := stack_io_drafts.inode(
+            part, name, context, loc, body, end, lines)):
+        return fixed
+    if 'M2C_UNALIGNED32(sp0)' in source and (fixed := stack_io_drafts.request(
+            part, name, context, loc, body, end, lines, resolve)):
+        return fixed
     if _outgoing_copy(lines):
         return (_packet(part, name, context, loc, body, end)
                 or _relocated_packet(part, name, context, loc, body, end, lines))
