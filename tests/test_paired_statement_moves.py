@@ -19,7 +19,7 @@ def statements(source):
 
 def test_proposes_only_candidates_two_moves_reach():
     proposed = variants(SOURCE, 'f', limit=200)
-    assert proposed and {family for family, _ in proposed} == set(FAMILIES)
+    assert proposed and {family for family, _ in proposed} == {FAMILIES[0]}
     candidates = [source for _, source in proposed]
     assert len(set(candidates)) == len(candidates)
     assert SOURCE not in candidates
@@ -147,3 +147,84 @@ def test_nothing_for_volatile_asm_missing_or_single_statement_functions():
     assert variants(SOURCE, 'missing') == []
     assert variants('void f(void) { __asm__("nop"); }', 'f') == []
     assert variants('void f(void) { a = 1; }', 'f') == []
+
+
+def test_adjacent_declarations_are_all_locals():
+    """Consecutive declarations used to consume each other's leading ';', hiding every second local."""
+    source = '''extern int a;
+extern void g(int);
+void f(void) {
+    char c1;
+    char c2;
+    register unsigned short c3;
+    c1 = 1;
+    c2 = 2;
+    c3 = 3;
+    g(1);
+}'''
+    from decomprepair.paired_statement_moves import wrapped_call_splits
+    moved = [candidate for _, candidate in wrapped_call_splits(source, 'f', limit=100)]
+    assert any(c.index('c1 = 1;') > c.index('do { g(1); } while (0);') for c in moved)
+    assert any(c.index('c3 = 3;') > c.index('do { g(1); } while (0);') for c in moved)
+
+
+WRAPPED = '''extern int a, b;
+extern void g(int);
+void f(void) {
+    char c1, c2;
+    c1 = 1;
+    c2 = 2;
+    a = 5;
+    g(1);
+    b = c1;
+    g(2);
+}'''
+
+
+def test_wrapped_call_splits_wrap_one_call_and_move_held_constants_past_it():
+    from decomprepair.paired_statement_moves import wrapped_call_splits
+    proposed = wrapped_call_splits(WRAPPED, 'f', limit=200)
+    assert proposed and {family for family, _ in proposed} == {'wrapped_call_split'}
+    candidates = [candidate for _, candidate in proposed]
+    assert len(set(candidates)) == len(candidates) and WRAPPED not in candidates
+    assert any('do { g(1); } while (0);' in c and c.index('c2 = 2;') > c.index('do { g(1); }') > c.index('c1 = 1;')
+               for c in candidates)  # one constant before the wrapped call, one after it
+    assert any('do { g(2); } while (0);' in c for c in candidates)
+    assert all(c.count('do {') == 1 for c in candidates)
+
+
+def test_wrapped_call_splits_never_move_a_constant_past_a_use_of_it():
+    from decomprepair.paired_statement_moves import wrapped_call_splits
+    for _, candidate in wrapped_call_splits(WRAPPED, 'f', limit=500):
+        assert candidate.index('c1 = 1;') < candidate.index('b = c1;')
+
+
+def test_wrapped_call_splits_only_wrap_plain_calls_and_move_only_literal_locals():
+    from decomprepair.paired_statement_moves import wrapped_call_splits
+    source = '''extern int a, b;
+extern void g(int);
+void f(int n) {
+    int i;
+    i = n;
+    a = 1;
+    g(2);
+}'''
+    for _, candidate in wrapped_call_splits(source, 'f', limit=100):
+        assert candidate.index('i = n;') < candidate.index('g(2)')  # not a literal: stays put
+        assert candidate.index('a = 1;') < candidate.index('g(2)')  # a global: stays put
+    assert wrapped_call_splits('void f(void) { while (1) { } }', 'f') == []
+
+
+def test_a_hex_literal_is_not_a_name():
+    """0x64 once yielded the identifier 'x64', so a local held constant looked like a global and never crossed a call."""
+    from decomprepair.paired_statement_moves import wrapped_call_splits
+    source = '''extern void g(int);
+void f(void) {
+    char c64;
+    char c2;
+    c64 = 0x64;
+    c2 = 0x2;
+    g(1);
+    g(2);
+}'''
+    assert any(c.index('c64 = 0x64;') > c.index('do { g(1); } while (0);') for _, c in wrapped_call_splits(source, 'f', limit=200))

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from .integer_repair_support import IDENT, edit, view
 from .pattern_repairs import close
 
-FAMILIES = ('paired_statement_moves',)
+FAMILIES = ('paired_statement_moves', 'wrapped_call_split')
 LIMIT = 64
 MAX_STATEMENTS = 400
 EXHAUSTIVE_MOVES = 24  # up to this many single moves, every pair is enumerated before sampling
@@ -29,6 +29,7 @@ TYPES = {'char', 'short', 'int', 'long', 'float', 'double', 'void', 'unsigned', 
          'f32', 'f64', 'volatile'}
 KEYWORDS = {'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default', 'goto', 'return', 'break', 'continue',
             'sizeof'}
+NUMBER_LITERAL = re.compile(r'\b(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d*)?)[uUlLfF]*\b')
 ASSIGN = re.compile(r'(?<![=!<>+\-*/%&|^])(?:[+\-*/%&|^]|<<|>>)?=(?!=)')
 UNARY_MEMORY = re.compile(r'(?:^|[=(,+\-*/&|<>!?:;~]\s*)(?:\*|&(?!&))')
 
@@ -167,7 +168,7 @@ def _declared(clean, part):
         if found and found[-1] not in TYPES:
             names.add(found[-1])
     body = part.clean[part.opening + 1:part.end]
-    for hit in re.finditer(r'(?:^|[;{}])\s*((?:register\s+|unsigned\s+|signed\s+|static\s+|const\s+)*'
+    for hit in re.finditer(r'(?:^|(?<=[;{}]))\s*((?:register\s+|unsigned\s+|signed\s+|static\s+|const\s+)*'
                            r'(?:char|short|int|long|float|double|[su](?:8|16|32|64)|f32|f64|struct\s+\w+)\b[^;(){}]*);',
                            body):
         for piece in hit[1].split(','):
@@ -180,12 +181,14 @@ def _declared(clean, part):
 
 def _facts(clean, stmt, locals_, macros):
     text = clean[stmt.start:stmt.end - 1]
-    names = {n for n in re.findall(IDENT, text) if n not in KEYWORDS and n not in TYPES}
+    # numbers are not names: the 'x64' in 0x64 used to look like a global and pin every constant behind each call
+    words = NUMBER_LITERAL.sub(' ', text)
+    names = {n for n in re.findall(IDENT, words) if n not in KEYWORDS and n not in TYPES}
     stmt.names = names
     if names & macros or re.search(r'\b(?:asm|__asm__)\b|\?|,(?![^(\[]*[)\]])', text):
         stmt.unknown = True
         return
-    function_names = set(re.findall(rf'({IDENT})\s*\(', text)) - KEYWORDS - {'sizeof'}
+    function_names = set(re.findall(rf'({IDENT})\s*\(', words)) - KEYWORDS - {'sizeof'}
     stmt.calls = bool(function_names)
     others = names - function_names
     stmt.global_names = others - locals_
@@ -205,7 +208,7 @@ def _facts(clean, stmt, locals_, macros):
             stmt.writes = {left}
             stmt.writes_local = left in locals_
         else:
-            stmt.writes = set(re.findall(IDENT, left)) - KEYWORDS - TYPES
+            stmt.writes = set(re.findall(IDENT, NUMBER_LITERAL.sub(' ', left))) - KEYWORDS - TYPES
             stmt.indirect_write = True
         right = text[assignment.end():]
         stmt.indirect_read = bool(UNARY_MEMORY.search(right) or '[' in right or '->' in right)
@@ -352,3 +355,79 @@ def variants(source, name, header='', limit=LIMIT, seed=0, exclude=()):
             continue
         emit(index, _apply(once, rng.choice(options)))
     return found
+
+
+LITERAL = re.compile(r'[-+]?(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*')
+
+
+def _is_plain_call(text):
+    """`f(...)` with nothing assigned: a call statement a one-shot scope can wrap."""
+    body = text.strip()
+    return bool(re.fullmatch(rf'{IDENT}\s*\(.*\)\s*;', body, re.S)) and not re.match(r'(?:if|while|for|switch|return|sizeof)\b', body)
+
+
+def _is_local_literal(stmt, text):
+    """`local = 5;`: a held constant, which commutes with everything that does not name the local."""
+    hit = re.fullmatch(rf'\s*({IDENT})\s*=\s*({LITERAL.pattern})\s*;', text)
+    return bool(hit) and stmt.writes_local
+
+
+def wrapped_call_splits(source, name, header='', limit=LIMIT, exclude=()):
+    """Candidates that wrap one call in `do { call; } while (0);` and move some of the held-constant assignments
+    ahead of it to just after it.
+
+    A one-shot loop around a call is a scheduling barrier: the compiler places a loop-invariant constant as late
+    as it can inside its region, and loop notes end regions. Wrapping a call therefore decides where the constants
+    land, and moving some of them past the call splits them across two regions, the way hand-written code does when
+    one constant is wanted before the call and the others after it. Neither one-move nor two-move search can reach
+    this: it is one wrap and several coordinated moves. (A real function went from 325 to 120 this way.)
+
+    Every moved statement is a local assigned a literal and commutes with each statement it passes; the wrap itself
+    changes no behaviour. Candidates are ordered by the number of constants moved, fewest first, and an empty
+    subset (the bare wrap) comes first for each call.
+    """
+    runs = _analysis(source, name, header)
+    seen = {source, *exclude}
+    found = []
+    for run in runs or ():
+        texts = [source[s.start:s.end] for s in run]
+        base = list(range(len(run)))
+        for j, call in enumerate(run):
+            if not _is_plain_call(texts[j]) or call.unknown:
+                continue
+            held = [i for i in range(j) if _is_local_literal(run[i], texts[i])]
+            for size in range(0, min(len(held), 6) + 1):
+                for chosen in _subsets(held, size):
+                    if any(conflict(run[i], run[k]) for i in chosen for k in range(i + 1, j + 1) if k not in chosen):
+                        continue
+                    rest = [i for i in held if i not in chosen]
+                    # the constants left before the call may stay where they are, or sink to just before it
+                    # (one at a time, or all together): the region the wrapper starts is then theirs alone
+                    for sunk in [()] + [(i,) for i in rest] + ([tuple(rest)] if len(rest) > 1 else []):
+                        if any(conflict(run[i], run[k]) for i in sunk for k in range(i + 1, j) if k not in sunk
+                               and k not in chosen):
+                            continue
+                        keep = [i for i in base[:j] if i not in chosen and i not in sunk]
+                        order = keep + list(sunk) + [j] + list(chosen) + base[j + 1:]
+                        wrapped = list(texts)
+                        wrapped[j] = 'do { ' + texts[j].strip() + ' } while (0);'
+                        out = wrapped[order[0]]
+                        seps = [source[run[k].end:run[k + 1].start] for k in range(len(run) - 1)]
+                        for k in range(1, len(order)):
+                            out += seps[k - 1] + wrapped[order[k]]
+                        candidate = edit(source, [(run[0].start, run[-1].end, out)])
+                        if candidate not in seen:
+                            seen.add(candidate)
+                            found.append((FAMILIES[1], candidate))
+                            if len(found) >= limit:
+                                return found
+    return found
+
+
+def _subsets(items, size):
+    if size == 0:
+        yield ()
+        return
+    for k in range(len(items)):
+        for rest in _subsets(items[k + 1:], size - 1):
+            yield (items[k],) + rest
