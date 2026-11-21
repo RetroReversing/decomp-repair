@@ -58,8 +58,10 @@ def _forwards(lines, globals_):
         # m2c reuses one name for unrelated values: only the live range up to the next assignment is forwarded,
         # and that assignment must not read the old value.
         stop = writes[1] if len(writes) > 1 else len(lines)
-        if stop < len(lines) and re.search(rf'\b{local}\b', lines[stop].split('=', 1)[1]):
-            continue
+        if stop < len(lines):
+            overwrite = re.fullmatch(rf'\s*{local}\s*=\s*([^;]+);\s*', lines[stop])
+            if not overwrite or re.search(rf'\b{local}\b', overwrite[1]):
+                continue
         stores = [(i, re.fullmatch(rf'\s*({ID})\s*=\s*{local}\s*;\s*', other)) for i, other in enumerate(lines)
                   if t_line < i < stop]
         stores = [(i, s[1]) for i, s in stores if s and s[1] in globals_]
