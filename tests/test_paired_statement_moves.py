@@ -265,3 +265,34 @@ def test_locals_initialised_by_a_call_are_not_globals():
 }'''
     moved = single_moves(source, 'f')
     assert any(candidate.index('m[2]') < candidate.index('m[0]') for candidate in moved)
+
+
+def test_an_initialised_declaration_is_split_so_its_value_can_move():
+    # gap: `f32 c = x * 2.0f;` was a barrier, so the value a register swap needed later could never move
+    from decomprepair.paired_statement_moves import split_declarations
+    source = '''extern float g, h; extern int n;
+void f(float x) {
+    float c = x * 2.0f;
+    int i = n;
+    float *p;
+    unsigned int count = 0;
+    g = x;
+    h = c;
+    n = i + 1;
+}'''
+    split = split_declarations(source, 'f')
+    assert ('    float c;\n    int i;\n    float *p;\n    unsigned int count;\n    c = x * 2.0f;\n    i = n;\n'
+            '    count = 0;\n    g = x;') in split
+    moved = [s for s in single_moves(source, 'f') if s.index('c = x') > s.index('g = x')]
+    assert moved and all(s.index('c = x') < s.index('h = c') for s in moved)
+
+
+def test_a_value_naming_a_later_declaration_is_not_split():
+    from decomprepair.paired_statement_moves import split_declarations
+    source = '''int n;
+void f(void) {
+    int a = n;
+    int n = 2;
+    a = n;
+}'''
+    assert 'int a = n;' in split_declarations(source, 'f')
