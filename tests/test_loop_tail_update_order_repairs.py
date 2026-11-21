@@ -33,3 +33,31 @@ def test_swaps_each_loop_and_both():
 def test_leaves_other_tails_alone():
     assert not repair.variants('void f(void) { do { g(); i += 1; } while (i < 3); }', 'f')
     assert not repair.variants('void f(void) { do { i += 1; i += 2; } while (i < 3); }', 'f')
+
+
+def test_for_goto_and_mid_body_updates_are_swapped_too():
+    # gap: only the last two updates of a do-while were offered
+    from decomprepair.loop_tail_update_order_repairs import variants
+    source = '''void f(int *a) {
+    int i, o, j, k;
+    for (i = 0; i < 4; i++, o += 4) {
+        a[o] = 0;
+    }
+    j = 0;
+loop:
+    a[j] = 1;
+    j += 1;
+    k += 8;
+    if (j < 4) goto loop;
+    while (j) {
+        j--;
+        k -= 2;
+        a[k] = j;
+    }
+}
+'''
+    out = [c for _, c in variants(source, 'f')]
+    assert any('o += 4, i++)' in c for c in out)
+    assert any('k += 8;\n    j += 1;\n    if (j < 4) goto loop;' in c for c in out)
+    assert any('k -= 2;\n        j--;\n        a[k] = j;' in c for c in out)
+    assert len(out) == len(set(out)) == 3
