@@ -40,6 +40,8 @@ def test_negate_any():
     assert b.negate_any('!flag') == 'flag'
     assert b.negate_any('a < 4') == 'a >= 4'
     assert b.negate_any('a && b') == '!(a && b)'
+    # m2c's field macros are reads, not calls
+    assert b.negate_any('M2C_FIELD(p, u16 *, 0x42) & 0x10') == '!(M2C_FIELD(p, u16 *, 0x42) & 0x10)'
     assert b.negate_any('f(x)') is None and b.negate_any('i++') is None and b.negate_any('a = b') is None
 
 
