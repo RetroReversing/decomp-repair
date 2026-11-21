@@ -587,3 +587,29 @@ def test_call_stride_uses_argument_register_as_relocated_base():
     assert 'send((i * 104) + (u8 *)&records, 1)' in fixed
     assert not variants(source, 'f', '', rows[:-1])
     assert not variants(source.replace('* 104', '* 100'), 'f', '', rows)
+
+
+def test_sentinel_cursor_steps_on_loop_entry_before_the_call():
+    source = '''void f(u16 *data, s32 key) {
+    char *cursor;
+    u16 value;
+    value = *data;
+    if (value != 0xFFFF) {
+        cursor = data + 2;
+        do {
+            register_value(value, key);
+            value = *(u16 *)cursor;
+            cursor += 2;
+        } while (value != 0xFFFF);
+    }
+}'''
+    ops = ['beq $v1, $v0, 0x64', '', 'ori $s2, $zero, 0xffff', 'addiu $s0, $s0, 2',
+           'jal register_value', 'move $a1, $s1', 'lhu $a0, ($s0)']
+    rows = [(' ', op, op) for op in ops]
+    rows[1] = ('>', '', 'addiu $s0, $s0, 4')
+    rows[3] = ('<', ops[3], '')
+    fixed = dict(variants(source, 'f', '', rows))['measured_sentinel_entry_step']
+    assert 'cursor = (char *)data;' in fixed
+    assert 'cursor += 2;\n            register_value(value, key);' in fixed
+    assert not variants(source.replace('register_value(value, key)', 'register_value(value, cursor)'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:-1])
