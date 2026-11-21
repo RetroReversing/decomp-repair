@@ -238,15 +238,42 @@ def byte_store_sites(rows):
     return sites
 
 
+def shared_byte_store_sites(rows):
+    """Find a positive byte constant shared by multiple stores and a signed division."""
+    positive = re.compile(rf'addiu ({REGISTER}), \$zero, (?:0[xX][fF][fF]|255)')
+    negative = re.compile(rf'addiu ({REGISTER}), \$zero, -(?:0x1|1)')
+    byte_store = re.compile(rf'sb ({REGISTER}), (-?(?:0x[\da-f]+|\d+))\({REGISTER}\)')
+    division = re.compile(rf'div (?:\$zero, )?({REGISTER}), {REGISTER}')
+    sites = set()
+    for i, (_, want, have) in enumerate(rows):
+        wanted, actual = positive.fullmatch(want), negative.fullmatch(have)
+        if not wanted or not actual:
+            continue
+        shared = set()
+        used_in_division = False
+        for _, target, candidate in rows[i+1:]:
+            if (div := division.fullmatch(target)) and div[1] == wanted[1]:
+                used_in_division = True
+            a, b = byte_store.fullmatch(target), byte_store.fullmatch(candidate)
+            if (a and b and a[1] == wanted[1] and b[1] == actual[1]
+                    and int(a[2], 0) == int(b[2], 0)):
+                shared.add(int(a[2], 0))
+        if used_in_division and len(shared) >= 2:
+            sites.update(shared)
+    return sites
+
+
 def unsigned_byte_stores(source, header, part, rows):
-    sites = byte_store_sites(rows)
+    sites = byte_store_sites(rows) | shared_byte_store_sites(rows)
     if not sites:
         return []
     literal = r'(?:0[xX][fF][fF]|255)\s*;'
     field = re.compile(rf'\bM2C_FIELD\(\s*{IDENT}\s*,\s*(?P<type>s8)\s*\*\s*,\s*'
                        rf'(?P<offset>-?(?:0[xX][\da-fA-F]+|\d+))\s*\)\s*=\s*{literal}')
     fields = {}
-    for match in field.finditer(part.body):
+    raw_field = re.compile(rf'\*\s*\(\s*(?P<type>s8)\s*\*\s*\)\s*[^;{{}}=\n]+?\+\s*'
+                           rf'(?P<offset>-?(?:0[xX][\da-fA-F]+|\d+))\s*\)+\s*=\s*{literal}')
+    for match in [*field.finditer(part.body), *raw_field.finditer(part.body)]:
         start, end = match.span('type')
         fields.setdefault(int(match['offset'], 0), []).append(
             (part.opening+1+start, part.opening+1+end, 'u8'))
