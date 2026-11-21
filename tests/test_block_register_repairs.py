@@ -109,3 +109,16 @@ def test_the_counter_init_can_stay_a_statement_of_its_own():
 def test_nothing_to_offer_without_loops_or_pointers():
     assert not blocks.variants('void g(void) { h(); }\n', 'g')
     assert not families('void g(void) { asm("nop"); }\n')
+
+
+def test_a_nonzero_test_can_go_through_an_inline_helper():
+    # N64: after `beqz v`, CSE replaced `v` on the else path by the counter register that also held zero
+    # (`slt $v0, $s4, $v0`); through an inline helper the byte kept its own register (20 -> 0).
+    source = ('s32 n;\nvoid f(void) {\n    s32 mode;\n\n    mode = G;\n    if (mode != 0) {\n        a();\n    } else if (mode < n) {\n'
+              '        b();\n    }\n    if (n != 0) {\n        c();\n    }\n}\n')
+    texts = [t for fam, t in blocks.variants(source, 'f') if fam == blocks.NONZERO]
+    helper = 'static inline int repair_nonzero(int value) { return value != 0; }\n'
+    assert texts[0].startswith('s32 n;\n' + helper + 'void f(void) {')
+    assert 'if (repair_nonzero(mode)) {' in texts[0] and 'if (repair_nonzero(n)) {' in texts[0]
+    assert any('if (repair_nonzero(mode)) {' in t and 'if (n != 0) {' in t for t in texts)
+    assert not any(blocks.NONZERO == fam for fam, _ in blocks.variants(texts[0], 'f'))
