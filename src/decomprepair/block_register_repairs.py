@@ -16,6 +16,11 @@ by the local pass, so how a draft names and scopes its variables decides which v
   The init is also offered left where it was, as `for (; c; i++)`: gcc emits a header init right before the loop,
   after the pointer declarations in front of it. 80 -> 20.
 
+- `inline_nonzero_test`: `if (v != 0)` becomes `if (repair_nonzero(v))` with `static inline int repair_nonzero(int v)
+  { return v != 0; }` above the function. After a plain `beqz v` gcc's CSE knows `v == 0` on the else path and
+  replaces `v` there by any register holding zero (`slt $v0, $s4, $v0`); through the helper it keeps `v`'s own
+  register, as the game's code did. 20 -> 0 on the N64 function (found by the deep permuter's inline rewrite).
+
 Each rewrite only renames, inlines or re-spells: what is computed does not change (the for-loop form assumes the
 condition holds on entry, which the judge settles). Proposals only; the compiler and the byte judge decide.
 """
@@ -27,7 +32,8 @@ from .pattern_repairs import close
 SYMBOL = 'symbol_pointer_inline'
 SPLIT = 'block_temp_split'
 FOR = 'do_while_to_for'
-FAMILIES = (SYMBOL, SPLIT, FOR)
+NONZERO = 'inline_nonzero_test'
+FAMILIES = (SYMBOL, SPLIT, FOR, NONZERO)
 
 IDENT = r'[A-Za-z_]\w*'
 LIMIT = 4
@@ -36,7 +42,7 @@ SPLIT_LIMIT = 16  # a function with four loops has a few temporaries that cross 
 
 def variants(source, name):
     result = []
-    for family, generator in ((SYMBOL, _symbol_pointers), (SPLIT, _split_temporaries), (FOR, _for_loops)):
+    for family, generator in ((SYMBOL, _symbol_pointers), (SPLIT, _split_temporaries), (FOR, _for_loops), (NONZERO, _nonzero_tests)):
         result += [(family, text) for text in generator(source, name)]
     return result
 
@@ -250,3 +256,30 @@ def _for_loops(source, name):
         if len(result) >= LIMIT:
             break
     return result
+
+
+# -- inline_nonzero_test -----------------------------------------------------------------------------------------
+
+HELPER = 'repair_nonzero'
+
+
+def _nonzero_tests(source, name):
+    part = _body(source, name)
+    if not part or re.search(r'\b' + HELPER + r'\b', source):
+        return []
+    clean, opening, end = part
+    tests = [m for m in re.finditer(rf'\bif\s*\(\s*(?P<v>{IDENT})\s*!=\s*0\s*\)', clean[opening:end])]
+    if not tests:
+        return []
+    span = find(source, name)
+    line = source.rfind('\n', 0, span[0]) + 1
+    helper = f'static inline int {HELPER}(int value) {{ return value != 0; }}\n'
+
+    def build(selected):
+        edits = [(opening + m.start(), opening + m.end(), f'if ({HELPER}({m["v"]}))') for m in selected]
+        edits.append((line, line, helper))
+        return _edit(source, edits)
+    # every test of a variable the function sets itself first (the key-mode byte), then all, then each alone
+    result = [build(tests)] if len(tests) > 1 else []
+    result += [build([m]) for m in tests[:LIMIT + 2]]
+    return list(dict.fromkeys(result))

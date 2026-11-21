@@ -16,7 +16,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/12/56/9a694f60f5b26612039d975c1c84d2ad8fd0ad839b0b1058dbe68dd32b0b/capstone-5.0.9-py3-none-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:1f5871b57e987d5bf23b531fbe868211b74ad750fa9b830a3d3cdc4956bc0ae3", size = 1483221, upload-time = "2026-05-28T16:05:51.925Z" },
     { url = "https://files.pythonhosted.org/packages/b9/74/c178ac241892bb3668b633065bdbe6dc719c2aa54668d68a8e23a6753525/capstone-5.0.9-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:69064219c814ad64af35469a7c4ddd19b730cacb96a1a796435ccde0e1567d05", size = 1459140, upload-time = "2026-05-28T16:05:53.182Z" },
     { url = "https://files.pythonhosted.org/packages/7b/f3/3865a0371603994f8bf521595b3072080bfe1b715f8bd080988d026dd2a1/capstone-5.0.9-py3-none-musllinux_1_2_i686.whl", hash = "sha256:0cc3b1ec319ab0530efc6b181491b77dd3373c81b6dbcf2f05a80e3d8dd61d5e", size = 1488205, upload-time = "2026-05-28T16:05:54.31Z" },
-    { url = "https://files.pythonhosted.org/packages/09/a1/39a575aa27a35b43b0ad930.5.1813dba39038060eccfb29031d82e3fb2c/capstone-5.0.9-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:cfec34e6e01472fe60850c87c5bea9918c274fa2a605b510e6489bf87c0c9960", size = 1488865, upload-time = "2026-05-28T16:05:55.603Z" },
+    { url = "https://files.pythonhosted.org/packages/09/a1/39a575aa27a35b43b0ad93065a1803dba39038060eccfb29031d82e3fb2c/capstone-5.0.9-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:cfec34e6e01472fe60850c87c5bea9918c274fa2a605b510e6489bf87c0c9960", size = 1488865, upload-time = "2026-05-28T16:05:55.603Z" },
     { url = "https://files.pythonhosted.org/packages/50/e6/6f06fdb6a9ed32b2f7cd9c036b92d5324112c3ef7080f2c71efc367d40dd/capstone-5.0.9-py3-none-win_amd64.whl", hash = "sha256:732cedbbb56d42e723f14d7af6387f1454194a820b4b96b56d1e53f865ef85d0", size = 1273459, upload-time = "2026-05-28T16:05:56.73Z" },
 ]
 
@@ -31,7 +31,7 @@ wheels = [
 
 [[package]]
 name = "decomprepair"
-version = "0.5.184"
+version = "0.5.185"
 source = { editable = "." }
 dependencies = [
     { name = "capstone" },
