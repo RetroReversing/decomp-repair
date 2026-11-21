@@ -1016,7 +1016,61 @@ def _byte_index_carrier(source, name, rows):
     return edit(source, [(*hit.span(), indent + replacement)])
 
 
+def _paired_record_padding(source, name, header, rows):
+    """Adjust both private record types when the final index scale proves a wider stride."""
+    changes = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changes) != 1:
+        return None
+    at = changes[0]
+    if at < 4 or at + 7 >= len(rows):
+        return None
+    want, have = (SHIFT.fullmatch(op) for op in rows[at][1:])
+    if not want or not have or want.groups()[:2] != have.groups()[:2] or want[1] != want[2]:
+        return None
+    reg = want[1]
+    steps = [row[1] for row in rows[at - 4:at]]
+    seed = re.fullmatch(rf'sll {re.escape(reg)}, (\$a[0-3]), 3', steps[0])
+    if not seed or steps[1:] != [f'subu {reg}, {reg}, {seed[1]}', f'sll {reg}, {reg}, 2',
+                                  f'addu {reg}, {reg}, {seed[1]}']:
+        return None
+    old_shift, new_shift = integer(have[3]), integer(want[3])
+    if not 1 <= old_shift < new_shift <= 7:
+        return None
+    targets = [row[1] for row in rows[at + 1:at + 8]]
+    tables = []
+    for slot, start in enumerate((0, 3)):
+        arg = f'$a{slot}'
+        high, address, load = targets[start:start + 3] if not slot else (targets[3], targets[4], targets[6])
+        table = re.fullmatch(rf'lui {re.escape(arg)}, %hi\(({IDENT})\)', high)
+        if not table or address != f'addu {arg}, {arg}, {reg}' or load != f'lh {arg}, %lo({table[1]})({arg})':
+            return None
+        tables.append(table[1])
+    call = re.fullmatch(rf'jal ({IDENT})', targets[5])
+    if len(set(tables)) != 2 or not call or not (part := view(source, name)):
+        return None
+    first, second = tables
+    uses = rf'\b{call[1]}\s*\(\s*{first}\[(?P<index>{IDENT})\]\.(?P<f0>{IDENT})\s*,\s*{second}\[(?P=index)\]\.(?P<f1>{IDENT})\s*\)'
+    hit = re.search(uses, part.body)
+    if not hit:
+        return None
+    edits = []
+    for table, member in zip(tables, (hit['f0'], hit['f1'])):
+        declarations = list(re.finditer(rf'\bextern\s+(?P<type>{IDENT})\s+{table}\s*\[\s*\]\s*;', part.clean[:part.opening]))
+        if len(declarations) != 1 or re.search(rf'\b{table}\b', header) or len(re.findall(rf'\b{table}\b', part.clean)) != 2:
+            return None
+        kind = declarations[0]['type']
+        layout = re.search(rf'\btypedef\s+struct\s*{{\s*u16\s+{member}\s*;\s*u8\s+{IDENT}\s*'
+                           rf'\[\s*(?P<pad>{NUMBER})\s*\]\s*;\s*}}\s*{kind}\s*;', part.clean[:part.opening])
+        if (not layout or integer(layout['pad']) + 2 != 29 << old_shift
+                or len(re.findall(rf'\b{kind}\b', part.clean)) != 2 or re.search(rf'\b{kind}\b', header)):
+            return None
+        edits.append((*layout.span('pad'), str((29 << new_shift) - 2)))
+    return edit(source, edits)
+
+
 def variants(source, name, header, rows):
+    if candidate := _paired_record_padding(source, name, header, rows):
+        return [('measured_paired_record_padding', candidate)]
     if candidate := _byte_index_carrier(source, name, rows):
         return [('measured_byte_index_carrier', candidate)]
     if 'char *' in source and (candidate := _sentinel_entry_step(source, name, rows)):

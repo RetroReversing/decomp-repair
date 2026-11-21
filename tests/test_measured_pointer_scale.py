@@ -673,3 +673,29 @@ void f(s32 row, s32 index) {
     assert not variants(source.replace('0xA0', '0x80'), 'f', '', rows)
     assert not variants(source.replace('*cursor |= 0x80;', '*cursor |= 0x80; touch();'), 'f', '', rows)
     assert not variants(source, 'f', '', [*rows[:-1], ('r', 'sb $v0, ($a0)', 'sb $v1, ($v0)')])
+
+
+def test_paired_record_padding_follows_the_measured_final_shift():
+    source = """\
+typedef struct { u16 half; u8 padding[56]; } Left;
+extern Left first[];
+typedef struct { u16 half; u8 padding[56]; } Right;
+extern Right second[];
+void f(s32 index) {
+    consume(first[index].half, second[index].half);
+}
+"""
+    ops = [
+        'sll $v0, $a1, 3', 'subu $v0, $v0, $a1', 'sll $v0, $v0, 2',
+        'addu $v0, $v0, $a1', 'sll $v0, $v0, 3',
+        'lui $a0, %hi(first)', 'addu $a0, $a0, $v0', 'lh $a0, %lo(first)($a0)',
+        'lui $a1, %hi(second)', 'addu $a1, $a1, $v0', 'jal consume', 'lh $a1, %lo(second)($a1)',
+    ]
+    rows = [(' ', op, op) for op in ops]
+    rows[4] = ('i', ops[4], 'sll $v0, $v0, 1')
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_paired_record_padding'
+    assert fixed.count('padding[230]') == 2
+    assert not variants(source.replace('padding[56]', 'padding[60]', 1), 'f', '', rows)
+    assert not variants(source + '\nLeft other;', 'f', '', rows)
+    assert not variants(source, 'f', 'extern Left first[];', rows)
