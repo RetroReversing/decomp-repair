@@ -83,18 +83,85 @@ def test_two_loops_trade_their_counters():
     assert '} while (j < 4);' in swapped[0] and 'if (i < 3) {' in swapped[0]
 
 
-def test_singles_come_before_merges_and_swaps():
+def test_reuse_comes_before_fresh_splits_then_merges_and_swaps():
     labels = [l for l, _ in h.variants(SOURCE, 'f')]
-    assert labels == sorted(labels, key=[h.FRESH, h.REASSIGN, h.MERGE, h.SWAP].index)
+    assert labels == sorted(labels, key=[h.REASSIGN, h.FRESH, h.MERGE, h.SWAP].index)
 
 
-def test_a_counter_read_after_its_loop_is_left_alone():
-    text = SOURCE.replace('        k += 1;\n    }\n', '        k += 1;\n    }\n    A[0] = k;\n')
-    assert 'k' not in h._counters(text, 'f')[0] and {'i', 'j'} <= set(h._counters(text, 'f')[0])
-    texts = [t for _, t in h.variants(text, 'f')]
-    assert texts and all('A[0] = k;' in t and '    s32 k;\n' in t and '    k = 0;\n    while (k < 6) {' in t for t in texts)
+def test_a_counter_read_before_or_between_its_loops_is_left_alone():
+    between = SOURCE.replace('    j = 0;\nloop_1:', '    A[0] = i;\n    j = 0;\nloop_1:')  # `i` read between its two loops
+    assert 'i' not in h._counters(between, 'f')[0] and {'j', 'k'} <= set(h._counters(between, 'f')[0])
+    texts = [t for _, t in h.variants(between, 'f')]
+    assert texts and all('A[0] = i;' in t and '    s32 i;\n' in t and '        A[i] = reader(A, 1);' in t for t in texts)
+    before = SOURCE.replace('    i = 0;\n    do {\n        A[i]', '    B[0] = k;\n    i = 0;\n    do {\n        A[i]', 1)
+    assert 'k' not in h._counters(before, 'f')[0]
     only = PRELUDE + 'void g(void) {\n    s32 i;\n    i = 0;\n    do {\n        A[i] = 1;\n        i += 1;\n    } while (i < 4);\n    B[0] = i;\n}\n'
     assert h.variants(only, 'g') == []
+
+
+def test_a_counter_read_after_its_last_loop_may_take_loops_but_not_give_its_own_up():
+    text = SOURCE.replace('        k += 1;\n    }\n', '        k += 1;\n    }\n    A[0] = k;\n')
+    found = h._counters(text, 'f')[0]
+    assert {'i', 'j', 'k'} <= set(found) and found['k'][3] and not found['i'][3]
+    texts = [t for _, t in h.variants(text, 'f')]
+    assert texts and all('A[0] = k;' in t and '    k = 0;\n    while (k < 6) {' in t for t in texts)  # k keeps its loop
+    # an earlier loop may count with `k`: k's own loop sets it again before the later read
+    assert any('    k = 0;\n    do {\n        C[k] = reader' in t for t in texts)
+    # `k` is never merged away or traded, which would hand its later reader another loop's value
+    assert all('    s32 k;\n' in t for t in texts)
+
+
+# the loops of a function that reads a counter long after its goto loop: `a` counts the first loop, `b` the inner goto
+# loop of the second, and `if (b)` guards the last loop's body (the same work in both arms)
+GUARDED = PRELUDE + '''
+void g(void) {
+    s32 a;
+    s32 b;
+    s32 c;
+
+    a = 0;
+    do {
+        A[a] = reader(A, 1);
+        a += 1;
+    } while (a < 3);
+    c = 0;
+    do {
+        b = 0;
+        A[c] = 0;
+inner:
+        B[b] = reader(B, 4);
+        b += 1;
+        if (b < 3) {
+            goto inner;
+        }
+        c += 1;
+    } while (c < 5);
+    c = 0;
+    do {
+        if (b) {
+            C[c] = reader(C, 1);
+            c += 1;
+        } else {
+            C[c] = reader(C, 1);
+            c += 1;
+        }
+    } while (c < 3);
+}
+'''
+
+
+def test_a_loop_takes_a_counter_that_a_later_guard_reads_and_the_guard_still_reads_the_inner_loops_last_value():
+    found = h._counters(GUARDED, 'g')[0]
+    assert set(found) == {'a', 'b', 'c'} and found['b'][3] and not found['a'][3]  # the goto loop counts; `if (b)` reads
+    taking = [t for t in of(h.REASSIGN, GUARDED, 'g') if '    b = 0;\n    do {\n        A[b] = reader(A, 1);' in t]
+    assert len(taking) == 1  # the first loop counts with `b`, whose set in the second loop precedes the guard's read
+    body = taking[0][taking[0].index('void g'):]
+    assert 'if (b) {' in body and '    s32 a;\n' in body and not re.search(r'\ba\b', body.replace('    s32 a;\n', ''))
+    # the loop after `b`'s last loop can't take `b`: the guard would read that loop's value, not the inner loop's
+    assert not any('    b = 0;\n    do {\n        if (b) {' in t or 'C[b]' in t for _, t in h.variants(GUARDED, 'g'))
+    # and `b`'s own inner loop is never given another counter (the guard would lose it) or merged or traded away
+    labels = [(l, t) for l, t in h.variants(GUARDED, 'g')]
+    assert all('B[b] = reader(B, 4);' in t and 'if (b) {' in t for l, t in labels)
 
 
 def test_a_counter_whose_address_is_taken_is_left_alone():
