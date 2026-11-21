@@ -450,6 +450,59 @@ def _float_sum_destination(source, name, header, rows):
     return edit(source, [(*hit.span(), fixed)])
 
 
+_PACKED_CHANNELS = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<red>{IDENT})\s*=\s*\((?P<value>{IDENT})\s*>>\s*1\)\s*<<\s*16\s*;\s*'
+    rf'(?P<blue>{IDENT})\s*=\s*\(255[Uu]?\s*-\s*(?P=value)\)\s*\|\s*64[Uu]?\s*;\s*'
+    rf'(?P=value)\s*=\s*(?P=red)\s*\|\s*(?P<alpha>{IDENT})\s*;\s*'
+    rf'(?P=alpha)\s*=\s*0x7[fF]800000[Uu]?\s*;\s*'
+    rf'(?P=red)\s*>>=\s*1\s*;\s*(?P=value)\s*\|=\s*(?P=blue)\s*;\s*(?P=blue)\s*>>=\s*1\s*;\s*'
+    rf'(?P<out>{IDENT})->{IDENT}\s*=\s*(?P=value)\s*;\s*'
+    rf'(?P=out)->{IDENT}\s*=\s*\((?P<order>(?P=blue)\s*\|\s*(?P=alpha))\)\s*\|\s*(?P<last>(?P=red))\s*;'
+)
+
+
+def _packed_color_channels(source, name, header, rows):
+    """Restore the register allocation of two unsigned channels in packed colors."""
+    changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
+    if len(changes) != 9 or any(rows[i][0] != 'r' for i, _, _ in changes):
+        return None
+    indices, target, current = zip(*changes)
+    if tuple(i - indices[0] for i in indices) != (0, 1, 2, 3, 4, 5, 7, 8, 9):
+        return None
+    target = normalized_integer_lines(target)
+    current = normalized_integer_lines(current)
+    expected = (
+        'srl $v0, $a0, 1', 'sll $v0, $v0, 16', 'addiu $v1, $zero, 255',
+        'subu $v1, $v1, $a0', 'ori $v1, $v1, 64', 'or $a0, $v0, $a1',
+        'srl $v0, $v0, 1', 'or $a0, $a0, $v1', 'srl $v1, $v1, 1',
+    )
+    swap = {'$v0': '$v1', '$v1': '$v0'}
+    swapped = tuple(re.sub(r'\$v[01]\b', lambda match: swap[match[0]], op) for op in expected)
+    if tuple(target) != expected or tuple(current) != swapped:
+        return None
+    part = plain_repair_view(source, name, header)
+    if not part:
+        return None
+    matches = list(_PACKED_CHANNELS.finditer(part.clean, part.opening + 1, part.end))
+    if len(matches) != 1:
+        return None
+    hit = matches[0]
+    red, blue, alpha, value = (hit[key] for key in ('red', 'blue', 'alpha', 'value'))
+    prefix = part.clean[part.opening + 1:hit.start()]
+    local_decls = re.findall(rf'\bu32\s+({IDENT}(?:\s*,\s*{IDENT})*)\s*(?:;|=)', prefix)
+    locals_ = {local for decl in local_decls for local in re.findall(IDENT, decl)}
+    if (len({red, blue, alpha, value}) != 4 or not {red, blue, alpha, value} <= locals_
+            or re.search(r'/[*/]', source[hit.start():hit.end()])):
+        return None
+    start = hit.end('indent')
+    end = part.clean.index(';', start, hit.end()) + 1
+    return edit(source, [
+        (start, end, f'do {{ {source[start:end]} }} while (0);'),
+        (*hit.span('order'), f'{red} | {alpha}'),
+        (*hit.span('last'), blue),
+    ])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -469,6 +522,8 @@ def variants(source, name, header, rows):
         return [('measured_in_place_float_ranges', candidate)]
     if candidate := _float_sum_destination(source, name, header, rows):
         return [('measured_float_sum_destination', candidate)]
+    if candidate := _packed_color_channels(source, name, header, rows):
+        return [('measured_packed_color_channels', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
