@@ -346,3 +346,26 @@ void probe(void) {
     assert 'if (y_hi < x_hi) { scale = x_hi; } else { scale = y_hi; }' in candidate
     assert not variants(source.replace('0.75f', 'x_hi'), 'probe', '', rows)
     assert not variants(source.replace('x = x_hi', 'expose(&x_hi); x = x_hi'), 'probe', '', rows)
+
+
+def test_float_sum_destination_preserves_operand_order_and_scope():
+    source = """float probe(f32 n, f32 initial, int enabled) {
+    f32 square, total;
+    total = initial;
+    square = n * n;
+    if (enabled)
+        total += square;
+    return total;
+}"""
+    rows = [
+        ('r', 'mul.s $f12, $f24, $f24', 'mul.s $f2, $f24, $f24'),
+        ('r', 'mul.s $f0, $f22, $f22', 'mul.s $f12, $f22, $f22'),
+        ('r', 'mul.s $f2, $f20, $f20', 'mul.s $f0, $f20, $f20'),
+        ('r', 'add.s $f12, $f12, $f0', 'add.s $f12, $f12, $f2'),
+        ('r', 'add.s $f12, $f12, $f2', 'add.s $f12, $f12, $f0'),
+    ]
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_float_sum_destination'
+    assert 'if (enabled)\n        { square = total + square; total = square; }' in candidate
+    assert not variants(source.replace('return total;', 'return total + square;'), 'probe', '', rows)
+    assert not variants(source, 'probe', '', list(reversed(rows)))

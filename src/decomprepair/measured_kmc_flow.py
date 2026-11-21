@@ -407,6 +407,49 @@ def _in_place_float_ranges(source, name, header, rows):
     ))])
 
 
+_FLOAT_SUM_UPDATE = re.compile(rf'\b(?P<sum>{IDENT})[ \t]*\+=[ \t]*(?P<square>{IDENT})[ \t]*;')
+
+
+def _float_sum_destination(source, name, header, rows):
+    """Stage a final sum in the dead square local without changing operand order."""
+    changes = [(target, current) for mark, target, current in rows if mark != ' ']
+    if len(changes) != 5 or any(mark not in (' ', 'r') for mark, _, _ in rows):
+        return None
+    squares = []
+    for target, current in changes[:3]:
+        new = re.fullmatch(r'mul\.s (\$f\d+), (\$f\d+), \2', target)
+        old = re.fullmatch(r'mul\.s (\$f\d+), (\$f\d+), \2', current)
+        if not new or not old or new[2] != old[2] or new[1] == old[1]:
+            return None
+        squares.append((new[1], old[1]))
+    (first, old_first), (second, old_second), (third, old_third) = squares
+    if (len({first, second, third}) != 3 or (old_first, old_second, old_third) != (third, first, second)
+            or first != '$f12' or changes[3:] != [
+                (f'add.s {first}, {first}, {second}', f'add.s {first}, {first}, {third}'),
+                (f'add.s {first}, {first}, {third}', f'add.s {first}, {first}, {second}'),
+            ]):
+        return None
+    part = plain_repair_view(source, name, header)
+    if not part:
+        return None
+    matches = list(_FLOAT_SUM_UPDATE.finditer(part.clean, part.opening + 1, part.end))
+    if len(matches) != 1:
+        return None
+    hit = matches[0]
+    total, square = hit['sum'], hit['square']
+    if total == square or re.search(r'/[*/]', source[hit.start():hit.end()]):
+        return None
+    declarations = re.compile(rf'\bf32\s+{IDENT}(?:\s*,\s*{IDENT})*\s*;')
+    locals_ = {local for decl in declarations.findall(part.body) for local in re.findall(IDENT, decl)[1:]}
+    if not {total, square} <= locals_ or len(re.findall(rf'\b{square}\b', part.body)) != 3:
+        return None
+    prefix = part.clean[part.opening + 1:hit.start()]
+    if not re.search(rf'\b{square}\s*=\s*({IDENT})\s*\*\s*\1\s*;', prefix):
+        return None
+    fixed = f'{{ {square} = {total} + {square}; {total} = {square}; }}'
+    return edit(source, [(*hit.span(), fixed)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -424,6 +467,8 @@ def variants(source, name, header, rows):
         return [('measured_byte_guard_return', candidate)]
     if candidate := _in_place_float_ranges(source, name, header, rows):
         return [('measured_in_place_float_ranges', candidate)]
+    if candidate := _float_sum_destination(source, name, header, rows):
+        return [('measured_float_sum_destination', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
