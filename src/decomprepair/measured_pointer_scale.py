@@ -708,6 +708,129 @@ def _loaded_halfword_call_offset(source, name, header, rows):
     return edit(source, edits) if len(edits) == 1 else None
 
 
+def _paired_halfword_call_tables(part, header, rows):
+    """Recover two adjacent halfword fields whose effective addresses drifted by two bytes."""
+    symbol = r'D_[0-9A-Fa-f]{8}'
+    for row in range(1, len(rows) - 6):
+        mark, wanted, current = rows[row - 1]
+        if mark != ' ' or wanted != current or not (shift := SHIFT.fullmatch(wanted)):
+            continue
+        amount = integer(shift[3])
+        if not 2 <= amount <= 7:
+            continue
+        tables = []
+        for position in (0, 1):
+            start = row + 3 * position
+            arg = f'$a{position}'
+            targets = [entry[1] for entry in rows[start:start + 3]]
+            candidates = [entry[2] for entry in rows[start:start + 3]]
+            base = re.fullmatch(rf'lui {re.escape(arg)}, %hi\(({symbol})\)', targets[0])
+            if not base or targets[1] != f'addu {arg}, {arg}, {shift[1]}':
+                break
+            old = re.fullmatch(rf'lui {re.escape(arg)}, %hi\(({symbol})\)', candidates[0])
+            if not old or int(old[1][2:], 16) != int(base[1][2:], 16) + 2:
+                break
+            if (candidates[1] != targets[1] or targets[2] != f'lh {arg}, %lo({base[1]})({arg})'
+                    or candidates[2] != f'lh {arg}, %lo({old[1]})({arg})'):
+                break
+            tables.append(base[1])
+        if len(tables) != 2 or int(tables[0][2:], 16) + 2 != int(tables[1][2:], 16):
+            continue
+        mark, wanted, current = rows[row + 6]
+        call = re.fullmatch(rf'jal ({IDENT})', wanted)
+        if mark != ' ' or wanted != current or not call:
+            continue
+        declarations = [_read_declaration(part, header, table, 1) for table in tables]
+        if not all(declarations):
+            continue
+        lookups = re.compile(
+            rf'\b{call[1]}\(\*\(&{tables[0]} \+ (?P<offset>{IDENT})\), '
+            rf'\*\(&{tables[1]} \+ (?P=offset)\)\);'
+        )
+        matches = list(lookups.finditer(part.body))
+        if len(matches) != 1:
+            continue
+        hit = matches[0]
+        offset = hit['offset']
+        if not re.search(rf'\bs32 {offset};', part.body):
+            continue
+        if len(re.findall(rf'\b{offset}\b', part.body)) != 4:
+            continue
+        scale = re.search(rf'\b{offset} = {IDENT} \* (?P<scale>{NUMBER});', part.body[:hit.start()])
+        if not scale or integer(scale['scale']) != 1 << (amount - 2):
+            continue
+        body_start = part.opening + 1
+        begin, end = (body_start + pos for pos in scale.span('scale'))
+        return edit(part.source, [(begin, end, str(1 << (amount - 1))),
+                                  *((*decl.span(), f'extern s16 {table};')
+                                    for decl, table in zip(declarations, tables))])
+    return None
+
+
+def _paired_call_setup(part, rows):
+    """Recover local setup order when the compiler moved it across a call boundary."""
+    if any(mark not in (' ', 'o') for mark, _, _ in rows):
+        return []
+    edits = []
+    for i in range(len(rows) - 7):
+        head = rows[i:i + 2]
+        if any(mark != 'o' or target or not re.fullmatch(r'move \$s[0-7], \$zero', old)
+               for mark, target, old in head):
+            continue
+        constants = rows[i + 2:i + 5]
+        if not all(tuple(row) == (' ', row[1], row[1])
+                   and re.fullmatch(rf'addiu \$a{arg}, \$zero, {NUMBER}', row[1])
+                   for arg, row in enumerate(constants, 1)):
+            continue
+        if [tuple(row) for row in rows[i + 5:i + 7]] != [('o', row[2], '') for row in head]:
+            continue
+        for mark, target, old in rows[i + 7:i + 14]:
+            if mark != ' ' or target != old or target.startswith(('b', 'j ')):
+                break
+            call = re.fullmatch(rf'jal ({IDENT})', target)
+            if call:
+                pattern = (rf'(?m)^(?P<setup>[ \t]*(?P<first>{IDENT}) = 0;\n[ \t]*(?P<second>{IDENT}) = 0;\n)'
+                           rf'(?P<call>[ \t]*{call[1]}\((?P<args>[^;()]+)\);\n)')
+                for hit in re.compile(pattern).finditer(part.clean, part.opening + 1, part.end):
+                    args = hit['args'].split(',')
+                    if len(args) < 4 or set(re.findall(IDENT, args[0])) & {hit['first'], hit['second']}:
+                        continue
+                    if not all(re.fullmatch(NUMBER, value.strip())
+                               and integer(value.strip()) == integer(row[1].rsplit(' ', 1)[1])
+                               for value, row in zip(args[1:4], constants)):
+                        continue
+                    if all(re.search(rf'(?m)^    [su](?:16|32) {hit[key]};', part.body)
+                           and not re.search(rf'&\s*{hit[key]}\b', part.body) for key in ('first', 'second')):
+                        edits.append(('measured_call_zero_setup', hit, hit['call'] + hit['setup']))
+                break
+
+    for i in range(len(rows) - 3):
+        old, call, slot, new = rows[i:i + 4]
+        if tuple(old) != ('o', '', new[1]) or tuple(new) != ('o', new[1], ''):
+            continue
+        load = re.fullmatch(rf'lbu \$s[0-7], ({NUMBER})\(\$s[0-7]\)', new[1])
+        callee = re.fullmatch(rf'jal ({IDENT})', call[1])
+        if not load or not callee or tuple(call) != (' ', call[1], call[1]):
+            continue
+        if tuple(slot) != (' ', slot[1], slot[1]) or not re.fullmatch(rf'addiu \$a[1-3], \$zero, {NUMBER}', slot[1]):
+            continue
+        pattern = (
+            rf'(?m)^(?P<setup>[ \t]*(?P<value>{IDENT}) = M2C_FIELD\((?P<base>{IDENT}), u8 \*, (?P<offset>{NUMBER})\);'
+            rf'\n[ \t]*(?P<index>{IDENT}) = (?P=value) \* {NUMBER};\n)'
+            rf'(?P<call>[ \t]*{IDENT} = {callee[1]}\((?P<args>[^;{{}}]+)\);\n)'
+        )
+        for hit in re.compile(pattern).finditer(part.clean, part.opening + 1, part.end):
+            if integer(hit['offset']) != integer(load[1]):
+                continue
+            if set(re.findall(IDENT, hit['args'])) & {hit['value'], hit['index']}:
+                continue
+            if not re.search(rf'\b{hit["base"]}\s*!=\s*NULL\)\s*\{{\s*$', part.clean[:hit.start()]):
+                continue
+            edits.append(('measured_call_byte_load_setup', hit, hit['call'] + hit['setup']))
+    return [(family, edit(part.source, [(*hit.span(), text)]))
+            for family, hit, text in edits if part.source[slice(*hit.span())] == hit[0]][:2]
+
+
 def variants(source, name, header, rows):
     if candidate := _loaded_halfword_call_offset(source, name, header, rows):
         return [('measured_loaded_halfword_call_offset', candidate)]
@@ -719,7 +842,12 @@ def variants(source, name, header, rows):
         return [('measured_pointer_step', candidate)]
     if '* 2' in source and 'u16 *' in source and (candidate := _halfword_scans(source, name, rows)):
         return [('measured_halfword_scan_scale', candidate)]
+    if 'extern M2C_UNK D_' in source and (part := view(source, name)):
+        if candidate := _paired_halfword_call_tables(part, header, rows):
+            return [('measured_paired_halfword_call_tables', candidate)]
     if not (shifts := _word_shifts(rows)):
+        if 'M2C_FIELD(' in source and (part := view(source, name)):
+            return _paired_call_setup(part, rows)
         return []
     part = view(source, name)
     if part is None:
