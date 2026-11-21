@@ -66,8 +66,7 @@ def _outgoing_copy(lines):
     return False
 
 
-def _word_copy(lines):
-    size = 24
+def _word_copy(lines, size=24, *, base=None):
     if not any(re.fullmatch(rf'addiu\s+\$sp,\s*\$sp,\s*-(?:0x{size:X}|{size})', line, re.I)
                for line in lines):
         return False
@@ -76,11 +75,15 @@ def _word_copy(lines):
         return False
     first = next((i for i, line in enumerate(lines) if (m := MEMORY.fullmatch(line))
                   and m[1] == 'sw' and m[4] == '$sp'), 0)
-    copies = [MEMORY.fullmatch(line) for line in lines[max(0, first-3):first+9]]
-    if len(copies) != 12 or not all(copies):
+    copies = [MEMORY.fullmatch(line) for line in lines[max(0, first-3):first-3+(size//2)]]
+    if len(copies) != size//2 or not all(copies):
         return False
-    loads = copies[:3] + copies[6:9]
+    loads = []
+    for offset in range(0, size//4, 3):
+        count = min(3, size//4 - offset)
+        loads.extend(copies[2*offset:2*offset+count])
     if not (len({m[4] for m in loads}) == 1 and loads[0][4] != '$sp'
+            and (base is None or base == loads[0][4])
             and all(m[1] == 'lw' for m in loads)
             and [integer(m[3] or '0') for m in loads] == list(range(0, size, 4))
             and [m[2] for m in loads] == [m[2] for m in stack]):

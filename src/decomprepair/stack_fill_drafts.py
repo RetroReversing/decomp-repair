@@ -182,3 +182,76 @@ def rewrite_ascending(source, name, asm, header=''):
     }} while ({index} < {extent});
     {write}({args}, {local}, 0);
 ''')])
+
+
+CLEAR_WORDS = re.compile(
+    r'addiu \$sp, \$sp, -(?P<frame>\d+)\nmove \$(?P<ptr>v[01]), \$sp\n'
+    r'addiu \$(?P<count>v[01]), \$zero, (?P<length>\d+)\n(?P<loop>\.L\w+):\n'
+    r'sw \$zero, (?:0)?\(\$(?P=ptr)\)\naddiu \$(?P=count), \$(?P=count), -1\n'
+    r'bnez \$(?P=count), (?P=loop)\naddiu \$(?P=ptr), \$(?P=ptr), 4\n'
+    r'addiu \$(?P=count), \$zero, 1\n(?P<idle>\.L\w+):\n'
+    r'bnez \$(?P=count), (?P=idle)\nnop\njr \$ra\naddiu \$sp, \$sp, (?P=frame)'
+)
+
+
+def _word_clear(asm):
+    if not asm or 'bnez' not in asm or 'sw' not in asm or len(asm) > 1500:
+        return None
+    text = '\n'.join(' '.join(line.split()) for line in _lines(asm)
+                     if not line.startswith(('glabel ', 'endlabel ')))
+    text = re.sub(r'(?m)^addu (\$v[01]), \$sp, \$zero$', r'move \1, $sp', text)
+    match = CLEAR_WORDS.fullmatch(_decimal(text))
+    if not match or match['ptr'] == match['count'] or match['loop'] == match['idle']:
+        return None
+    frame, count = int(match['frame']), int(match['length'])
+    return match if frame % 8 == 0 and 0 < count <= frame // 4 else None
+
+
+def word_clear_applies(asm):
+    return _word_clear(asm) is not None
+
+
+def rewrite_word_clear(source, name, asm, header=''):
+    """Recover the stack array, step in words, and reuse the counter in the terminal loop."""
+    local = '__repair_clear_words'
+    if 'sp;' not in source or local in source + header or not (target := _word_clear(asm)):
+        return None
+    if not (part := view(source, name)):
+        return None
+    if not re.search(rf'\bvoid\s+{re.escape(name)}\s*\(void\)\s*$', part.clean[:part.opening]):
+        return None
+    length = target['length']
+    shape = _shape(f'''
+        s32 *@ptr;
+        s32 @left;
+        @ptr = sp;
+        @left = {length};
+        do {{
+            *@ptr = 0;
+            @left -= 1;
+            @ptr += 4;
+        }} while (@left != 0);
+        do {{ }} while (1 != 0);
+    ''')
+    start = part.opening + 1
+    end = part.clean.rfind('}', start, part.end)
+    body = ' '.join(_decimal(part.clean[start:end]).split()).replace('do {} while', 'do { } while')
+    match = shape.fullmatch(body)
+    if not match or match['ptr'] == match['left']:
+        return None
+    ptr, left = match['ptr'], match['left']
+    return edit(source, [(start, end, f'''
+    s32 {local}[{int(target["frame"]) // 4}];
+    s32 *{ptr};
+    s32 {left};
+
+    {ptr} = {local};
+    {left} = {length};
+    do {{
+        *{ptr} = 0;
+        {left} -= 1;
+        {ptr} += 1;
+    }} while ({left} != 0);
+    {left} = 1;
+    do {{ }} while ({left} != 0);
+''')])
