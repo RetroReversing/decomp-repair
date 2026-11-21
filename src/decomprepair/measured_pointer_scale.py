@@ -161,11 +161,14 @@ def _inline_scale(part, header, symbols, kind='M2C_UNK', width=4, byte_shift=Non
         table = hit['table']
         declaration = _read_declaration(part, header, table, 1)
         if declaration and not re.search(r'/[*/]', part.source[deref.start():end]):
-            if width == 2 and byte_shift is not None:
-                if not re.fullmatch(IDENT, hit['value']):
-                    continue
+            if width == 2 and scale != width:
                 # The odd part of the byte stride also survives in the target.
-                text = f'*({kind} *)({table} + {hit["value"]} * {hit["scale"]})'
+                value = hit['value']
+                if close(f'({value})', 0) != len(value) + 2:
+                    continue
+                if not re.fullmatch(IDENT, value):
+                    value = f'({value})'
+                text = f'*({kind} *)({table} + {value} * {hit["scale"]})'
                 declared_type = 'u8'
             else:
                 index = hit['value'] if width > 1 else f'{hit["value"]} * {hit["scale"]}'
@@ -212,6 +215,11 @@ def _repeated_word_table(part, header, rows, shifts):
 
 def _relocated_scaled_load(part, header, rows, row, register, amount):
     """A reproduced address adds one shifted index to matching hi/lo base relocations."""
+    # A scheduled return-address spill can separate the shift from the address calculation.
+    if row + 1 < len(rows):
+        mark, wanted, current = rows[row + 1]
+        if mark == ' ' and wanted == current and re.fullmatch(rf'sw \$ra, {NUMBER}\(\$sp\)', wanted):
+            rows = rows[:row + 1] + rows[row + 2:]
     changed = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
     if len(changed) not in (2, 3) or changed[0] != row or changed[-1] not in (row + 3, row + 4):
         return None
@@ -220,26 +228,32 @@ def _relocated_scaled_load(part, header, rows, row, register, amount):
     load_row = changed[-1]
     high, low = [], []
     for side in (1, 2):
-        if not (base := re.fullmatch(rf'lui (\$\w+), %hi\(({IDENT})\)', rows[row + 1][side])):
+        addend = r'(?:\+(?:0x2|2))?' if side == 2 else ''
+        if not (base := re.fullmatch(
+            rf'lui (\$\w+), %hi\(({IDENT})({addend})\)', rows[row + 1][side]
+        )):
             return None
         if not re.fullmatch(rf'addu {re.escape(base[1])}, {re.escape(base[1])}, {re.escape(register)}',
                             rows[row + 2][side]):
             return None
-        if load_row == row + 4 and rows[row + 3][side] != 'jr $ra':
-            return None
+        if load_row == row + 4:
+            preceding = rows[row + 3][side]
+            if preceding != 'jr $ra' and not re.fullmatch(rf'jal {IDENT}', preceding):
+                return None
         if not (load := re.fullmatch(
-            rf'(lh|lhu|lb|lbu) (\$\w+), %lo\({base[2]}\)\({re.escape(base[1])}\)', rows[load_row][side]
+            rf'(lh|lhu|lb|lbu) (\$\w+), %lo\({base[2]}{re.escape(base[3])}\)\({re.escape(base[1])}\)', rows[load_row][side]
         )):
             return None
         high.append(base.groups())
         low.append(load.groups())
     if high[0][0] != high[1][0] or low[0] != low[1]:
         return None
-    kind, width = {'lh': ('s16', 2), 'lhu': ('u16', 2), 'lb': ('s8', 1), 'lbu': ('u8', 1)}[low[0][0]]
-    if width == 1 and amount < 2:
+    if high[1][2] and high[0][1] != high[1][1]:
         return None
-    byte_shift = amount if width == 1 or amount > 1 else None
-    return _inline_scale(part, header, {high[0][1]}, kind, width, byte_shift=byte_shift)
+    kind, width = {'lh': ('s16', 2), 'lhu': ('u16', 2), 'lb': ('s8', 1), 'lbu': ('u8', 1)}[low[0][0]]
+    if width == 1 and (amount < 2 or high[1][2]):
+        return None
+    return _inline_scale(part, header, {high[0][1]}, kind, width, byte_shift=amount)
 
 
 def _halfword_scans(source, name, rows):
