@@ -353,6 +353,40 @@ def _breakable(trail):
     return None
 
 
+def _case_exit(source, trail, tail):
+    """A single store whose next executable statement exits its switch by goto."""
+    switch = _breakable(trail)
+    if switch is None or switch.kind != 'switch' or len(tail) != 1 or tail[0].kind != 'simple':
+        return None
+    store = _blank(source[tail[0].start:tail[0].end]).strip()
+    if not re.fullmatch(r'(?:' + IDENT + r'|\([^;]+\))\s*=(?!=)\s*[^;]+;', store):
+        return None
+    after = _continuation(source, trail[:-1] + ((trail[-1][0], trail[-1][1] + 1, None),))
+    if not after or not re.fullmatch(r'goto\s+' + IDENT + r'\s*;', after[0]):
+        return None
+    return switch, store, after[0]
+
+
+def _case_scope_allows_copy(source, trail, switch, store):
+    # Nested declarations can shadow a name used by the store. Ignore the function's outer
+    # declarations and inspect each intervening lexical block up to the switch.
+    names = set(re.findall(IDENT, store))
+    declaration = re.compile(r'\s*' + IDENT + r'(?:\s+|\s*\*\s*)' + IDENT)
+
+    def may_shadow(stmt):
+        text = _blank(source[stmt.start:stmt.end])
+        return declaration.match(text) and names.intersection(re.findall(IDENT, text))
+
+    for depth in range(len(trail) - 1, 0, -1):
+        stmts, index, _ = trail[depth]
+        if any(st.kind == 'simple' and may_shadow(st)
+               for st in stmts[:index]):
+            return False
+        if trail[depth - 1][2] is switch:
+            return True
+    return False
+
+
 def _tail_variants(source, function):
     found = []
     trails = {id(st): trail for st, trail in _paths(function)}
@@ -373,6 +407,14 @@ def _tail_variants(source, function):
         # ending in `break;` may be copied too where every goto leaves the same loop or switch as the label: m2c's
         # `case A: v = x * 2; L: r = v + K; break; case B: v = y * 2; goto L;` was a switch whose cases each ended so,
         # gcc having merged the copies; written out again an N64 function was exact)
+        case_exit = _case_exit(source, trail, tail)
+        if case_exit:
+            switch, store, jump = case_exit
+            sites = [trail, *(trails[id(goto)] for goto, _ in gotos)]
+            if (jump[4:].strip().removesuffix(';').strip() == label.parts['name']
+                or any(_breakable(site) is not switch or not _case_scope_allows_copy(source, site, switch, store)
+                       for site in sites)):
+                case_exit = None
         breaks = bool(tail) and tail[-1].kind == 'jump' and source[tail[-1].start:tail[-1].end].lstrip().startswith('break')
         body = tail[:-1] if breaks else tail
         if not tail or not gotos or _labels(tail) \
@@ -380,7 +422,7 @@ def _tail_variants(source, function):
             continue
         if breaks and any(_breakable(trails[id(goto)]) is not _breakable(trail) for goto, _ in gotos):
             continue
-        ends = breaks or tail[-1].kind == 'simple' and re.match(r'return\b', source[tail[-1].start:tail[-1].end])
+        ends = case_exit or breaks or tail[-1].kind == 'simple' and re.match(r'return\b', source[tail[-1].start:tail[-1].end])
         # without a return, each goto must continue as the tail's end does: the same statements follow, level by
         # level, out to the same enclosing loop or switch (or the function's end)
         after_tail = _continuation(source, trail[:-1] + ((stmts, len(stmts) - 1, None),))
@@ -396,7 +438,12 @@ def _tail_variants(source, function):
         for goto, _ in gotos:
             indent = _indent_of(source, goto.start)
             copy = _lines(text, indent[:-4] if len(indent) >= 4 else '')
-            edits.append((goto.start, goto.end, copy.strip('\n').lstrip()))
+            replacement = copy.strip('\n').lstrip()
+            if case_exit:
+                # Copy the terminating jump as well, so the new site cannot fall
+                # through into its own case continuation.
+                replacement = '{ ' + replacement + ' ' + case_exit[2] + ' }'
+            edits.append((goto.start, goto.end, replacement))
         for a, b, rep in sorted(edits, reverse=True):
             out = out[:a] + rep + out[b:]
         found.append(('goto_shared_tail', out))
