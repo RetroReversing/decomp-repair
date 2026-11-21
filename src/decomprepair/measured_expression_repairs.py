@@ -341,9 +341,61 @@ def _inline_rounded_shift(part, header, rows, changed):
     return edit(part.source, [(*hit.span(), f'{result} = ({hit["cast"]})(({value} >= 0 ? {value} + 1 : {value} - 1) >> 1);')])
 
 
+def _square_vector_locals(part, header, rows, changed):
+    """Reuse each difference for its square when the float dataflow is register-only."""
+    if not 2 <= len(changed) <= 9:
+        return None
+    operations = {'lwc1', 'sub.s', 'mul.s', 'add.s'}
+    if any(mark != 'r' or target.split(' ', 1)[0] not in operations
+           or target.split(' ', 1)[0] != actual.split(' ', 1)[0]
+           for mark, target, actual in (rows[i] for i in changed)):
+        return None
+    if not any(rows[i][1].startswith('sub.s ') for i in changed):
+        return None
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<call>{IDENT})\s*\(\s*'
+        rf'\(\s*(?P<x>{IDENT})\s*\*\s*(?P=x)\s*\)\s*\+\s*'
+        rf'\(\s*(?P<y>{IDENT})\s*\*\s*(?P=y)\s*\)\s*\+\s*'
+        rf'\(\s*(?P<z>{IDENT})\s*\*\s*(?P=z)\s*\)\s*\)\s*;\s*$')
+    hit = pattern.search(part.clean, part.opening + 1, part.end)
+    if not hit or not re.fullmatch(r'\s*}\s*', part.clean[hit.end():part.end]):
+        return None
+    names = [hit[key] for key in ('x', 'y', 'z')]
+    if len(set(names)) != 3:
+        return None
+    prefix = part.clean[part.opening + 1:hit.start()]
+    field = rf'M2C_FIELD\(\s*({IDENT})\s*,\s*const\s+f32\s*\*\s*,\s*({NUM})\s*\)'
+    assignments = list(re.finditer(rf'\b({IDENT})\s*=\s*{field}\s*-\s*{field}\s*;', prefix))
+    if [assignment[1] for assignment in assignments] != names:
+        return None
+    bases = {(assignment[2], assignment[4]) for assignment in assignments}
+    offsets = [(integer(assignment[3]), integer(assignment[5])) for assignment in assignments]
+    if len(bases) != 1 or offsets != [(0, 0), (4, 4), (8, 8)]:
+        return None
+    for local in names:
+        if (not re.search(rf'(?m)^[ \t]*f32\s+{local}\s*;', prefix)
+                or len(re.findall(rf'\b{local}\b', prefix)) != 2
+                or re.search(rf'(?m)^\s*#\s*define\s+{local}\b', header + '\n' + part.clean)):
+            return None
+    before = prefix[:assignments[0].start()].rstrip()
+    if (before[-1:] != ';'
+            or any(prefix[left.end():right.start()].strip() for left, right in zip(assignments, assignments[1:]))
+            or prefix[assignments[-1].end():].strip() or prefix.count('{') != prefix.count('}')
+            or re.search(r'\b(?:goto|asm|__asm__|volatile)\b', prefix)):
+        return None
+    indent = hit['indent']
+    replacement = ''.join(f'{indent}{local} = {local} * {local};\n' for local in names)
+    replacement += f'{indent}{hit["call"]}({" + ".join(names)});'
+    return edit(part.source, [(hit.start(), len(part.clean[:hit.end()].rstrip()), replacement)])
+
+
 def variants(source, name, header, rows):
     changed = [index for index,(marker,_,_) in enumerate(rows) if marker != ' ']
-    if not 1 <= len(changed) <= 6 or not (part := view(source,name)):
+    if not 1 <= len(changed) <= 9 or not (part := view(source,name)):
+        return []
+    if candidate := _square_vector_locals(part, header, rows, changed):
+        return [('measured_square_vector_locals', candidate)]
+    if len(changed) > 6:
         return []
     if candidate := sign_test(source,part,rows,changed):
         return [('measured_sign_test',candidate)]
