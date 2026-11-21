@@ -70,3 +70,34 @@ s32 f(void *arg) {
     assert not c.variants(source.replace('notify();', 'notify(&result);'), 'f')
     assert not c.variants(source.replace('cleanup(arg);', 'other(arg); cleanup(arg);'), 'f')
     assert not c.variants(source.replace('    result = 0;', '    if (ready)\n        result = 0;', 1), 'f')
+
+
+def test_float_identity_and_zero_return_before_the_signed_computation():
+    source = """\
+f64 f(f64 x, f64 y, s32 left, s32 right) {
+    f64 result;
+    s32 exponent;
+    result = x;
+    if ((left | right) == 0) {
+        result = 0.0;
+        if (x != 0.0) {
+            if (x < 0.0) {
+                exponent = (s32)y;
+                result = 0.0;
+                if (y == exponent) goto compute;
+            } else {
+compute:
+                result = calculate(x, y);
+            }
+        }
+    }
+    return result;
+}
+"""
+    [(family, fixed)] = c.variants(source, 'f')
+    assert family == c.FAMILY
+    assert 'if ((left | right) != 0) return x;' in fixed
+    assert 'if (x == 0.0) return 0.0;' in fixed
+    assert 'compute:\n                result = calculate(x, y);' in fixed
+    assert not c.variants(source.replace('exponent = (s32)y;', 'read(&result); exponent = (s32)y;'), 'f')
+    assert not c.variants(source.replace('result = calculate(x, y);', 'if (left) result = calculate(x, y);'), 'f')

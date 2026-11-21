@@ -63,6 +63,48 @@ def _guarded_binary_return(source, clean, opening, end):
             + source[block_start + 1:block_start + 1 + tail.start()] + ending + source[end:])
 
 
+def _float_identity_returns(source, clean, opening, end):
+    """Expose the two early results before a signed floating-point computation."""
+    prefix = re.search(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<result>{IDENT})\s*=\s*(?P<value>{IDENT})\s*;\s*'
+        rf'if\s*\(\s*\(\s*(?P<left>{IDENT})\s*\|\s*(?P<right>{IDENT})\s*\)\s*==\s*0\s*\)\s*{{\s*'
+        rf'(?P<inner>[ \t]*)(?P=result)\s*=\s*0\.0\s*;\s*'
+        rf'if\s*\(\s*(?P=value)\s*!=\s*0\.0\s*\)\s*{{',
+        clean[opening + 1:end],
+    )
+    if not prefix:
+        return None
+    start = opening + 1 + prefix.start()
+    before = clean[opening + 1:start].rstrip()
+    if before.count('{') != before.count('}') or (before and before[-1] not in ';}'):
+        return None
+    nested = opening + prefix.end()
+    nested_end = close(clean, nested, '{', '}')
+    result, value = prefix['result'], prefix['value']
+    if not nested_end or not re.fullmatch(rf'\s*}}\s*return\s+{result}\s*;\s*}}', clean[nested_end:end]):
+        return None
+    body = clean[opening + 1:end - 1]
+    if (value == result or len(re.findall(rf'\b{result}\b', body)) != 6
+            or not re.search(rf'(?m)^[ \t]*(?:f64|double)\s+{result}\s*;', before)
+            or re.search(r'\b(?:asm|__asm__|volatile)\b', body)):
+        return None
+    negative = re.match(rf'\s*if\s*\(\s*{value}\s*<\s*0\.0\s*\)\s*{{\s*'
+                        rf'{IDENT}\s*=\s*\(\s*s32\s*\)\s*{IDENT}\s*;\s*{result}\s*=\s*0\.0\s*;',
+                        clean[nested + 1:nested_end - 1])
+    if not negative:
+        return None
+    arm_start = clean.index('{', nested + 1, nested + 1 + negative.end())
+    arm_end = close(clean, arm_start, '{', '}')
+    if not arm_end or not re.fullmatch(rf'\s*else\s*{{\s*(?:{IDENT}\s*:\s*)?'
+                                      rf'{result}\s*=\s*[^;{{}}]+;\s*}}\s*', clean[arm_end:nested_end - 1]):
+        return None
+    indent = prefix['indent']
+    inner = indent + '    '
+    head = (f'{indent}if (({prefix["left"]} | {prefix["right"]}) != 0) return {value};\n'
+            f'{indent}{{\n{inner}if ({value} == 0.0) return 0.0;\n{inner}{{')
+    return source[:start] + head + source[nested + 1:]
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -77,7 +119,8 @@ def variants(source, name):
     tail = re.search(r'\{\s*(?P<var>' + IDENT + r')\s*=\s*(?P<value>' + NUMBER
                      + r')\s*;\s*\}\s*return\s+(?P=var)\s*;\s*\}\s*$', body)
     if not tail:
-        transformed = _guarded_binary_return(source, clean, opening, end)
+        transformed = (_guarded_binary_return(source, clean, opening, end)
+                       or _float_identity_returns(source, clean, opening, end))
         return [(FAMILY, transformed)] if transformed else []
     var = tail['var']
     arm_open = opening + tail.start()
