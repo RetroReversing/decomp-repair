@@ -79,3 +79,28 @@ void f(void) {
     assert not repairs.variants(source, 'f', 's32 osGetTime(void);', rows, asm, big_endian=True)
     clobbered = annotate([*target[:4], 'li $v1, 3', target[5]])
     assert not repairs.variants(source, 'f', '', rows, clobbered, big_endian=True)
+
+
+def test_repeated_global_byte_offsets_follow_the_measured_stride():
+    source = """extern s16 key;
+extern s32 first, second;
+void f(void) {
+    s32 initial;
+    s32 reload;
+    initial = key * 4;
+    use(*(s32 *)((s8 *)&first + initial));
+    reload = key * 0x4;
+    use(*(s32 *)((s8 *)&second + reload));
+}
+"""
+    operations = ['sll $v1, $v0, 4', 'lw $a0, 0($v1)', 'sll $v0, $v0, 0x4']
+    changes = {0: 'sll $v1, $v0, 2', 2: 'sll $v0, $v0, 2'}
+    rows = rows_for(operations, changes)
+    results = repairs.variants(source, 'f', '', rows, '', big_endian=True)
+    assert results == [('measured_byte_offset_scale', source.replace('key * 4', 'key * 16')
+                        .replace('key * 0x4', 'key * 16'))]
+    for unrelated in (source.replace('use(*(s32 *)((s8 *)&second + reload));', 'use(reload);'),
+                      source.replace('reload = key', 'reload = other')):
+        assert not repairs.variants(unrelated, 'f', '', rows, '', big_endian=True)
+    mismatched = rows_for(operations, changes | {2: 'sll $v0, $v1, 2'})
+    assert not repairs.variants(source, 'f', '', mismatched, '', big_endian=True)
