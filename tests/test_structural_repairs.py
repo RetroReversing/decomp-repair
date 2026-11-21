@@ -21,6 +21,54 @@ def texts(variants):
     return [text for _, text in variants]
 
 
+def test_split_read_modify_write_collapses_interleaved_updates_together():
+    source = """void f(u8 *p) {
+    u8 *m;
+    u8 a;
+    u8 b;
+
+    m = &D_8010A4C1;
+    a = *m;
+    b = D_8010A4C2;
+    a = (a | 4) & ~1;
+    b &= ~1;
+    *m = a;
+    D_8010A4C2 = b;
+    g(m);
+    a = *m;
+    b = D_8010A4C2;
+    a |= 1;
+    b |= 1;
+    *m = a;
+    D_8010A4C2 = b;
+    g(m);
+}
+"""
+    found = [(family, text) for family, text in compound_global_update_repairs.variants(source, 'f')
+             if family == compound_global_update_repairs.SPLIT]
+    out = [text for _, text in found]
+    # the second update collapsed as one child, the first left alone (one site alone moved nothing in the game)
+    second = ('    g(m);\n    *m |= 1;\n    D_8010A4C2 |= 1;\n    g(m);')
+    assert any(second in text and '    a = (a | 4) & ~1;' in text for text in out)
+    # the load folded into the update while the store stays
+    assert any('    b = D_8010A4C2;\n    a = (*m | 4) & ~1;\n    b &= ~1;\n    *m = a;' in text for text in out)
+    assert any('    *m = (*m | 4) & ~1;\n    D_8010A4C2 &= ~1;' in text and second in text for text in out)
+
+
+def test_split_read_modify_write_leaves_a_value_read_after_the_store():
+    source = """s32 f(void) {
+    u8 a;
+
+    a = D_80100000;
+    a |= 1;
+    D_80100000 = a;
+    return a;
+}
+"""
+    out = texts(compound_global_update_repairs.split_variants(source, 'f'))
+    assert out and all('return a;' in text and 'D_80100000 |= 1' not in text for text in out)
+
+
 def test_narrow_widening_offers_each_narrow_local_and_parameter_as_s32():
     source = '''void f(void *arg0, s16 arg1) {
     s8 temp_s1;
