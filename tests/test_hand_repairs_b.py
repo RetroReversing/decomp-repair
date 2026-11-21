@@ -47,3 +47,42 @@ def test_the_case_tail_up_to_its_return_is_copied_to_the_goto():
 def test_a_tail_running_into_the_next_case_is_left_alone():
     falls = SOURCE.replace('        h(0x35);\n        return;\n    case 3:', '        h(0x35);\n    case 3:')
     assert tails(falls) == []  # it continues into case 3: copying it would change what case 1 does
+
+
+EXIT_TAIL = """void f(int state, int *out) {
+    int value;
+    switch (state) {
+    case 0:
+        value = 1;
+        goto store;
+    case 1:
+        if (ready()) {
+            value = 2;
+store:
+            (*out) = value;
+        }
+        goto done;
+    default:
+        goto done;
+    }
+done:
+    finish();
+}
+"""
+
+
+def test_switch_store_is_copied_with_its_exit_jump():
+    (text,) = tails(EXIT_TAIL)
+    assert "goto store;" not in text
+    assert "{ (*out) = value; goto done; }" in text
+    assert text.count("(*out) = value;") == 2
+
+
+def test_switch_store_cannot_skip_work_before_its_exit():
+    source = EXIT_TAIL.replace("        goto done;\n    default:", "        work();\n        goto done;\n    default:")
+    assert tails(source) == []
+
+
+def test_switch_store_cannot_bind_to_a_shadowing_declaration():
+    source = EXIT_TAIL.replace("            value = 2;", "            int value = 2;")
+    assert tails(source) == []
