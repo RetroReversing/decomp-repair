@@ -29,14 +29,20 @@ def _local(part, name, types):
 def _loop_edits(part, match, header):
     alias, base = match['alias'], match['base']
     if (alias == base or not _local(part, alias, rf'void|{BYTE}') or not _local(part, base, BYTE)
-            or re.search(rf'(?m)^\s*#\s*define\s+(?:{alias}|{base})\b', header + '\n' + part.clean)
-            or re.search(rf'&\s*\(*\s*{base}\b', part.body)):
+            or re.search(rf'(?m)^\s*#\s*define\s+(?:{alias}|{base})\b', header + '\n' + part.clean)):
         return []
     opening = match.end() - 1
     end = close(part.clean, opening, '{', '}')
     test = end and re.match(r'\s*while\s*\(', part.clean[end:part.end])
     test_end = test and close(part.clean, end + test.end() - 1)
     if not test_end or re.search(rf'\b{base}\b', part.clean[end:test_end]):
+        return []
+    before = part.clean[part.opening:match.start()]
+    outside = before + ' ' + part.clean[test_end:part.end]
+    # Outside the walk allow one declaration and one assignment to the base.
+    # An enclosing block can otherwise shadow the byte pointer with another type.
+    if (len(re.findall(rf'\b{base}\b', outside)) != 2
+            or not re.search(rf'(?<=[;{{}}])\s*{base}\s*=(?!=)', before)):
         return []
     body = part.clean[opening + 1:end - 1]
     tail = TAIL.search(body)
