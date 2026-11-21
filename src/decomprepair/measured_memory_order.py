@@ -254,6 +254,64 @@ def _stage_scan_sentinel(part, header, rows, changed):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _mask_load_sites(rows):
+    """Find a word load that the target issues before the call's zero argument."""
+    load = re.compile(rf'lw ({REG}), ({NUM})?\(({REG})\)')
+    immediate = re.compile(rf'addiu ({REG}), \$zero, (-{NUM})')
+    zero = re.compile(r'move \$a[0-3], \$zero')
+    for i, (before, word, after) in enumerate(zip(rows, rows[1:], rows[2:])):
+        if before[1] or after[2] or before[2] != after[1] or not zero.fullmatch(after[1]):
+            continue
+        read = load.fullmatch(word[1])
+        if not read or word[1] != word[2]:
+            continue
+        following = [row[1] for row in rows[i+3:i+9] if row[1]]
+        for prep, mask in zip(following, following[1:]):
+            constant = immediate.fullmatch(prep)
+            if constant and mask == f'and {read[1]}, {read[1]}, {constant[1]}':
+                yield integer(read[2] or '0'), ~(-integer(constant[2][1:]))
+
+
+def staged_field_masks(source, name, rows, header=''):
+    """Split a masked word read into assignments to the same scalar local."""
+    sites = set(_mask_load_sites(rows))
+    if not sites or not (part := view(source, name)):
+        return []
+    # Only the canonical dereference macro has a known single, plain word read.
+    context = source + '\n' + header
+    field_types = {
+        'FIELD': (r's32', '(*(T*)((u8*)(p)+(o)))'),
+        'M2C_FIELD': (r's32\s*\*', '(*(type_ptr)((s8*)(expr)+(offset)))'),
+    }
+    macros = []
+    for name, (typ, dereference) in field_types.items():
+        # A competing directive could select another implementation.
+        directives = re.findall(rf'(?m)^[ \t]*#\s*(define|undef)\s+{name}\b([^\n]*)', context)
+        params = '(p,T,o)' if name == 'FIELD' else '(expr,type_ptr,offset)'
+        if (len(directives) == 1 and directives[0][0] == 'define' and directives[0][1].startswith('(')
+                and re.sub(r'\s+', '', directives[0][1]) == params + dereference):
+            macros.append(rf'{name}\s*\(\s*{IDENT}\s*,\s*{typ}\s*,')
+    if not macros:
+        return []
+    access = '|'.join(macros)
+    pattern = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<var>{IDENT})\s*=\s*(?:{access})'
+        rf'\s*(?P<offset>{NUM})\s*\)(?P<operator>\s*&\s*)~(?P<mask>{NUM})\s*;'
+    )
+    signed = {decl['name']: decl.start() for decl in locals_for(part) if decl['type'] == 's32'}
+    result = []
+    for match in pattern.finditer(part.clean, part.opening + 1, part.end):
+        var = match['var']
+        if ((integer(match['offset']), integer(match['mask'])) not in sites
+                or signed.get(var, part.end) >= match.start()
+                or part.clean[:match.start()].rstrip()[-1:] not in ';{}'):
+            continue
+        start, stop = match.span('operator')
+        if source[start:stop] == match['operator']:
+            result.append(('staged_field_mask', edit(source, [(start, stop, f';\n{match["indent"]}{var} &= ')])))
+    return result[:4]
+
+
 def variants(source, name, rows, *, resolve=None, header=''):
     changed = [i for i,(mark,_,_) in enumerate(rows) if mark != ' ']
     if len(changed) not in (2,4):
