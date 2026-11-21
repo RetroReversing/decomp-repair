@@ -46,7 +46,7 @@ def test_the_generator_is_a_program_beside_its_helpers():
     """Callers run permuter_gen.py by path, with decomp-permuter's Python: its helpers must be next to it, and it
     must not import the package (decomp-permuter's environment doesn't have it)."""
     folder = Path(decomprepair.__file__).parent
-    for helper in ('permuter_gen.py', 'permuter_capture.py', 'permuter_dependencies.py', 'permuter_formatting.py'):
+    for helper in ('permuter_gen.py', 'permuter_capture.py', 'permuter_clone.py', 'permuter_dependencies.py', 'permuter_formatting.py'):
         assert (folder / helper).is_file()
         assert 'decomprepair' not in (folder / helper).read_text().split('"""', 2)[-1]
     run = subprocess.run([sys.executable, '-I', '-c', 'import ast,sys; ast.parse(open(sys.argv[1]).read())',
@@ -154,3 +154,36 @@ def test_dependency_guard_skips_unprovable_parents():
 
     with pytest.raises(RejectedRewrite):
         protect(rewrite, RejectedRewrite)(ast.ext[0], ast, None, None, None)
+
+
+def test_candidate_clone_preserves_mutable_tree_isolation_and_aliases():
+    from copy import deepcopy
+
+    from decomprepair.permuter_clone import make_cloner
+
+    class Coordinate:
+        __slots__ = ('line',)
+
+    class Node:
+        __slots__ = ('children', 'coord', 'payload')
+
+    original = Node()
+    original.coord = Coordinate()
+    original.coord.line = 12
+    original.children = [original.coord, original]
+    original.payload = {'coordinates': original.children}
+
+    clone_tree = make_cloner([Node], Coordinate)
+    expected = deepcopy(original)
+    clone = clone_tree(original)
+    sibling = clone_tree(original)
+
+    assert clone is not original and clone is not sibling
+    assert clone.children[1] is clone
+    assert clone.coord is clone.children[0]
+    assert clone.payload['coordinates'] is clone.children
+    assert clone.coord.line == expected.coord.line
+    clone.coord.line = 21
+    clone.children.pop()
+    assert original.coord.line == sibling.coord.line == 12
+    assert original.children[1] is original and sibling.children[1] is sibling
