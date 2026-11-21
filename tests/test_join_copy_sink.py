@@ -47,3 +47,12 @@ def test_left_alone_when_the_copies_differ_or_the_label_has_other_jumps():
     assert join_copy_sink_repairs.variants(SOURCE.replace('block_9:\n        var_v0 = var_s3;', 'block_9:\n        var_v0 = 0;'), 'f') == []
     assert join_copy_sink_repairs.variants(SOURCE.replace('var_s3 = 1;', 'var_s3 = 1;\n                    goto block_9;'), 'f') == []
     assert join_copy_sink_repairs.variants('void g(void) {\n}\n', 'f') == []
+
+
+def test_a_folded_zero_in_the_early_copy_still_counts_as_the_same_copy():
+    source = SOURCE.replace('        var_v0 = var_s3;\n        if (M2C', '        var_v0 = 0;\n        if (M2C')
+    (_, out), = join_copy_sink_repairs.variants(source, 'f')
+    assert '        }\n        var_v0 = var_s3;\n    } else {\n        var_v0 = var_s3;\n    }' in out
+    assert 'var_v0 = 0' not in out
+    # only when the other variable is that zero: otherwise the copies differ
+    assert join_copy_sink_repairs.variants(source.replace('    var_s3 = 0;\n', '    var_s3 = k();\n'), 'f') == []
