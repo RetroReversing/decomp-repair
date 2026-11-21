@@ -80,3 +80,15 @@ def test_grow_existing_unused_byte_array_with_independent_instruction_difference
     assert not unused_frame_array(source.replace('&header', 'padding'), 'f', rows, report)
     assert not unused_frame_array(source.replace('u8 padding[8];', 'u8 padding[8]; u8 pad[8];'),
                                   'f', rows, report)
+
+
+def test_unused_volatile_doubleword_explains_an_excess_frame():
+    source = 'void f(void) { volatile u64 scratch; do_work(); }'
+    report = {'frame_delta': -8, 'saved_deltas': [-8], 'local_deltas': []}
+    rows = [('s', 'addiu $sp, $sp, -48', 'addiu $sp, $sp, -56'),
+            ('r', 'move $a0, $s0', 'move $a1, $s0')]
+    assert unused_frame_array(source, 'f', rows, report) == [
+        ('measured_unused_frame_word', source.replace('volatile u64 scratch;', ''))]
+    assert not unused_frame_array(source.replace('do_work()', 'do_work(&scratch)'), 'f', rows, report)
+    assert not unused_frame_array(source.replace('scratch;', 'scratch = 0;'), 'f', rows, report)
+    assert not unused_frame_array(source, 'f', rows, dict(report, local_deltas=[-8]))
