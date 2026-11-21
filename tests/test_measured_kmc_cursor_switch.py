@@ -218,3 +218,37 @@ void f(void) {
     assert '    a = prepare();' in fixed
     assert not variants(source, 'f', 'void reset(s32);', rows)
     assert not variants(source.replace('!= 8', '!= 9'), 'f', '', rows)
+
+
+def test_label_loop_cursor_splits_before_a_matching_reinitialization():
+    source = """void f(void *base) {
+    void *cursor;
+    cursor = base;
+    first_loop:
+    write_halfword(cursor);
+    cursor += 2;
+    if (more()) goto first_loop;
+
+    cursor = base;
+    next_loop:
+    write_word(cursor);
+    cursor += 4;
+    if (more()) goto next_loop;
+}
+"""
+    rows = [
+        ('r', 'move $v1, $s5', 'move $s1, $s5'),
+        ('r', 'sh $zero, 0x1bc($v1)', 'sh $zero, 0x1bc($s1)'),
+        ('r', 'sh $v0, 0x1bc($v1)', 'sh $v0, 0x1bc($s1)'),
+        ('r', 'addiu $v1, $v1, 2', 'addiu $s1, $s1, 2'),
+    ]
+    [(family, fixed)] = variants(source, 'f', '', rows)
+    assert family == 'measured_label_loop_cursor'
+    assert 'void *__repair_first_loop_cursor;' in fixed
+    assert 'write_halfword(__repair_first_loop_cursor);' in fixed
+    assert 'write_word(cursor);' in fixed
+    assert not variants(source.replace('cursor += 2;', 'cursor += 8;'), 'f', '', rows)
+    assert not variants(source.replace('if (more()) goto first_loop;', 'if (more()) goto first_loop;\n    use(cursor);'),
+                        'f', '', rows)
+    assert not variants(source.replace('write_halfword(cursor)', 'write_halfword(&cursor)'), 'f', '', rows)
+    assert not variants(source.replace('    cursor = base;\n    next_loop:', '    next_loop:'), 'f', '', rows)
