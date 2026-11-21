@@ -94,11 +94,41 @@ def rewrite(source, name, asm, header='', resolve=None):
     pattern, witness = target
     head = part.clean[:part.opening]
     body = ' '.join(part.clean[part.opening + 1:closing - 1].split())
-    replacement = (_read_body(name, head, body, witness, resolve) if pattern is _READ
-                   else _dma_body(name, head, body, witness, resolve))
+    declarations = ''
+    if pattern is _READ:
+        replacement = _read_body(name, head, body, witness, resolve)
+        if not replacement:
+            raw = source[part.opening + 1:closing - 1]
+            restored = _diagnostic_symbols(raw, witness, header + head, resolve)
+            if restored:
+                restored_body, declarations = restored
+                replacement = _read_body(name, head, restored_body, witness, resolve)
+    else:
+        replacement = _dma_body(name, head, body, witness, resolve)
     if not replacement:
         return None
-    return edit(source, [(part.opening + 1, closing - 1, replacement)])
+    changes = [(part.opening + 1, closing - 1, replacement)]
+    if declarations:
+        signature = re.search(rf'\bs32\s+{re.escape(name)}\s*\([^()]*\)\s*$', head)
+        changes.append((signature.start(), signature.start(), declarations + '\n'))
+    return edit(source, changes)
+
+
+def _diagnostic_symbols(body, target, known, resolve):
+    """m2c can inline the strings, but the two original addresses are distinct relocations."""
+    from .csource import _blank
+
+    file, message = target['file'], target['message']
+    if any(not isinstance(resolve(symbol), int) for symbol in (file, message)):
+        return None
+    literal = r'"(?:[^"\\\n]|\\.)*"'
+    call = re.search(rf'\b{re.escape(target["call"])}\(\s*{literal}\s*,\s*{literal}\s*,', body)
+    if not call:
+        return None
+    patched = body[:call.start()] + f'{target["call"]}(&{file}, &{message},' + body[call.end():]
+    declarations = ''.join(f'extern s32 {symbol};\n' for symbol in dict.fromkeys((file, message))
+                           if not re.search(rf'\b{re.escape(symbol)}\b', known))
+    return ' '.join(_blank(patched).split()), declarations
 
 
 def _poll(target):

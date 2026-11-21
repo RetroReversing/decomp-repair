@@ -54,18 +54,19 @@ def variants(source, name, asm, header, toolchain, *, resolve=None):
 def baseline_variants(source, name, asm, header, toolchain, *, resolve=None):
     """Try measured repairs shared by fresh drafts and broken saved baselines."""
     if toolchain == 'gcc-2.7.2-kmc':
-        from . import heap_span_drafts, kmc_cartridge_io
+        from . import heap_span_drafts, kmc_buffer_drafts, kmc_cartridge_io
 
         if candidate := kmc_cartridge_io.rewrite(source, name, asm, header, resolve):
             return [(kmc_cartridge_io.FAMILY, candidate)]
         if candidate := heap_span_drafts.rewrite(source, name, asm, header):
             return [(heap_span_drafts.FAMILY, candidate)]
-        return []
+        return kmc_buffer_drafts.variants(source, name, asm, header)
     if toolchain != 'ido-7.1':
         return []
-    from . import ido_mapped_poll, ido_matrix_copy, ido_packed_stack_word, ido_typed_loops
+    from . import ido_buffer_drafts, ido_mapped_poll, ido_matrix_copy, ido_packed_stack_word, ido_typed_loops
 
-    if candidates := ido_typed_loops.variants(source, name, asm, header):
+    if candidates := (ido_typed_loops.variants(source, name, asm, header)
+                      or ido_buffer_drafts.variants(source, name, asm, header)):
         return candidates
     if candidate := ido_packed_stack_word.rewrite(source, name, asm, header):
         return [(ido_packed_stack_word.FAMILY, candidate)]
