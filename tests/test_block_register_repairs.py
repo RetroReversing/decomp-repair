@@ -122,3 +122,13 @@ def test_a_nonzero_test_can_go_through_an_inline_helper():
     assert 'if (repair_nonzero(mode)) {' in texts[0] and 'if (repair_nonzero(n)) {' in texts[0]
     assert any('if (repair_nonzero(mode)) {' in t and 'if (n != 0) {' in t for t in texts)
     assert not any(blocks.NONZERO == fam for fam, _ in blocks.variants(texts[0], 'f'))
+
+
+def test_shifted_counter_in_printed_do_loop_becomes_a_for():
+    # KMC GCC 2.7.2: the loop-header increment fills the null guard's likely delay slot (400 -> 65).
+    source = '''void f(void) { u32 i; i = 0; do { if (make()) { work(); } ++i; } while ((i + 1) <= 2U); }'''
+    texts = [t for family, t in blocks.variants(source, 'f') if family == blocks.FOR]
+    assert any('for (i = 0; i < 2U; ++i)' in t and 'work();' in t for t in texts)
+    for unsafe in (source.replace('work();', 'i += 1;'), source.replace('work();', 'work(&i);'),
+                   source.replace('work();', 'continue;'), source.replace('i = 0;', 'i = 1;')):
+        assert not any('i < 2U' in t for family, t in blocks.variants(unsafe, 'f') if family == blocks.FOR)
