@@ -151,3 +151,29 @@ void update(void *record) {
     assert not variants(source, 'update', '', [constant, (' ', 'sw $v0, 0x28($s1)', 'sw $v0, 0x28($s1)')])
     assert not variants(source, 'update', '', [constant, (' ', 'lui $v0, 1', 'lui $v0, 1'), *rows[1:2]])
     assert not variants(source.replace('extern s8 flag;', ''), 'update', '', rows[4:])
+
+
+def test_float_return_uses_a_typed_array_index_once():
+    from decomprepair.kmc_cast_repairs import rewrite_float_table
+
+    source = '''
+extern M2C_UNK samples;
+f32 sample(s32 i) {
+    return *(&samples + ((i & 0xFF) * 4));
+}
+'''
+    asm = '''
+andi $a0, $a0, 0xff
+sll $a0, $a0, 2
+lui $at, %hi(samples)
+addu $at, $at, $a0
+jr $ra
+lwc1 $f0, %lo(samples)($at)
+'''
+    patch = rewrite_float_table(source, 'sample', asm)
+    assert patch
+    assert 'extern f32 samples[];' in patch
+    assert 'return samples[(i & 0xFF)];' in patch
+    assert rewrite_float_table(source, 'sample', asm.replace('sll $a0, $a0, 2', 'sll $a0, $a0, 3')) is None
+    assert rewrite_float_table(source, 'sample', asm.replace('lwc1 $f0', 'lw $v0')) is None
+    assert rewrite_float_table(source, 'sample', asm, 'extern s32 samples;') is None

@@ -69,3 +69,65 @@ def variants(source, name):
         if len(result) >= 2:
             break
     return result
+
+
+def _toggle_target(asm):
+    if 'beql' not in asm or 'lbu' not in asm or 'sb' not in asm:
+        return None
+    from .integer_repair_support import NUMBER, integer
+    from .measured_stack_drafts import _lines
+
+    text = '\n'.join(' '.join(line.split()) for line in _lines(asm))
+    pattern = re.compile(
+        rf'(?m)^lbu (?P<value>\$\w+), (?P<offset>{NUMBER})?\((?P<base>\$\w+)\)\n'
+        rf'andi (?P<result>\$\w+), (?P=value), (?P<bit>{NUMBER})\n'
+        r'beql (?P=result), \$zero, (?P<merge>\.L\w+)\n'
+        rf'ori (?P=result), (?P=value), (?P<set>{NUMBER})\n'
+        rf'andi (?P=result), (?P=value), (?P<clear>{NUMBER})\n(?P=merge):\n'
+        r'sb (?P=result), (?(offset)(?P=offset))\((?P=base)\)$',
+    )
+    evidence = []
+    for hit in pattern.finditer(text):
+        bit, set_bit, clear = (integer(hit[key]) for key in ('bit', 'set', 'clear'))
+        if (0 < bit < 256 and not bit & (bit - 1) and bit == set_bit and bit ^ clear == 255
+                and len({hit[key] for key in ('base', 'value', 'result')}) == 3):
+            evidence.append((integer(hit['offset'] or '0'), bit, clear))
+    return evidence[0] if len(evidence) == 1 else None
+
+
+def byte_toggle_applies(asm):
+    return _toggle_target(asm) is not None
+
+
+def rewrite_byte_toggle(source, name, asm, header=''):
+    """Orient the bit update so the set path uses the target's likely delay slot."""
+    if 'M2C_FIELD' not in source or not (evidence := _toggle_target(asm)):
+        return None
+    from .integer_repair_support import IDENT, NUMBER, edit, integer, view
+
+    part = view(source, name)
+    if not part:
+        return None
+    field = rf'M2C_FIELD\((?P<base>{IDENT}), u8 \*, (?P<offset>{NUMBER})\)'
+    pattern = re.compile(
+        rf'(?P<value>{IDENT})\s*=\s*{field};\s*'
+        rf'if\s*\((?P<condition>!\(\s*(?P=value)\s*&\s*(?P<bit>{NUMBER})\s*\))\)\s*{{\s*'
+        rf'(?P<set>(?P<result>{IDENT})\s*=\s*(?P=value)\s*\|\s*(?P<set_bit>{NUMBER});)\s*}}\s*else\s*{{\s*'
+        rf'(?P<clear>(?P=result)\s*=\s*(?P=value)\s*&\s*(?P<mask>{NUMBER});)\s*}}\s*'
+        r'M2C_FIELD\((?P=base), u8 \*, (?P=offset)\)\s*=\s*(?P=result);',
+    )
+    matches = []
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
+        if (tuple(integer(hit[key]) for key in ('offset', 'bit', 'mask')) != evidence
+                or integer(hit['set_bit']) != evidence[1]
+                or len({hit[key] for key in ('base', 'value', 'result')}) != 3):
+            continue
+        if any(not re.search(rf'\bu8\s+{hit[key]}\s*;', part.body) for key in ('value', 'result')):
+            continue
+        matches.append(hit)
+    if len(matches) != 1:
+        return None
+    hit = matches[0]
+    return edit(source, [(*hit.span('condition'), f"{hit['value']} & {hit['bit']}"),
+                         (*hit.span('set'), source[slice(*hit.span('clear'))]),
+                         (*hit.span('clear'), source[slice(*hit.span('set'))])])

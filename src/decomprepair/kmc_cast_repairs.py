@@ -278,3 +278,49 @@ def variants(source, name, header, rows, flags=()):
     result = [] if '-fstrict-aliasing' in flags else typed_loads(source, header, part, rows)
     return (result + truncated_literal(source, part, rows) + narrow_array_loads(source, header, part, rows, flags)
             + stores)
+
+
+_FLOAT_LOOKUP = re.compile(
+    rf'(?m)^sll (?P<index>{REGISTER}), (?P=index), (?:2|0x2)\n'
+    rf'lui \$at, %hi\((?P<table>{IDENT})\)\naddu \$at, \$at, (?P=index)\n'
+    r'jr \$ra\nlwc1 \$(?:f0|fv0), %lo\((?P=table)\)\(\$at\)$',
+)
+
+
+def _float_table(asm):
+    if 'lwc1' not in asm or '%lo(' not in asm:
+        return None
+    from .measured_stack_drafts import _lines
+
+    text = '\n'.join(' '.join(line.split()) for line in _lines(asm)
+                     if not line.startswith(('glabel ', 'endlabel ')))
+    return _FLOAT_LOOKUP.search(text)
+
+
+def float_table_applies(asm):
+    return _float_table(asm) is not None
+
+
+def rewrite_float_table(source, name, asm, header=''):
+    """Restore the element type and scale the index once for a direct float load."""
+    if 'M2C_UNK' not in source or not (target := _float_table(asm)):
+        return None
+    part = view(source, name)
+    if not part or not re.search(rf'\bf32\s+{re.escape(name)}\s*\(\s*s32\s+{IDENT}\s*\)\s*$',
+                                part.clean[:part.opening]):
+        return None
+    table = target['table']
+    context = _blank(header) + '\n' + part.clean
+    declaration = re.search(rf'\bextern\s+M2C_UNK\s+{table}\s*;', part.clean[:part.opening])
+    if (not declaration or len(declarators(context, table)) != 1 or len(re.findall(rf'\b{table}\b', context)) != 2
+            or complex_declarator(context, table)):
+        return None
+    terminal = re.search(rf'\breturn\s*(?P<lookup>\*\(&{table}\s*\+\s*'
+                         rf'\((?P<index>{IDENT}|\({IDENT} & (?:0xFF|255)\))\s*\*\s*4\)\))\s*;\s*}}?\s*$',
+                         part.body)
+    if not terminal:
+        return None
+    a, b = terminal.span('lookup')
+    at = part.opening + 1
+    return edit(source, [(*declaration.span(), f'extern f32 {table}[];'),
+                         (at + a, at + b, f'{table}[{terminal["index"]}]')])
