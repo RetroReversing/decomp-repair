@@ -8,11 +8,14 @@ variables for the registers a binary used and shares them between loops; the gam
 and the pairing decides which counter lands in which saved register. A counter's instructions are the same either
 way, so this changes only what the allocator sees.
 
-A counter loop here is a local integer `v` set by a plain `v = <number>;` just before a `do { } while`, `for`,
-`while` or `label: ... if (c) goto label;` loop, stepped in its body and tested in its condition. Its *region* runs
-from that set to the end of the loop. Every mention of `v` in the function must lie in one of its regions, so no
-value ever flows from one loop's counter into another's (each region sets before it reads); anything else, a
-counter read after its loop or whose address is taken, is left alone. Three operations, each one a rename:
+A counter loop here is a local integer `v` set by a plain `v = <number>;` shortly before a `do { } while`, `for`,
+`while` or `label: ... if (c) goto label;` loop (up to a few statements that don't mention `v` may sit between), stepped
+in its body and tested in its condition. Its *region* runs from that set to the end of the loop. Every mention of `v`
+in the function must lie in one of its regions, so no value ever flows from one loop's counter into another's (each
+region sets before it reads), except mentions after its last region, which only read that region's last value (a guard
+such as `if (v)` further down): such a counter may take other loops (they sit above its last region and are
+overwritten by its set) but not give its own up. A counter whose address is taken, or read before or between its
+loops, is left alone. Four operations, each one a rename:
 
 - `loop_counter_fresh`: one loop of a variable shared by several gets a new variable of the same type;
 - `loop_counter_reassign`: one loop takes another counter variable of the same type whose own regions don't
@@ -40,7 +43,7 @@ def _mentions(clean, var, start, end):
 def _condition(clean, loop):
     """The text of the loop's own test, or None when its shape isn't one this reads."""
     start, end = loop
-    text = clean[start:end]
+    text = clean[start:end].lstrip()  # (a goto loop's span starts at its label's indentation)
     if re.match(r'(?:for|while)\b', text):
         paren = text.find('(')
         close = _match(text, paren, '(', ')') if paren >= 0 else -1
@@ -80,7 +83,8 @@ def _set_before(clean, var, loop, floor):
 
 
 def _counters(source, name):
-    """({var: (type, (decl start, decl end), [(region start, region end, [mention spans])])}, clean, body span)."""
+    """({var: (type, (decl start, decl end), [(region start, region end, [mention spans])], [later mentions])},
+    clean, body span)."""
     span = find(source, name)
     if not span:
         return None
@@ -109,9 +113,12 @@ def _counters(source, name):
             continue  # a loop inside another loop's region would have to share its counter
         every = [m for m in _mentions(clean, var, opening, end) if not spans[0] <= m[0] < spans[1]]
         owned = [[m for m in every if r[0] <= m[0] < r[1]] for r in regions]
-        if sum(len(o) for o in owned) != len(every):
-            continue  # a mention outside every counter loop: a value may flow, so the variable stays as it is
-        found[var] = (' '.join(decl[1].split()), spans, [(r[0], r[1], o) for r, o in zip(regions, owned)])
+        outside = [m for m in every if not any(r[0] <= m[0] < r[1] for r in regions)]
+        if any(m[0] < regions[-1][1] for m in outside):
+            continue  # a mention before or between the loops: a value may flow, so the variable stays as it is
+        # (a mention after the last loop only reads that loop's last value, which loops moved onto this variable
+        # above it overwrite before that loop sets it again: such a variable can take loops, not give them up)
+        found[var] = (' '.join(decl[1].split()), spans, [(r[0], r[1], o) for r, o in zip(regions, owned)], outside)
     return found, clean, (opening, end)
 
 
@@ -153,10 +160,12 @@ def variants(source, name):
             result.append((label, text))
 
     taken = set()
-    for var, (kind, decl, spans) in found.items():  # one loop of a shared counter takes a variable of its own
+    for var, (kind, decl, spans, later) in found.items():  # one loop of a shared counter takes a variable of its own
         if len(spans) < 2:
             continue
         for index in range(len(spans)):
+            if later and index == len(spans)-1:
+                continue  # (its later readers would lose the loop that sets what they read)
             new = _fresh_name(clean, var, set(taken))
             if new is None:
                 continue
@@ -165,18 +174,24 @@ def variants(source, name):
     same = [(u, w) for u in found for w in found if u != w and found[u][0] == found[w][0]]
     for u, w in same:  # one loop of `u` counts with `w` instead, when w's own loops don't overlap it
         for region in regions[u]:
+            if found[u][3] and region is regions[u][-1]:
+                continue
+            if found[w][3] and region[1] > regions[w][-1][0]:
+                continue  # (it must lie above w's last loop, which sets w again before w's later readers)
             if not any(_overlap(region, other) for other in regions[w]):
                 add(REASSIGN, _rename(region, w))
     for u, w in same:
-        if u < w and not any(_overlap(a, b) for a in regions[u] for b in regions[w]):
+        if u < w and not found[u][3] and not found[w][3] and not any(_overlap(a, b) for a in regions[u] for b in regions[w]):
             add(MERGE, [*(e for r in regions[w] for e in _rename(r, u)), (found[w][1][0], found[w][1][1], '')])
     for u, w in same:  # two loops trade their counters
-        if u < w:
+        if u < w and not found[u][3] and not found[w][3]:
             for a in regions[u]:
                 for b in regions[w]:
                     if (not any(_overlap(a, o) for o in regions[w] if o is not b)
                             and not any(_overlap(b, o) for o in regions[u] if o is not a)):
                         add(SWAP, [*_rename(a, w), *_rename(b, u)])
-    order = {FRESH: 0, REASSIGN: 1, MERGE: 2, SWAP: 3}
-    result.sort(key=lambda item: order[item[0]])  # (stable: singles before pairs)
+    # (stable) a loop that takes another loop's counter comes first: it reuses a variable the function already spreads
+    # over other code, which is what moves a counter's live range; a fresh variable only shortens one
+    order = {REASSIGN: 0, FRESH: 1, MERGE: 2, SWAP: 3}
+    result.sort(key=lambda item: order[item[0]])
     return result[:LIMIT]
