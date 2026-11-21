@@ -4,6 +4,7 @@ import re
 
 from . import inode_cache_drafts
 from .integer_repair_support import IDENT, NUMBER, integer
+from .mips import normalized_integer_lines
 
 _REQUEST_COPY = (
     'lwl $v0, 0($sp)', 'lwr $v0, 3($sp)', 'lwl $v1, 4($sp)', 'lwr $v1, 7($sp)',
@@ -41,14 +42,8 @@ _INODE_BODY = re.compile(
 )
 
 
-def _rows(lines):
-    # Canonicalize numeric operands while preserving relocations and labels.
-    return tuple(re.sub(r'(?<![\w])(-?0x[\da-fA-F]+)\b', lambda m: str(int(m[1], 16)),
-                        ' '.join(line.split())) for line in lines)
-
-
 def request_evidence(lines):
-    rows = _rows(lines)
+    rows = normalized_integer_lines(lines)
     text = '\n'.join(rows)
     return ('\n'.join(_REQUEST_COPY) in text and 'addiu $sp, $sp, -16' in rows
             and 'addiu $a3, $a3, 8' in rows and 'slt $v0, $a2, $v0' in rows
@@ -75,7 +70,7 @@ def request(part, name, context, loc, body, end, lines, resolve):
             return None
         prefix = prefix[:decl.start()] + prefix[decl.end():]
 
-    rows = _rows(lines)
+    rows = normalized_integer_lines(lines)
     names = {}
     for field, (symbol, op, reg, ctype) in {
         'offset': (base, 'addiu', '$a3, $a3', 'unsigned char'),
@@ -135,7 +130,7 @@ void {name}(unsigned char {arg}) {{
 
 
 def inode_evidence(lines):
-    rows = _rows(lines)
+    rows = normalized_integer_lines(lines)
     return _scan_evidence(rows) or inode_cache_drafts.evidence(rows)
 
 
@@ -153,7 +148,7 @@ def _scan_evidence(rows):
 
 
 def inode(part, name, context, loc, body, end, lines):
-    rows = _rows(lines)
+    rows = normalized_integer_lines(lines)
     if fixed := inode_cache_drafts.rewrite(part, name, context, loc, body, end, rows):
         return fixed
     match = _INODE_BODY.fullmatch(body)

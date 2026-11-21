@@ -2,7 +2,14 @@
 
 import re
 
-from . import channel_status_drafts, formatted_stack_draft, message_frame_drafts, stack_io_drafts
+from . import (
+    channel_status_drafts,
+    fixed_code_stack,
+    formatted_stack_draft,
+    message_frame_drafts,
+    packet_write_stack,
+    stack_io_drafts,
+)
 from .integer_repair_support import IDENT, NUMBER, integer, view
 from .mips import abi_register_names
 from .unaligned_stack_drafts import MEMORY, stack_copy
@@ -110,6 +117,10 @@ def applies(asm):
     if channel_status_drafts.RESULT in asm and channel_status_drafts.evidence(_lines(asm)):
         return True
     if 'osCreateMesgQueue' in asm and message_frame_drafts.evidence(_lines(asm)):
+        return True
+    if packet_write_stack.STATUS in asm and packet_write_stack.applies(_lines(asm)):
+        return True
+    if fixed_code_stack.BUILDER in asm and fixed_code_stack.applies(_lines(asm)):
         return True
     if 'nor' in asm and formatted_stack_draft.target(_lines(asm)):
         return True
@@ -359,7 +370,8 @@ def rewrite(source, name, asm, context='', resolve=None):
     if 'u8 sp' in source and 'nor' in asm and (target := formatted_stack_draft.target(_lines(asm))):
         if fixed := formatted_stack_draft.rewrite(source, name, context, target):
             return fixed
-    if (('M2C_UNALIGNED32(' not in source and '+ sp)' not in source and stack_io_drafts.INODE_READ not in source)
+    if (not any(token in source for token in ('M2C_UNALIGNED32(', '+ sp)', stack_io_drafts.INODE_READ,
+                                              fixed_code_stack.BUILDER))
             or re.search(r'\b__m2c_copy_\w+\b', source+'\n'+context)
             or re.search(r'^\s*#\s*define\s+(bytes|word|status|error|words)\b', source+'\n'+context, re.M)):
         return None
@@ -368,6 +380,11 @@ def rewrite(source, name, asm, context='', resolve=None):
         return None
     loc, body, end = _body(part)
     lines = _lines(asm)
+    if packet_write_stack.STATUS in source and (fixed := packet_write_stack.rewrite(
+            part, name, context, loc, body, end, lines)):
+        return fixed
+    if fixed_code_stack.BUILDER in source and (fixed := fixed_code_stack.rewrite(part, name, loc, body, end, lines)):
+        return fixed
     if stack_io_drafts.INODE_READ in source and (fixed := stack_io_drafts.inode(
             part, name, context, loc, body, end, lines)):
         return fixed
