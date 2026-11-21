@@ -63,3 +63,24 @@ def test_m2c_word_casts_take_the_targets_widths():
     assert ordered.index('(u16 *)') > ordered.rindex('(s16 *)((s8')
     assert common.count('(s16 *)((s8 *)&D_800CF554') == 3
     assert w.variants(UNKNOWN, 'f', UNKNOWN_ASM.replace('lh ', 'lw ').replace('lhu', 'lw ')) == []
+
+
+TYPED = '''extern s32 gFlags;
+
+void f(void *arg0, u16 i) {
+    u8 v;
+    v = *((s32 *) (((s8 *) (&gFlags)) + i));
+    if (v < 2U) {
+        *((s32 *) (((s8 *) (&gFlags)) + i)) = v ^ 1;
+    }
+}
+'''
+
+
+def test_wrong_width_cast_on_a_typed_symbol():
+    # The printed dialect (extra parentheses), a concrete `s32` symbol: the target's loads were `lbu`/`sb`.
+    asm = 'lbu $v1, %lo(gFlags)($v1)\nsb $v0, %lo(gFlags)($at)\n'
+    outs = [out for _, out in w.variants(TYPED, 'f', asm)]
+    assert outs and '*((u8 *) (((s8 *) (&gFlags)) + i))' in outs[0] and '(s32 *)' not in outs[0]
+    # accesses the cast already matches are left alone
+    assert w.variants(TYPED, 'f', 'lw $v1, %lo(gFlags)($v1)\nsw $v0, %lo(gFlags)($at)\n') == []
