@@ -91,7 +91,61 @@ _EARLY_SOURCE = re.compile(
 )
 
 
+def _separate_label_loop_cursor(source, name, header, rows):
+    """Split a cursor freshly initialized before each of two label loops."""
+    changes = [(want, have) for mark, want, have in rows if mark != ' ']
+    if not 4 <= len(changes) <= 16 or any(mark not in (' ', 'r') for mark, _, _ in rows):
+        return None
+    incoming = re.compile(r'move (\$\w+), (\$\w+)')
+    moved = [(a[1], b[1]) for want, have in changes
+             if (a := incoming.fullmatch(want)) and (b := incoming.fullmatch(have))
+             and a[2] == b[2] and a[2] != '$zero' and a[1] != b[1]]
+    if len(moved) != 1 or not (part := view(source, name)):
+        return None
+    wanted, staged = map(re.escape, moved[0])
+    stride = [a[1] for left, right in changes
+              if (a := re.fullmatch(rf'addiu {wanted}, {wanted}, ({NUMBER})', left))
+              and re.fullmatch(rf'addiu {staged}, {staged}, {re.escape(a[1])}', right)]
+    if len(stride) != 1:
+        return None
+    local = '__repair_first_loop_cursor'
+    if local in source + header:
+        return None
+    start = re.compile(
+        rf'(?m)^(?P<indent>[ \t]+)(?P<cursor>{IDENT})\s*=\s*(?P<base>{IDENT});\n'
+        rf'[ \t]*(?P<label>{IDENT}):')
+    possible = []
+    for first in start.finditer(part.clean, part.opening + 1, part.end):
+        cursor, label = first['cursor'], first['label']
+        later = next((hit for hit in start.finditer(part.clean, first.end(), part.end)
+                      if hit['cursor'] == cursor and hit['base'] == first['base']), None)
+        if not later:
+            continue
+        goto = list(re.finditer(rf'\bgoto\s+{label}\s*;', part.body))
+        if len(goto) != 1:
+            continue
+        tail = part.opening + 1 + goto[0].end()
+        if not first.end() < tail < later.start() or re.search(rf'\b{cursor}\b', part.clean[tail:later.start()]):
+            continue
+        declarations = re.compile(rf'(?m)^[ \t]*void\s*\*\s*{cursor};[ \t]*\n')
+        bind = list(declarations.finditer(part.clean, part.opening + 1, first.start()))
+        if len(bind) != 1:
+            continue
+        loop = part.clean[first.end():tail]
+        steps = re.findall(rf'\b{cursor}\s*\+=\s*({NUMBER});', loop)
+        if len(steps) != 1 or integer(steps[0]) != integer(stride[0]) or re.search(rf'&\s*{cursor}\b', loop):
+            continue
+        if re.search(rf'\bgoto\s+(?!{label}\b){IDENT}|(?m:^[ \t]*{IDENT}:)', loop):
+            continue
+        read = re.compile(rf'(?<![.>\w]){cursor}\b')
+        positions = [(*hit.span(), local) for hit in read.finditer(part.clean, first.start(), tail)]
+        possible.append(edit(source, [*positions, (bind[0].end(), bind[0].end(), f'{first["indent"]}void *{local};\n')]))
+    return possible[0] if len(possible) == 1 else None
+
+
 def variants(source, name, header, rows):
+    if fixed := _separate_label_loop_cursor(source, name, header, rows):
+        return [('measured_label_loop_cursor', fixed)]
     if len(rows) not in (14, 20, 21, 33):
         return _early_call(source, name, header, rows)
     changes = [(left, right) for tag, left, right in rows if tag != ' ']
