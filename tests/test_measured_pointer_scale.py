@@ -389,3 +389,25 @@ s32 f(s32 choice) {
     assert 'consume(table[fetch()]);' in fixed
     assert not variants(source.replace('return consume', 'hold(table);\n    return consume'), 'f', '', rows)
     assert not variants(source, 'f', 'extern s32 blue;', rows)
+
+
+def test_measured_call_uses_byte_stride_for_a_global_record_argument():
+    source = 'extern M2C_UNK records;\nvoid f(s32 i) { send(7, (i * 24) + &records, 0); }'
+    rows = [('i', 'sll $a1, $a1, 3', 'sll $a1, $a1, 5')]
+    rows += [(' ', op, op) for op in ('lui $v0, %hi(records)', 'addiu $v0, $v0, %lo(records)',
+                                      'addu $a1, $a1, $v0', 'sw $a3, 16($sp)', 'jal send', 'nop')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_scaled_global_call']
+    assert 'send(7, (i * 24) + (u8 *)&records, 0)' in fixed
+    assert not variants(source, 'f', '', rows[:-1] + [(' ', 'move $a1, $zero', 'move $a1, $zero')])
+    assert not variants(source.replace('* 24', '* 12'), 'f', '', rows)
+
+
+def test_measured_call_scales_offset_after_loading_a_halfword_pointer():
+    source = 'extern u16 *values;\ns32 f(void) { return read(values + 2, 7); }'
+    rows = [(' ', op, op) for op in ('lui $a0, %hi(values)', 'lw $a0, %lo(values)($a0)',
+                                      'lui $a1, %hi(other)', 'lw $a1, %lo(other)($a1)')]
+    rows += [('i', 'addiu $a0, $a0, 2', 'addiu $a0, $a0, 4'), (' ', 'jal read', 'jal read')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_loaded_halfword_call_offset']
+    assert 'read(values + 1, 7)' in fixed
+    assert not variants(source.replace('u16 *', 'u8 *'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[1:])
