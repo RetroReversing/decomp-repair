@@ -2,6 +2,7 @@
 
 import re
 
+from . import formatted_stack_draft
 from .integer_repair_support import IDENT, NUMBER, integer, view
 from .mips import abi_register_names
 from .unaligned_stack_drafts import MEMORY, stack_copy
@@ -101,6 +102,8 @@ def applies(asm):
     """Which other cached KMC drafts to regenerate."""
     if ('swr' in asm and 'lwr' in asm
             and (stack_copy(asm, (('lbu', 4), ('lbu', 5), ('lbu', 6))) or _outgoing_copy(_lines(asm)))):
+        return True
+    if 'nor' in asm and formatted_stack_draft.target(_lines(asm)):
         return True
     return asm.count('($sp)') >= 6 and 'sll' in asm and _word_copy(_lines(asm))
 
@@ -237,6 +240,9 @@ def _words(part, name, context, loc, body, end, lines):
 
 def rewrite(source, name, asm, context=''):
     """Leave drafts with incomplete copy or source evidence to ordinary generation."""
+    if 'u8 sp' in source and 'nor' in asm and (target := formatted_stack_draft.target(_lines(asm))):
+        if fixed := formatted_stack_draft.rewrite(source, name, context, target):
+            return fixed
     if (('M2C_UNALIGNED32(' not in source and '+ sp)' not in source)
             or re.search(r'\b__m2c_copy_\w+\b', source+'\n'+context)
             or re.search(r'^\s*#\s*define\s+(bytes|word|status|error|words)\b', source+'\n'+context, re.M)):
