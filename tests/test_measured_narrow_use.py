@@ -151,3 +151,19 @@ def test_zero_store_uses_measured_width_at_the_same_address():
     assert dict(variants(source, 'f', rows))['measured_zero_store_width'] == source.replace('(s32 *)', '(u8 *)')
     assert not variants(source, 'f', [rows[0], ('|', 'sb $zero, ($v1)', rows[1][2])])
     assert not variants(source.replace('= 0', '= 1'), 'f', rows)
+
+
+def test_stage_masked_halfword_before_merging_and_storing_it():
+    source = '''void f(void *p, u16 bits) {
+    u16 value;
+    if (p && (prepare(p), value = (M2C_FIELD(p, u16 *, 12) & 65520) | bits, M2C_FIELD(p, u16 *, 12) = value, ready())) {
+        use(value);
+    }
+}'''
+    rows = [(' ', op, op) for op in ('lhu $v0, 12($a0)', 'lw $a2, 8($a0)', 'andi $v0, $v0, 0xfff0')]
+    rows += [('r', 'or $v1, $v0, $a1', 'or $v1, $a1, $v0')]
+    rows += [(' ', op, op) for op in ('beqz $a2, 40', 'sh $v1, 12($a0)')]
+    fixed = dict(variants(source, 'f', rows))['measured_masked_halfword_or']
+    assert 'value = M2C_FIELD(p, u16 *, 12) & 65520, value |= bits' in fixed
+    assert not variants(source.replace('u16 bits', 's32 bits'), 'f', rows)
+    assert not variants(source, 'f', rows[:-1])

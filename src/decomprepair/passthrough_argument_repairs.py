@@ -788,9 +788,61 @@ def _switch_byte_forward(source, name, header, asm, rows, changes, resolve, read
                     selected_call=callee[1], resolve=resolve, indirect=edges)
 
 
+def _saved_entry_forward(source, name, header, asm, rows, changes, resolve):
+    """Recover a forwarded entry call whose omitted argument disturbed the save order."""
+    if len(changes) != 5 or changes[:4] != list(range(changes[0], changes[0] + 4)):
+        return []
+    start = changes[0]
+    saved = [entry[1] for entry in rows[start:start + 4]]
+    current = [entry[2] for entry in rows[start:start + 4]]
+    if current != saved[2:] + saved[:2]:
+        return []
+    for slot, (store, move) in enumerate((saved[:2], saved[2:])):
+        spill = re.fullmatch(rf'sw (\$s[0-7]), {NUMBER}\(\$sp\)', store)
+        if not spill or move != f'move {spill[1]}, $a{slot}':
+            return []
+    last = changes[-1]
+    argument = re.fullmatch(r'move \$a1, (\$s[0-7])', rows[last][1])
+    if not argument or rows[last][2] != f'move $a0, {argument[1]}':
+        return []
+    for mark, wanted, candidate in rows[last + 1:last + 6]:
+        if mark != ' ' or wanted != candidate:
+            return []
+        if callee := re.fullmatch(rf'jal ({IDENT})', wanted):
+            break
+        if not re.fullmatch(rf'sw \$(?:ra|s[0-7]), {NUMBER}\(\$sp\)', wanted):
+            return []
+    else:
+        return []
+    forwarded = variants(source, name, asm=asm, arch='mips', header=header, require_evidence=True,
+                         selected_call=callee[1], resolve=resolve)
+    if len(forwarded) != 1 or not (part := view(forwarded[0][1], name)):
+        return []
+    parameters = re.search(rf'\b{re.escape(name)}\s*\(\s*s32\s+({IDENT}),\s*s32\s+({IDENT}),',
+                           part.clean[:part.opening])
+    if not parameters:
+        return []
+    first, second = parameters.groups()
+    copying = re.match(
+        rf'(?P<decls>(?:\s*{IDENT}\s+{IDENT}(?:\[{NUMBER}\])?;)+)\s*\n'
+        rf'(?P<second>[ \t]*(?P<right>{IDENT}) = {second};\n)'
+        rf'(?P<first>[ \t]*(?P<left>{IDENT}) = {first};\n)', part.body)
+    if not copying or copying['left'] == copying['right'] or {first, second} & {copying['left'], copying['right']}:
+        return []
+    if not all(re.search(rf'\bs32 {copying[key]};', copying['decls']) for key in ('left', 'right')):
+        return []
+    begin = part.opening + 1 + copying.start('second')
+    end = part.opening + 1 + copying.end('first')
+    if part.source[begin:end] != copying['second'] + copying['first']:
+        return []
+    return [(FAMILY, edit(part.source, [(begin, end, copying['first'] + copying['second'])]))]
+
+
 def shifted_call_variants(source, name, header, asm, rows, *, resolve=None, read_data=None, big_endian=False):
     """Focus passthrough proposals on the measured setup for one changed call."""
     changes = [i for i, (marker, _, _) in enumerate(rows) if marker != ' ']
+    if forwarded := _saved_entry_forward(source, name, header, asm, rows, changes, resolve):
+        return forwarded
     if forwarded := _switch_byte_forward(source, name, header, asm, rows, changes, resolve, read_data, big_endian):
         return forwarded
     if forwarded := _shifted_float_literal(source, name, header, asm, rows, changes, resolve):
