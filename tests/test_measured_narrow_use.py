@@ -117,3 +117,29 @@ def test_byte_backedge_uses_the_loop_entry_carrier():
     assert not byte_backedge_variants(source, 'f', rows[:-1])
     assert not byte_backedge_variants(source.replace('    }\n}', '    }\n    use(raw);\n}'), 'f', rows)
     assert not byte_backedge_variants(source.replace('u8 *ptr', 'volatile u8 *ptr'), 'f', rows)
+
+
+def test_explicit_byte_boolean_carrier_preserves_masked_reads():
+    from decomprepair.measured_narrow_use import boolean_byte_carriers
+
+    source = """void f(void) {
+    s32 flag;
+    s32 value;
+    flag = 0;
+    if (ready) {
+        value = state != 7;
+        flag = (u8)value;
+    }
+    if (flag & 0xff) work();
+}
+"""
+    rows = [
+        (' ', 'sltu $v0, $zero, $v0', 'sltu $v0, $zero, $v0'),
+        ('|', 'move $s0, $v0', 'andi $s0, $v0, 0xff'),
+    ]
+    assert boolean_byte_carriers(source, 'f', rows) == [
+        ('boolean_byte_carrier', source.replace('s32 flag;', 'u8 flag;').replace('(u8)value', 'value'))
+    ]
+    assert not boolean_byte_carriers(source, 'f', rows[1:])
+    assert not boolean_byte_carriers(source.replace('if (flag & 0xff) work();', 'work(&flag);'), 'f', rows)
+    assert not boolean_byte_carriers(source.replace('flag = 0;', 'flag = 256;'), 'f', rows)
