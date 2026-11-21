@@ -143,3 +143,11 @@ def test_explicit_byte_boolean_carrier_preserves_masked_reads():
     assert not boolean_byte_carriers(source, 'f', rows[1:])
     assert not boolean_byte_carriers(source.replace('if (flag & 0xff) work();', 'work(&flag);'), 'f', rows)
     assert not boolean_byte_carriers(source.replace('flag = 0;', 'flag = 256;'), 'f', rows)
+
+
+def test_zero_store_uses_measured_width_at_the_same_address():
+    source = 'extern s32 base;\nvoid f(s32 i) { *(s32 *)((i * 24) + base) = 0; }'
+    rows = [(' ', 'jr $ra', 'jr $ra'), ('|', 'sb $zero, ($v0)', 'sw $zero, ($v0)')]
+    assert dict(variants(source, 'f', rows))['measured_zero_store_width'] == source.replace('(s32 *)', '(u8 *)')
+    assert not variants(source, 'f', [rows[0], ('|', 'sb $zero, ($v1)', rows[1][2])])
+    assert not variants(source.replace('= 0', '= 1'), 'f', rows)

@@ -32,12 +32,19 @@ def _float_table(part, name, header, rows):
     else:
         signature = re.search(rf'\bf32\s+{re.escape(name)}\s*\(\s*f32\s+({IDENT})\s*\)\s*$',
                               part.clean[:part.opening])
-        body = re.fullmatch(
-            rf'\s*return\s*\*\(&(?P<base>{IDENT})\s*\+\s*\(\(\(s32\)\s*(?P<index>{IDENT})'
-            rf'\s*&\s*(?P<mask>{NUMBER})\)\s*\*\s*4\)\)\s*;\s*', part.body.rstrip('}\n '))
+        cast_index = rf'\(s32\)\s*(?P<index>{IDENT})'
+        address = rf'\s*return\s*\*\(&(?P<base>{IDENT})\s*\+\s*\(\('
+        tail = rf'\s*&\s*(?P<mask>{NUMBER})\)\s*\*\s*4\)\)\s*;\s*'
+        statement = part.body.rstrip('}\n ')
+        body = re.fullmatch(address + cast_index + tail, statement)
+        if not body:
+            body = re.fullmatch(
+                address + rf'\((?P<biased>{cast_index}\s*[+-]\s*{NUMBER})\)' + tail, statement)
         if not signature or not body or signature[1] != body['index']:
             return None
         offset = f'(s32){body["index"]}'
+        if bias := body.groupdict().get('biased'):
+            offset = f'({bias})'
     base = body['base']
     decl = re.search(rf'\bextern M2C_UNK {base};', part.clean[:part.opening])
     if (not decl or re.search(rf'\b{base}\b', header) or len(re.findall(rf'\b{base}\b',part.clean)) != 2
