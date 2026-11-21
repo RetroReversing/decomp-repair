@@ -5,8 +5,9 @@ from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'mutable_parameter_local'
 POINTER_PARAMETER = re.compile(rf'\s*((?:const\s+)?(?:struct\s+)?{IDENT}\s*\*)\s*({IDENT})\s*')
-LOCAL = re.compile(rf'\s*(?:(?:struct\s+)?{IDENT}\s+)+\**\s*{IDENT}\s*'
-                   rf'(?:=\s*(?:{IDENT}|[\d.]+[fFuU]?))?\s*;')
+DECLARATOR = rf'\**\s*{IDENT}\s*(?:=\s*(?:{IDENT}|[\d.]+[fFuU]?))?'
+LOCAL = re.compile(rf'\s*(?:(?:struct\s+)?{IDENT}\s+)+{DECLARATOR}'
+                   rf'(?:\s*,\s*{DECLARATOR})*\s*;')
 
 
 def variants(source, function, header=''):
