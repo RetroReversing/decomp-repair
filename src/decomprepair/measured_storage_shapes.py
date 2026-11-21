@@ -2,7 +2,7 @@
 
 import re
 
-from . import measured_relocated_lifetimes
+from . import measured_call_stride, measured_relocated_lifetimes
 from .csource import _blank
 from .integer_repair_support import IDENT, NUMBER, calls, edit, integer, view
 from .mips_returns import instructions
@@ -21,7 +21,8 @@ def variants(source, name, header, rows, asm, *, big_endian):
     elif len(changed) == 3:
         label, candidate = 'cursor_after_word_copy', _cursor(source, name, rows, changed)
     else:
-        return measured_relocated_lifetimes.variants(source, name, header, rows, asm, changed)
+        return (measured_relocated_lifetimes.variants(source, name, header, rows, asm, changed)
+                + measured_call_stride.variants(source, name, header, rows, changed))
     return [(label, candidate)] if candidate else []
 
 
