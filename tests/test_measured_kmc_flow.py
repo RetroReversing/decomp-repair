@@ -267,3 +267,40 @@ f32 f(int i) {
     assert not variants(source.replace('return out;', 'return out + tmp;'), 'f', '', rows)
     assert not variants(source.replace('tmp = ((1.0f', 'if (i)\n    tmp = ((1.0f'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:-1])
+
+
+def test_identical_branch_assignments_collapse_plain_and_wrapped_arms():
+    source = """s32 f(s32 input) {
+    f32 score;
+    f32 a;
+    f32 b;
+    s32 ok;
+    s32 result;
+    score = input;
+    a = score + 1.0f;
+    b = score - 1.0f;
+    if (score) {
+        do { ok = 1; } while (0);
+    } else {
+        ok = 1;
+    }
+    if (a || b) {
+        result = 0;
+    } else {
+        result = 0;
+    }
+    return ok + result;
+}
+"""
+    rows = [('>', '', 'move $t1, $zero')]
+    fixed = [candidate for family, candidate in variants(source, 'f', '', rows)
+             if family == 'measured_identical_branch_assignments']
+    assert len(fixed) == 3
+    assert 'if (score)' not in fixed[0] and 'if (a || b)' not in fixed[0]
+    assert any('if (score)' in candidate for candidate in fixed)
+    assert any('if (a || b)' in candidate for candidate in fixed)
+    for guarded in (source.replace('f32 score;', 'volatile f32 score;'), source.replace('if (score)', 'if (observe())')):
+        [(family, candidate)] = variants(guarded, 'f', '', rows)
+        assert family == 'measured_identical_branch_assignments'
+        assert 'if (a || b)' not in candidate and 'else {' in candidate
+    assert not variants(source, 'f', '', [(' ', 'move $t1, $zero', 'move $t1, $zero')])

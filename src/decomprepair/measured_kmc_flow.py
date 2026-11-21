@@ -291,7 +291,36 @@ def _inline_interpolated_product(source, name, rows):
     return edit(source, [(*hit.span(), f'{hit["indent"]}{hit["dst"]} = {hit["gain"]}*{hit["blend"]};')])
 
 
+def _collapse_identical_assignments(source, name, header, rows):
+    """Remove redundant scalar control flow behind a candidate-only zero move."""
+    if not any(not target and re.fullmatch(r'move \$\w+, \$zero', actual)
+               for _, target, actual in rows) or not (part := view(source, name)):
+        return []
+    shape = re.compile(
+        rf'(?m)^(?P<indent>[ \t]+)if\s*\((?P<test>{IDENT}(?:\s*\|\|\s*{IDENT})?)\)\s*\{{\s*'
+        rf'(?P<wrapped>do\s*\{{\s*)?(?P<dst>{IDENT})\s*=\s*(?P<value>{NUMBER});'
+        r'(?(wrapped)\s*\}\s*while\s*\(0\);)\s*\}\s*else\s*\{\s*'
+        r'(?P=dst)\s*=\s*(?P=value);\s*\}')
+    locals_ = set(re.findall(rf'(?m)^[ \t]*(?:register\s+)?(?:f32|[su](?:8|16|32))\s+({IDENT})\s*;', part.body))
+    macros = set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})\b', part.clean + '\n' + header))
+    edits = []
+    for hit in shape.finditer(part.clean, part.opening + 1, part.end):
+        names = set(re.findall(IDENT, hit['test'])) | {hit['dst']}
+        if (names <= locals_ and not names & macros
+                and not any(re.search(rf'\bvolatile\b[^;\n]*\b{name}\b\s*(?:[;=,])', part.body)
+                            for name in names)
+                and part.clean[:hit.start()].rstrip().endswith(('{', '}', ';'))
+                and not re.search(r'/[*/]', source[hit.start():hit.end()])):
+            edits.append((*hit.span(), f'{hit["indent"]}{hit["dst"]} = {hit["value"]};'))
+    if not 1 <= len(edits) <= 3:
+        return []
+    groups = [edits, *([item] for item in edits)] if len(edits) > 1 else [edits]
+    return [('measured_identical_branch_assignments', edit(source, group)) for group in groups]
+
+
 def variants(source, name, header, rows):
+    if choices := _collapse_identical_assignments(source, name, header, rows):
+        return choices
     if candidate := _inline_interpolated_product(source, name, rows):
         return [('measured_inline_interpolated_product', candidate)]
     if candidate := _byte_subtraction_carrier(source, name, rows):
