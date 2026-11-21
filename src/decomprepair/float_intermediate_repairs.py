@@ -6,7 +6,8 @@ judge, never an equivalence proof or permission to reassociate floating arithmet
 import re
 
 from .call_lifetime_repairs import block_path
-from .integer_repair_support import IDENT, edit, refs, view
+from .compiler_phase_repairs import fresh
+from .integer_repair_support import IDENT, NUMBER, edit, integer, refs, view
 
 LIMIT = 6
 FLOAT = r'(?:float|double|f32|f64)'
@@ -102,10 +103,70 @@ def _array_names(part):
             for name in re.findall(IDENT, match['arrays'])}
 
 
+def _swapped_product_loads(rows):
+    """Find two adjacent load/product chains that trade places without changing operands."""
+    changed = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changed) != 4 or changed != list(range(changed[0], changed[0] + 4)):
+        return None
+    start = changed[0]
+    target = [entry[1] for entry in rows[start:start + 4]]
+    candidate = [entry[2] for entry in rows[start:start + 4]]
+    if candidate != target[2:] + target[:2]:
+        return None
+    load = re.compile(rf'lwc1 ({F32_REG}), ({NUMBER})\((\$a[0-3])\)')
+    product = re.compile(rf'mul\.s {F32_REG}, ({F32_REG}), {F32_REG}')
+    a, b = load.fullmatch(target[0]), load.fullmatch(target[2])
+    x, y = product.fullmatch(target[1]), product.fullmatch(target[3])
+    if not a or not b or not x or not y or a[1] != x[1] or b[1] != y[1] or a[3] != b[3]:
+        return None
+    return integer(a[2]), integer(b[2])
+
+
+def _stage_subtracted_product(source, name, rows):
+    offsets = _swapped_product_loads(rows)
+    if not offsets or offsets[0] == offsets[1] or not (part := view(source, name)):
+        return []
+    if re.search(r'\b(?:volatile|asm|__asm__|goto)\b', part.body):
+        return []
+    difference = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*){IDENT} = \((?P<left>{IDENT}) \* {IDENT}\) - '
+        rf'(?P<subtracted>\((?P<right>{IDENT}) \* {IDENT}\));'
+    )
+    proposals = []
+    for hit in difference.finditer(part.clean, part.opening + 1, part.end):
+        if block_path(part, hit.start()) != [part.opening] or part.clean[:hit.start()].rstrip()[-1:] != ';':
+            continue
+        names, _ = _unused_float_locals(part, hit.start())
+        if not set(re.findall(IDENT, hit[0])) <= names:
+            continue
+        bindings = []
+        for operand in (hit['right'], hit['left']):
+            assignments = list(re.compile(rf'\b{operand}\s*=(?!=)').finditer(part.clean, part.opening + 1, hit.start()))
+            if len(assignments) != 1:
+                break
+            pos = assignments[0].end()
+            field = re.match(rf'\s*M2C_FIELD\(({IDENT}), f32 \*, ({NUMBER})\);', part.clean[pos:])
+            if not field or block_path(part, pos) != [part.opening] or re.search(rf'&\s*{operand}\b', part.body):
+                break
+            bindings.append((field[1], integer(field[2])))
+        if len(bindings) != 2 or bindings[0][0] != bindings[1][0] or tuple(x[1] for x in bindings) != offsets:
+            continue
+        temporary = fresh(source, '', 'repair_subtracted_product')
+        pos = hit.start()
+        edits = [
+            (part.opening + 1, part.opening + 1, f'\n    f32 {temporary};'),
+            (pos, pos, f'{hit["indent"]}{temporary} = {hit["subtracted"]};\n'),
+            (*hit.span('subtracted'), temporary),
+        ]
+        if source[hit.start():hit.end()] == hit[0]:
+            proposals.append(('staged_subtracted_float_product', edit(source, edits)))
+    return proposals if len(proposals) == 1 else []
+
+
 def repeated_products(source, name, rows):
     """Stage the same interpolation across conversions without reordering products."""
     if _multiply_conversion_sites(rows) < 2 or not (part := view(source, name)):
-        return []
+        return _stage_subtracted_product(source, name, rows)
     if re.search(r'\b(?:goto|for|while|do|asm|__asm__)\b', part.body):
         return []
     # Anchor at a statement so the added assignment never escapes an unbraced arm.
