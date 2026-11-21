@@ -59,3 +59,31 @@ def test_constant_local_read_once_becomes_a_literal():
     assert any('T[i + 1] = 1;' in t for t in out)
     # a non-constant read once is still left to `_adjacent`
     assert not any('T[i] = (g' in t for _, t in inline.variants(source.replace('c2 = 2;', 'c2 = g();'), 'f'))
+
+
+def test_inner_block_local_is_written_at_its_call_sites():
+    # a voice-list walk: m2c's loop-invariant locals before the loop; the target recomputes them at each call
+    source = '''void g(s32, s32);
+extern char T[];
+
+s32 f(s32 a, s32 b) {
+    s32 h = g0();
+    if (h != -1) {
+        u32 high = (u32)(b & 0xffff) >> 7;
+        do {
+            if (T[h] & 2) {
+                g(h, high);
+            } else {
+                g(h + 1, high);
+            }
+            h = T[h];
+        } while (h != -1);
+    }
+    return h;
+}
+'''
+    out = [text for _, text in inline.variants(source, 'f')]
+    both = [t for t in out if t.count('((u32)(b & 0xffff) >> 7)') == 2]
+    assert both and 'g(h + 1, ((u32)(b & 0xffff) >> 7));' in both[0]
+    # an operand changed inside the block keeps the local
+    assert not inline.variants(source.replace('h = T[h];', 'h = T[h]; b = h;'), 'f')

@@ -63,6 +63,24 @@ def _adjacent(source, part):
     return result
 
 
+def _block_end(clean, base, start, end):
+    """Where the block holding `start` closes: the function's end at top level, else its own `}` (None if unbalanced)."""
+    depth = clean[base:start].count('{') - clean[base:start].count('}')
+    if depth == 0:
+        return end
+    if depth < 0:
+        return None
+    level = 0
+    for index in range(start, end):
+        if clean[index] == '{':
+            level += 1
+        elif clean[index] == '}':
+            level -= 1
+            if level < 0:
+                return index
+    return None
+
+
 def variants(source, name, limit=8):
     part = view(source, name)
     if not part:
@@ -71,9 +89,15 @@ def variants(source, name, limit=8):
     result = _adjacent(source, part)
     for start, end, local, first, last in _assignments(clean, part.opening + 1, part.end):
         expression = source[first:last].strip()
-        if clean[part.opening+1:start].count('{') != clean[part.opening+1:start].count('}') or not _plain(expression):
+        if not _plain(expression):
             continue
-        body = clean[end:part.end]
+        # A local declared in an inner block (m2c's `u32 high = (u32)(arg1 & 0xffff) >> 7;` before a loop) is read
+        # only up to that block's close. A voice-list walk matched once both such locals were written at their call
+        # sites again (a neutral step, 623 -> 623) and the scaled index was staged (-> 0).
+        block_end = _block_end(clean, part.opening + 1, start, part.end)
+        if block_end is None:
+            continue
+        body = clean[end:block_end]
         if _changed(local, body) or any(_changed(o, body) for o in set(re.findall(r'[A-Za-z_]\w*', expression))):
             continue
         uses = [end + h.start() for h in re.finditer(rf'\b{local}\b', body)]
