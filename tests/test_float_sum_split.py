@@ -21,7 +21,7 @@ def _squash(text):
 
 def test_the_matched_shape_is_proposed_from_m2c_output():
     out = [src for fam, src in variants(RAW, 'f') if fam == 'float_sum_split']
-    assert len(out) == 2
+    assert len(out) == 3
     assert any(_squash(MATCHED) in _squash(src) for src in out)
     assert any('do {' not in src for src in out)
 
@@ -40,3 +40,11 @@ def test_other_shapes_are_left_alone():
     assert not variants(RAW.replace('f32 *', 's32 *'), 'f')                      # not a float field
     assert not variants(RAW.replace(' + M2C_FIELD(arg0, f32 *, 0x40);', ' + M2C_FIELD(arg0, f32 *, 0x44);'), 'f')
     assert not variants(RAW.replace('angleDelta12((s32) M2C_FIELD(arg0, f32 *, 0x40))', '3'), 'f')   # no call
+
+def test_captures_the_initial_read_in_a_single_statement_wrapper():
+    [fixed] = [src for _, src in variants(RAW, 'f') if ' += ' in src]
+    assert 'f32 v_split = M2C_FIELD(arg0, f32 *, 0x40);' in fixed
+    assert 'do { t_split = (angleDelta12((s32) v_split) * (f32) arg2); } while (0);' in fixed
+    assert 'M2C_FIELD(arg0, f32 *, 0x40) += t_split;' in fixed
+    extra = RAW.replace('    M2C_FIELD', '    touch();\n    M2C_FIELD', 1)
+    assert not any(' += ' in src for _, src in variants(extra, 'f'))

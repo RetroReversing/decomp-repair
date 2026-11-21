@@ -13,7 +13,8 @@ product in its own `do { } while (0)` (a scheduling boundary: the field's load s
     d = call(F);  do { t = d * k; } while (0);  v = F;  F = v + t;
 
 The same two edits without the boundary (`d = ...; t = d * k; v = F; F = v + t;`) are proposed too, since they matched
-other shapes of the pair. Only MIPS (the GCC scheduler), only a float field read twice with the same text, only a
+other shapes of the pair. For a single-statement wrapper, also try capturing the initial field read,
+scoping the call and product together, and updating the field with `+=`. Only MIPS (the GCC scheduler), only a float field read twice with the same text, only a
 call multiplied by something. The candidate is never a verdict: the judge decides.
 """
 import re
@@ -80,6 +81,23 @@ def _return_type(source, upto, callee):
     return hit[1] if hit and hit[1] not in ('return', 'else') else 's32'
 
 
+def _captured_field_update(clean, opening, closing, start, stop, lvalue, call, factor, kind, indent):
+    """Capture the first read used as a cast argument and reload for the compound update."""
+    if clean[opening + 1:start].strip() or clean[stop:closing].strip() or kind not in ('f32', 'float'):
+        return None
+    field = re.fullmatch(rf'M2C_FIELD\(\s*{_ID}\s*,\s*(?:f32|float)\s*\*\s*,\s*(?:0x[0-9a-fA-F]+|\d+)\s*\)', lvalue)
+    argument = re.fullmatch(rf'(?P<callee>{_ID})\s*\(\s*\(\s*(?P<cast>s32|int)\s*\)\s*(?P<field>.+)\)', call)
+    if (not field or not argument or _norm(argument['field']) != _norm(lvalue)
+            or not re.fullmatch(rf'(?:\(\s*(?:float|f32)\s*\)\s*)?{_ID}', factor)):
+        return None
+    return ('\n' + indent).join((
+        f'{kind} v_split = {lvalue};',
+        f'{kind} t_split;',
+        f'do {{ t_split = ({argument["callee"]}(({argument["cast"]}) v_split) * {factor}); }} while (0);',
+        f'{lvalue} += t_split;',
+    ))
+
+
 def variants(source, name, arch='mips', asm='', header=''):
     if arch != 'mips':
         return []
@@ -117,6 +135,9 @@ def variants(source, name, arch='mips', asm='', header=''):
             decl = f'{_return_type(source, span[0], callee)} {d}; {t} {v}; {t} {w};'
             indent = source[source.rfind('\n', 0, a) + 1:a]
             indent = indent if not indent.strip() else '    '
+            captured = _captured_field_update(clean, opening, closing, a, b, lvalue, call, factor, t, indent)
+            if captured and _norm(_strip_parens(other)).startswith(_norm(call) + "*"):
+                out.append((FAMILY, source[:a] + captured + source[b:]))
             for scoped in (True, False):
                 prod = f'{w} = {d} * {factor};'
                 lines = [f'{d} = {call};', f'do {{ {prod} }} while (0);' if scoped else prod,
