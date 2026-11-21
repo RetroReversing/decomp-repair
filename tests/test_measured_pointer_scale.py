@@ -369,3 +369,23 @@ def test_guarded_word_reads_correct_a_single_shared_record_stride():
     assert 'offset = i * 4;' in dict(variants(source, 'f', '', rows))['measured_word_stride']
     assert not variants(source.replace('i * 16', 'i * 8'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:-1])
+
+
+def test_indirect_halfword_lookup_retypes_the_cursor_and_preserves_other_tables():
+    source = '''extern M2C_UNK red;
+extern M2C_UNK blue;
+s32 f(s32 choice) {
+    M2C_UNK *table;
+    if (choice) { table = &red; } else { table = &blue; }
+    return consume(*((fetch() * 2) + table));
+}
+'''
+    rows = [('i', 'sll $v0, $v0, 1', 'sll $v0, $v0, 3'),
+            (' ', 'addu $v0, $v0, $s1', 'addu $v0, $v0, $s1'),
+            ('i', 'lhu $a0, ($v0)', 'lhu $a0, 2($v0)')]
+    fixed = dict(variants(source, 'f', '', rows))['measured_indirect_halfword_table']
+    assert 'u16 *table;' in fixed
+    assert 'table = (u16 *)&red;' in fixed and 'table = (u16 *)&blue;' in fixed
+    assert 'consume(table[fetch()]);' in fixed
+    assert not variants(source.replace('return consume', 'hold(table);\n    return consume'), 'f', '', rows)
+    assert not variants(source, 'f', 'extern s32 blue;', rows)
