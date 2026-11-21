@@ -139,3 +139,45 @@ void f(s32 input) {
     assert rewrite_reload_wrapper(source, 'f', asm.replace('8CA50100', '8CA50104'), resolve=resolve) is None
     assert rewrite_reload_wrapper(source.replace('), 1);', '), 2);'), 'f', asm, resolve=resolve) is None
     assert rewrite_reload_wrapper(source, 'f', asm, 'extern u32 D_80010100;', resolve) is None
+
+
+_BRANCH_BYTE_ASM = '''
+/* 00 80000100 3C038000 */ lui $v1, %hi(state + 0x30)
+/* 04 80000104 90632030 */ lbu $v1, %lo(state + 0x30)($v1)
+/* 08 80000108 24020001 */ addiu $v0, $zero, 1
+/* 0C 8000010C 14620003 */ bne $v1, $v0, .Ldone
+/* 10 80000110 00000000 */ nop
+/* 14 80000114 3C018000 */ lui $at, %hi(state + 0x30)
+/* 18 80000118 A0202030 */ sb $zero, %lo(state + 0x30)($at)
+'''
+_BRANCH_BYTE_SOURCE = '''
+extern M2C_UNK state;
+void clear_pending(void) {
+    if (M2C_FIELD(&state, u8 *, 0x30) == 1) {
+        M2C_FIELD(&state, u8 *, 0x30) = 0U;
+        notify();
+    }
+}
+'''
+
+
+def test_branch_byte_uses_one_name_with_two_independent_relocations():
+    from decomprepair.relocated_global_update import branch_byte_applies, rewrite_branch_byte
+
+    resolve = {'state': 0x80002000, 'D_80002030': 0x80002030}.get
+    assert branch_byte_applies(_BRANCH_BYTE_ASM)
+    fixed = rewrite_branch_byte(_BRANCH_BYTE_SOURCE, 'clear_pending', _BRANCH_BYTE_ASM, resolve=resolve)
+    assert 'extern u8 D_80002030;' in fixed
+    assert 'if (D_80002030 == 1)' in fixed
+    assert 'D_80002030 = 0U;' in fixed
+    assert 'notify();' in fixed
+
+
+def test_branch_byte_rejects_a_different_machine_store_address_and_volatile_header():
+    from decomprepair.relocated_global_update import rewrite_branch_byte
+
+    resolve = {'state': 0x80002000, 'D_80002030': 0x80002030}.get
+    asm = _BRANCH_BYTE_ASM.replace('A0202030', 'A0202031')
+    assert not rewrite_branch_byte(_BRANCH_BYTE_SOURCE, 'clear_pending', asm, resolve=resolve)
+    assert not rewrite_branch_byte(_BRANCH_BYTE_SOURCE, 'clear_pending', _BRANCH_BYTE_ASM,
+                                   'extern volatile char state[];', resolve)

@@ -220,3 +220,71 @@ def rewrite_reload_wrapper(source, name, asm, header='', resolve=None):
     if (addresses.get(16), addresses.get(36)) != (address, address):
         return None
     return _direct_word(source, name, header, resolve, address, [draft.span('read'), draft.span('reload')])
+
+
+_BRANCH_BYTE = re.compile(
+    rf'lui (?P<load>\$\w+), %hi\((?P<base>{IDENT})(?: \+ (?P<offset>{NUMBER}))?\)\n'
+    rf'lbu (?P=load), %lo\((?P=base)(?(offset) \+ (?:\()?(?P=offset)(?: & 0xFFFF\))?)\)\((?P=load)\)\n'
+    rf'addiu (?P<compare>\$\w+), \$zero, (?P<value>{NUMBER})\n'
+    r'bne (?P=load), (?P=compare), \.L\w+\nnop\n'
+    rf'lui (?P<store>\$\w+), %hi\((?P=base)(?(offset) \+ (?P=offset))\)\n'
+    r'sb \$zero, %lo\((?P=base)(?(offset) \+ (?:\()?(?P=offset)(?: & 0xFFFF\))?)\)\((?P=store)\)'
+)
+_BYTE_TEST = re.compile(
+    rf'if\s*\(\s*(?P<field>M2C_FIELD\(\s*&(?P<base>{IDENT}),\s*u8\s*\*,\s*(?P<offset>{NUMBER})\s*\))'
+    rf'\s*==\s*(?P<value>{NUMBER})\s*\)\s*{{\s*(?P<clear>(?P=field))\s*=\s*0U?\s*;'
+)
+
+
+def _branch_byte_matches(asm):
+    from .mips_returns import instructions as instruction_text
+
+    lines = [' '.join(row.split()) for row in instruction_text(abi_register_names(asm))]
+    text = '\n'.join(lines)
+    for target in _BRANCH_BYTE.finditer(text):
+        yield target, text.count('\n', 0, target.start())
+
+
+def branch_byte_applies(asm):
+    return 'lbu' in asm and 'sb ' in asm and next(_branch_byte_matches(asm), None) is not None
+
+
+def rewrite_branch_byte(source, name, asm, header='', resolve=None):
+    """Give a tested and cleared byte its own name when the target materializes it twice."""
+    if resolve is None or 'M2C_FIELD' not in source or not branch_byte_applies(asm):
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    words = instructions(asm)
+    targets = {}
+    for target, start in _branch_byte_matches(asm):
+        def operand(at, opcode):
+            pair = words[at:at+2]
+            if len(pair) == 2 and pair[0] >> 26 == 15 and pair[1] >> 26 == opcode:
+                return resolved(b''.join(word.to_bytes(4, 'big') for word in pair)).get(4)
+
+        address = operand(start, 36)
+        base = resolve(target['base'])
+        if (address is not None and address == operand(start+5, 40) and base is not None
+                and address == base + integer(target['offset'] or '0')):
+            targets.setdefault(address, set()).add(integer(target['value']))
+    for draft in _BYTE_TEST.finditer(part.clean, part.opening + 1, part.end):
+        base = resolve(draft['base'])
+        if base is None or re.search(rf'\bvolatile\b[^;{{}}\n]*\b{draft["base"]}\b', header + part.clean):
+            continue
+        address = base + integer(draft['offset'])
+        if targets.get(address) != {integer(draft['value'])}:
+            continue
+        alias = f'D_{address:08X}'
+        if (not 0 <= address <= 0xFFFFFFFF or resolve(alias) != address
+                or re.search(rf'\b{alias}\b', source + '\n' + header)):
+            continue
+        # Adding a second name must not leave other base-relative uses of this byte behind.
+        if len(re.findall(rf'\bM2C_FIELD\(\s*&{draft["base"]}\s*,[^,]+,\s*{draft["offset"]}\s*\)',
+                          part.clean)) != 2:
+            continue
+        definition = find(source, name)[0]
+        return edit(source, [(definition, definition, f'extern u8 {alias};\n\n'),
+                             (*draft.span('field'), alias), (*draft.span('clear'), alias)])
+    return None
