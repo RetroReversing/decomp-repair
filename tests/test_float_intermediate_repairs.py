@@ -28,3 +28,31 @@ void f(s16 *a, s16 *b, s16 *c) {
     assert not repeated_products(source, 'f', rows)
     assert not repeated_products(source.replace('    *a =', '    if (flag)\n        *a ='), 'f', rows * 2)
     assert not repeated_products(source.replace('t, v', 'v'), 'f', rows * 2)
+
+
+def test_stage_subtracted_product_when_two_matched_load_product_pairs_are_swapped():
+    from decomprepair.float_intermediate_repairs import repeated_products
+
+    source = '''f32 f(void *in) {
+    f32 first;
+    f32 second;
+    f32 gain;
+    f32 value;
+    first = M2C_FIELD(in, f32 *, 24);
+    second = M2C_FIELD(in, f32 *, 12);
+    gain = M2C_FIELD(in, f32 *, 16);
+    value = (first * gain) - (second * gain);
+    return value;
+}
+'''
+    target = ['lwc1 $f6, 0xc($a0)', 'mul.s $f4, $f6, $f4',
+              'lwc1 $f0, 0x18($a0)', 'mul.s $f8, $f0, $f8']
+    rows = list(zip(('i', 'r', 'i', 'r'), target, target[2:] + target[:2]))
+    family, fixed = repeated_products(source, 'f', rows)[0]
+    assert family == 'staged_subtracted_float_product'
+    assert 'f32 repair_subtracted_product;' in fixed
+    assert 'repair_subtracted_product = (second * gain);' in fixed
+    assert 'value = (first * gain) - repair_subtracted_product;' in fixed
+    assert not repeated_products(source.replace('in, f32 *, 12', 'in, f32 *, 28'), 'f', rows)
+    assert not repeated_products(source.replace('second =', 'second = gain; second ='), 'f', rows)
+    assert not repeated_products(source, 'f', rows[:-1])
