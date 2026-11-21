@@ -99,3 +99,20 @@ def test_m2cs_field_macro_and_typed_cursors_are_read_too():
         found = x.variants(source, 'f', ASM)
         assert len(found) == 2 and 'sp30[i]' in found[0][1] and 'sp38[i*2+1]' in found[0][1]
         assert 'for (i = 0; i < 4; i++)' in found[0][1] and 'var_' not in found[0][1] and 'M2C_FIELD(var' not in found[0][1]
+
+
+def test_the_printed_dialect_the_deep_pass_saves_is_read_too():
+    # the same draft after a round through the deep pass's printer and its argument home-slot device
+    import re
+    printed = re.sub(r'\(\*\(u8 \*\)\(\(char \*\)\((\w+)\) \+ (-?\w+)\)\)', r'(*((u8 *) (((char *) \1) + \2)))', SOURCE)
+    printed = re.sub(r'\*\(s16 \*\)\(\(char \*\)\((\w+)\) \+ (-?\w+)\)', r'*((s16 *) (((char *) \1) + (\2)))', printed)
+    printed = printed.replace('var_b += 2;', 'var_b = var_b + 2;').replace('    loop: {', '    loop:\n    {')
+    printed = printed.replace('    if (var_a != &sp30) goto loop;', '    if (var_a != (&sp30))\n    {\n        goto loop;\n    }')
+    printed = printed.replace('    var_src = arg1;', '    int *__repair_home0 = &arg0;\n    var_src = arg1;')
+    printed = printed.replace('g(arg0, &sp48', 'g(*__repair_home0, &sp48')
+    assert '(((char *) arg1) + 0)' in printed and '__repair_home0' in printed and 'goto loop;' in printed
+    found = x.variants(printed, 'f', ASM)
+    assert len(found) == 2
+    for _, text in found:
+        assert 'for (i = 0; i < 4; i++)' in text and '__repair_home' not in text and 'var_' not in text
+        assert 'sp38[i*2+1]' in text and 'arg1[i*3+3]' in text and 'g(arg0, sp48, sp28, sp30, sp38, arg2);' in ' '.join(text.split())
