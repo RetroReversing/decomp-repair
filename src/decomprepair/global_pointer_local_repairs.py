@@ -178,3 +178,72 @@ def rewrite_list_transfer(source, name, asm, header=''):
         {local} = {field};
     }}
 ''')])
+
+
+def _pointer_field_gaps(instructions):
+    """Instruction distance from a relocated pointer load to a field read."""
+    register = r'\$\w+'
+    relocation = re.compile(rf'lw (?P<base>{register}), %lo\((?P<symbol>{IDENT})\)\((?P=base)\)')
+    gaps = {}
+    for i, instruction in enumerate(instructions):
+        load = relocation.fullmatch(instruction)
+        if not load:
+            continue
+        base, symbol = load['base'], load['symbol']
+        if i == 0 or instructions[i-1] != f'lui {base}, %hi({symbol})':
+            continue
+        field = re.compile(rf'lw {register}, (0x[0-9a-f]+|[1-9][0-9]*)\({re.escape(base)}\)')
+        for distance, op in enumerate(instructions[i+1:i+25], 1):
+            if found := field.fullmatch(op):
+                key = (symbol, int(found[1], 0))
+                gaps[key] = max(distance, gaps.get(key, 0))
+                break
+            if re.match(rf'\w+ {re.escape(base)},', op) and not op.startswith(('sw ', 'sh ', 'sb ')):
+                break
+    return gaps
+
+
+def scoped_field_reads(source, name, rows):
+    """Capture a field's relocated base with the lifetime indicated by the linked diff."""
+    from .integer_repair_support import edit, view
+    from .loaded_byte_repairs import declarators
+
+    if not any('%lo(' in row[1] for row in rows):
+        return []
+    target, candidate = (_pointer_field_gaps([row[side] for row in rows if row[side]]) for side in (1, 2))
+    part = view(source, name)
+    if not part:
+        return []
+    proposals = []
+    for (symbol, field), gap in target.items():
+        actual = candidate.get((symbol, field))
+        if actual is None or gap <= actual or len(declarators(part.clean, symbol)) != 1:
+            continue
+        if not re.search(rf'(?m)^\s*extern\s+void\s*\*\s*{symbol}\s*;', part.clean[:part.opening]):
+            continue
+        read = re.compile(
+            rf'(?m)^(?P<indent>[ \t]*){IDENT}\s*=\s*\(\s*\*\s*\(\s*(?:s32|u32|int)\s*\*\s*\)'
+            rf'\s*\(\s*\(\s*char\s*\*\s*\)\s*\(\s*(?P<base>{symbol})\s*\)'
+            r'\s*\+\s*(?P<field>0[xX][0-9a-fA-F]+|[1-9][0-9]*)\s*\)\s*\)\s*;'
+        )
+        for access in read.finditer(part.clean, part.opening + 1, part.end):
+            if int(access['field'], 0) != field:
+                continue
+            later = part.clean[access.end():part.end]
+            reuse = re.search(rf'(?<=[;{{}}])\s*(?P<local>{IDENT})\s*=\s*{symbol}\s*;', later)
+            if not reuse:
+                continue
+            local = reuse['local']
+            before = part.clean[part.opening:access.start()].rstrip()
+            between = later[:reuse.start()]
+            if (not before or before[-1] not in ';{}' or len(declarators(part.clean, local)) != 1
+                    or not re.search(rf'(?<=[;{{}}])\s*void\s*\*\s*{local}\s*;', before)
+                    or re.search(rf'\b(?:{local}|goto|return|continue|break)\b', between)
+                    or re.search(rf'&\s*\(*\s*{local}\b', part.body)):
+                continue
+            indent = access['indent']
+            capture = f'{indent}do {{\n{indent}    {local} = {symbol};\n{indent}}} while (0);\n'
+            proposals.append(('measured_scoped_global_field', edit(source, [
+                (access.start(), access.start(), capture), (*access.span('base'), local),
+            ])))
+    return proposals[:4]
