@@ -9,7 +9,7 @@ _MASK = re.compile(rf'andi ({_REG}), ({_REG}), (0x[0-9a-f]+)')
 _GUARD = re.compile(
     rf'\bif\s*\(\s*\(\s*(?P<load>\*\s*\(\s*(?:u8|unsigned\s+char)\s*\*\s*\)'
     rf'\s*\(\s*\(\s*(?:u8|unsigned\s+char)\s*\*\s*\)\s*&\s*{IDENT}\s*\+\s*'
-    rf'\(\s*{IDENT}\s*\*\s*(?:0x[0-9a-fA-F]+|[0-9]+)\s*\)\s*\))'
+    rf'(?P<index>\(\s*(?P<index_name>{IDENT})\s*\*\s*(?:0x[0-9a-fA-F]+|[0-9]+)\s*\))\s*\))'
     rf'\s*&\s*0[xX]7[fF][uU]?\s*\)\s*(?P<operator>==|!=)\s*(?P<constant>[0-9]+)\s*\)\s*{{'
 )
 
@@ -77,6 +77,18 @@ def variants(source, name, rows, header=''):
         replacement = f'{local} = {load};\n{indent}if (({local} & 0xffU) {pred}) {{'
         declaration = f'\n    {kind} {local};'
         result.append((FAMILY, edit(source, [(part.opening + 1, part.opening + 1, declaration),
+                                              (*hit.span(), replacement)])))
+    offset = 'repair_byte_offset'
+    signature = source[source.rfind(name, 0, part.opening):part.opening]
+    signed_index = re.search(rf'(?:\(|,)\s*(?:s32|int)\s+{re.escape(hit["index_name"])}\b', signature)
+    if signed_index and not re.search(rf'\b{offset}\b', source + '\n' + header):
+        indexed_load = load.replace(source[slice(*hit.span('index'))], offset, 1)
+        indexed_load = re.sub(r'\(\s*(?:u8|unsigned\s+char)\s*\*\s*\)',
+                              '(volatile unsigned char *)', indexed_load, count=1)
+        index = source[slice(*hit.span('index'))]
+        replacement = f'{offset} = {index};\n{indent}if (({indexed_load} & 0xffU) {pred}) {{'
+        result.append((FAMILY, edit(source, [(part.opening + 1, part.opening + 1,
+                                               f'\n    int {offset};'),
                                               (*hit.span(), replacement)])))
     return result
 
