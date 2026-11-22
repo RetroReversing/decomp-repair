@@ -203,3 +203,15 @@ void f(void *base) {
     assert not variants(source.replace('0x28', '0x3C'), 'f')
     assert not variants(source.replace('int v', 'volatile int v'), 'f')
     assert not variants(source.replace('    ((Word', '    if (base)\n    ((Word', 1), 'f')
+
+
+@pytest.mark.parametrize('record', [
+    'typedef struct { int values[bound()]; } Record;',
+    'typedef struct { int (*callback)(void); } Record;',
+    'typedef struct { int value : 3; } Record;',
+])
+def test_initialization_guard_gives_no_verdict_for_a_complex_record_typedef(record):
+    """local_flow reads braced records since 0.5.577; the guard must still treat a non-inert typedef as opaque."""
+    from decomprepair.permuter_initialization import unsafe_temporary
+    candidate = 'int f(int condition) { int temp; ' + record + ' return temp; }'
+    assert not unsafe_temporary('int f(int condition) { int temp; temp=1; return temp; }', candidate, 'f')

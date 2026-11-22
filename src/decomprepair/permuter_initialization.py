@@ -73,8 +73,13 @@ def _initialization_verdicts(candidate, name, header):
         declarations.append(decl)
     if not declarations or re.search(r"\bfor\s*\([^;]*;\s*;", part.body):
         return {}
-    flow = local_flow.analyze(_without_type_only_records(candidate, part, macros), name,
-                              declarations=declarations)
+    scrubbed = _without_type_only_records(candidate, part, macros)
+    # local_flow now reads braced record declarations (m2c's block-scoped struct tags), where it used to refuse the
+    # function. The guard relied on that refusal: any record typedef the scrubbing above did not hide (a variable
+    # bound, a function-pointer or nested member, a bit-field) is opaque, so no verdict.
+    if re.search(r'\btypedef\s+(?:struct|union)\b[^;{]*{', scrubbed[part.opening+1:part.end]):
+        return {}
+    flow = local_flow.analyze(scrubbed, name, declarations=declarations)
     if not flow or flow.entry is None:
         return {}
     # The native walk commonly wraps a single statement in do {...} while (0).
