@@ -81,4 +81,71 @@ def variants(source, name):
             candidate = source[:hit.start()] + _build(g, direct, split) + source[hit.end():]
             if candidate not in [c for _, c in result]:
                 result.append((FAMILY, candidate))
-    return result[:6]
+    return (result + masked_copy_variants(source, name))[:6]
+
+
+def masked_copy_variants(source, name):
+    """Split a byte-masked helper compare into arms and narrow its private key copy.
+
+    The helper must be exactly an equality of a masked integer with a byte. Narrowing is safe only when all
+    uses of the copied key are that helper's argument or an equivalently masked array index.
+    """
+    from .integer_repair_support import edit, view
+    from .pattern_repairs import close
+
+    part = view(source, name)
+    if not part or re.search(r'\b(?:volatile|asm|__asm__|goto)\b|^\s*#', part.body, re.M):
+        return []
+    helper = re.search(
+        rf'\b(?:inline\s+static|static\s+inline)\s+int\s+({IDENT})\s*\(\s*s32\s+({IDENT})\s*,\s*u8\s+({IDENT})\s*\)\s*'
+        rf'{{\s*return\s*\(\s*\2\s*&\s*0[xX][fF][fF]\s*\)\s*==\s*\3\s*;\s*}}', source)
+    if not helper:
+        return []
+    for copy in re.finditer(rf'\bs32\s+({IDENT})\s*;', part.clean[part.opening + 1:]):
+        key = copy[1]
+        decl_start = part.opening + 1 + copy.start()
+        if key in (helper[2], helper[3]) or len(re.findall(rf'\bs32\s+{key}\s*;', part.body)) != 1:
+            continue
+        for branch in re.finditer(r'\bif\s*\(', part.clean[decl_start:]):
+            start = decl_start + branch.start()
+            cond = close(part.clean, start + branch.group().rfind('('))
+            if not cond:
+                continue
+            arm = re.match(r'\s*{', part.clean[cond:])
+            if not arm:
+                continue
+            a = cond + arm.end() - 1
+            b = close(part.clean, a, '{', '}')
+            if not b:
+                continue
+            other = re.match(r'\s*else\s*{', part.clean[b:])
+            if not other:
+                continue
+            c = b + other.end() - 1
+            d = close(part.clean, c, '{', '}')
+            if not d:
+                continue
+            tail = re.match(rf'\s*if\s*\(\s*{helper[1]}\s*\(\s*{key}\s*,\s*({IDENT})\s*\)\s*\)\s*{{\s*return\s+1\s*;\s*}}', part.clean[d:])
+            if not tail:
+                continue
+            value = tail[1]
+            bodies = part.clean[a + 1:b - 1] + '\n' + part.clean[c + 1:d - 1]
+            if re.search(r'\b(?:if|else|for|while|do|switch|return|break|continue)\b|[?:]', bodies):
+                continue
+            if not all(re.search(rf'\b{value}\s*=', part.clean[x + 1:y - 1]) for x, y in ((a, b), (c, d))):
+                continue
+            # No other reads or writes: a single copy, one masked index, and the helper call.
+            uses = re.sub(rf'\b{key}\s*=\s*{IDENT}\s*;', '', part.clean[decl_start:part.end])
+            uses = re.sub(rf'\b{key}\s*&\s*0[xX][fF][fF]\b', '', uses)
+            uses = re.sub(rf'\b{helper[1]}\s*\(\s*{key}\s*,', '', uses)
+            uses = re.sub(rf'\bs32\s+{key}\s*;', '', uses)
+            if re.search(rf'\b{key}\b', uses) or len(re.findall(rf'\b{key}\s*=\s*{IDENT}\s*;', part.clean[decl_start:part.end])) != 1:
+                continue
+            label = '__repair_compare_no'
+            if re.search(rf'\b{label}\b', source):
+                continue
+            check = f'\nif (!{helper[1]}({key}, {value})) goto {label};\n'
+            return [(FAMILY, edit(source, [(decl_start, decl_start + 3, 'u8'),
+                                         (b - 1, b - 1, check), (d - 1, d - 1, check),
+                                         (d, d + tail.end(), f'\nreturn 1; {label}:;')]))]
+    return []
