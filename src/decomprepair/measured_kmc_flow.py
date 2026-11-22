@@ -1053,6 +1053,75 @@ def _parameter_store_widths(source, name, header, rows):
     return edit(source, [(narrow[0], narrow[1], 's32 '), (wide[0], wide[1], 'u8 ')])
 
 
+def _delay_stack_formal_copy(source, name, rows):
+    """Shorten a local's live range when the target copies a stacked formal after a call."""
+    if not rows or not (frame := re.fullmatch(rf'addiu \$sp, \$sp, -({NUMBER})', rows[0][1])):
+        return None
+    target = [(mark, left) for mark, left, _ in rows[:64] if left]
+    calls = [i for i, (_, left) in enumerate(target) if re.fullmatch(rf'jal {IDENT}', left)]
+    if len(calls) < 2:
+        return None
+    first, second = calls[:2]
+    if second + 4 >= len(target):
+        return None
+    if not re.fullmatch(r'sll \$v0, \$v0, (?:24|0x18)', target[second + 2][1]):
+        return None
+    if not re.fullmatch(rf'beqz \$v0, {NUMBER}', target[second + 3][1]):
+        return None
+    mark, insn = target[second + 4]
+    copy = re.fullmatch(r'move \$(s[0-7]), \$(s[0-7])', insn)
+    if mark == ' ' or not copy or copy[1] == copy[2]:
+        return None
+    load = re.compile(rf'lw \${copy[2]}, ({NUMBER})\(\$sp\)')
+    loads = [(i, integer(hit[1])) for i, (_, left) in enumerate(target[:first]) if (hit := load.fullmatch(left))]
+    if len(loads) != 1:
+        return None
+    load_index, slot = loads[0]
+    overwrite = re.compile(rf'(?!s[bhwd]\s)\w+ \${copy[2]},')
+    if any(overwrite.match(left) for _, left in target[load_index + 1:second + 4]):
+        return None
+    offset = slot - integer(frame[1])
+    if offset < 16 or offset % 4:
+        return None
+    found = _signature(source, name)
+    if not found:
+        return None
+    clean, opening, end, start, paren = found
+    params = _params(clean, start, paren)
+    if len(params) != clean[start + 1:paren].count(',') + 1 or offset // 4 >= len(params):
+        return None
+    integer_type = r'(?:[su](?:8|16|32)|int|unsigned(?:\s+int)?)'
+    if any(not re.fullmatch(rf'{integer_type}|void\s*\*', param[2].strip()) for param in params):
+        return None
+    _, _, kind, formal = params[offset // 4]
+    if kind.strip() not in ('s32', 'u32', 'int', 'unsigned', 'unsigned int'):
+        return None
+    callee = re.escape(target[first][1].split()[1])
+    body = clean[opening + 1:end]
+    call = re.search(rf'(?m)^[ \t]*{callee}\s*\([^();{{}}]*\)\s*;[ \t]*\n', body)
+    if not call or re.search(r'[{{}}]|\b(?:if|goto|switch|for|while|return)\b', body[:call.end()]):
+        return None
+    assignments = list(re.finditer(rf'(?m)^(?P<indent>[ \t]*)(?P<local>{IDENT})\s*=\s*{formal}\s*;[ \t]*\n',
+                                  body[:call.start()]))
+    if len(assignments) != 1:
+        return None
+    assignment = assignments[0]
+    local = assignment['local']
+    if local == formal or not re.search(rf'(?m)^[ \t]*(?:register\s+)?{integer_type}\s+{local}\s*;',
+                                        body[:assignment.start()]):
+        return None
+    if (re.search(rf'\b{local}\b', body[assignment.end():call.end()])
+            or re.search(rf'&\s*\(*\s*(?:{local}|{formal})\b', body)
+            or len(re.findall(rf'\b{formal}\b', body)) != 1):
+        return None
+    at = opening + 1
+    original = source[at + assignment.start():at + assignment.end()]
+    if not re.fullmatch(rf'[ \t]*{local}\s*=\s*{formal}\s*;[ \t]*\n', original):
+        return None
+    return edit(source, [(at + assignment.start(), at + assignment.end(), ''),
+                         (at + call.end(), at + call.end(), original)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -1096,6 +1165,8 @@ def variants(source, name, header, rows):
         return [('measured_masked_lookup_switch', candidate)]
     if candidate := _stage_volatile_float_pair(source, name, header, rows):
         return [('measured_volatile_float_pair', candidate)]
+    if candidate := _delay_stack_formal_copy(source, name, rows):
+        return [('measured_delay_stack_formal_copy', candidate)]
     if candidate := _parameter_store_widths(source, name, header, rows):
         return [('measured_parameter_store_widths', candidate)]
     if not 23 <= len(rows) <= 125:
