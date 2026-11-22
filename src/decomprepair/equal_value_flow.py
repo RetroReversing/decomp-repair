@@ -75,11 +75,18 @@ def transfer(facts, text, types):
     return result
 
 
+# The macros m2c's own prelude defines (`#ifndef M2C_DEFINES`): lvalue/rvalue casts of a pointer plus a byte offset, with
+# no hidden write, call or control transfer at the use site. Their bodies hold a `;` and a `{` (the anonymous struct that
+# carries the member's type), which the check below rejects, so every function that kept one was refused.
+M2C_PRELUDE = frozenset(('M2C_FIELD', 'M2C_BITWISE', 'M2C_UNK', 'M2C_ERROR', 'M2C_CARRY', 'M2C_OVERFLOW'))
+
+
 def macros_safe(source, header, body, names):
     """Allow simple read-only expression macros, never hidden writes/control or local aliases."""
     definitions = re.findall(r'^\s*#\s*define[ \t]+('+IDENT+r')([^\n]*)',source+'\n'+header,re.M)
     for macro,expression in definitions:
         if not re.search(r'\b'+re.escape(macro)+r'\b',body):continue
+        if macro in M2C_PRELUDE:continue
         if macro in names:return False
         if any(re.search(r'\b'+re.escape(other)+r'\b',expression) for other,_ in definitions):return False
         if expression.startswith('('):

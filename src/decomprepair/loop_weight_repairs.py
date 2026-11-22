@@ -95,7 +95,9 @@ def variants(source, name, header='', *, focus_lines=(), depths=(1,2,3)):
         # Reserve room for the new operation even in update-heavy functions.
         return (divisions[:QUOTIENT_LIMIT]+list(dict.fromkeys(out))[:QUOTIENT_UPDATE_LIMIT]
                 +list(dict.fromkeys(loads))[:QUOTIENT_LOAD_LIMIT])
-    return list(dict.fromkeys(out))[:UPDATE_LIMIT]+list(dict.fromkeys(loads))[:LIMIT-UPDATE_LIMIT]
+    # the counters' starts are extra: they are the cheapest lever, and a function with several counters would
+    # otherwise lose its later ones (and the in-place depth-1 wrapper, the one that matched) to the update limit
+    return list(dict.fromkeys(out))[:UPDATE_LIMIT+len(inits)]+list(dict.fromkeys(loads))[:LIMIT-UPDATE_LIMIT]
 
 
 def quotient_scopes(source, part, declarations, *, focus_lines=(), depths=(1,2,3)):
@@ -147,7 +149,7 @@ def quotient_scopes(source, part, declarations, *, focus_lines=(), depths=(1,2,3
     return result
 
 
-COUNTER_INIT_LIMIT = 6
+COUNTER_INIT_LIMIT = 24
 
 
 def counter_init_scopes(source, name, part, declarations):
@@ -160,7 +162,8 @@ def counter_init_scopes(source, name, part, declarations):
     `if (n > 0) { do { ... } while (...); }` that guards the loop (instead of inside it) also lengthens the counter's
     range by the guard. A KMC 2.7.2 function (an edge-linking loop, 35 -> 0): the counter needed ten references and a
     longer range to land between the loaded halfword (it kept the first temporary) and the induction pointer.
-    Only `name = <literal>;` of a declared integer local that is stepped later (`++`, `+= 1`, `= name + 1`) is wrapped.
+    Only `name = <literal>;` of a declared integer local that is stepped later (`++`, `+= <literal>`, `= name + <literal>`) is wrapped
+    (a byte offset that advances by a structure's size is a counter as much as an index that advances by one).
     """
     groups, bare = [], []
     flow = None
@@ -170,7 +173,7 @@ def counter_init_scopes(source, name, part, declarations):
         variable = hit['var']
         if variable not in declarations:
             continue
-        stepped = re.search(rf'\b{re.escape(variable)}\s*(?:\+\+|\+=\s*1\b|=\s*{re.escape(variable)}\s*\+\s*1\b)|\+\+\s*{re.escape(variable)}\b',
+        stepped = re.search(rf'\b{re.escape(variable)}\s*(?:\+\+|\+=\s*{NUMBER}\b|=\s*{re.escape(variable)}\s*\+\s*{NUMBER}\b)|\+\+\s*{re.escape(variable)}\b',
                             part.clean[hit.end():part.end])
         if not stepped:
             continue
