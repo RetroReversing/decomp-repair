@@ -82,10 +82,13 @@ def supported_methods(methods):
     # bounded storage reuse instead; never feed this pass invalid parents.
     # The audit also found uninitialized inserted reads, similar-type array
     # aliases without escape proofs, and arbitrary effect removal. Those passes
-    # stay disabled until independently guarded.
+    # stay disabled until independently guarded. The native conditional block
+    # picks its predicate from the whole function, so it can read a local
+    # before the path that initializes it.
     return [(method, weight) for method, weight in methods
             if method.__name__ not in {'perm_add_self_assignment','perm_remove_var',
-                                      'perm_refer_to_var','perm_alias_array','perm_remove_ast'}]
+                                      'perm_refer_to_var','perm_alias_array','perm_remove_ast',
+                                      'perm_var_cond_block'}]
 
 
 # ---------------------------------------------------------------- MSVC's words, and a C++ header read as C
