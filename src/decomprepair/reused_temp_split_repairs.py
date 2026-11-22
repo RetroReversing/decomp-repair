@@ -127,3 +127,51 @@ def variants(source, name):
             if len(out) >= LIMIT:
                 return out
     return out
+
+
+def guarded_scope_variants(source, name):
+    """Combine a safe lifetime split with a one-shot scope around its enclosing guard."""
+    result = []
+    for family, candidate in variants(source, name):
+        if family != FAMILY:
+            continue
+        part = view(candidate, name)
+        if not part or re.search(r'\b(?:goto|volatile|asm|__asm__)\b', part.body):
+            continue
+        # Restrict to generated split locals; the split itself is checked by
+        # variants' reaching-definition proof before this wrapper is offered.
+        for decl in locals_for(part):
+            split = re.fullmatch(r'([A-Za-z_]\w*)_b[1-9]\d*_*', decl['name'])
+            if not split or decl['name'] in source:
+                continue
+            first = re.search(rf'\b{re.escape(split[1])}\s*=(?!=)', part.body)
+            second = re.search(rf'\b{re.escape(decl["name"])}\s*=(?!=)', part.body)
+            if not first or not second:
+                continue
+            first_pos = part.opening + 1 + first.start()
+            second_pos = part.opening + 1 + second.start()
+            for guard in re.finditer(r'\bif\s*\(', part.clean[part.opening + 1:part.end]):
+                start = part.opening + 1 + guard.start()
+                prefix = part.clean[part.opening:start]
+                if prefix.count('{') - prefix.count('}') != 1:
+                    continue
+                line_start = part.clean.rfind('\n', part.opening, start) + 1
+                if part.clean[line_start:start].strip():
+                    continue
+                condition_end = close(part.clean, part.opening + guard.end(), '(', ')')
+                if not condition_end:
+                    continue
+                brace = re.match(r'\s*\{', part.clean[condition_end:])
+                if not brace:
+                    continue
+                opening = condition_end + brace.end() - 1
+                end = close(part.clean, opening, '{', '}')
+                if (not end or not opening < first_pos < second_pos < end
+                        or re.match(r'\s*else\b', part.clean[end:])
+                        or re.search(r'\b(?:break|continue|return)\b', part.clean[opening:end])):
+                    continue
+                indent = candidate[line_start:start]
+                wrapped = ('do {\n' + candidate[start:end] + '\n' + indent + '} while (0);')
+                result.append((FAMILY, candidate[:start] + wrapped + candidate[end:]))
+                break
+    return list(dict.fromkeys(result))[:8]
