@@ -27,9 +27,15 @@ _PATTERN = re.compile(
 
 def variants(source, name, header=""):
     span = find(source, name)
-    if (not span or re.search(r'\b(?:volatile|asm|__asm__)\b', source + '\n' + header)
+    if (not span or re.search(r'\b(?:volatile|asm|__asm__)\b', source)
             or re.search(r'^\s*#', source, re.M)):
         return []
+    # Unrelated volatile aliases in context.h do not make these ordinary reads volatile.
+    # Refuse any source using a name from a volatile declaration in the header.
+    for declaration in re.findall(r'\bvolatile\b[^;{}]*;', header):
+        names = re.findall(r'([A-Za-z_]\w*)\s*(?:\[[^]]*\])?\s*[,;]', declaration)
+        if any(re.search(rf'\b{re.escape(name)}\b', source) for name in names):
+            return []
     clean = _blank(source)
     opening = clean.find('{', span[0], span[1])
     end = close(clean, opening, '{', '}') if opening >= 0 else None
