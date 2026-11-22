@@ -27,7 +27,8 @@ hoisting the shift into it. Only the matching result is evidenced. A 154-instruc
 function matched this way, 475 -> 0, `gcc-2.7.2-kmc -G0 -mips3 -mgp32 -mfp32 -O2` (COMPILER_MATCHING_LEARNINGS.md).
 
 Three proposals: the `if` form with the pinned goto (the exact child), the `if` form alone, and the pinned goto alone
-for every backward `goto` that stands in a loop (a label defined earlier in the function). The step may be any
+for every backward `goto` that stands in a loop (a label defined earlier in the function). A join label other gotos also
+reach stays in place, before the copy. The step may be any
 constant (`V - 1`, `V + 0x10`) as long as both arms use the same one. A candidate for the exact
 judge, never a verdict. Only MIPS is proposed (the GCC delay-slot filler)."""
 import re
@@ -108,22 +109,24 @@ def _skip_joins(part):
         retry_close = _close(clean, retry_open)
         tail = re.compile(rf'\s*goto\s+(?P<l>{IDENT})\s*;\s*{re.escape(label)}\s*:\s*{re.escape(var)}\s*=\s*{re.escape(temp)}\s*;'
                           ).match(clean, retry_close) if retry_close else None
-        if not tail or len(re.findall(rf'\b{re.escape(label)}\b', clean[part.opening:part.end])) != 2:
+        uses = len(re.findall(rf'\b{re.escape(label)}\b', clean[part.opening:part.end])) if tail else 0
+        if uses < 2:
             continue
+        shared = uses > 2  # other gotos jump to the join too: the label stays where the join was
         # the retry label must be defined earlier: this is the backward goto that leaves the loop
         if not re.search(rf'(?m)(?:^|[;{{}}])\s*{re.escape(tail["l"])}\s*:', clean[part.opening:at]):
             continue
         pad = re.match(r'[ \t]*', source[source.rfind('\n', 0, at) + 1:at])[0]
         retry = _positive(source[retry_open + 1:retry_close - 1])
-        found.append((at, tail.end(), tail['l'], retry, current, var, temp, pad, step))
+        found.append((at, tail.end(), tail['l'], retry, current, var, temp, pad, step, label if shared else None))
     return found
 
 
 def _restructured(part):
     out = []
-    for at, end, label, retry, current, var, temp, pad, step in _skip_joins(part):
+    for at, end, label, retry, current, var, temp, pad, step, shared in _skip_joins(part):
         text = (f'if ({var} != {current})\n{pad}{{\n{pad}  if ({retry}) {{ do {{ goto {label}; }} while (0); }}\n{pad}}}\n'
-                f'{pad}{temp} = {var} {step};\n{pad}{var} = {temp};')
+                f'{pad}{temp} = {var} {step};\n{pad}' + (f'{shared}:\n{pad}' if shared else '') + f'{var} = {temp};')
         plain = text.replace(f'{{ do {{ goto {label}; }} while (0); }}', f'goto {label};')
         out.append((edit(part.source, [(at, end, text)]), edit(part.source, [(at, end, plain)])))
     return out
