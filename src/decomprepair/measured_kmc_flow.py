@@ -1122,6 +1122,67 @@ def _delay_stack_formal_copy(source, name, rows):
                          (at + call.end(), at + call.end(), original)])
 
 
+def _split_saved_flag_mask(source, name, rows):
+    """Keep distinct saved-register lifetimes for two tests of the same flag word."""
+    target = [(mark, left) for mark, left, _ in rows if left]
+    witness = None
+    for index, (mark, insn) in enumerate(target[:64]):
+        if index < 4 or mark not in ('<', 'o'):
+            continue
+        copy = re.fullmatch(r'move \$(s[0-7]), \$(s[0-7])', insn)
+        guard = re.fullmatch(rf'jal ({IDENT})', target[index - 4][1])
+        if (not copy or not guard or copy[1] == copy[2]
+                or not re.fullmatch(rf'beqz \$v0, {NUMBER}', target[index - 1][1])
+                or not re.fullmatch(r'sll \$v0, \$v0, (?:24|0x18)', target[index - 2][1])):
+            continue
+        masks = []
+        for register in (copy[2], copy[1]):
+            hits = [(i, integer(m[1])) for i, (_, op) in enumerate(target[index + 1:index + 64])
+                    if (m := re.fullmatch(rf'andi \$v[01], \${register}, ({NUMBER})', op))]
+            if len(hits) != 1 or hits[0][1] not in (1, 2, 4, 8):
+                break
+            masks.append(hits[0])
+        if len(masks) == 2 and masks[0][0] < masks[1][0] and masks[0][1] != masks[1][1]:
+            if witness is not None:
+                return None
+            witness = guard[1], masks[0][1], masks[1][1]
+    if witness is None or not (part := view(source, name)):
+        return None
+    if re.search(r'\bgoto\b|(?m:^[ \t]*[A-Za-z_]\w*\s*:)', part.body):
+        return None
+    callee, first, second = witness
+    clean, opening, end = part.clean, part.opening, part.end
+    shape = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<name>{IDENT})\s*=\s*{IDENT}\s*;\s*\n'
+        rf'[ \t]*if\s*\(\s*\(\s*{re.escape(callee)}\s*\([^();{{}}]*\)\s*<<\s*(?:24|0x18)\s*\)'
+        rf'\s*!=\s*0\s*\)\s*{{[ \t]*\n(?P<inner>[ \t]*){IDENT}\s*='
+    )
+    hit = shape.search(clean, opening + 1, end)
+    if not hit or clean[opening + 1:hit.start()].count('{') != clean[opening + 1:hit.start()].count('}'):
+        return None
+    local = hit['name']
+    declaration = re.search(rf'(?m)^(?P<indent>[ \t]*)(?:u32|unsigned\s+int)\s+{local}\s*;[ \t]*\n',
+                            clean[opening + 1:hit.start()])
+    if not declaration or len(re.findall(rf'(?<![\w.>]){local}\b', part.body)) != 4:
+        return None
+    entry = hit.start('inner')
+    closing = close(clean, clean.rfind('{', hit.start(), entry), '{', '}')
+    if not closing:
+        return None
+    tests = list(re.finditer(rf'if\s*\(\s*(?P<local>{local})\s*&\s*(?P<mask>{NUMBER})\s*\)',
+                             clean[entry:closing]))
+    if [integer(match['mask']) for match in tests] != [first, second]:
+        return None
+    split = '__repair_mask_flags'
+    if re.search(rf'\b{split}\b', clean):
+        return None
+    start, stop = tests[1].span('local')
+    return edit(source, [(opening + 1 + declaration.end(), opening + 1 + declaration.end(),
+                          f'{declaration["indent"]}u32 {split};\n'),
+                         (entry, entry, f'{hit["inner"]}do {{ {split} = {local}; }} while (0);\n'),
+                         (entry + start, entry + stop, split)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -1165,6 +1226,8 @@ def variants(source, name, header, rows):
         return [('measured_masked_lookup_switch', candidate)]
     if candidate := _stage_volatile_float_pair(source, name, header, rows):
         return [('measured_volatile_float_pair', candidate)]
+    if candidate := _split_saved_flag_mask(source, name, rows):
+        return [('measured_split_saved_flag_mask', candidate)]
     if candidate := _delay_stack_formal_copy(source, name, rows):
         return [('measured_delay_stack_formal_copy', candidate)]
     if candidate := _parameter_store_widths(source, name, header, rows):

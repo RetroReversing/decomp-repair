@@ -735,3 +735,30 @@ def test_copy_stacked_formal_after_first_call():
     assert not variants(source.replace('unsigned int bits', 'volatile unsigned int bits'), 'f', '', rows)
     assert not variants(source.replace('setup(a, b)', 'setup(&options, b)'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:4] + measured(('move $s6, $v0',)) + rows[4:])
+
+
+def test_split_flag_word_when_target_uses_both_saved_registers():
+    source = """int f(int options) {
+    unsigned int flags;
+    int result;
+    flags = options;
+    if ((check() << 24) != 0) {
+        result = make();
+        if (flags & 2) { result++; }
+        if (flags & 1) { result--; }
+        return result;
+    }
+    return 0;
+}
+"""
+    rows = measured(('jal check', 'nop', 'sll $v0, $v0, 24', 'beqz $v0, 80'))
+    rows += [('<', 'move $s2, $s6', ''),
+             ('r', 'andi $v0, $s6, 2', 'andi $v0, $s3, 2'),
+             ('r', 'andi $v0, $s2, 1', 'andi $v0, $s3, 1')]
+    candidate = source.replace('    unsigned int flags;\n', '    unsigned int flags;\n    u32 __repair_mask_flags;\n')
+    candidate = candidate.replace('        result = make();', '        do { __repair_mask_flags = flags; } while (0);\n'
+                                  '        result = make();').replace('if (flags & 1)', 'if (__repair_mask_flags & 1)')
+    assert variants(source, 'f', '', rows) == [('measured_split_saved_flag_mask', candidate)]
+    assert not variants(source, 'f', '', rows[:-1])
+    assert not variants(source.replace('result = make();', 'result = use(&flags);'), 'f', '', rows)
+    assert not variants(source.replace('return result;', 'goto exit;'), 'f', '', rows)
