@@ -106,6 +106,15 @@ uv run ruff check src tests
 
 Nothing in `src/decomprepair` may import decompdecomp (`decompnet`); `tests/test_library.py` checks this.
 
+## Releases
+
+Merge changes to `main` without bumping the version or tagging. The `release` workflow (`.github/workflows/release.yml`,
+rules in `scripts/release.py`) runs on every merge to `main` and every half hour: when `main` has changes since the last
+tag it runs the checks, bumps the patch version in `pyproject.toml` and `uv.lock`, commits
+`Release decomprepair X.Y.Z: ...`, pushes the commit and tag together and creates the GitHub release. To release at
+once: `gh workflow run release -R RetroReversing/decomp-repair`. decompdecomp moves its pin to the new tag by its own
+workflow. A version in `pyproject.toml` above the last tag is released as written.
+
 ## License
 
 AGPL-3.0-only (`LICENSE`), like decompdecomp, which this code comes from. Some readers began in decomp.wtf
