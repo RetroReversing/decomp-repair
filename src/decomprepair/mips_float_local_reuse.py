@@ -8,15 +8,20 @@ entry to its own lifetime.
 
 import re
 
+from .allocator_call_guards import dominators
+from .call_lifetime_repairs import block_path
 from .csource import _blank, find
-from .integer_repair_support import IDENT, edit
+from .integer_repair_support import IDENT, edit, view
+from .local_flow import Flow
 from .mips_returns import instructions
+from .operand_lifetime_repairs import _escaped, _typed_locals
 from .pattern_repairs import close
 
 FAMILY = 'mips_float_local_reuse'
 ACCUMULATOR_FAMILY = 'mips_float_accumulator_reuse'
 ACROSS_CALL_FAMILY = 'saved_float_across_call'
-FAMILIES = (FAMILY, ACCUMULATOR_FAMILY, ACROSS_CALL_FAMILY)
+CLAMP_FAMILY = 'split_float_clamp_lifetime'
+FAMILIES = (FAMILY, ACCUMULATOR_FAMILY, ACROSS_CALL_FAMILY, CLAMP_FAMILY)
 _DECLARATION = re.compile(
     r'(?m)^[ \t]*(?P<type>f32|float)[ \t]+'
     r'(?P<name>(?:temp|var)_(?:fs(?P<reg>[0-5])|s[0-7])(?:_\d+)?)[ \t]*;[ \t]*\n')
@@ -164,6 +169,75 @@ def _across_call_reuse(source, clean, lifetimes, asm):
     return choices[:6]
 
 
+
+def clamp_lifetimes(source, name, asm):
+    """Split a divided and clamped value from a local reused on another path."""
+    if 'div.s' not in asm or asm.count('c.lt.s') < 2:
+        return []
+    part = view(source, name)
+    if not part or re.search(r'\bvolatile\b', part.body):
+        return []
+    typed = _typed_locals(part, r'(?:f32|float)')
+    pattern = re.compile(
+        rf'\bif\s*\(\s*(?P<name>{IDENT})\s*<\s*-(?P<limit>\d+\.\d+[fF])\s*\)'
+        rf'\s*(?P=name)\s*=\s*-(?P=limit)\s*;\s*else\s+if\s*\('
+        rf'\s*(?P=name)\s*>\s*(?P=limit)\s*\)\s*(?P=name)\s*=\s*(?P=limit)\s*;')
+    out = []
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end - 1):
+        var = hit['name']
+        word = rf'\b{var}\b'
+        if var not in typed or _escaped(part.body, var):
+            continue
+        if re.search(rf'(?m)^\s*#\s*define[^\n]*{word}', part.clean):
+            continue
+        kind, at = typed[var]
+        path = block_path(part, hit.start())
+        if len(path) < 2 or block_path(part, at) != [part.opening]:
+            continue
+        opening = path[-1]
+        end = close(part.clean, opening, '{', '}')
+        if not end or not re.search(word, part.clean[end:part.end]):
+            continue
+        initialize = re.compile(rf'\s*{word}\s*=(?!=)(?P<expr>[^;{{}}]+);').match(part.clean, opening + 1)
+        if not initialize or initialize.end() > hit.start() or '/' not in initialize['expr'] or re.search(word, initialize['expr']):
+            continue
+        decl_end = part.clean.find(';', at)
+        decl = re.compile(rf'(?P<name>{word})').search(part.clean, at, decl_end)
+        if not decl:
+            continue
+        try:
+            flow = Flow(part, [decl])
+        except (ValueError, RecursionError):
+            continue
+        members = {i for i, node in enumerate(flow.nodes) if opening < node.start < end}
+        entry = flow.at(initialize.end() - 1)
+        node_ids = {id(node): i for i, node in enumerate(flow.nodes)}
+        if not entry or var not in entry.defines:
+            continue
+        dom = dominators(flow)
+        entry_index = node_ids[id(entry)]
+        # No use bypasses the local initializer, and the outgoing paths
+        # cannot read the old local without another definition.
+        if any(i not in dom or entry_index not in dom[i] for i in members if var in flow.nodes[i].uses):
+            continue
+        exits = {j for i in members for j in flow.nodes[i].successors - members}
+        if any(var in flow.nodes[i].live for i in exits):
+            continue
+        replacement = '__repair_clamped_float'
+        while re.search(rf'\b{replacement}\b', source):
+            replacement += '_'
+        reads = list(re.compile(word).finditer(part.clean, opening + 1, end - 1))
+        if any(re.search(r'(?:\.|->)\s*$', part.clean[opening + 1:ref.start()]) for ref in reads):
+            continue
+        changes = [(ref.start(), ref.end(), replacement) for ref in reads]
+        changes[0] = (reads[0].start(), reads[0].end(), f'{kind} {replacement}')
+        # The declaration in the original function still owns later lifetimes.
+        out.append((CLAMP_FAMILY, edit(source, changes)))
+        if len(out) == 4:
+            break
+    return out
+
+
 def variants(source, name, asm=''):
     span = find(source, name)
     if not span:
@@ -227,4 +301,5 @@ def variants(source, name, asm=''):
     accumulators = _accumulator_reuses(source, clean, opening, end, scopes, declarations)
     across_calls = _across_call_reuse(source, clean, lifetimes, asm)
     options = dict.fromkeys(label_choices + choices + following_choices)
-    return across_calls + accumulators + [(FAMILY, text) for text in options if text != source][:12]
+    return clamp_lifetimes(source, name, asm) + across_calls + accumulators + [
+        (FAMILY, text) for text in options if text != source][:12]
