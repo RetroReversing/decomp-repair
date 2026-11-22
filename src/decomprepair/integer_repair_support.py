@@ -29,7 +29,7 @@ def view(source, name):
     return View(part.source, part.clean, part.opening, part.end) if part else None
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=8)
 def _view(source, name):
     span = find(source, name)
     if not span:

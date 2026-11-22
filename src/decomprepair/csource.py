@@ -12,7 +12,7 @@ from functools import lru_cache
 _COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=8)  # (one entry was thrown away by every alternation between a header and a source)
 def _blank(text: str) -> str:
     """Same length, with comments and strings blanked, so braces inside them don't count."""
     return _COMMENT_OR_STRING.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), text)
@@ -29,7 +29,7 @@ def is_stub(code: str) -> bool:
     return bool(re.match(r"\s*(?:#\s*pragma\s+)?(?:INCLUDE_ASM|GLOBAL_ASM|INCLUDE_RODATA_FN)\s*\(", code))
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=8)
 def _code_only(text: str) -> str:
     clean = _blank(text)
     # Preprocessor logical lines can contain braces/loops that are not C function scopes.
