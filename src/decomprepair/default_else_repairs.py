@@ -10,15 +10,23 @@ an `else` block whose only insn the delay slot of the first test had taken. The 
 
 Both directions: the default of a local moved into an `else` that the `if` doesn't have yet (the body must assign the
 local before reading it), and a lone `else { x = default; }` moved up in front of its `if`.
+
+`default_into_then` is the same move with the test inverted, so the default is the then arm and the body the `else`:
+`x = 0xA0; if (c != 0xFF) { x = y; }` -> `if (c == 0xFF) { x = 0xA0; } else { x = y; }`. The two arm orders lay the
+branch out differently (which block is out of line): in a KMC GCC 2.7.2 N64 function a halfword's value read from an
+`if (m != 0xFF)` guard went 95 -> 80 written with the default as the then arm, and 15 -> 0 once the rest of the function
+was in place (the arm order of `default_into_else` alone changed nothing).
 """
 import re
 
 from .integer_repair_support import view
 from .line_scan import apply, block_end, block_open, block_start, lines, mentions, reads_first
+from .pattern_repairs import negate
 
 FAMILY = 'default_into_else'
 INVERSE = 'else_into_default'
-FAMILIES = (FAMILY, INVERSE)
+THEN = 'default_into_then'
+FAMILIES = (FAMILY, INVERSE, THEN)
 _DEFAULT = re.compile(r'(?P<x>[A-Za-z_]\w*) = (?P<d>-?(?:0[xX][0-9A-Fa-f]+|\d+)|[A-Za-z_]\w*);')
 
 
@@ -42,6 +50,13 @@ def variants(source, name):
             indent = body[i + 1].indent
             arm = f'{indent}else\n{indent}{{\n{indent}  {line.stripped}\n{indent}}}\n'
             out.append((FAMILY, apply(source, [(line.start, line.end, ''), (body[closing].end, body[closing].end, arm)])))
+            test = re.fullmatch(r'if \((.*)\)', body[i + 1].stripped)
+            inverse = negate(test[1]) if test else None
+            if inverse:
+                text = ''.join(l.source + '\n' for l in body[opening + 1:closing])
+                whole = (f'{indent}if ({inverse})\n{indent}{{\n{indent}  {line.stripped}\n{indent}}}\n'
+                         f'{indent}else\n{indent}{{\n{text}{indent}}}\n')
+                out.append((THEN, apply(source, [(line.start, line.end, ''), (body[i + 1].start, body[closing].end, whole)])))
         if line.stripped == 'else':
             opening = block_open(body, i)
             closing = block_end(body, opening) if opening is not None else None
