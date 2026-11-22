@@ -112,7 +112,7 @@ def _pointer_edits(part, read, macros):
     return None
 
 
-def _zero_phase(part, word, param):
+def _zero_phase(part, word, param, *, shared=False):
     owner, bits, number = word['owner'], word['word'], word['number']
     clean = part.clean
     if clean[part.opening:word.start()].rstrip()[-1:] not in ('{', '}', ';'):
@@ -126,7 +126,8 @@ def _zero_phase(part, word, param):
     if len(matches) != 1:
         return None
     init = matches[0]
-    opened = re.match(rf'\s*(?:{IDENT}(?:\s*\.\s*{IDENT})?\s*=\s*0\.0[fF]\s*;\s*){{0,3}}\{{',
+    reset = rf'(?:0\.0[fF]|{owner}\s*\.\s*{number})' if shared else r'0\.0[fF]'
+    opened = re.match(rf'\s*(?:{IDENT}(?:\s*\.\s*{IDENT})?\s*=\s*{reset}\s*;\s*){{0,3}}\{{',
                       clean[init.end():part.end])
     if not opened:
         return None
@@ -148,10 +149,15 @@ def _zero_phase(part, word, param):
     for use in re.compile(rf'\b{owner}\b').finditer(clean, part.opening + 1, part.end):
         if word.start() <= use.start() < word.end() or init.start() <= use.start() < init.end():
             continue
+        if shared and init.end() <= use.start() < opening:
+            continue
         if not opening < use.start() < stop:
             return None
         suffix = clean[use.end():stop]
         if re.match(rf'\s*\.\s*{bits}\s*=\s*0\s*;', suffix):
+            continue
+        if (shared and re.match(rf'\s*\.\s*{bits}\b(?=\s*\))(?!\s*(?:\)\s*)*{_MUTATION})', suffix)
+                and re.search(r'\(\s*(?:s32|int)\s*\)\s*$', clean[opening:use.start()])):
             continue
         if (not re.match(rf'\s*\.\s*{number}\b(?!\s*(?:\)\s*)*{_MUTATION})', suffix)
                 or re.search(r'(?:\+\+|--)\s*\(*\s*$', clean[opening:use.start()])):
@@ -159,11 +165,7 @@ def _zero_phase(part, word, param):
     return init.end(), opening, stop
 
 
-def _zero_calls(part, context, word, param, frame, rows, macros):
-    phase = _zero_phase(part, word, param)
-    if not phase or macros & {word['owner'], word['type'], word['word'], word['float'], word['number']}:
-        return []
-    init_end, opening, stop = phase
+def _call_moves(rows, target_move, candidate_move):
     matched = Counter()
     for i, (_, target, candidate) in enumerate(rows[:-1]):
         if target != candidate or not (call := _CALL.fullmatch(target)):
@@ -173,8 +175,17 @@ def _zero_calls(part, context, word, param, frame, rows, macros):
             if _CALL.fullmatch(row[1]):
                 break
             before.append(row)
-        if any(row[1:] == ('move $a1, $zero',) * 2 for row in (*before, rows[i + 1])):
+        if any(row[1:] == (target_move, candidate_move) for row in (*before, rows[i + 1])):
             matched[call[1]] += 1
+    return matched
+
+
+def _zero_calls(part, context, word, param, frame, rows, macros):
+    phase = _zero_phase(part, word, param)
+    if not phase or macros & {word['owner'], word['type'], word['word'], word['float'], word['number']}:
+        return []
+    init_end, opening, stop = phase
+    matched = _call_moves(rows, 'move $a1, $zero', 'move $a1, $zero')
     by_call = {}
     for hit in re.finditer(rf'(?m)^[ \t]*(?P<callee>{IDENT})\(\s*{param}\s*,\s*(?P<zero>0)\s*\)\s*;',
                            part.clean[opening:stop]):
