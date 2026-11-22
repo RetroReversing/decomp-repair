@@ -32,3 +32,20 @@ def test_requires_bounded_unmodified_index_and_target():
     assert not variants(SOURCE.replace('second = index', 'escape(&index); second = index'), 'f', '', ROWS)
     assert not variants(SOURCE.replace('u8 arg', 's32 arg'), 'f', '', ROWS)
     assert not variants(SOURCE, 'f', '', ROWS[:-1])
+
+
+def test_reuses_masked_copy_without_changing_its_value():
+    candidates = dict(variants(SOURCE, 'f', '', ROWS))
+    fixed = candidates['measured_masked_byte_index_reuse']
+    assert 'u8 index;' in fixed
+    assert 's32 second;' not in fixed
+    assert 'second = index' not in fixed
+    assert 'table[(index & 0xFF)]' in fixed
+
+
+def test_reuse_requires_unmodified_unescaped_copy():
+    for source in (SOURCE.replace('result = table[second]', 'second++; result = table[second]'),
+                   SOURCE.replace('result = table[second]', 'escape(&second); result = table[second]'),
+                   SOURCE.replace('result = 0xFF;', 'result = second;')):
+        assert 'measured_masked_byte_index_reuse' not in dict(variants(source, 'f', '', ROWS))
+    assert 'measured_masked_byte_index_reuse' not in dict(variants(SOURCE, 'f', '#define second x', ROWS))
