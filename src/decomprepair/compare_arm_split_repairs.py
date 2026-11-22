@@ -129,6 +129,8 @@ def masked_copy_variants(source, name):
             if not tail:
                 continue
             value = tail[1]
+            if len(re.findall(rf'\bu8\s+{value}\s*;', part.body)) != 1:
+                continue
             bodies = part.clean[a + 1:b - 1] + '\n' + part.clean[c + 1:d - 1]
             if re.search(r'\b(?:if|else|for|while|do|switch|return|break|continue)\b|[?:]', bodies):
                 continue
@@ -145,7 +147,12 @@ def masked_copy_variants(source, name):
             if re.search(rf'\b{label}\b', source):
                 continue
             check = f'\nif (!{helper[1]}({key}, {value})) goto {label};\n'
+            reverse = f'\nif (!{helper[1]}({value}, {key})) goto {label};\n'
+            # Both arguments are bytes, so reversing this equality is equivalent. It can change
+            # the operand order after GCC merges the separately allocated branch tails.
             return [(FAMILY, edit(source, [(decl_start, decl_start + 3, 'u8'),
-                                         (b - 1, b - 1, check), (d - 1, d - 1, check),
-                                         (d, d + tail.end(), f'\nreturn 1; {label}:;')]))]
+                                         (b - 1, b - 1, check), (d - 1, d - 1, second),
+                                         (d, d + tail.end(), f'\nreturn 1; {label}:;')]))
+                    for second in (check, reverse)]
+
     return []
