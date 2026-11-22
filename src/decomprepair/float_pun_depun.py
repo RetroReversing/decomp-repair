@@ -55,7 +55,7 @@ def _arrays(cbody, name, integer, skip):
 
     `skip` holds the spans of the declarations. Allowed: `.float` anywhere, `arr[i] = x.int;`, and the whole pun
     assigned from a pun-typed load or another pun local."""
-    flo_or_int = re.compile(rf'\.(\w+)\b')
+    flo_or_int = re.compile(r'\.(\w+)\b')
     arrays, stores = set(), 0
     for use in re.finditer(rf'(?<![\w.>]){name}\b', cbody):
         if any(a <= use.start() < b for a, b in skip):
