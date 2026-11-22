@@ -106,3 +106,40 @@ def test_only_mips_is_proposed():
 
 def test_a_missing_function_proposes_nothing():
     assert variants(BEFORE, 'g', 'mips') == []
+
+
+def test_signed_zero_guard_and_masked_counter_are_repaired_together():
+    from decomprepair.halfword_countdown_shapes import SIGNED_ENTRY
+
+    source = """extern s32 count;
+void f(void) {
+    s32 timer;
+    s32 index;
+    s32 *bound;
+    if (timer) { tick(); } else { tick(); }
+    timer = next();
+    if (timer == 0) {
+        start();
+        index = 0;
+        bound = &count;
+        if (((u32) timer) < ((u32) (*bound))) {
+            do {
+                visit(index & 0xff);
+                index++;
+            } while ((index & 0xffff) < *bound);
+        }
+    }
+}
+"""
+    result = dict(variants(source, 'f', 'mips'))[SIGNED_ENTRY]
+    assert 'u16 index;' in result
+    assert 'if (timer < *bound)' in result
+    assert '    tick();' in result
+    assert 'if (timer)' not in result
+    for before, after in (
+        ('        start();', '        timer = next();'),
+        ('visit(index & 0xff);', 'visit(index);'),
+        ('extern s32 count;', 'extern u32 count;'),
+    ):
+        assert SIGNED_ENTRY not in dict(variants(source.replace(before, after), 'f', 'mips'))
+    assert variants(source, 'f', 'arm') == []
