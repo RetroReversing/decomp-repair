@@ -64,3 +64,44 @@ def test_a_misaligned_offset_or_a_far_store_is_not_offered():
 
 def test_a_function_without_raw_stores_has_nothing():
     assert m.variants('extern s32 D_A;\nvoid f(void)\n{\n  D_A = 1;\n}\n', 'f') == []
+
+
+MEMBER_SOURCE = '''typedef union { struct { u32 w0; u32 w1; } words; long long pad; } Gfx;
+extern s32 D_MODE;
+extern s32 D_BORDER;
+extern Gfx *D_CURSOR;
+void draw(s32 arg0)
+{
+  Gfx *gp;
+  s32 mode;
+  gp = D_CURSOR;
+  gp[0].words.w1 = 0xFFFCFFFC;
+  gp[1].words.w0 = arg0;
+  mode = D_MODE;
+  if (D_BORDER)
+  {
+    func(mode);
+  }
+}
+'''
+
+
+def test_stores_that_are_members_already_offer_the_global_alone_as_a_record():
+    # 1195 -> 390 on a 343-instruction display-list function: the read of the mode word could no longer be hoisted
+    # above the member stores (exact-judge replay in decompdecomp's tests needs the compiler).
+    texts = _texts(MEMBER_SOURCE)
+    one = next(t for t in texts if 'mode = D_MODE.value;' in t)
+    assert 'extern __repair_global_s32 D_MODE;' in one
+    assert 'gp[0].words.w1 = 0xFFFCFFFC;' in one  # the stores are left as written
+    assert '__repair_member_' not in one
+
+
+def test_a_second_global_reuses_the_record_type_an_earlier_child_declared():
+    first = next(t for t in _texts(MEMBER_SOURCE) if 'D_MODE.value' in t)
+    both = [t for _, t in m.variants(first, 'draw') if 'D_BORDER.value' in t]
+    assert both
+    assert both[0].count('} __repair_global_s32;') == 1
+
+
+def test_no_member_or_raw_store_means_no_variant():
+    assert not _texts(MEMBER_SOURCE.replace('gp[0].words.w1 = 0xFFFCFFFC;', 'x = 1;').replace('gp[1].words.w0 = arg0;', 'y = 2;'))
