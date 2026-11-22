@@ -266,7 +266,7 @@ def store_tails(source, name, header=''):
 
 
 def scalar_tails(source, name, header=''):
-    """Sink identical final scalar products from both arms, optionally past one independent literal store."""
+    """Sink shared scalar products or resets that can move past an independent local assignment."""
     from . import pointer_pair_repairs
     from .integer_repair_support import locals_for
     part, _, macros = pointer_pair_repairs.context(source, name, header)
@@ -276,6 +276,9 @@ def scalar_tails(source, name, header=''):
                if part.clean[part.opening+1:decl.start()].count('{')
                == part.clean[part.opening+1:decl.start()].count('}')}
     out = []
+    globals_ = set(re.findall(rf'\bextern\s+(?:s8|u8|s16|u16|s32|u32|int)\s+({IDENT})\s*;',
+                              part.clean[:part.opening] + '\n' + header))
+    reset = re.compile(rf'(?P<lhs>{IDENT})\s*=\s*0\s*;(?=\s*(?P<rhs>{IDENT})\s*=\s*{NUMBER}\s*;\s*$)')
     tail = re.compile(rf'(?P<lhs>{IDENT})\s*=\s*(?P<rhs>{IDENT})\s*\*\s*(?P<n>{NUMBER})\s*;\s*$')
     for hit in re.finditer(r'\bif\s*\(', part.body):
         prefix = part.body[:hit.start()].rstrip()
@@ -296,13 +299,21 @@ def scalar_tails(source, name, header=''):
             continue
         left, right = part.clean[a+1:b-1], part.clean[c+1:d-1]
         matches = [tail.search(text) for text in (left, right)]
-        if not all(matches):
-            continue
+        literal_reset = not all(matches)
+        if literal_reset:
+            matches = [reset.search(text) for text in (left, right)]
+            if not all(matches):
+                continue
         one, two = matches
         if one.groupdict() != two.groupdict():
             continue
         names = {one['lhs'], one['rhs']}
-        if not names <= locals_ or names & macros.keys():
+        if literal_reset:
+            if one['lhs'] not in globals_ - locals_ or one['rhs'] not in locals_:
+                continue
+        elif not names <= locals_:
+            continue
+        if names & macros.keys():
             continue
         # Flat scalar arms only: no incoming labels, transfers, calls, nested
         # scopes or declarations that could change lookup at the successor.
