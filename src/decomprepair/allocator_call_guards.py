@@ -44,29 +44,33 @@ def declarations(part):
 
 
 def dominators(flow):
-    """Unknown/unreachable blocks cannot prove an initialization, including forward-jump entries."""
+    """Unknown/unreachable blocks cannot prove an initialization, including forward-jump entries.
+
+    The greatest fixpoint, as bit sets over the blocks in reverse postorder (a pass or two instead of one set
+    intersection per block per pass: a live Deep Permuter run spent 394 CPU seconds here), reused while the edges
+    stay the same since a dozen repair families ask for the same function. The caller gets sets of its own."""
     if flow.entry is None:
         return {}
-    reached, pending = set(), [flow.entry]
-    while pending:
-        index = pending.pop()
-        if index not in reached:
-            reached.add(index)
-            pending.extend(flow.nodes[index].successors)
-    parents = {index: set() for index in reached}
-    for index in reached:
-        for child in flow.nodes[index].successors & reached:
-            parents[child].add(index)
-    result = {index: ({index} if index == flow.entry else set(reached)) for index in reached}
-    changed = True
-    while changed:
-        changed = False
-        for index in reached - {flow.entry}:
-            value = {index} | set.intersection(*(result[parent] for parent in parents[index]))
-            if value != result[index]:
-                result[index] = value
-                changed = True
-    return result
+    shape = (flow.entry, tuple(tuple(sorted(node.successors)) for node in flow.nodes))
+    held = flow.__dict__.get('_dominators')
+    if held is None or held[0] != shape:
+        order, predecessors = flow.reachability()
+        position = {index: bit for bit, index in enumerate(order)}
+        everything = (1 << len(order)) - 1
+        masks = {index: (1 << position[index]) if index == flow.entry else everything for index in order}
+        changed = True
+        while changed:
+            changed = False
+            for index in order[1:]:
+                value = everything
+                for parent in predecessors[index]:
+                    value &= masks[parent]
+                value |= 1 << position[index]
+                if value != masks[index]:
+                    masks[index], changed = value, True
+        held = flow.__dict__['_dominators'] = (shape, {index: frozenset(order[bit] for bit in range(len(order)) if mask >> bit & 1)
+                                                      for index, mask in masks.items()})
+    return {index: set(members) for index, members in held[1].items()}
 
 
 def variants(source, name, header=''):

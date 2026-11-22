@@ -50,6 +50,38 @@ class Flow:
                     node.live = live
                     changed = True
 
+    def reachability(self):
+        """(blocks reachable from the entry in reverse postorder, their predecessors), reused until an edge changes.
+
+        Some repairs cut a flow's edges in place, so the graph is checked on every call (a sort of the edges, far
+        cheaper than the dominator and initialization passes that ask for it a dozen times per function)."""
+        shape = (self.entry, tuple(tuple(sorted(node.successors)) for node in self.nodes))
+        held = self.__dict__.get('_reachability')
+        if held is not None and held[0] == shape:
+            return held[1]
+        order, seen = [], set()
+        if self.entry is not None:
+            seen.add(self.entry)
+            stack = [(self.entry, iter(sorted(self.nodes[self.entry].successors)))]
+            while stack:
+                index, children = stack[-1]
+                for child in children:
+                    if child not in seen:
+                        seen.add(child)
+                        stack.append((child, iter(sorted(self.nodes[child].successors))))
+                        break
+                else:
+                    order.append(index)
+                    stack.pop()
+            order.reverse()
+        predecessors = {index: [] for index in order}
+        for index in order:
+            for child in sorted(self.nodes[index].successors):
+                predecessors[child].append(index)
+        result = (order, predecessors)
+        self.__dict__['_reachability'] = (shape, result)
+        return result
+
     def node(self, start, end, successors=()):
         """Only a plain scalar assignment kills an incoming value; unknown updates stay reads."""
         if len(self.nodes) >= MAX_NODES:
