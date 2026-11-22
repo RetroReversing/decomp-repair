@@ -83,7 +83,7 @@ _CASE_SOURCE = _shape('''
 
 def variants(source, name, header, rows, *, resolve=None, flags=()):
     if len(rows) == 29:
-        return _loop_pointer_table(source, name, rows, resolve)
+        return _loop_pointer_table(source, name, rows, resolve, header)
     if len(rows) not in (8, 10, 11, 13, 14):
         return []
     changes = [(left, right) for mark, left, right in rows if mark != ' ']
@@ -210,7 +210,71 @@ def _case_byte(part, name, header, _resolve, evidence):
     return edit(part.source, [(*signature.span('type'), 'char'), (part.opening + 1, part.end - 1, fixed)])
 
 
-def _loop_pointer_table(source, name, rows, resolve):
+_POINTER_SEARCH_LOOP = {
+    op: _shape("""
+    s32 @test;
+    s32 @index;
+    s32 @found;
+    void *@entry;
+    @index = 0;
+    @found = 0;
+    do {
+        @entry = *(((@index & 0xFFFF) * 4) + ((char *)&@base + @offset));
+        if ((@entry != NULL) && (M2C_FIELD(@entry, s32 *, 4) == @arg)) { @found = 1; }
+        @index += 1;
+        @test = @found & 0xFF;
+    } while ((@test == 0) & ((u32) (@index & 0xFFFF) < 0x800U));
+    if (@test != 0) {
+        M2C_FIELD(@entry, u8 *, 2) = (u8) (M2C_FIELD(@entry, u8 *, 2) OP 1);
+    }
+    return M2C_FIELD(@entry, u8 *, 2);
+    """.replace('OP', op), numbers=('offset',)) for op in ('+', '-')
+}
+
+
+def _pointer_search_loop(part, name, header, target, load):
+    # The halfword index cannot wrap before the bounded search finishes.
+    body = ' '.join(part.body.split())
+    for op, pattern in _POINTER_SEARCH_LOOP.items():
+        if m := pattern.fullmatch(body):
+            break
+    else:
+        return None
+    if any(m[k] != load[k] for k in ('base', 'index', 'offset')) or m['entry'] != load['result']:
+        return None
+    if not re.search(rf'\bu8\s+{re.escape(name)}\s*\(\s*s32\s+{m["arg"]}\s*\)\s*$', part.clean[:part.opening]):
+        return None
+    names = ('test', 'index', 'found', 'entry', 'base', 'arg')
+    if len({m[k] for k in names}) != len(names):
+        return None
+    macros = set(re.findall(r'(?m)^\s*#\s*define\s+(' + IDENT + r')\b', part.source + '\n' + header))
+    if macros.intersection(m[k] for k in names):
+        return None
+    original = part.source[part.opening + 1:part.end - 1]
+    if any(mark in original for mark in ('/*', '//', '#')):
+        return None
+    if 'sltiu $v0, $v0, 2048' not in target or f'addiu $v0, $v0, {1 if op == "+" else -1}' not in target:
+        return None
+    body = f"""
+    void *{m['entry']};
+    u16 {m['index']};
+    s32 {m['found']};
+    {m['found']} = 0;
+    {m['index']} = 0;
+    do {{
+        {m['entry']} = *(void **)((char *)&{m['base']} + {m['offset']} + {m['index']} * 4);
+        if ({m['entry']} != NULL && M2C_FIELD({m['entry']}, s32 *, 4) == {m['arg']})
+            {m['found']} = 1;
+        {m['index']} += 1;
+    }} while (({m['found']} & 0xFF) == 0 && {m['index']} < 0x800);
+    if (({m['found']} & 0xFF) != 0)
+        M2C_FIELD({m['entry']}, u8 *, 2) = (u8) (M2C_FIELD({m['entry']}, u8 *, 2) {op} 1);
+    return M2C_FIELD({m['entry']}, u8 *, 2);
+"""
+    return edit(part.source, [(part.opening + 1, part.end - 1, body)])
+
+
+def _loop_pointer_table(source, name, rows, resolve, header):
     """Recover a word-sized table entry in a masked search loop."""
     if not resolve:
         return []
@@ -243,4 +307,7 @@ def _loop_pointer_table(source, name, rows, resolve):
     if base is None or base + integer(load['offset']) != resolve(evidence['table']):
         return []
     pos = part.opening + 1 + load.end('star')
-    return [('measured_masked_pointer_search', edit(source, [(pos, pos, '(void **)')]))]
+    result = [('measured_masked_pointer_search', edit(source, [(pos, pos, '(void **)')]))]
+    if loop := _pointer_search_loop(part, name, header, target, load):
+        result.append(('measured_masked_pointer_loop', loop))
+    return result
