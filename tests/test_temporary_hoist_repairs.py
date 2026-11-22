@@ -136,3 +136,56 @@ def test_the_library_runs_it_and_names_the_families():
     found = {p.family for p in report.proposals if p.module == 'temporary_hoist_repairs'}
     assert found and found <= set(FAMILIES)
     assert 'temporary_hoist_repairs' in propose.modules()
+
+
+def test_a_file_with_preprocessor_lines_still_types_its_globals():
+    # m2c's header of #defines ahead of `extern s32 D;` must not hide the declaration (a real audit function: 10 -> 0)
+    source = """\
+#ifndef M2C_DEFINES
+#define M2C_DEFINES
+#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))
+#endif
+
+extern s32 D_801002B8;
+
+s32 func(s32 arg0) {
+    s32 temp_v1;
+
+    temp_v1 = arg0 & 0xFFFF;
+    if (temp_v1 < D_801002B8) {
+        return temp_v1;
+    }
+    return (arg0 + (D_801002B8 + 0xFFFC)) & 0xFFFF;
+}
+"""
+    assert any('    s32 temp;\n' in t and '    temp = D_801002B8 + 0xFFFC;\n    return (arg0 + temp) & 0xFFFF;' in t
+               for t in texts(source, 'temporary_hoist'))
+
+
+def test_a_load_from_a_constant_address_and_a_repeated_float_literal_are_held():
+    source = """\
+f32 func(f32 a)
+{
+  f32 out[2];
+  out[0] = a - *(f32 *) 0x218680;
+  out[1] = *(f32 *) 0x218680 + a;
+  return out[0] + out[1];
+}
+"""
+    out = texts(source, 'temporary_hoist')
+    assert any('temp = *(f32 *) 0x218680;' in t and 'out[0] = a - temp;' in t and 'out[1] = temp + a;' in t for t in out)
+    # through a pointer the store may change what the constant address holds: no run
+    through = source.replace('f32 func(f32 a)', 'f32 func(f32 a, f32 *out)').replace('  f32 out[2];\n', '')
+    assert not any('out[0] = a - temp;' in t and 'out[1] = temp + a;' in t for t in texts(through, 'temporary_hoist'))
+    zeros = """\
+void func(f32 *sp10)
+{
+  sp10[2] = 0.0f;
+  sp10[1] = 0.0f;
+  sp10[0] = 0.0f;
+}
+"""
+    out = texts(zeros, 'temporary_hoist')
+    assert any('temp = 0.0f;' in t and t.count('= temp;') == 3 for t in out)
+    # a literal that is used once is not worth a name
+    assert texts("void func(f32 *p) { p[0] = 0.0f; }") == []

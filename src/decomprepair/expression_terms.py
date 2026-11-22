@@ -321,18 +321,24 @@ def int_range(ty):
     return (-(2 ** (ty.bits - 1)), 2 ** (ty.bits - 1) - 1) if ty.signed else (0, 2 ** ty.bits - 1)
 
 
+def _directives_blanked(text):
+    """The same text with each preprocessor line (and its backslash continuations) blanked, so a `#define` is not
+    read as the start of the declaration after it."""
+    return re.sub(r'(?m)^[ \t]*#(?:[^\n]*\\\n)*[^\n]*$', lambda m: re.sub(r'[^\n]', ' ', m.group()), text)
+
+
 class Types:
     """The declared types of a function's names, from its own text, the file's and the header's."""
 
     def __init__(self, source, name, header=''):
-        self.volatile, self.unknown = set(), set()
+        self.volatile, self.unknown, self.aggregates = set(), set(), set()
         self.table = {}
         self.typedefs = {n: Ty('int', bits, signed, n) for n, (bits, signed) in DEFAULT_TYPEDEFS.items()}
         self.typedefs.update({'f32': Ty('float', 32, True, 'f32'), 'f64': Ty('float', 64, True, 'f64')})
         self.members = {}
         self.ok = False
         self.body_start = self.body_end = 0
-        text = _blank(header + '\n' + source)
+        text = _directives_blanked(_blank(header + '\n' + source))
         self._typedefs(text)
         self._members(text)
         self.locals = set()
@@ -494,6 +500,8 @@ class Types:
                 self.volatile.add(name_)
             if local and not members:
                 self.locals.add(name_)
+                if array or (ty is not None and ty.kind == 'opaque' and not stars):
+                    self.aggregates.add(name_)
 
     # ---- the type of an expression
 
