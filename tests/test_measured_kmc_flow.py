@@ -712,3 +712,26 @@ def test_swap_byte_store_parameter_widths_from_prologue():
     assert variants(source.replace('obj->y = y;', 'obj->y = y; use(y);'), 'f', '', rows) == []
     assert variants(source, 'f', 'void f(void *, int, u8, s32);', rows) == []
     assert variants(source, 'f', '', rows[:-1]) == []
+
+
+def test_copy_stacked_formal_after_first_call():
+    source = """int f(int a, int b, int c, int d, int options) {
+    unsigned int bits;
+    bits = options;
+    setup(a, b);
+    if (check(c, d)) {
+        return bits & 1;
+    }
+    return 0;
+}
+"""
+    rows = measured(('addiu $sp, $sp, -0x20', 'lw $s6, 0x30($sp)', 'jal setup', 'nop',
+                     'jal check', 'nop', 'sll $v0, $v0, 0x18', 'beqz $v0, 0x30'))
+    rows.append(('<', 'move $s2, $s6', ''))
+    candidate = source.replace('    bits = options;\n', '').replace(
+        '    setup(a, b);\n', '    setup(a, b);\n    bits = options;\n')
+    assert variants(source, 'f', '', rows) == [('measured_delay_stack_formal_copy', candidate)]
+    assert not variants(source.replace('setup(a, b)', 'setup(bits, b)'), 'f', '', rows)
+    assert not variants(source.replace('unsigned int bits', 'volatile unsigned int bits'), 'f', '', rows)
+    assert not variants(source.replace('setup(a, b)', 'setup(&options, b)'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:4] + measured(('move $s6, $v0',)) + rows[4:])
