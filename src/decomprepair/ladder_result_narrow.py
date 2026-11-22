@@ -155,7 +155,7 @@ def variants(source, name):
     out = []
     names = '|'.join(map(re.escape, NARROWABLE))
     for decl in re.finditer(rf'(?m)^[ \t]*({names})\s+({IDENT})\s*;[ \t]*$', clean[opening:end]):
-        kind, var, declared = decl[1], decl[2], opening + decl.start(2)
+        var, declared = decl[2], opening + decl.start(2)
         found = _ladders(part, var)
         if len(found) != 1:
             continue
