@@ -20,10 +20,10 @@ slot, one `move V, T`, and the test on the temporary. That needs two changes tog
     T = V + 1;
     V = T;
 
-The `do { } while (0)` leaves loop notes behind: `goto RETRY` is then a branch whose destination is outside the loop
-it sits in, which reorg.c's `mostly_true_jump` rates "highly unlikely" (-2), so the delay-slot filler takes the
-following instruction for the slot of the branch before it (the beql) instead of hoisting the shift into it. Written as
-a bare backward `goto` the same branch is rated like any other and the filler picks the other thread. A 154-instruction
+Why the pair works is a hypothesis, not read from the compiler: the `do { } while (0)` may leave loop notes behind
+that make `goto RETRY` look like a branch out of the loop it sits in, which reorg.c's `mostly_true_jump` would rate
+"highly unlikely", so the delay-slot filler would take the following instruction for the beql's slot instead of
+hoisting the shift into it. Only the matching result is evidenced. A 154-instruction
 function matched this way, 475 -> 0, `gcc-2.7.2-kmc -G0 -mips3 -mgp32 -mfp32 -O2` (COMPILER_MATCHING_LEARNINGS.md).
 
 Three proposals: the `if` form with the pinned goto (the exact child), the `if` form alone, and the pinned goto alone
