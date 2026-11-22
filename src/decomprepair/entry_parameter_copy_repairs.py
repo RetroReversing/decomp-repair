@@ -8,6 +8,16 @@ first load; before that, the register saves of its prologue came out in another 
 and nothing else differed (40 to 0). m2c never writes such a copy for a parameter it only reads, so nothing else
 proposes one (`parameter_copy_drop` is the opposite rewrite).
 
+`entry_parameter_clobber` is the same copy followed by `NAME_in = 0;`. A plain copy is optimised away: cse replaces the
+local by the parameter and the parameter's own entry copy (`move $s2, $a3`) stays above the first statement, so the copy
+never moves. Overwriting the parameter after the copy leaves cse no later use to propagate into, the local keeps its own
+`move` after the function's first statement, and the second scheduler (which places the prologue's saves and the copy by
+original order) puts it after the first call's `li $a0` (hypothesis from `cc1 -dS -dR` dumps, not confirmed in the
+compiler source). A 150-instruction N64 effect spawner (KMC GCC 2.7.2) whose target had `move $s6,$a0; li $a0,0x50;
+sw $s2; move $s2,$a3` ahead of its first call was 60 with the plain copy (no change) and exact (0) with the clobber; the
+dead store is deleted, so nothing else in the code moves. Offered where the copy is (top of the body, the wrapper, and
+after each plain statement).
+
 Offered for each scalar or pointer parameter that is read at least twice and never has its address taken: the
 signature takes `NAME_in`, a local called NAME is declared, and `NAME = NAME_in;` goes at the top of the entry block
 or after each of its first three plain statements (the entry block is the function body, or the body of a
@@ -18,7 +28,8 @@ import re
 from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'entry_parameter_copy'
-FAMILIES = (FAMILY,)
+CLOBBER = 'entry_parameter_clobber'
+FAMILIES = (FAMILY, CLOBBER)
 LIMIT = 8
 TYPE = r'(?:(?:unsigned|signed|const)\s+)*[A-Za-z_]\w*(?:\s*\*)*'
 CONTROL = re.compile(r'\b(?:if|else|for|while|do|switch|case|default|return|goto|break|continue)\b')
@@ -94,7 +105,7 @@ def variants(source, name):
     part = view(source, name)
     if not part or re.search(r'\b(?:asm|__asm__|setjmp|longjmp)\b|^\s*#', part.body, re.M):
         return []
-    result = []
+    result, clobbered = [], []
     places = _insertions(part)
     body = part.body
     for where, param, kind in _parameters(part):
@@ -106,4 +117,6 @@ def variants(source, name):
                      (part.opening + 1, part.opening + 1, f'\n  {kind} {param};'),
                      (place, place, f'\n  {param} = {param}_in;')]
             result.append((FAMILY, edit(source, edits)))
-    return result[:LIMIT]
+            edits[2] = (place, place, f'\n  {param} = {param}_in;\n  {param}_in = 0;')
+            clobbered.append((CLOBBER, edit(source, edits)))
+    return result[:LIMIT] + clobbered[:LIMIT]
