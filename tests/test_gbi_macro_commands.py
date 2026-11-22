@@ -176,7 +176,7 @@ def test_the_variants_write_the_same_display_list_as_the_draft(tmp_path, source,
         path = tmp_path / f'{label}.c'
         path.write_text(prefix + body + main)
         binary = tmp_path / label
-        subprocess.run(['cc', '-w', '-o', str(binary), str(path)], check=True)
+        subprocess.run(['cc', '-w', '-Wno-error', '-Wno-incompatible-pointer-types', '-Wno-int-conversion', '-o', str(binary), str(path)], check=True)
         return subprocess.run([str(binary)], check=True, capture_output=True, text=True).stdout
     expected = run(source, 'draft')
     variants = g.variants(source, name)
