@@ -224,6 +224,13 @@ def test_clamp_default_is_scoped():
     assert '    do\n    {\n      v = 0x7F0000;\n    }\n    while (0);\n    if (x <= 0x7F0000)' in out
 
 
+def test_clamp_default_is_scoped_when_the_body_starts_with_another_statement():
+    src = CLAMP.replace('      v = x;', '      { long long pad = 0; }\n      v = x;')
+    [(family, out)] = clamp_default_scope_repairs.variants(src, 'f')
+    assert family == 'clamp_default_scope'
+    assert 'v = 0x7F0000;\n    }\n    while (0);' in out
+
+
 VOLATILE = '''void f(void)
 {
   volatile unsigned int t;
