@@ -24,21 +24,30 @@ _PRIOR = re.compile(
 )
 
 
+def _confirmed_global_loads(targets):
+    for j, (index, op, right) in enumerate(targets):
+        load = _LOAD.fullmatch(op)
+        if not load or op != right:
+            continue
+        register, offset, _ = load.groups()
+        window = targets[j + 1:j + 11]
+        for n, (_, line, _) in enumerate(window[:5]):
+            relocation = _GLOBAL.fullmatch(line)
+            if not relocation:
+                continue
+            subtract = f'sub.s {relocation[1]}, {relocation[1]}, {register}'
+            if any(left == right == subtract for _, left, right in window[n + 1:]):
+                yield index, register, integer(offset), relocation[2]
+
+
 def _source_witnesses(rows):
     targets = [(i, left, right) for i, (_, left, right) in enumerate(rows) if left]
-    earlier, projections = [], []
+    earlier, projections = list(_confirmed_global_loads(targets)), []
     for j, (index, op, right) in enumerate(targets):
         load, candidate = _LOAD.fullmatch(op), _LOAD.fullmatch(right)
         if not load:
             continue
         register, offset, base = load.groups()
-        if op == right:
-            window = [line for _, line, _ in targets[j + 1:j + 11]]
-            for n, line in enumerate(window[:5]):
-                relocation = _GLOBAL.fullmatch(line)
-                if relocation and f'sub.s {relocation[1]}, {relocation[1]}, {register}' in window[n + 1:]:
-                    earlier.append((index, register, integer(offset), relocation[2]))
-            continue
         if not candidate or candidate[1] == register or candidate.groups()[1:] != (offset, base):
             continue
         nearby = targets[j + 1:j + 25]
