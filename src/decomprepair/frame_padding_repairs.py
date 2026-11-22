@@ -14,6 +14,7 @@ from .integer_repair_support import edit, view
 
 FAMILY = 'unused_frame_padding'
 DROP_FAMILY = 'unused_frame_padding_drop'
+POSITIONED_FAMILY = 'inferred_frame_reservation'
 FAMILIES = (FAMILY, DROP_FAMILY)
 _SAVE = re.compile(r'\b(?:sw|sd|swc1|sdc1)\s+\$(?:s[0-8]|ra|fp|f2[0-9]|f3[01]|fs\d)\s*,\s*(0x[0-9a-fA-F]+|\d+)\(\$sp\)')
 _ARGUMENT = re.compile(r'\b(?:sw|sd|swc1|sdc1|sh|sb)\s+\$\w+\s*,\s*(0x[0-9a-fA-F]+|\d+)\(\$sp\)')
@@ -85,3 +86,60 @@ def forwarded_variants(source, name, header, rows, asm, frame_delta):
     forwarded = passthrough_argument_repairs.shifted_call_variants(source, name, header, asm, call_rows)
     return [('frame_reservation_with_forwarded_argument', padded)
             for _, candidate in forwarded for _, padded in variants(candidate, name, asm)]
+
+
+_LOCAL_DECLARATION = re.compile(r'[ \t]*(?:(?:unsigned|signed|const|register|static|struct|union)\s+)*[A-Za-z_]\w*'
+                                r'(?:[ \t]+[A-Za-z_]\w*)*[ \t]+\**[ \t]*[A-Za-z_]\w*(?:\[[^\]\n;]*\])*[ \t]*(?:=[^;\n]*)?;')
+_NOT_A_DECLARATION = re.compile(r'\s*(?:return|goto|break|continue|else|case|default|do|if|for|while|switch|typedef)\b')
+
+
+def declaration_ends(part):
+    """The offset just past each declaration of the function's leading declaration block, in order."""
+    ends = []
+    pos = part.opening + 1
+    while pos < part.end - 1:
+        while pos < part.end - 1 and part.clean[pos].isspace():
+            pos += 1
+        if _NOT_A_DECLARATION.match(part.clean, pos):
+            break
+        hit = _LOCAL_DECLARATION.match(part.clean, pos)
+        if not hit:
+            break
+        ends.append(hit.end())
+        pos = hit.end()
+    return ends
+
+
+def positioned_variants(source, name, frame_delta):
+    """One or two unused word-sized locals, declared at each gap of the leading declaration block (IDO, GCC 2.x).
+
+    A target frame bigger than the draft's by a few bytes that no named object explains is storage the original
+    declared: IDO reserves a stack word for a local nothing reads, and the words sit between the locals the way the
+    declarations did, so where the unused one is declared decides which spill slots and which arrays keep their
+    offsets. `unused_frame_padding` only reaches a function with no locals of its own, and the measured growth
+    placement puts one char array after every declaration; an IDO bit-stream reader with five stack arrays
+    and three scalars needed one `s32` right after its last array, and the same word anywhere else left the saved
+    registers' slots swapped (8 rows; the array's offsets were right either way). `frame_delta` is the target's frame
+    minus the draft's, in bytes; the proposals try one word and then as many as it names, at the gaps after the
+    arrays first (a local array is where the frame's size is decided), then every other gap. Proposals only.
+    """
+    part = view(source, name)
+    if not part or not 4 <= frame_delta <= 32 or frame_delta % 4:
+        return []
+    fresh = '__repair_unused_frame'
+    if re.search(r'\b(?:volatile|' + fresh + r')\w*\b', part.clean[part.opening:part.end]):
+        return []
+    ends = declaration_ends(part)
+    if not ends:
+        return []
+    gaps = list(dict.fromkeys(ends + [part.opening + 1]))
+    arrays = [end for end in ends if re.search(r'\]\s*;$', part.clean[:end])]
+    arrays.reverse()  # the last array first: its offset is where the next local's slot begins
+    order = arrays + [gap for gap in gaps if gap not in arrays]
+    words = frame_delta // 4
+    result = []
+    for count in dict.fromkeys((1, words)):
+        for gap in order[:8]:
+            lines = ''.join(f'\n    s32 {fresh}_{index};' for index in range(count))
+            result.append((POSITIONED_FAMILY, edit(source, [(gap, gap, lines)])))
+    return result[:12]

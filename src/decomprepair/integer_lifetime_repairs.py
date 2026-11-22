@@ -43,6 +43,48 @@ def jump_crosses(part, start, end):
     return False
 
 
+def counter_reuse_variants(source, name):
+    """An integer temporary that is dead before a loop starts, renamed to the loop's own counter (IDO, GCC 2.x).
+
+    The allocators colour a variable as one web: a one-use flag read at the top of a function and the counter of a
+    loop further down are two variables, two sets of uses, and the flag takes a register the counter's constants
+    could have had. The original source often used one variable for both (`i`), so the flag's register came from the
+    counter's web instead. An IDO bit-stream reader read its first flag into its own local, and the target's flag
+    sat in `$t3` and the constant it compared with in `$a0`, the reverse of the draft's: reading the flag into the
+    loop counter made the function exact (the flag's declaration stays, unused: IDO still reserves its word of frame,
+    and the target's frame had it).
+
+    Only a plain local of the counter's type whose every use lies before the counter's first mention, where the
+    counter's first mention assigns it (`i = 0`, a `for (i = 0; ...)` initialiser), so the old value is never read.
+    The flag's declaration is kept: the proposal changes who owns the register, not how much frame there is.
+    """
+    part = view(source, name)
+    if not part:
+        return []
+    loops = loop_ranges(part)
+    if not loops:
+        return []
+    declarations = [decl for decl in locals_for(part) if depth(part.clean, decl.start()) == depth(part.clean, part.opening)+1]
+    active = [(decl, refs(part, decl)) for decl in declarations]
+    active = [(decl, hits) for decl, hits in active if hits]
+    result = []
+    for counter, counter_refs in active:
+        first = counter_refs[0]
+        if not re.match(r'\s*=(?!=)', part.clean[first.end():]) or not any(a <= first.start() < b for a, b in loops):
+            continue
+        for temp, temp_refs in active:
+            if (temp is counter or temp['type'] != counter['type'] or temp_refs[-1].end() > first.start()
+                    or any(a <= hit.start() < b for hit in temp_refs for a, b in loops)
+                    or jump_crosses(part, temp_refs[0].start(), first.start())):
+                continue
+            # Several definitions of a flag are fine; a flag read again after the loop starts is not.
+            edits = [(hit.start(), hit.end(), counter['name']) for hit in temp_refs]
+            result.append(('merge_integer_lifetimes', edit(source, edits)))
+            if len(result) >= 4:
+                return result
+    return result
+
+
 def variants(source, name):
     part = view(source, name)
     if not part:
@@ -94,6 +136,7 @@ def variants(source, name):
     for _, _, left, right, hits in sorted(pairs, key=lambda pair: pair[:2])[:6]:
         edits = [(right.start(), right.end(), '')]+[(hit.start(), hit.end(), left['name']) for hit in hits]
         result.append(('merge_integer_lifetimes', edit(source, edits)))
+    result += counter_reuse_variants(source, name)
     # A CFG can prove disjoint lifetimes even when loops/gotos prevent the textual shortcut.
     flow = local_flow.analyze(source, name)
     if flow:
