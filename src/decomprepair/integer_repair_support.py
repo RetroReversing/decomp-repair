@@ -57,6 +57,27 @@ def plain_repair_view(source, name, header):
     return part
 
 
+def _address_taken(body, name):
+    """Whether `&name` appears as an address-of. A binary `a & name` (an identifier, `]` or a parenthesised expression
+    before the `&`) is not; `(T *)&name` and `(T)&name` are, and so is a parenthesised lone name (it may be a cast)."""
+    for hit in re.finditer(rf'&\s*{re.escape(name)}\b', body):
+        before = body[:hit.start()].rstrip()
+        if before.endswith('&'):
+            continue  # `a && name` is a logical and
+        if re.search(r'(?:^|[^\w])return$', before) or not re.search(r'[\w)\]]$', before):
+            return True
+        if before.endswith(')'):
+            depth, at = 0, len(before)
+            while at > 0:
+                at -= 1
+                depth += (before[at] == ')') - (before[at] == '(')
+                if depth == 0:
+                    break
+            if re.fullmatch(r'\s*(?:(?:const|volatile|struct|union|unsigned|signed)\s+)*\w+[\s*]*', before[at + 1:-1]):
+                return True
+    return False
+
+
 def locals_for(part):
     """Ordinary, unescaped scalar declarations; leave shadows and qualified objects to the compiler."""
     found = []
@@ -75,7 +96,7 @@ def locals_for(part):
         name = decl['name']
         # Also notice shadows declared as pointers, qualified objects or for-loop variables.
         declarations = re.findall(rf'\b(?:{INTEGER}|void|float|double)\s*\**\s*{re.escape(name)}\s*(?=[;=,\[])', part.body)
-        if len(declarations) != 1 or re.search(rf'&\s*{re.escape(name)}\b', part.body):
+        if len(declarations) != 1 or _address_taken(part.body, name):
             continue
         found.append(decl)
     return found
