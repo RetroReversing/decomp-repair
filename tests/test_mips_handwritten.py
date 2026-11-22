@@ -51,3 +51,10 @@ def test_a_leaf_that_starts_in_registers_no_compiler_picks_first():
     # $v0 written too, or a call made: not proof
     assert mips.asm_reason(words(0x3C083F80, 0xAC880000, 0x24020001, JR_RA, NOP), True) is None
     assert mips.asm_reason(words(0x3C083F80, 0x0C000000, NOP, JR_RA, NOP), True) is None
+
+
+def test_cache_and_atomic_instructions_are_assembly():
+    # osInvalICache: cache 0x10, 0($a0) in a loop; no C compiler of the era emits cache, ll or sc
+    assert 'cache' in mips.asm_reason(words(0xBC900000, JR_RA, NOP), True)
+    assert 'll/sc' in mips.asm_reason(words(0xC0880000, 0xE0880000, JR_RA, NOP), True)
+    assert mips.asm_reason(words(0x8C820000, JR_RA, NOP), True) is None  # lw is C

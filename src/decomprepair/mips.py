@@ -94,6 +94,7 @@ CAPSTONE = {True: (capstone.CS_ARCH_MIPS, capstone.CS_MODE_MIPS64 | capstone.CS_
 
 JR_RA = 0x03E00008
 COP0, COP2 = 0x10, 0x12  # the opcodes of coprocessor 0's and coprocessor 2's instructions
+CACHE, LL, SC = 0x2F, 0x30, 0x38  # cache, and the load-linked/store-conditional pair: no C compiler of the era emits them
 COP2_MEMORY = (0x32, 0x3A, 0x36, 0x3E)  # lwc2, swc2, ldc2 (lqc2 on the EE), sdc2 (sqc2)
 EABI_ARGUMENTS = {8, 9, 10, 11}  # t0-t3: arguments too under the EABI
 SCAN_BLOCK = 0x400  # code is looked for in blocks of this many bytes; a function's start is at most two before
@@ -364,6 +365,10 @@ def asm_reason(code: bytes, big_endian: bool, *, eabi: bool = False, cop2: str =
                     "asm, which decompdecomp doesn't take")
         if cop2 and (op == COP2 or op in COP2_MEMORY):
             return f"uses {cop2} (coprocessor 2): C reaches it only through inline asm"
+        if op == CACHE:  # (libultra's osInvalICache and the other cache routines, boot code)
+            return "uses the cache instruction (cache): a cache-maintenance routine, written in assembly; C has no way to emit it"
+        if op in (LL, SC):
+            return "uses ll/sc (load-linked, store-conditional): an atomic routine, written in assembly; C has no way to emit them"
     body = list(words)
     while len(body) > 1 and body[-1] == 0:  # alignment padding
         body.pop()
