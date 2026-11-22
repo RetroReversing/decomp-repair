@@ -70,3 +70,45 @@ def test_a_global_that_is_not_a_plain_pointer_is_left_alone():
 
 def test_an_existing_record_type_is_left_alone():
     assert r.variants('typedef int CursorRecord;\n' + DRAFT, 'f') == []
+
+
+WORDS = '''typedef struct { int value; } Field_0;
+extern int * volatile sCursor;
+extern unsigned char gR, gG, gB, gA;
+void g(unsigned char *arg0)
+{
+    int *t;
+    t = sCursor;
+    sCursor = t + 2;
+    ((Field_0 *) t)->value = 0xFA000000;
+    sCursor = t + 4;
+    *((s32 *) (((char *) t) + 0xC)) = (gR << 24) | gG;
+    *((s32 *) (((char *) t) + 4)) = (gB << 8) | arg0[0x82];
+    *((s32 *) (((char *) t) + 8)) = 0xFB000000;
+}
+'''
+
+
+def test_a_word_typed_cursor_counts_its_advances_in_words_and_a_one_member_record_is_a_word_store():
+    out = _by_family(WORDS.replace('void g', 'void f'))['display_cursor_record_ordered']
+    assert 'extern CursorRecord *sCursor;' in out and 'volatile' not in out
+    # `t + 2` is eight bytes for an int cursor: command 1 starts at `t + 4` words
+    assert 'sCursor = t + 0x2;' in out and 'sCursor = t + 0x4;' in out
+    assert '((CursorRecord *) t)[0].w0 = 0xFA000000;' in out
+    assert '((CursorRecord *) t)[1].w1 = (gR << 24) | gG;' in out
+
+
+def test_the_ordered_form_writes_each_command_whole_in_the_slots_the_stores_held():
+    out = _by_family(WORDS.replace('void g', 'void f'))['display_cursor_record_ordered']
+    lines = [line.strip() for line in out.split('\n') if line.strip()]
+    order = [line for line in lines if line.startswith('((CursorRecord *)')]
+    assert [line.split(' = ')[0] for line in order] == ['((CursorRecord *) t)[0].w0', '((CursorRecord *) t)[0].w1',
+                                                         '((CursorRecord *) t)[1].w0', '((CursorRecord *) t)[1].w1']
+    assert lines.index('sCursor = t + 0x2;') < lines.index(order[0])
+    assert lines.index('sCursor = t + 0x4;') < lines.index(order[2])
+
+
+def test_stores_in_different_branches_are_never_reordered_or_moved_across():
+    branched = WORDS.replace('void g', 'void f').replace('    *((s32 *) (((char *) t) + 4))', '    if (arg0)\n    {\n    *((s32 *) (((char *) t) + 4))').replace(
+        '(gB << 8) | arg0[0x82];', '(gB << 8) | arg0[0x82];\n    }')
+    assert 'display_cursor_record_ordered' not in _by_family(branched)
