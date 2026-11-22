@@ -34,3 +34,9 @@ def test_the_first_and_the_last_store_of_a_run_alone_are_offered_too():
 
 def test_a_store_into_a_local_is_not_staged():
     assert not staged('void f(void)\n{\n    s16 v;\n    v = (s16) other();\n    keep(v);\n}\n')
+
+
+def test_a_one_line_definition_gets_its_declarations_on_the_same_line():
+    text = 'void f(void) { struct { f32 a, b; s16 x, y; } L;\n    L.x = (s16) (s32) L.a;\n    L.y = (s16) (s32) L.b;\n    call(&L.x); }\n'
+    texts = staged(text)
+    assert texts and texts[0].startswith('void f(void) { s16 __repair_narrow_0; s16 __repair_narrow_1; struct')

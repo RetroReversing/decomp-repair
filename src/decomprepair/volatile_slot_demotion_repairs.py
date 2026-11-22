@@ -76,8 +76,10 @@ def variants(source, name):
         address = re.fullmatch(rf'&\s*{holder}\.{IDENT}', value or '')
         plans.append(dict(member=member, kind=kind, uses=uses, assign=assigns[0], value=value, address=bool(address)))
     result = []
-    for subset in ([plans], [[p for p in plans if not p['address']]] if any(p['address'] for p in plans) and any(not p['address'] for p in plans) else []):
-        chosen = subset[0]
+    subsets = [plans]
+    if any(p['address'] for p in plans) and any(not p['address'] for p in plans):
+        subsets.append([p for p in plans if not p['address']])
+    for chosen in subsets:
         if not chosen:
             continue
         edits = [(structure.start('body') + members[cut][0], structure.end('body'), '')]

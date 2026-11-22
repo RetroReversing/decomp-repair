@@ -61,12 +61,17 @@ def variants(source, name):
     clean, base, end = part.clean, part.opening + 1, part.end
     runs = _runs(clean, base, end)
     result = []
-    opening = source.index('\n', part.opening) + 1
+    if not runs:
+        return []
+    newline = source.find('\n', part.opening)
+    # (a brace followed by code on its line takes the declarations right after it, space separated)
+    tidy = newline >= 0 and not source[part.opening + 1:newline].strip()
+    opening, separator = (newline + 1, '\n') if tidy else (part.opening + 1, ' ')
     for hits in runs:
         choices = [hits] + ([hits[:1], hits[-1:]] if len(hits) > 1 else [])
         for chosen in choices:
             edits, declared = _staged(source, chosen, 0, '')
-            declarations = ''.join(f'    {kind} {local};\n' for local, kind in declared)
+            declarations = ''.join(f'    {kind} {local};{separator}' if separator == '\n' else f' {kind} {local};' for local, kind in declared)
             text = edit(source, edits + [(opening, opening, declarations)])
             if text not in [t for _, t in result]:
                 result.append((FAMILY, text))
