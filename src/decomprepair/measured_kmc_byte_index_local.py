@@ -38,4 +38,32 @@ def variants(source, name, header, rows):
         return []
     start = part.opening + 1
     fixed = edit(source, [(start + declaration.start('type'), start + declaration.end('type'), 'u8')])
-    return [('measured_masked_byte_index', fixed)]
+    result = [('measured_masked_byte_index', fixed)]
+    # An extra copy of the masked byte can also force the index into a
+    # different register on each table arm. Reuse the immutable byte directly.
+    assignment = re.search(rf'\b(?P<copy>{IDENT})\s*=\s*{re.escape(local)}\s*&\s*0[xX][fF][fF]\s*;', body[init.end():])
+    if not assignment:
+        return result
+    copy = assignment['copy']
+    decls = list(re.finditer(rf'\bs32\s+{re.escape(copy)}\s*;', body[:init.start()]))
+    if len(decls) != 1 or copy == local:
+        return result
+    assignment_start = init.end() + assignment.start()
+    assignment_end = init.end() + assignment.end()
+    uses = list(re.finditer(rf'\b{re.escape(copy)}\b', body))
+    if (len(uses) < 3 or any(re.search(rf'(?m)^\s*#\s*define\s+{re.escape(symbol)}\b', source + '\n' + header)
+                               for symbol in (copy, local))
+            or re.search(rf'(?:&|\+\+|--|\.|->)\s*{re.escape(copy)}\b', body)
+            or re.search(rf'\b{re.escape(copy)}\s*(?:[+*/&|^-]?=|\+\+|--)', body[assignment_end:])):
+        return result
+    if any(hit.start() > decls[0].end() and hit.start() < assignment_start for hit in uses):
+        return result
+    remaining = [hit for hit in uses if hit.start() >= assignment_end]
+    if not remaining:
+        return result
+    spans = [(start + declaration.start('type'), start + declaration.end('type'), 'u8'),
+             (start + decls[0].start(), start + decls[0].end(), ''),
+             (start + assignment_start, start + assignment_end, '')]
+    spans.extend((start + hit.start(), start + hit.end(), f'({local} & 0xFF)') for hit in remaining)
+    result.append(('measured_masked_byte_index_reuse', edit(source, spans)))
+    return result
