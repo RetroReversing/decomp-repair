@@ -31,17 +31,33 @@ def variants(source, name):
         j = i + 1
         while j < len(body) and not body[j].stripped:
             j += 1
-        if j + 1 >= len(body) or not body[j].stripped.startswith('if (') or body[j + 1].stripped != '{':
+        if j + 1 >= len(body) or not body[j].stripped.startswith('if ('):
             continue
         test = body[j].stripped
-        closing = block_end(body, j + 1)
+        opening = j if test.endswith('{') else j + 1
+        if opening != j and body[opening].stripped != '{':
+            continue
+        closing = block_end(body, opening)
         if closing is None or mentions(test, hit['t']) or _CALL.search(test[3:]):
             continue
         declaration = re.compile(rf'(?:[A-Za-z_]\w*\s+)+\**\s*{re.escape(hit["t"])};')
-        outside = [l for k, l in enumerate(body) if not (j + 1 < k < closing) and k != i and not declaration.fullmatch(l.stripped)]
-        if any(mentions(l.text, hit['t']) for l in outside) or not any(mentions(l.text, hit['t']) for l in body[j + 2:closing]):
+        outside = [l for k, l in enumerate(body) if not (opening < k < closing) and k != i and not declaration.fullmatch(l.stripped)]
+        if any(mentions(l.text, hit['t']) for l in outside) or not any(mentions(l.text, hit['t']) for l in body[opening + 1:closing]):
             continue
-        inner = body[j + 1].indent + '  '
-        # no later statement may assign what the value reads before the if body's first use
-        out.append((FAMILY, apply(source, [(line.start, line.end, ''), (body[j + 1].end, body[j + 1].end, inner + line.stripped + '\n')])))
+        # Keep C89 declarations first. Only cross plain scalar declarations
+        # whose initializer cannot change a value used by the sunk expression.
+        insert = opening + 1
+        while insert < closing:
+            declaration = re.fullmatch(r'(?:s32|u32|int|unsigned int)\s+([A-Za-z_]\w*)'
+                                       r'(?:\s*=\s*([A-Za-z_]\w*|[0-9]+))?\s*;', body[insert].stripped)
+            if not declaration:
+                break
+            if mentions(hit['e'], declaration[1]) or mentions(body[insert].text, hit['t']):
+                break
+            insert += 1
+        if insert < closing and re.match(r'(?:[A-Za-z_]\w*\s+)+\**\s*[A-Za-z_]\w*\s*(?:=|;)', body[insert].stripped):
+            continue
+        inner = body[insert].indent if insert < closing else body[opening].indent + '    '
+        point = body[insert].start if insert < closing else body[opening].end
+        out.append((FAMILY, apply(source, [(line.start, line.end, ''), (point, point, inner + line.stripped + '\n')])))
     return out
