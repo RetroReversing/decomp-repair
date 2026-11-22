@@ -106,3 +106,18 @@ def test_the_counters_old_value_is_returned():
     (family, out), = ret.variants(COUNTER, 'f', COUNTER_ASM)
     assert 's32 f(void *arg0) {' in out and '    return M2C_FIELD(arg0, s32 *, 0)--;\n}' in out
     assert ret.variants(COUNTER, 'f', COUNTER_ASM.replace('lw         $v0, ($a0)', 'lw         $v0, 8($a0)')) == []
+
+
+def test_guard_inversion_finds_the_function_return_after_a_braced_guard():
+    source = """s32 f(void *p) {
+    if (p == NULL) {
+        return 0;
+    }
+    M2C_FIELD(p, s32 *, 8) = 3;
+    return 1;
+}"""
+    (family, fixed), = guard.variants(source, 'f')
+    assert family == 'guard_inversion'
+    assert 'if (p != NULL) {' in fixed
+    assert fixed.index('M2C_FIELD') < fixed.index('return 1;') < fixed.index('return 0;')
+    assert not guard.variants(source.replace('    return 1;', '    if (p) { return 1; }'), 'f')

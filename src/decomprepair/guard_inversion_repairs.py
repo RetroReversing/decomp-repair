@@ -34,7 +34,7 @@ def variants(source, name):
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
         return []
-    final = re.search(r'(?m)^[ \t]*return\b[^;]*;[ \t]*\n[ \t]*\}\s*$', clean[opening:end])
+    final = re.search(r'(?m)^[ \t]*return\b[^;]*;[ \t]*\n[ \t]*\}\s*\Z', clean[opening:end])
     if not final:
         return []
     final_at = opening + final.start()
