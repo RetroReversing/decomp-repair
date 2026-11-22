@@ -52,4 +52,21 @@ def variants(source, name, header, rows, resolve=None):
             f'    *{cursor} += {draft["amount"]};\n')
     decl = f'extern s32 {index};\nextern s32 {table};\n\n'
     fixed = edit(source, [(sig.start(), sig.start(), decl), (part.opening + 1, part.end - 1, body)])
-    return [('measured_relocated_pool_cursor', fixed)]
+    result = [('measured_relocated_pool_cursor', fixed)]
+    # The target leaves the pre-increment value in the return register. The
+    # draft's void signature can be another inference error, so try this only
+    # when no external declaration constrains the function's return type.
+    names = ('__repair_pool_index', '__repair_pool_ptr', '__repair_pool_old')
+    if (not re.search(rf'\b{re.escape(name)}\s*\(', _blank(header))
+            and len(re.findall(rf'\b{re.escape(name)}\s*\(', part.clean)) == 1
+            and not any(re.search(rf'\b{item}\b', part.clean + '\n' + header) for item in names)):
+        returned = (f'\n    s32 __repair_pool_index = {index};\n'
+                    f'    s32 *__repair_pool_ptr = &{table}[__repair_pool_index];\n'
+                    '    s32 __repair_pool_old = *__repair_pool_ptr;\n'
+                    f'    *__repair_pool_ptr = __repair_pool_old + {draft["amount"]};\n'
+                    '    return __repair_pool_old;\n')
+        declarations = f'extern s32 {index};\nextern s32 {table}[];\n\n'
+        result.append(('measured_relocated_pool_return', edit(source, [
+            (sig.start(), sig.start() + 4, declarations + 's32'),
+            (part.opening + 1, part.end - 1, returned)])))
+    return result
