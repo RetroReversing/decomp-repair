@@ -71,6 +71,28 @@ def _run(body):
     return None, []
 
 
+STAGED = re.compile(rf'\(\s*\*\s*(?P<ptr>{IDENT})\s*\*\s*(?P<copy>{IDENT})\s*\)|\(\s*(?P<copy2>{IDENT})\s*\*\s*\*\s*(?P<ptr2>{IDENT})\s*\)')
+
+
+def _first_load(run, clean, part):
+    """(index of the statement, pointer, its scalar type) of the first product of a dereference and a value the run copied
+    from a parameter earlier, else None."""
+    copies = {}
+    for index, line in enumerate(run):
+        text = line.stripped
+        plain = re.fullmatch(rf'({IDENT})\s*=\s*({IDENT})\s*;', text)
+        if plain:
+            copies[plain[1]] = plain[2]
+            continue
+        for hit in STAGED.finditer(text):
+            copy = hit['copy'] or hit['copy2']
+            if copy in copies:
+                kind = re.search(rf'\b(f32|float|f64|double)\s+{re.escape(copy)}\s*;', clean[part.opening:part.end])
+                if kind:
+                    return index, hit['ptr'] or hit['ptr2'], kind[1]
+    return None
+
+
 def variants(source, name):
     part = view(source, name)
     if not part or re.search(r'\b(?:asm|__asm__|volatile)\b|^\s*#', part.body, re.M) or 'while (0)' in part.body:
@@ -83,6 +105,21 @@ def variants(source, name):
     start, end, indent = run[0].start, run[-1].end, run[0].indent
     texts = [f'{line.source}\n' for line in run]
     found = [(FAMILY, edit(source, [(start, end, f'{indent}do {{\n{"".join(texts)}{indent}}} while (0);\n')]))]
+    staged = _first_load(run, clean, part)
+    texts_staged = None
+    if staged:
+        # the first product's dereference read into a local as the run's first statement, so the run's first insn is that
+        # load and the value copied from a parameter comes after it (250 -> the mov.s after the lwc1 as the target has it)
+        number, pointer, kind = staged
+        local = f'staged_{pointer}'
+        decl = next((m for m in DECLARATION.finditer(clean, part.opening + 1, part.end)), None)
+        at = source.rfind('\n', 0, decl.start('type')) + 1 if decl else source.find('\n', part.opening) + 1
+        changed = run[number].source
+        for pattern in (rf'\(\s*\*\s*{pointer}\s*\*', rf'\*\s*{pointer}\s*\)'):
+            changed = re.sub(pattern, lambda m: m[0].replace(f'*{pointer}', local).replace(f'* {pointer}', local), changed, count=1)
+        texts_staged = [f'{indent}    {local} = *{pointer};\n'] + [f'{line.source}\n' if i != number else f'{changed}\n' for i, line in enumerate(run)]
+        at2, decl2 = at, f'    {kind} {local};\n'
+        found.append((FAMILY, edit(source, [(start, end, f'{indent}do {{\n{"".join(texts_staged)}{indent}}} while (0);\n'), (at2, at2, decl2)])))
     # a narrow stack parameter (the fifth or later) the function reads after the run, read through a new local
     narrow = []
     for number, text in enumerate(_parameters(clean, part, name)):
@@ -99,7 +136,10 @@ def variants(source, name):
         at = source.rfind('\n', 0, decl.start('type')) + 1 if decl else source.find('\n', part.opening) + 1
         declared = ''.join(f'    {hit["type"]} {names[hit["name"]]};\n' for hit in narrow)
         # the copies first in the run, or after its first statement: the score depends on where (459 against 225 here)
-        for place in (0, 1):
-            wrapped = ''.join(texts[:place]) + ''.join(copies) + ''.join(texts[place:])
-            found.append((FAMILY, edit(source, [(start, end, f'{indent}do {{\n{wrapped}{indent}}} while (0);\n'), *later, (at, at, declared)])))
+        for base, places in ((texts, (0, 1)), (texts_staged, (1, 2))):
+            if base is None:
+                continue
+            for place in places:
+                wrapped = ''.join(base[:place]) + ''.join(copies) + ''.join(base[place:])
+                found.append((FAMILY, edit(source, [(start, end, f'{indent}do {{\n{wrapped}{indent}}} while (0);\n'), *later, (at, at, declared)] + ([(at2, at2, decl2)] if base is texts_staged else []))))
     return found

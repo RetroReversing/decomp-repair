@@ -42,7 +42,8 @@ def test_the_leading_run_is_wrapped():
 
 
 def test_a_narrow_stack_parameter_is_read_through_a_local_set_first_in_the_run():
-    wrapped, copied, _ = _texts()
+    wrapped = _texts()[0]
+    copied = next(t for t in _texts() if '        copy_flag = flag;\n    dist = span;' in t and 'staged_' not in t)
     assert 'copy_flag' not in wrapped
     assert '    do {\n        copy_flag = flag;\n    dist = span;' in copied
     assert 'if (copy_flag != 0) {' in copied
@@ -62,3 +63,11 @@ def test_a_call_in_the_run_ends_it():
 
 def test_a_function_that_already_has_the_wrapper_is_left_alone():
     assert _texts(SOURCE.replace('    dist = span;', '    do { dist = span; } while (0);')) == []
+
+
+def test_the_first_product_dereference_is_staged_first_in_the_run():
+    texts = _texts(SOURCE.replace('f32 dist;', 'f32 dist;\n    f32 tmp;').replace('end.x = *start + (*dir * dist);', 'end.x = *start + (*dir * dist);'))
+    staged = [t for t in texts if 'staged_dir = *dir;' in t]
+    assert staged
+    assert 'end.x = *start + (staged_dir * dist);' in staged[0]
+    assert staged[0].index('staged_dir = *dir;') < staged[0].index('dist = span;')
