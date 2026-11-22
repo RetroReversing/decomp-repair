@@ -101,6 +101,7 @@ def variants(source, name, header=''):
         variable = decl['name']
         unsigned[variable] = unsigned.get(variable, 0) + 1
     macros = set(re.findall(rf'^\s*#\s*define\s+({IDENT})\b', header + '\n' + source, re.M))
+    volatile_u32 = re.search(r'\btypedef\b[^;]*\bvolatile\b[^;]*\bu32\s*;', header + '\n' + source)
     spans = _chains(clean, part.opening + 1, part.end - 1)
     # keep the outermost chains: a span inside another one belongs to the larger chain
     spans = [s for s in spans if len(_split(clean[s[0]:s[1]]) or []) > 1]
@@ -147,6 +148,8 @@ def variants(source, name, header=''):
             for chosen in rest:
                 chosen = chosen.strip()
                 if not PLAIN.fullmatch(chosen) or unsigned.get(chosen) != 1 or chosen in macros:
+                    continue
+                if volatile_u32 and re.search(rf'\bu32\s+{re.escape(chosen)}\b', clean):
                     continue
                 declarations = re.findall(rf'\b{IDENT}\s+(?:\*\s*)*{re.escape(chosen)}\b', clean)
                 if len(declarations) != 1:

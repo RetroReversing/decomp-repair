@@ -56,6 +56,7 @@ def test_or_identity_refuses_volatile_shadowed_and_macro_operands():
     assert not any('~a' in t for t in _texts(shadowed))
     assert not any('~a' in t for t in _texts(shadowed.replace('s32 a;', 'u32 *a;')))
     assert not any('~a' in t for _, t in r.variants(base, 'f', '#define a read()'))
+    assert not any('~a' in t for _, t in r.variants(base, 'f', 'typedef volatile unsigned int u32;'))
     assert not any('~a' in t for t in _texts('u32 f(s32 a, u32 b) { return (0xff000000 | a | b); }'))
 
 
