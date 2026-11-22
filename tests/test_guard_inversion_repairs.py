@@ -31,3 +31,25 @@ sb $v0, 12($a0)
     assert rewrite_byte_toggle(source, 'toggle', asm.replace('beql', 'bnel')) is None
     assert rewrite_byte_toggle(source, 'toggle', asm.replace('sb $v0, 12', 'sb $v0, 13')) is None
     assert rewrite_byte_toggle(source.replace('next = old | 4', 'next = old | 2'), 'toggle', asm) is None
+
+
+def test_measured_null_return_guard():
+    from decomprepair.guard_inversion_repairs import measured_null_return_variants
+
+    source = '''int f(void *p) {
+    if (p == 0) {
+        return 0;
+    }
+    work(p);
+    return 1;
+}
+'''
+    target = ['bnez $v0, 0x24', 'nop', 'j f+0x30', 'move $v0, $zero']
+    candidate = ['beql $v0, $zero, 0x28', 'move $v0, $zero']
+    rows = [('o', a, '') for a in target] + [('o', '', b) for b in candidate]
+    (family, result), = measured_null_return_variants(source, 'f', rows)
+    assert family == 'guard_inversion'
+    assert 'if (p != 0)' in result and 'work(p)' in result
+    assert not measured_null_return_variants(source, 'f', [(' ', a, a) for a in target])
+    assert not measured_null_return_variants(source, 'f', rows[:-1])
+    assert not measured_null_return_variants(source.replace('return 0;', 'work(p); return 0;'), 'f', rows)
