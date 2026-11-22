@@ -194,7 +194,13 @@ def _reuse_initialized_load(source, clean, opening, end, blocks, integers):
         for local in integers:
             pattern = r"(?m)^\s*(?:register\s+)?(?:s32|int)\s+" + local + r"\s*;"
             prefix = clean[opening+1:start]
-            if local == old or len(re.findall(pattern, prefix)) != 1:
+            declarations = list(re.finditer(pattern, prefix))
+            if local == old or len(declarations) != 1:
+                continue
+            declared_at = opening + 1 + declarations[0].start()
+            scope = _block_of(blocks, declared_at)
+            if (not scope or not (scope[0] <= start < scope[1])
+                    or len(re.findall(r"\b(?:s8|u8|s16|u16|s32|u32|int|char)\s+" + local + r"\b", body)) != 1):
                 continue
             prefix = re.sub(pattern, "", prefix)
             if (re.search(r"(?<![\w.>])" + local + r"\b", prefix)

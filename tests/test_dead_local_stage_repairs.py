@@ -92,3 +92,10 @@ def test_initialized_load_may_feed_the_overwriting_call():
     out = [text for _, text in r.variants(source, 'f') if 'result = *(u16 *)(p + 2);' in text]
     assert len(out) == 1
     assert 'result = call(result);' in out[0]
+
+
+def test_initialized_load_reuse_rejects_out_of_scope_or_shadowed_local():
+    out_of_scope = LOAD_REUSE.replace('    s32 result;', '    { s32 result; }')
+    shadowed = LOAD_REUSE.replace('        sink(first, one);', '        { s32 result; result = 1; }\n        sink(first, one);')
+    for source in (out_of_scope, shadowed):
+        assert not [out for _, out in r.variants(source, 'f') if 'result = *(u16 *)(p + 2);' in out]
