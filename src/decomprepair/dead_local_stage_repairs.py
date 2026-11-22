@@ -137,7 +137,7 @@ def variants(source, name):
     pointers = POINTER.findall(body)
     blocks = list(_blocks(clean, opening, end))
     loops = _loops(clean, opening, end)
-    result = []
+    result = _reuse_initialized_load(source, clean, opening, end, blocks, integers)
     for first, last in blocks:
         for start, stop in _statements(clean, first, last):
             hit = ASSIGN.fullmatch(clean, start, stop)
@@ -159,3 +159,74 @@ def variants(source, name):
                     if (FAMILY, text) not in result:
                         result.append((FAMILY, text))
     return result
+
+
+def _reuse_initialized_load(source, clean, opening, end, blocks, integers):
+    """Reuse an untouched outer scalar for a short inner load lifetime before its next assignment."""
+    body = clean[opening:end]
+    if re.search(r"\b(?:volatile|asm|__asm__|goto)\b", clean) or re.search(r"^\s*#", source, re.M):
+        return []
+    results = []
+    for begin, stop in blocks:
+        if begin == opening or stop >= end:
+            continue
+        # A scalar halfword load followed only by pure scalar/constant initializers.
+        head = re.match(r"\s*(s32|int)\s+(" + IDENT + r")\s*=\s*(\*\s*\(\s*u16\s*\*\s*\)\s*\(\s*" + IDENT + r"\s*\+\s*(?:0[xX][0-9a-fA-F]+|[0-9]+)\s*\))\s*;", clean[begin+1:stop])
+        if not head:
+            continue
+        old = head[2]
+        start = begin + 1 + head.start()
+        declaration_end = begin + 1 + head.end()
+        insertion = declaration_end
+        declaration = re.compile(r"\s*(?:s32|u32|int)\s+" + IDENT + r"\s*=\s*(?:" + IDENT + r"|(?:0[xX][0-9a-fA-F]+|[0-9]+))\s*;")
+        while hit := declaration.match(clean, insertion, stop):
+            insertion = hit.end()
+        # Moving the load after declarations is safe only when those initializers
+        # read plain locals, not globals, volatile objects, macros or calls.
+        for initializer in re.finditer(r"=\s*(" + IDENT + r")\s*;", clean[declaration_end:insertion]):
+            name = initializer[1]
+            if not re.search(r"\b(?:s8|u8|s16|u16|s32|u32|int)\s+" + name + r"\b", clean[opening:start]):
+                break
+        else:
+            name = None
+        if name is not None:
+            continue
+        for local in integers:
+            pattern = r"(?m)^\s*(?:register\s+)?(?:s32|int)\s+" + local + r"\s*;"
+            prefix = clean[opening+1:start]
+            if local == old or len(re.findall(pattern, prefix)) != 1:
+                continue
+            prefix = re.sub(pattern, "", prefix)
+            if (re.search(r"(?<![\w.>])" + local + r"\b", prefix)
+                    or re.search(r"(?<![\w.>])(?:" + old + "|" + local + r")\b",
+                                 clean[declaration_end:insertion])
+                    or re.search(r"(?<![\w.>])" + local + r"\b", head[3])):
+                continue
+            if re.search(r"&\s*" + local + r"\b|&\s*" + old + r"\b", body):
+                continue
+            after = clean[insertion:stop]
+            overwrite = re.search(r"(?<![\w.>])" + local + r"\s*=\s*[^;{}]*;", after)
+            if not overwrite:
+                continue
+            before = after[:overwrite.start()]
+            tail = after[overwrite.end():]
+            if (re.search(r"(?<![\w.>])" + local + r"\b", before)
+                    or re.search(r"(?<![\w.>])" + old + r"\b", tail)
+                    or not re.search(r"(?<![\w.>])" + old + r"\b", before)):
+                continue
+            # The overwrite cannot read the previous value; no macros or shadowing can alias it.
+            if re.search(r"(?<![\w.>])" + local + r"\b", overwrite.group().split('=', 1)[1]):
+                continue
+            if len(re.findall(r"\b(?:s32|int|u32)\s+" + old + r"\b", body)) != 1:
+                continue
+            rewritten = re.sub(r"(?<![\w.>])" + old + r"\b", local, source[insertion:insertion+overwrite.end()])
+            replacement = source[start:declaration_end].replace(source[start:declaration_end][head.start(3)-head.start():head.end(3)-head.start()], '', 1)
+            # Replace the initializer with a declaration; retain the surrounding declaration text.
+            replacement = re.sub(r"\s*=\s*;", ";", replacement)
+            candidate = (source[:start] + replacement + source[declaration_end:insertion]
+                         + "\n        " + local + " = " + source[start+head.start(3)-head.start():start+head.end(3)-head.start()] + ";"
+                         + rewritten + source[insertion+overwrite.end():])
+            results.append((FAMILY, candidate))
+            if len(results) >= 4:
+                return results
+    return results

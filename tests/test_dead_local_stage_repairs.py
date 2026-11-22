@@ -54,3 +54,41 @@ def test_a_local_that_is_live_is_left_alone():
     assert staged(wrapped, 'rv', '((n->value * 3) >> 3);') == []
     # the statement's own locals and plain operands
     assert all('g = g' not in t for _, t in r.variants(SOURCE, 'f'))
+
+LOAD_REUSE = '''void f(u8 *p) {
+    s32 result;
+    {
+        s32 first = *(u16 *)(p + 2);
+        s32 id = 4;
+        s32 one = 1;
+        sink(first, one);
+        result = call(id);
+    }
+    sink(result, 0);
+}
+'''
+
+
+def test_reuses_outer_return_local_for_initialized_load():
+    out = [text for _, text in r.variants(LOAD_REUSE, 'f') if 'result = *(u16 *)(p + 2);' in text]
+    assert len(out) == 1
+    assert 'sink(result, one);' in out[0]
+    assert 'result = call(id);' in out[0]
+
+
+def test_initialized_load_reuse_requires_dead_unaliased_compatible_local():
+    for text in (
+        LOAD_REUSE.replace('    {\n', '    sink(result, 0);\n    {\n', 1),
+        LOAD_REUSE.replace('    {\n', '    sink(&result, 0);\n    {\n', 1),
+        LOAD_REUSE.replace('s32 result;', 'u32 result;'),
+        LOAD_REUSE.replace('s32 id = 4;', 's32 id = first;'),
+        LOAD_REUSE.replace('result = call(id);', 'result = call(id); sink(first, 0);'),
+    ):
+        assert not [out for _, out in r.variants(text, 'f') if 'result = *(u16 *)(p + 2);' in out]
+
+
+def test_initialized_load_may_feed_the_overwriting_call():
+    source = LOAD_REUSE.replace('result = call(id);', 'result = call(first);')
+    out = [text for _, text in r.variants(source, 'f') if 'result = *(u16 *)(p + 2);' in text]
+    assert len(out) == 1
+    assert 'result = call(result);' in out[0]
