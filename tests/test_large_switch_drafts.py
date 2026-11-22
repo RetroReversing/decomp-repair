@@ -80,3 +80,23 @@ def test_float_reads_and_argument_placeholders():
 
 def test_a_draft_with_nothing_to_repair_is_declined():
     assert rewrite('void f(void) {\n    g();\n}\n') is None
+
+
+def test_a_case_outside_every_switch_becomes_a_label_the_switch_jumps_to():
+    source = """void f(s32 a, s32 b) {
+    switch (a) {                                    /* switch 1 */
+    case 1:                                         /* switch 1 */
+        g(1);
+        break;
+    }
+    if (b) {
+        g(2);
+    } else {
+    case 2:                                         /* switch 1 */
+        g(3);
+    }
+}
+"""
+    out = cross_switch_cases(source)
+    assert 'switch_1_2:' in out and 'case 2: goto switch_1_2;' in out
+    assert 'case 2:                                         /* switch 1 */' not in out

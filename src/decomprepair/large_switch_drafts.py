@@ -76,7 +76,8 @@ def cross_switch_cases(source):
         elif m.group('n'):
             number = int(m.group('n'))
             inner = stack[-1][0] if stack else None
-            if inner is not None and inner != number:
+            # (also a label outside every switch: m2c leaves the target of an irregular jump table where the code is)
+            if inner != number:
                 moves.append((m.start(), m.end(), number, m.group('label'), m.group('value'), m.group('indent')))
     if not moves:
         return source
