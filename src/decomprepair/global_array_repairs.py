@@ -19,7 +19,7 @@ from .csource import _blank, find
 from .integer_repair_support import edit
 from .pattern_repairs import close
 
-FAMILIES = ('global_table_index', 'byte_table_signedness', 'global_address_table', 'global_scalar_type', 'global_value_address', 'table_read_width')
+FAMILIES = ('global_table_index', 'byte_table_signedness', 'global_address_table', 'global_scalar_type', 'global_value_address', 'table_read_width', 'global_first_element')
 _WORD = ('f32', 's32', 'u32')
 _SCALARS = {'M2C_UNK': ('u32', 's32', 'f32'), 's32': ('u32', 's8', 'u8', 's16', 'u16', 'f32'), 'u32': ('s32', 'u8', 's8', 'u16', 's16'),
             's16': ('u16', 's8', 'u8'), 'u16': ('s16', 'u8'), 's8': ('u8',), 'u8': ('s8',), 'char': ('u8',)}
@@ -123,6 +123,30 @@ def _read_widths(source, clean, span):
     return result
 
 
+def _first_element(source, clean, span):
+    """Try a scalar call argument as element zero of an extern array.
+
+    GCC can schedule the equivalent load differently when the declaration is an array.
+    Restrict this to one argument read and one declaration, so no address, write, shadow,
+    or other function is changed implicitly.
+    """
+    result = []
+    for decl in re.finditer(r'^[ \t]*extern\s+(?:s32|u32|s16|u16|s8|u8|f32)\s+([A-Za-z_]\w*)\s*;', clean[:span[0]], re.M):
+        name = decl[1]
+        uses = list(re.finditer(r'\b' + re.escape(name) + r'\b', clean))
+        if len(uses) != 2:
+            continue
+        use = uses[1]
+        if not span[0] <= use.start() < span[1]:
+            continue
+        before, after = clean[span[0]:use.start()], clean[use.end():span[1]]
+        if not re.search(r'(?:\(|,)\s*$', before) or not re.match(r'\s*[,)]', after):
+            continue
+        result.append(('global_first_element', edit(source, [
+            (decl.end(1), decl.end(1), '[]'), (use.start(), use.end(), name + '[0]')])))
+    return result
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -132,6 +156,6 @@ def variants(source, name):
     # Agents retyped the table and wrote its pointer temporary out at each use in one rewrite.
     from .local_inline_repairs import variants as inlined
     tables += [('global_address_table', text) for _, table in tables[:2] for _, text in inlined(table, name, limit=4)]
-    return (_table_index(source, clean, span) + _read_widths(source, clean, span) + _byte_tables(source, clean) + tables
+    return (_first_element(source, clean, span) + _table_index(source, clean, span) + _read_widths(source, clean, span) + _byte_tables(source, clean) + tables
             + _value_addresses(source, clean, span)
             + _scalar_types(source, clean, span))[:20]

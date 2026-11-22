@@ -59,3 +59,17 @@ def test_every_byte_table_read_is_widened_at_once_first():
               'void f(s32 t) {\n    *(D_8011F2F4 + t) = *(D_8011F2F4 + t) | 0x20;\n    *(D_8011F2F8 + t) = *(D_8011F2F8 + t) | 0x20;\n}\n')
     first = [t for fam, t in arrays.variants(source, 'f') if fam == 'table_read_width'][0]
     assert first.count('*(u16 *)(') == 4
+
+
+def test_scalar_call_argument_can_be_the_first_array_element():
+    source = 'extern s32 table;\nvoid f(void) { call(0, table, 1); }\n'
+    variants = [text for family, text in arrays.variants(source, 'f') if family == 'global_first_element']
+    assert variants == ['extern s32 table[];\nvoid f(void) { call(0, table[0], 1); }\n']
+
+
+def test_first_element_leaves_other_uses_alone():
+    source = 'extern s32 table;\nvoid f(void) { call(0, table, 1); }\n'
+    for text in (source + 'int g(void) { return table; }\n',
+                 source.replace('table, 1', '&table, 1'),
+                 source.replace('call(0, table, 1);', 'table = 1;')):
+        assert not [text for family, text in arrays.variants(text, 'f') if family == 'global_first_element']
