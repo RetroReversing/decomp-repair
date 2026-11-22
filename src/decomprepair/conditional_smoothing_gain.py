@@ -14,6 +14,7 @@ from .quadratic_sign_holder import _witnesses as _sample_witnesses
 from .trig_axis_reuse import _DECL, _SAVED
 
 FAMILY = 'saved_conditional_smoothing_gain'
+PAIRED_FAMILY = 'split_capture_and_conditional_gain'
 _LITERAL = r'\d+\.\d+[fF]'
 _MOVE = re.compile(r'mtc1 \$at, (\$f\d+)')
 _MUL = re.compile(rf'mul\.s (\$f\d+), \1, ({_SAVED})')
@@ -25,6 +26,43 @@ _SOURCE = re.compile(
     rf'\s*\+\s*(?P=old)\s*;'
 )
 _WRITE = re.compile(rf'(?m)^[ \t]*(?P<var>{IDENT})\s*=\s*(?P<literal>{_LITERAL})\s*;')
+
+
+_CAPTURE = re.compile(
+    rf'(?m)^[ \t]*(?P<local>{IDENT})\s*=\s*(?P<callee>{IDENT})'
+    rf'\(\s*{IDENT}\s*\)\s*;'
+)
+_SCALED = re.compile(
+    rf'(?m)^[ \t]*{IDENT}\s*=\s*(?P<local>{IDENT})\s*\*\s*{_LITERAL}\s*;'
+)
+_SNAPSHOT = re.compile(
+    rf'(?m)^[ \t]*(?P<local>{IDENT})\s*=\s*(?P<field>\*[^;={{}}\n]+)\s*;'
+)
+_RESTORE = re.compile(
+    rf'(?m)^[ \t]*(?P<field>\*[^;={{}}\n]+)\s*=\s*(?P<local>{IDENT})\s*;'
+)
+_SAVED_RETURN = re.compile(rf'mov\.s ({_SAVED}), \$f0')
+
+
+def _snapshot_witnesses(rows):
+    aligned = [(a, b) for _, a, b in rows if a]
+    witnessed = set()
+    for i, (call, compiled) in enumerate(aligned[:-2]):
+        if call != compiled or not call.startswith('jal '):
+            continue
+        left, right = aligned[i + 2]
+        desired, previous = _SAVED_RETURN.fullmatch(left), _SAVED_RETURN.fullmatch(right)
+        if not desired or not previous or desired[1] == previous[1]:
+            continue
+        window = aligned[i + 3:i + 39]
+        for n, (op, actual) in enumerate(window):
+            load = _LOAD.fullmatch(op)
+            if not load or op != actual or load[1] != previous[1]:
+                continue
+            store = op.replace('lwc1 ', 'swc1 ', 1)
+            if any(a == b == store for a, b in window[n + 1:]):
+                witnessed.add((call[4:], desired[1], integer(load[2])))
+    return witnessed
 
 
 def _site_counts(rows):
@@ -93,13 +131,17 @@ def _feeds_only_blend(flow, definitions, blend, gain):
     return True
 
 
-def _blend_sites(part, flow, declarations, macros, desired):
+def _parents(flow):
     parents = [[] for _ in flow.nodes]
     indexes = {}
     for index, node in enumerate(flow.nodes):
         indexes[id(node)] = index
         for successor in node.successors:
             parents[successor].append(index)
+    return parents, indexes
+
+
+def _blend_sites(part, flow, declarations, macros, desired, parents, indexes):
     writes = defaultdict(list)
     for write in _WRITE.finditer(part.clean, part.opening + 1, part.end):
         writes[write['var']].append(write)
@@ -128,6 +170,58 @@ def _blend_sites(part, flow, declarations, macros, desired):
     return sites
 
 
+def _only_capture_reaches(flow, parents, entry, origin, old, holder):
+    pending = list(parents[entry])
+    visited = set()
+    while pending:
+        at = pending.pop()
+        if at in visited:
+            continue
+        visited.add(at)
+        if at == origin:
+            continue
+        node = flow.nodes[at]
+        if old in node.defines or holder in node.defines or not parents[at] or at == flow.entry:
+            return False
+        pending.extend(parents[at])
+    return origin in visited
+
+
+def _capture_companions(part, flow, declarations, macros, parents, indexes, old, gain, position, register, witnesses):
+    choices = []
+    for capture in _CAPTURE.finditer(part.clean, part.opening + 1, position):
+        if capture['local'] != old:
+            continue
+        hit = next((m for m in _SCALED.finditer(part.clean, capture.end(), position) if m['local'] == old), None)
+        if not hit or hit.start() - capture.end() > 2200:
+            continue
+        span = part.clean[capture.start():hit.end()]
+        if (len(re.findall(rf'\b{old}\b', span)) != 2
+                or macros & set(re.findall(IDENT, span))):
+            continue
+        definition, scaled = flow.at(capture.start('local')), flow.at(hit.start('local'))
+        if (not definition or not scaled or old not in definition.defines or old not in scaled.uses
+                or any(old in flow.nodes[n].live for n in scaled.successors)
+                or not _feeds_only_blend(flow, [definition], scaled, old)):
+            continue
+        restores = {(m['local'], _field(m['field'], part.clean[:part.opening]))
+                    for m in _RESTORE.finditer(part.clean, capture.end(), hit.start())}
+        for snapshot in _SNAPSHOT.finditer(part.clean, capture.end(), hit.start()):
+            holder = snapshot['local']
+            field = _field(snapshot['field'], part.clean[:part.opening])
+            if (not field or (holder, field) not in restores or holder in {old, gain}
+                    or (capture['callee'], register, field[1]) not in witnesses
+                    or holder not in flow.names or holder in macros
+                    or not _in_scope(part, declarations[holder].start(), capture.start('local'))
+                    or not _in_scope(part, declarations[holder].start(), hit.start('local'))
+                    or not flow.dead(holder, capture.start('local'))
+                    or not _only_capture_reaches(flow, parents, indexes[id(scaled)], indexes[id(definition)], old, holder)):
+                continue
+            choices.append([(*capture.span('local'), holder), (*hit.span('local'), holder)])
+    distinct = list(dict.fromkeys(tuple(change) for change in choices))
+    return distinct[0] if len(distinct) == 1 else ()
+
+
 def variants(source, name, rows, *, header=''):
     measured = _site_counts(rows)
     visible = _visible(source, name, header) if 1 <= sum(measured.values()) <= 4 else None
@@ -148,7 +242,9 @@ def variants(source, name, rows, *, header=''):
     except (ValueError, RecursionError):
         return []
     macros = set(re.findall(rf'(?m)^[ \t]*#\s*(?:define|undef)\s+({IDENT})', context))
-    sites = _blend_sites(part, flow, declarations, macros, {key[:2] for key in measured})
+    parents, indexes = _parents(flow)
+    sites = _blend_sites(part, flow, declarations, macros, {key[:2] for key in measured}, parents, indexes)
+    snapshots = _snapshot_witnesses(rows) if sites else set()
     proposals = []
     for donor in _DONOR.finditer(part.clean, part.opening + 1, part.end):
         holder = donor['holder']
@@ -167,7 +263,19 @@ def variants(source, name, rows, *, header=''):
                         or any(not _in_scope(part, declarations[holder].start(), m.start('var'))
                                or not flow.dead(holder, m.start('var')) for m in pair)):
                     continue
-                eligible.append((key, [m.span('var') for m in pair] + [hit.span('gain')]))
+                changes = [m.span('var') for m in pair] + [hit.span('gain')]
+                eligible.append((key, changes))
+                if snapshots:
+                    capture = _capture_companions(
+                        part, flow, declarations, macros, parents, indexes, hit['gain'], holder,
+                        pair[0].start(), register, snapshots,
+                    )
+                    if capture:
+                        entry = (PAIRED_FAMILY, edit(source, [*capture, *((a, b, holder) for a, b in changes)]))
+                        if entry not in proposals:
+                            proposals.append(entry)
+                            if len(proposals) == 4:
+                                return proposals
             count = sum(wanted.values())
             if len(eligible) > count + 2:
                 continue

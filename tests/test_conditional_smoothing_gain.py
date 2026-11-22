@@ -67,3 +67,56 @@ def test_emits_group_and_bounded_alternatives_if_allocator_interference_is_possi
     combined = combined.replace('    f32 gain;', '    f32 gain;\n    f32 other;')
     candidates = variants(combined, 'update', DEMAND * 2 + DONOR)
     assert [code.count(' * holder)') for _, code in candidates] == [2, 1, 1]
+
+
+CAPTURE_SOURCE = SOURCE.replace('    f32 holder;', '''\
+    typedef struct { f32 value; } LocalRecord;
+    f32 holder;
+    f32 snapshot;
+    f32 scaled;''').replace('    if (mode) {', '''\
+    gain = magnitude(axis);
+    if (probe(record)) {
+        snapshot = *((f32 *) (((char *) record) + 0x24));
+        notify(record);
+        *((f32 *) (((char *) record) + 0x24)) = snapshot;
+    } else {
+        scaled = gain * 5.0f;
+        report(scaled);
+    }
+    if (mode) {''')
+CAPTURE_ROWS = [
+    (' ', 'jal magnitude', 'jal magnitude'),
+    (' ', 'nop', 'nop'),
+    ('r', 'mov.s $f24, $f0', 'mov.s $f20, $f0'),
+    (' ', 'lwc1 $f20, 0x24($s0)', 'lwc1 $f20, 0x24($s0)'),
+    (' ', 'jal notify', 'jal notify'),
+    (' ', 'nop', 'nop'),
+    (' ', 'swc1 $f20, 0x24($s0)', 'swc1 $f20, 0x24($s0)'),
+]
+
+
+def _paired(code, rows):
+    return [text for label, text in variants(code, 'update', rows)
+            if label == 'split_capture_and_conditional_gain']
+
+
+def test_splits_the_earlier_capture_when_the_gain_rebind_alone_changes_scheduling():
+    [candidate] = _paired(CAPTURE_SOURCE, CAPTURE_ROWS + ROWS)
+    assert 'snapshot = magnitude(axis);' in candidate
+    assert 'scaled = snapshot * 5.0f;' in candidate
+    assert 'holder = 0.25f;' in candidate and 'holder = 0.5f;' in candidate
+    assert 'next = ((axis - current) * holder) + current;' in candidate
+    assert '*((f32 *) (((char *) record) + 0x24)) = snapshot;' in candidate
+
+
+def test_paired_variant_requires_the_saved_field_and_a_single_reaching_capture():
+    assert not _paired(CAPTURE_SOURCE, ROWS)
+    assert not _paired(CAPTURE_SOURCE, CAPTURE_ROWS[:-1] + ROWS)
+    for source in (
+        CAPTURE_SOURCE.replace('    gain = magnitude(axis);', '    if (mode) gain = magnitude(axis);'),
+        CAPTURE_SOURCE.replace('    if (probe(record)) {', '    if (probe(record)) {\n        report(snapshot);'),
+        CAPTURE_SOURCE.replace('        scaled = gain *', '        snapshot = axis;\n        scaled = gain *'),
+        CAPTURE_SOURCE.replace('        scaled = gain *', '        report(gain);\n        scaled = gain *'),
+        CAPTURE_SOURCE.replace('record) + 0x24)) = snapshot;', 'record) + 0x28)) = snapshot;'),
+    ):
+        assert not _paired(source, CAPTURE_ROWS + ROWS)
