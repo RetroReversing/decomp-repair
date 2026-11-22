@@ -50,7 +50,8 @@ def _groups(part, opening, position):
 
 
 def _sink(source, part, scalars, pointers, macros):
-    tail_test = re.compile(rf'&&\s*\(\s*({IDENT})\s*&&\s*({IDENT})\s*!=\s*NULL\s*\)')
+    # m2c wraps the comparison in its own parentheses: `(flag && (other != NULL))`.
+    tail_test = re.compile(rf'&&\s*\(\s*({IDENT})\s*&&\s*(?:\(\s*({IDENT})\s*!=\s*NULL\s*\)|({IDENT})\s*!=\s*NULL)\s*\)')
     guards = []
     for hit in re.finditer(r'\bif\s*\(', part.body):
         opening = part.opening + hit.end()
@@ -58,7 +59,8 @@ def _sink(source, part, scalars, pointers, macros):
         if end:
             guards.append((opening, end))
     for tail in tail_test.finditer(part.clean, part.opening + 1, part.end):
-        flag, other = tail.groups()
+        flag, bare, plain = tail.groups()
+        other = bare or plain
         if flag not in scalars or other not in pointers:
             continue
         uses = refs(part, scalars[flag])
