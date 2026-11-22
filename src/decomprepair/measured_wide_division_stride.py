@@ -21,6 +21,8 @@ def variants(source, name, header, rows):
         return []
     if int(t['low'], 0) != int(t['high'], 0) + 4:
         return []
+    if re.search(r'\b__repair_u64_word_aligned\b', header + '\n' + source):
+        return []
     part = view(source, name)
     if not part or re.search(r'\b(?:volatile|asm|__asm__)\b', part.clean):
         return []
@@ -52,8 +54,10 @@ def variants(source, name, header, rows):
     if '/*' in original or '//' in original:
         return []
     replacement = (f'{m["ptr"]} = (char *) {m["base"]} + (*{m["base"]} * 8);\n'
-                   f'    return (u32) __udivdi3(M2C_FIELD({m["ptr"]}, u64 *, {m["high"]}), {m["divisor"]})')
+                   f'    return (u32) __udivdi3(M2C_FIELD({m["ptr"]}, __repair_u64_word_aligned *, {m["high"]}), {m["divisor"]})')
     return [('measured_wide_division_stride', edit(source, [
-        (declaration.start(), declaration.end(), 'u64 __udivdi3(u64, u64);'),
+        (declaration.start(), declaration.end(),
+         'typedef u64 __attribute__((aligned(4))) __repair_u64_word_aligned;\n'
+         'u64 __udivdi3(u64, u64);'),
         (part.opening + 1 + m.start(), part.opening + 1 + m.end(), replacement),
     ]))]
