@@ -110,3 +110,21 @@ void f(void) {
     assert 'value = *(volatile s16 *)(fields + index);' in qualified
     assert not signed_halfword_load_variants(source, 'f', [('|', rows[0][1], rows[0][2].replace('fields', 'other'))])
     assert not signed_halfword_load_variants(source.replace('value = *', 'if (flag) value = *'), 'f', rows)
+
+
+def test_measured_halfword_update_requires_both_accesses():
+    source = '''extern char fields[];
+void f(int i) {
+    *(fields + i) = *(fields + i) & 0xFFEF;
+}
+'''
+    target = 'lhu $v1, %lo(fields)($v1)\nsh $v1, %lo(fields)($at)'
+    rows = [('|', 'lhu $v1, %lo(fields)($v1)', 'lbu $v1, %lo(fields)($v1)'),
+            ('|', 'sh $v1, %lo(fields)($at)', 'sb $v1, %lo(fields)($at)')]
+    (family, result), = w.measured_halfword_update_variants(source, 'f', '', target, rows)
+    assert family == 'symbol_access_width'
+    assert result.count('*(u16 *)(fields + i)') == 2
+    assert not w.measured_halfword_update_variants(source, 'f', '', target, rows[:1])
+    assert not w.measured_halfword_update_variants(source, 'f', '#define fields get()', target, rows)
+    assert not w.measured_halfword_update_variants(source.replace('int i)', 'int i, char *fields)'), 'f', '', target, rows)
+    assert not w.measured_halfword_update_variants(source, 'f', '', target + '\nlbu $v0, %lo(fields)($v0)', rows)
