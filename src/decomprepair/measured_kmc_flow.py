@@ -3,7 +3,7 @@
 import re
 import struct
 
-from . import goto_structure_repairs
+from . import goto_structure_repairs, masked_lookup_switch
 from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for, plain_repair_view, view
 from .mips import normalized_integer_lines
 from .pattern_repairs import close
@@ -992,6 +992,8 @@ def variants(source, name, header, rows):
         return [('measured_unsigned_table_guard', candidate)]
     if candidate := _byte_pair_scan(source, name, header, rows):
         return [('measured_byte_pair_scan', candidate)]
+    if candidate := masked_lookup_switch.candidate(source, name, header, rows):
+        return [('measured_masked_lookup_switch', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
