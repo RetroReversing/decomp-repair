@@ -3,7 +3,8 @@
 import re
 import struct
 
-from . import goto_structure_repairs, masked_lookup_switch
+from . import goto_structure_repairs, integer_abi, masked_lookup_switch
+from .call_lifetime_repairs import block_path
 from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for, plain_repair_view, view
 from .mips import normalized_integer_lines
 from .parameter_shape_repairs import _params, _signature
@@ -1249,7 +1250,46 @@ def _capture_loop_float_before_setup(source, name, header, rows):
     return edit(source, choices[0]) if len(choices) == 1 else None
 
 
+
+def _reversed_repeated_product(source, name, header, rows):
+    """Keep repeated source products in one operand order following reversed MIPS operands."""
+    multiply = re.compile(r'(?P<opcode>multu?)\s+(?P<left>\$\w+),\s*(?P<right>\$\w+)')
+    for _, target, actual in rows:
+        left, right = multiply.fullmatch(target), multiply.fullmatch(actual)
+        if (left and right and left['opcode'] == right['opcode']
+                and left['left'] != left['right']
+                and (left['left'], left['right']) == (right['right'], right['left'])):
+            break
+    else:
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    context = header + '\n' + source
+    macros = set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})', context))
+    if 'u32' in macros or integer_abi.scalar('u32', context, 'mips') != (32, False):
+        return None
+    locals_ = {decl['name'] for decl in locals_for(part)
+               if block_path(part, decl.start()) == [part.opening]
+               and integer_abi.scalar(decl['type'], context, 'mips') in {(32, False), (32, True)}}
+    product = re.compile(rf'\(\s*u32\s*\)\s*\(\s*(?P<expr>(?P<a>{IDENT})\s*\*\s*(?P<b>{IDENT}))'
+                         rf'\s*\)\s*\)\s*>>\s*(?P<shift>{NUMBER})')
+    groups = {}
+    for hit in product.finditer(part.clean, part.opening + 1, part.end - 1):
+        a, b = hit['a'], hit['b']
+        if a == b or not {a, b} <= locals_ - macros or not 0 < integer(hit['shift']) < 32:
+            continue
+        groups.setdefault((a, b), []).append(hit.span('expr'))
+    repeated = [(pair, edits) for pair, edits in groups.items() if len(edits) >= 2]
+    if len(repeated) != 1:
+        return None
+    (a, b), edits = repeated[0]
+    return edit(source, [(start, end, f'{b} * {a}') for start, end in edits])
+
+
 def variants(source, name, header, rows):
+    if candidate := _reversed_repeated_product(source, name, header, rows):
+        return [('arithmetic_operand_order', candidate)]
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
     if candidate := _inline_interpolated_product(source, name, rows):
