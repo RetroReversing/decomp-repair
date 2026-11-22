@@ -344,3 +344,33 @@ def test_reused_temporary_split_keeps_assignments_feeding_switch_join():
 }
 '''
     assert not any('value_b1 = h();' in text for _, text in reused_temp_split_repairs.variants(source, 'f'))
+
+
+def test_reused_temporary_restores_orphaned_switch_write():
+    source = '''void f(s32 which)
+{
+  s32 value;
+  s32 value_b1_;
+  switch ((u32)which) {
+  case 0:
+    value = 0;
+    break;
+  case 1:
+    value_b1_ = h();
+    break;
+  default:
+    value = 2;
+    break;
+  }
+  g(value);
+}
+'''
+    family = reused_temp_split_repairs.RESTORE_FAMILY
+
+    def restores(text):
+        return [candidate for label, candidate in reused_temp_split_repairs.variants(text, 'f') if label == family]
+
+    assert restores(source) == [source.replace('s32 value_b1_;', '').replace('value_b1_ = h();', 'value = h();')]
+    assert not restores(source.replace('value_b1_ = h();', 'value_b1_ = h();\n    g(value_b1_);'))
+    assert not restores(source.replace('g(value);', 'value = h();\n  g(value);'))
+    assert not restores(source.replace('value = 0;', 'g(0);').replace('value = 2;', 'g(2);'))
