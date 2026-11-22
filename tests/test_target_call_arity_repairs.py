@@ -209,3 +209,27 @@ def test_measured_call_drop_prioritizes_a_consumed_literal():
     assert not repair.measured_variants(source.replace('0x1000040', 'side_effect()'), 'f', asm, rows)
     assert not repair.measured_variants(source, 'f', asm, [('o', a, b.replace('convert', 'other'))
                                                         for a, b in zip(target, candidate)])
+
+
+def test_measured_mixed_calls_drop_only_a_plain_global_pointer():
+    from decomprepair import target_call_arity_repairs as repair
+
+    source = '''s32 lock();
+extern void *global_pointer;
+void f(void) {
+    s32 token = lock(1);
+    lock(token, global_pointer);
+}
+'''
+    target = ['jal lock', 'addiu $a0, $zero, 1', 'lui $a1, %hi(global_pointer)',
+              'lw $a1, %lo(global_pointer)($a1)', 'lw $v0, ($a1)', 'move $a0, $v0', 'jal lock', 'nop']
+    candidate = target[:-2] + ['lui $a1, %hi(global_pointer)', 'jal lock', 'lw $a1, %lo(global_pointer)($a1)']
+    rows = [('o', a, '') for a in target] + [('o', '', b) for b in candidate]
+    (family, result), = repair.measured_variants(source, 'f', '\n'.join(target), rows)
+    assert family == 'target_call_arity'
+    assert 'lock(1)' in result and 'lock(token)' in result
+    assert not repair.measured_variants(source.replace('void *global_pointer', 'void *volatile global_pointer'),
+                                        'f', '\n'.join(target), rows)
+    assert not repair.measured_variants(source, 'f', '\n'.join(target), rows, '#define global_pointer get()')
+    assert not repair.measured_variants(source.replace('void f(void)', 'void f(void *global_pointer)'),
+                                        'f', '\n'.join(target), rows)

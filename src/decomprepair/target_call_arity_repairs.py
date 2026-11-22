@@ -326,8 +326,8 @@ def _prototype(text, callee, name, change, edits, clean, parens):
     return text[:proto.start(1)] + new + text[proto.end(1):]
 
 
-def measured_variants(source, name, asm, rows):
-    """Try dropping a literal argument when the measured call setup no longer supplies it."""
+def measured_variants(source, name, asm, rows, header=""):
+    """Try dropping side-effect-free arguments absent from the measured call setup."""
     target = calls(asm, consumed=True)
     candidate = calls('\n'.join(row[2] for row in rows if row[2]), consumed=True)
     if len(target) != len(candidate) or not target:
@@ -356,15 +356,25 @@ def measured_variants(source, name, asm, rows):
         sites = list(re.finditer(r'\b' + re.escape(callee) + r'\s*\(', body))
         if not sites:
             continue
+        shapes = []
         for site in sites:
             start = site.end() - 1
             end = close(body, start)
             args = m2cfix._split_top_level(body[start + 1:end - 1]) if end else []
-            if len(args) <= count or any(not re.fullmatch(r'\s*(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*\s*', a)
-                                        for a in args[count:]):
+            if len(args) < count:
                 break
+            shapes.append((count, args))
         else:
-            safe[callee] = count
+            extras = [arg.strip() for _, args in shapes for arg in args[count:]]
+            literal = lambda arg: re.fullmatch(r'(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*', arg)
+            if extras and all(literal(arg) for arg in extras):
+                safe[callee] = count
+            elif _mixed_drop_safe(_blank(header + '\n' + source), shapes,
+                                  sum(len(args) > count for _, args in shapes)):
+                # A local with the same name could hide the nonvolatile global.
+                if not any(re.search(r'\b' + IDENT + r'\s+\**\s*' + re.escape(arg)
+                                     + r'\s*(?:[;,=)\[])', clean[span[0]:span[1]]) for arg in extras):
+                    safe[callee] = count
     if not safe:
         return []
     result = []
