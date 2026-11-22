@@ -31,7 +31,21 @@ def _parameters(clean, opening, name):
     m = list(re.finditer(rf'\b{re.escape(name)}\s*\(([^{{}};]*)\)\s*$', head))
     if not m:
         return []
-    return [p.strip().split()[-1].lstrip('*') for p in m[-1][1].split(',') if p.strip() and p.strip() != 'void']
+    names, depth, start, text = [], 0, 0, m[-1][1]
+    for index, char in enumerate(text + ','):
+        depth += char == '('
+        depth -= char == ')'
+        if char == ',' and depth == 0:
+            piece = text[start:index].strip()
+            start = index + 1
+            if not piece or piece == 'void':
+                continue
+            # a function pointer's name is the one in `(*name)(...)`; any other parameter's is its last word
+            pointer = re.search(r'\(\s*\*\s*(\w+)\s*\)\s*\(', piece)
+            last = re.search(r'(\w+)\s*(?:\[[^\]]*\])?\s*$', piece)
+            if pointer or last:
+                names.append((pointer or last)[1])
+    return names
 
 
 def alias_variants(source, name):

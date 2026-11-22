@@ -55,3 +55,13 @@ def test_result_copy_that_is_overwritten_before_it_is_read_is_dropped_from_the_c
 def test_a_copy_read_elsewhere_than_call_arguments_is_kept():
     assert not reuse.temp_variants(SOURCE.replace('g(0x85, result, low & 0xff);', 'g(0x85, result + 1, low & 0xff);'), 'f')
     assert not reuse.temp_variants(SOURCE.replace('    result = 0;\n', ''), 'f')
+
+
+def test_a_function_pointer_parameter_does_not_break_the_parameter_list():
+    """A ray test with a callback parameter, `s32 (*cb)(f32 *, f32 *, s32), s32 n`, raised `re.error` (the comma inside the
+    pointer's own parentheses split the list and the last word was `)`), which stopped every draft repair for it."""
+    from decomprepair import loop_param_reuse_repairs as r
+    source = 'void f(s32 (*cb)(f32 *, f32 *, s32), f32 *p, s32 n)\n{\n    s32 i;\n    for (i = 0; i < n; i++) {\n        cb(p, p, i);\n    }\n}\n'
+    part = r.view(source, 'f')
+    assert r._parameters(part.clean, part.opening, 'f') == ['cb', 'p', 'n']
+    assert isinstance(r.alias_variants(source, 'f'), list)
