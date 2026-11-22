@@ -9,9 +9,12 @@ judge decides.
 """
 import re
 
+from . import local_flow
+from .allocator_call_guards import dominators
 from .integer_repair_support import locals_for, view
 from .line_scan import apply, lines, mentions
 from .pattern_repairs import close
+from .phase_lifetime_repairs import reaching
 
 FAMILY = 'reused_temp_split'
 RESTORE_FAMILY = 'switch_temporary_restore'
@@ -75,6 +78,8 @@ def variants(source, name):
         return []
     decls = locals_for(part)
     body = lines(part, source)
+    flow = local_flow.analyze(source, name)
+    reachable = set(dominators(flow)) if flow else set()
     out = _restore_switch_writes(source, part, decls)
     labels = {label[1]: label.start(1) for label in _LABEL.finditer(part.clean, part.opening, part.end)}
     jumps = [(jump.start(), labels[jump[1]]) for jump in _GOTO.finditer(part.clean, part.opening, part.end)
@@ -87,6 +92,7 @@ def variants(source, name):
                 and not mentions(l.stripped.split('=', 1)[1], local)]
         if len(sets) < 2:
             continue
+        incoming = reaching(flow, local, reachable) if flow and local in flow.names else {}
         for k in range(1, len(sets)):
             end = sets[k + 1] if k + 1 < len(sets) else len(body)
             fresh = f'{local}_b{k}'
@@ -96,6 +102,19 @@ def variants(source, name):
             # An incoming goto can skip the write that initializes the new local.
             # A jump to a label before the split still executes that write.
             if any(start < target < stop and not start <= jump < stop for jump, target in jumps):
+                continue
+            # Every read must keep the same reaching definitions after the rename,
+            # including reads at a join reached from another branch and reads
+            # outside the textual span fed by a write inside it.
+            if not incoming:
+                continue
+            split_defs = {i for i in reachable if local in flow.nodes[i].defines
+                          and start <= flow.nodes[i].start < stop}
+            if not split_defs or any(
+                (not incoming[i] or not incoming[i] <= split_defs) if start <= node.start < stop
+                else bool(incoming[i] & split_defs)
+                for i in reachable for node in [flow.nodes[i]] if local in node.uses
+            ):
                 continue
             span = part.clean[start:stop]
             edits = [(start + m.start(), start + m.end(), fresh) for m in re.finditer(rf'(?<![\w.>]){re.escape(local)}\b', span)]
