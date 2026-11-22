@@ -16,9 +16,10 @@ from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'or_chain_order'
 FAMILIES = (FAMILY,)
-LIMIT = 8
+LIMIT = 10
 PER_CHAIN = 6
 LITERAL = re.compile(r'\s*(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*\s*\Z')
+PLAIN = re.compile(rf'{IDENT}\Z')
 # anything that is not a plain arithmetic operand: calls, assignments, comparisons, logic, the conditional
 UNSAFE = re.compile(rf'{IDENT}\s*\(|[^=!<>]=[^=]|\+\+|--|==|!=|<=|>=|&&|\|\||\?|[^<]<[^<]|[^>]>[^>]|\bvolatile\b|[,;{{}}]')
 
@@ -93,6 +94,14 @@ def variants(source, name, header=''):
     if not part or re.search(r'\b(?:asm|__asm__|goto)\b', part.body):
         return []
     clean = part.clean
+    # The OR identity below duplicates a read. Only a unique unsigned local
+    # or parameter is safe: a volatile, macro, field access, or shadow is not.
+    unsigned = {}
+    for decl in re.finditer(rf'\b(?P<type>u32|unsigned\s+int|unsigned)\s+(?P<name>{IDENT})\b', clean):
+        variable = decl['name']
+        unsigned[variable] = unsigned.get(variable, 0) + 1
+    macros = set(re.findall(rf'^\s*#\s*define\s+({IDENT})\b', header + '\n' + source, re.M))
+    volatile_u32 = re.search(r'\btypedef\b[^;]*\bvolatile\b[^;]*\bu32\s*;', header + '\n' + source)
     spans = _chains(clean, part.opening + 1, part.end - 1)
     # keep the outermost chains: a span inside another one belongs to the larger chain
     spans = [s for s in spans if len(_split(clean[s[0]:s[1]]) or []) > 1]
@@ -126,6 +135,36 @@ def variants(source, name, header=''):
             count += 1
             if count == PER_CHAIN:
                 break
+        # GCC can coalesce an OR result into a different input register when
+        # the literal is hidden until combine: x | (~x & K) == x | K.
+        # Preserve every other operand's order and offer one duplicated local
+        # at a time. In particular, never duplicate a field or volatile read.
+        # A hex literal of at most 32 bits (without a long suffix) has the
+        # same unsigned-int width as the selected u32 on the target. A wider
+        # literal could change the width at which ~chosen is evaluated.
+        identity_literal = re.fullmatch(r'0[xX][0-9a-fA-F]{1,8}[uU]?', literals[0].strip())
+        if identity_literal and not re.search(r'\bvolatile\b', part.body):
+            insertion = len(result) - count + min(count, 2)
+            for chosen in rest:
+                chosen = chosen.strip()
+                if not PLAIN.fullmatch(chosen) or unsigned.get(chosen) != 1 or chosen in macros:
+                    continue
+                if volatile_u32 and re.search(rf'\bu32\s+{re.escape(chosen)}\b', clean):
+                    continue
+                declarations = re.findall(rf'\b{IDENT}\s+(?:\*\s*)*{re.escape(chosen)}\b', clean)
+                if len(declarations) != 1:
+                    continue
+                if re.search(rf'\bvolatile\s+(?:u32|unsigned(?:\s+int)?)\s+{re.escape(chosen)}\b', clean):
+                    continue
+                replaced = [f'((~{chosen} & {literals[0].strip()}) | {chosen})' if o.strip() == chosen
+                            else o.strip() for o in rest]
+                if sum(o.strip() == chosen for o in rest) != 1:
+                    continue
+                source_text = source[first:last]
+                lead = source_text[:len(source_text) - len(source_text.lstrip())]
+                trail = source_text[len(source_text.rstrip()):]
+                result.insert(insertion, (FAMILY, edit(source, [(first, last, lead + ' | '.join(replaced) + trail)])))
+                insertion += 1
         if len(result) >= LIMIT:
             break
     return result[:LIMIT]

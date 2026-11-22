@@ -38,3 +38,33 @@ def test_two_operands_or_two_literals_are_left_alone():
 
 def test_a_logical_or_is_not_a_bit_chain():
     assert _texts(DRAFT.replace('((var_v0 * 4) | 0xF6000000) | y', 'x || y || 3')) == []
+
+
+def test_unsigned_or_identity_is_offered_without_changing_other_operands():
+    source = '''void f(u32 shade) {
+        u32 high = shade << 16; u32 low = shade << 8;
+        do { out = (((0xff000000 | high) | low) | shade); } while (0);
+    }'''
+    out = _texts(source)
+    assert any('high | ((~low & 0xff000000) | low) | shade' in t for t in out)
+
+
+def test_or_identity_refuses_volatile_shadowed_and_macro_operands():
+    base = 'u32 f(u32 a, u32 b) { return (0xff000000 | a | b); }'
+    assert not any('~a' in t for t in _texts(base.replace('u32 a', 'volatile u32 a')))
+    shadowed = 'u32 f(u32 a, u32 b) { { s32 a; } return (0xff000000 | a | b); }'
+    assert not any('~a' in t for t in _texts(shadowed))
+    assert not any('~a' in t for t in _texts(shadowed.replace('s32 a;', 'u32 *a;')))
+    assert not any('~a' in t for _, t in r.variants(base, 'f', '#define a read()'))
+    assert not any('~a' in t for _, t in r.variants(base, 'f', 'typedef volatile unsigned int u32;'))
+    assert not any('~a' in t for t in _texts('u32 f(s32 a, u32 b) { return (0xff000000 | a | b); }'))
+
+
+def test_or_identity_keeps_the_unsigned_int_width():
+    source = 'u32 f(u32 a, u32 b) { return (0xff000000 | a | b); }'
+    assert any('~a' in t for t in _texts(source))
+    for literal in ('0xff000000UL', '0x100000000', '4294967295'):
+        assert not any('~a' in t for t in _texts(source.replace('0xff000000', literal)))
+    for value in (0, 1, 0xff, 0x80000000, 0xffffffff):
+        for mask in (0, 0xff, 0xff000000, 0xffffffff):
+            assert value | ((~value & 0xffffffff) & mask) == value | mask
