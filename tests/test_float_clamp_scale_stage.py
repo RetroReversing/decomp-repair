@@ -47,3 +47,32 @@ def test_rejects_additional_observable_local_write():
                                        '    f32 axis, old;\n    volatile f32 result;'), 'adjust', ROWS)
     assert not variants(SOURCE.replace('result = (((axis * 32.0f) - old)',
                                        'old = (((axis * 32.0f) - old)'), 'adjust', ROWS)
+
+
+def test_reloaded_axis_can_hold_a_scale_with_both_literal_words():
+    from decomprepair.float_clamp_scale_stage import IN_PLACE
+
+    helper = 'static inline f32 *field(void *base) {\n    return (f32 *) (((char *) base) + 0x48);\n}\n'
+    source = helper + SOURCE.replace('old = *((f32 *) (((char *) record) + 0x48))', 'old = *field(record)')
+    source = source.replace('axis * 32.0f', 'axis * 0.12f')
+    source = source[:source.rindex('}')] + '''
+    else if (result > 32.0f) {
+        *field(record) = 32.0f;
+    }
+    axis = *field(record);
+    report(axis);
+}
+'''
+    rows = [(' ', 'lui $at, 0x3df5', 'lui $at, 0x3df5'),
+            (' ', 'ori $at, $at, 0xc28f', 'ori $at, $at, 0xc28f')] + ROWS[1:]
+    [candidate] = [text for family, text in variants(source, 'adjust', rows) if family == IN_PLACE]
+    assert 'axis = axis * 0.12f;\n    old = *field(record);' in candidate
+    assert 'result = ((axis - old)' in candidate
+
+    for changed in (
+        source.replace('axis = *field(record);', 'report(axis);\n    axis = *field(record);'),
+        source.replace('axis = *field(record);', 'axis = *field(other);'),
+        source.replace('*field(record) = 32.0f;', '*field(other) = 32.0f;'),
+        source.replace('axis * 0.12f', 'axis * 0.13f'),
+    ):
+        assert all(family != IN_PLACE for family, _ in variants(changed, 'adjust', rows))
