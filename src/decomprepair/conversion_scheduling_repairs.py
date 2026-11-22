@@ -11,7 +11,7 @@ from .call_lifetime_repairs import block_path
 from .csource import _code_only
 from .integer_repair_support import IDENT, INTEGER, edit, integer, locals_for, refs, view
 
-FAMILIES = ('debug_conversion_tail', 'delayed_narrow_capture', 'shared_shift_mask')
+FAMILIES = ('debug_conversion_tail', 'delayed_narrow_capture', 'shared_shift_mask', 'narrow_zero_test_shift')
 LIMIT = 8
 
 
@@ -124,6 +124,52 @@ def shift_masks(source, name, header='', arch=''):
     return result
 
 
+def narrow_zero_tests(source, name, header='', arch='', asm=''):
+    """Expose the low bits of a narrow zero test without requiring an arithmetic right shift."""
+    if arch != 'mips' or not asm:
+        return []
+    widths = {width for width, shift in ((8, 24), (16, 16)) if re.search(
+        rf'\bsll\s+(\$\w+),[^\n]+,\s*(?:{shift}|0x{shift:x})\s*\n'
+        rf'[^\n]*?\bsra\s+\$\w+,\s*\1,\s*(?:{shift}|0x{shift:x})\b', asm)}
+    part = _part(source, name, header) if widths else None
+    if not part:
+        return []
+    context = header + '\n' + source
+    pattern = re.compile(
+        rf'\bif\s*\(\s*(?P<operand>\(\s*\(\s*(?P<type>{INTEGER})\s*\)'
+        rf'\s*(?P<value>{IDENT})\s*\))\s*(?P<op>==|!=)\s*0\s*\)')
+    locals_ = {decl['name']: decl for decl in locals_for(part)
+               if integer_abi.scalar(decl['type'], context, arch)}
+    groups = {}
+    for test in pattern.finditer(part.clean, part.opening + 1, part.end - 1):
+        narrow = integer_abi.scalar(test['type'], context, arch)
+        if not narrow or not narrow[1] or narrow[0] not in widths:
+            continue
+        value = test['value']
+        decl = locals_.get(value)
+        if not decl or decl.end() > test.start():
+            continue
+        scope = block_path(part, decl.start())
+        if block_path(part, test.start())[:len(scope)] != scope:
+            continue
+        if re.search(rf'^\s*#\s*define[^\n]*\b{value}\b', context, re.M):
+            continue
+        groups.setdefault((value, narrow[0]), []).append(test)
+    result = []
+    for (value, width), tests in groups.items():
+        if {test['op'] for test in tests} != {'==', '!='}:
+            continue
+        # MIPS GCC's signed narrowing and the unsigned shift both discard the
+        # high bits. A zero comparison only observes whether any low bit is set.
+        replacement = f'((unsigned int){value} << {32 - width})'
+        changes = [(*test.span('operand'), replacement) for test in tests]
+        result.append((FAMILIES[3], edit(source, changes)))
+        if len(result) == LIMIT:
+            break
+    return result
+
+
 def variants(source,name,header='',arch='',asm='',flags=()):
     return (conversion_tails(source,name,header,arch,asm,flags)
-            + delayed_captures(source,name,header,arch) + shift_masks(source,name,header,arch))
+            + delayed_captures(source,name,header,arch) + shift_masks(source,name,header,arch)
+            + narrow_zero_tests(source,name,header,arch,asm))
