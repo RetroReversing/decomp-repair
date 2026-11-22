@@ -223,18 +223,19 @@ def _split_staged_capture(source, part, first, helpers, macros, swapped):
     return options
 
 
-def _split_store_order(source, part, mismatched, macros):
-    """Keep split reads and adds in place while reordering disjoint stores."""
+def split_field_updates(part, macros):
+    """Read fully staged field additions followed by their disjoint stores."""
     for first in _READ.finditer(part.clean, part.opening + 1, part.end):
         pos = first.start()
-        reads, stores = [], []
+        reads, additions, stores = [], [], []
         while len(reads) < 8 and (read := _READ.match(part.clean, pos, part.end)):
             addition = re.compile(rf'(?m)^[ \t]*{read["local"]}\s*=\s*\({read["field_type"]}\)\s*\(\s*'
-                                  rf'{read["local"]}\s*\+\s*{IDENT}(?:\.{IDENT})?\s*\)\s*;[ \t]*\n')
+                                  rf'{read["local"]}\s*\+\s*(?P<delta>{IDENT}(?:\.{IDENT})?)\s*\)\s*;[ \t]*\n')
             found = addition.match(part.clean, read.end(), part.end)
             if not found:
                 break
             reads.append(read)
+            additions.append(found)
             pos = found.end()
         while len(stores) < 8 and (store := _STORE.match(part.clean, pos, part.end)):
             stores.append(store)
@@ -248,9 +249,16 @@ def _split_store_order(source, part, mismatched, macros):
         ]
         if (len(offsets) != len(stores) or any(offset % 4 for offset in offsets) or read_fields != store_fields
                 or len({hit['base'] for hit in stores}) != 1
-                or not mismatched.intersection(offsets)
                 or macros & ({first['base']} | {hit['local'] for hit in reads})
                 or any(not _plain_scalar(part, hit['local'], hit['field_type'], hit.start()) for hit in reads)):
+            continue
+        yield reads, additions, stores
+
+
+def _split_store_order(source, part, mismatched, macros):
+    """Keep split reads and adds in place while reordering disjoint stores."""
+    for _, _, stores in split_field_updates(part, macros):
+        if not mismatched.intersection(int(hit['offset'], 16) for hit in stores):
             continue
         options = []
         for moved in range(1, len(stores) - 1):
