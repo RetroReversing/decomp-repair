@@ -135,7 +135,7 @@ def _scalar_copies(part, setup, slot, uses, writeback, fields):
     return matched == 2
 
 
-def _writeback_edit(source, part, setup, local, macros, fields):
+def _writeback_edits(source, part, setup, local, macros, fields):
     key = f'{setup["record"]}.{setup["member"]}'
     operand_order = (setup['x'], setup['y'], setup['z'], setup['global'], key, setup['view'])
     for reads, additions, stores in split_field_updates(part, macros):
@@ -149,11 +149,16 @@ def _writeback_edit(source, part, setup, local, macros, fields):
         spans = [source[by_value[op][0].start():by_value[op][1].end()] for op in operand_order]
         update = ''.join(spans).replace(key, local)
         by_result = {hit['local']: hit for hit in stores}
-        for index in (5, 4, 1, 0, 2, 3):
-            store = by_result[by_value[operand_order[index]][0]['local']]
-            update += source[store.start():store.end()]
-        return reads[0].start(), stores[-1].end(), update
-    return None
+        store_spans = []
+        for operand in operand_order:
+            store = by_result[by_value[operand][0]['local']]
+            store_spans.append(source[store.start():store.end()])
+        # The scheduler uses store order to break ties between independent updates.
+        return [
+            (reads[0].start(), stores[-1].end(), update + ''.join(store_spans[index] for index in order))
+            for order in ((5, 4, 1, 0, 2, 3), (5, 4, 0, 1, 3, 2))
+        ]
+    return []
 
 
 def variants(source, name, rows, header='', max_bytes=65536):
@@ -196,8 +201,8 @@ def variants(source, name, rows, header='', max_bytes=65536):
         pad = setup['pad']
         local = fresh(source, header, 'speed_delta')
         late, uses = sites
-        writeback = _writeback_edit(source, part, setup, local, macros, fields)
-        if not writeback or not _scalar_copies(part, setup, slot, uses, writeback, fields):
+        writebacks = _writeback_edits(source, part, setup, local, macros, fields)
+        if not writebacks or not _scalar_copies(part, setup, slot, uses, writebacks[0], fields):
             continue
         before = f'{pad}{setup["owner"]}.{setup["bits"]} = {setup["zero"]};\n{pad}{{\n'
         before += f'{pad}{setup["kind"]} {setup["x"]} = 0.0f;\n{pad}{local} = {setup["view"]};\n'
@@ -210,9 +215,13 @@ def variants(source, name, rows, header='', max_bytes=65536):
         # The later combine pass removes the shift pair on that known zero.
         redefine = (late.start('insert'), late.start('insert'), f'{late["insert"]}{raw} = ({raw} >> 16) << 16;\n')
         separate = [(pointer, pointer, f'  {setup["kind"]} {local};\n'), (*frame_tail.span(), '')]
+        writeback_start, writeback_end, _ = writebacks[0]
         accesses = [(*hit.span(), local) for hit in uses
-                    if not setup.start() <= hit.start() < setup.end() and not writeback[0] <= hit.start() < writeback[1]]
-        trial = edit(source, [*separate, initialize, redefine, writeback, *accesses])
-        if len(trial.encode()) <= max_bytes:
-            return [(FAMILY, trial)]
+                    if not setup.start() <= hit.start() < setup.end()
+                    and not writeback_start <= hit.start() < writeback_end]
+        trials = [edit(source, [*separate, initialize, redefine, writeback, *accesses])
+                  for writeback in writebacks]
+        allowed = [(FAMILY, trial) for trial in trials if len(trial.encode()) <= max_bytes]
+        if allowed:
+            return allowed
     return []

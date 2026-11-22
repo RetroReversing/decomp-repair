@@ -68,14 +68,19 @@ ROWS = [
 
 
 def test_native_slot_reopens_reload_and_separates_the_two_zero_definitions():
-    [(family, candidate)] = variants(SOURCE, 'f', ROWS)
-    assert family == FAMILY
+    [(family, candidate), (alternate_family, alternate)] = variants(SOURCE, 'f', ROWS)
+    assert family == alternate_family == FAMILY
     assert candidate.index('float speed_delta;') < candidate.index('void *path;')
     assert 'unused[2]' not in candidate
     assert 'frame.speed' not in candidate
     assert 'heading = cleared.number;\n            cleared.bits = (cleared.bits >> 16) << 16;' in candidate
     assert candidate.index('z_value = *') < candidate.index('heading_value = *')
-    assert candidate.index(' = roll_value;') < candidate.index(' = speed_value;') < candidate.index(' = y_value;')
+    first_order = ('roll', 'speed', 'y', 'x', 'z', 'heading')
+    alternate_order = ('roll', 'speed', 'x', 'y', 'heading', 'z')
+    for trial, order in ((candidate, first_order), (alternate, alternate_order)):
+        indexes = [trial.index(f' = {name}_value;') for name in order]
+        assert indexes == sorted(indexes)
+        assert 'frame.speed' not in trial
 
 
 def test_native_slot_requires_two_reloads_and_the_matching_paired_reset():
