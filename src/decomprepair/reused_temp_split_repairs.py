@@ -136,7 +136,7 @@ def guarded_scope_variants(source, name):
         if family != FAMILY:
             continue
         part = view(candidate, name)
-        if not part or re.search(r'\b(?:goto|volatile|asm|__asm__)\b', part.body):
+        if not part or re.search(r'\b(?:goto|volatile|asm|__asm__|setjmp|longjmp)\b', part.body):
             continue
         # Restrict to generated split locals; the split itself is checked by
         # variants' reaching-definition proof before this wrapper is offered.
@@ -169,6 +169,11 @@ def guarded_scope_variants(source, name):
                 if (not end or not opening < first_pos < second_pos < end
                         or re.match(r'\s*else\b', part.clean[end:])
                         or re.search(r'\b(?:break|continue|return)\b', part.clean[opening:end])):
+                    continue
+                # An opaque statement macro could expand to a break or continue.
+                # M2C_FIELD is the supported expression macro in generated C.
+                macro_calls = re.findall(r'\b([A-Z_]\w*)\s*\(', part.clean[opening:end])
+                if any(macro != 'M2C_FIELD' for macro in macro_calls):
                     continue
                 indent = candidate[line_start:start]
                 wrapped = ('do {\n' + candidate[start:end] + '\n' + indent + '} while (0);')

@@ -33,3 +33,8 @@ def test_does_not_change_break_or_continue_targets():
 def test_does_not_wrap_a_guard_entered_by_a_goto():
     source = SOURCE.replace('    if (p != 0)', '    goto label;\n    if (p != 0)').replace('value = *p;', 'label: value = *p;')
     assert not guarded_scope_variants(source, 'f')
+
+
+def test_does_not_wrap_an_opaque_statement_macro():
+    source = SOURCE.replace('sink(value);', 'MAY_BREAK();', 1)
+    assert not guarded_scope_variants(source, 'f')
