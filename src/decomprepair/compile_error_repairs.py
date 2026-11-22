@@ -8,6 +8,11 @@ repair here changes only that line, and only the expression the message is about
 * `invalid type argument of `unary *'` / `wrong type argument to bit-complement`: the operand is an address held in an
   integer, so it is cast to a word pointer / read as an integer.
 * `called object is not a function`: `*(address)(args)` calls the function pointer stored at `address`.
+* `void value not ignored` / `invalid use of void expression`: a `*(a + b)` that m2c left untyped reads a value of the
+  type the assigned local has (a byte when that is not known).
+* `arithmetic on pointer to an incomplete type`: the same as an invalid binary `+`.
+* `pointer value used where a floating point value was expected`: `(f32) p` converts what `p` holds.
+* `incompatible type for argument N of `f'`: the callee's declaration drops its parameter list.
 
 The compiler can't be told which of several operators on a line is the wrong one, so `attempt` picks the nth: a caller
 that compiles again, and meets the same message on the same line, asks for the next. Nothing here runs a compiler.
@@ -206,8 +211,48 @@ def _call_through_table(tokens, attempt):
     return [(tokens.starts[at], '((s32 (*)()) '), (tokens.starts[at + 1], '(s32 *)'), (tokens.ends[close], ')')]
 
 
+_SCALARS = ('f32', 'f64', 's8', 'u8', 's16', 'u16', 's32', 'u32', 's64', 'u64')
+
+
+def _read_type(source, line_text):
+    """The type a `*(a + b)` of unknown type is read as: that of the local it is assigned to, else a byte."""
+    target = re.match(r'\s*(\w+)\s*=[^=]', line_text)
+    if target:
+        declared = re.search(r'^[ \t]+(' + '|'.join(_SCALARS) + r')[ \t]+' + re.escape(target[1]) + r'\b', source, re.M)
+        if declared:
+            return declared[1]
+    return 'u8'
+
+
+def _untyped_read(tokens, attempt, kind):
+    places = [at for at in _unary_operators(tokens, '*') if tokens[at + 1:at + 2] == ['(']]
+    if attempt >= len(places):
+        return None
+    return [(tokens.starts[places[attempt] + 1], f'({kind} *)')]
+
+
+def _float_conversion(tokens, attempt):
+    places = [i for i in range(len(tokens) - 3)
+              if tokens[i] == '(' and tokens[i + 1] in ('f32', 'f64') and tokens[i + 2] == ')'
+              and _atom_after(tokens, i + 3) is not None]
+    if attempt >= len(places):
+        return None
+    return [(tokens.starts[places[attempt] + 3], '(s32)')]
+
+
+def _drop_parameters(source, name):
+    """`source` with the declaration of `name` left without a parameter list, or None."""
+    declaration = re.compile(r'^(?P<head>[A-Za-z_][^\n;()=]*\b' + re.escape(name) + r')\((?P<params>[^()\n]+)\);', re.M)
+    found = declaration.search(source)
+    if not found or found['params'].strip() == 'void':
+        return None
+    return source[:found.start()] + found['head'] + '();' + source[found.end():]
+
+
 def repair(source, line, message, attempt=0):
     """`source` with line `line` (1-based) changed for the compiler's `message`, or None when nothing fits."""
+    if (found := re.search(r"incompatible type for argument \d+ of `(\w+)'", message)):
+        return _drop_parameters(source, found[1]) if attempt == 0 else None
     lines = source.split('\n')
     if not 1 <= line <= len(lines):
         return None
@@ -216,6 +261,12 @@ def repair(source, line, message, attempt=0):
     tokens = _tokens(code)
     if found := _BINARY.search(message):
         edits = _binary(tokens, found[1], attempt)
+    elif 'arithmetic on pointer to an incomplete type' in message:
+        edits = _binary(tokens, '+', attempt) or _binary(tokens, '-', attempt - len(_binary_operators(tokens, '+')))
+    elif 'void value not ignored' in message or 'invalid use of void expression' in message:
+        edits = _untyped_read(tokens, attempt, _read_type(source, code))
+    elif 'pointer value used where a floating point value was expected' in message:
+        edits = _float_conversion(tokens, attempt)
     elif 'invalid type argument of `unary *' in message:
         edits = _dereference(tokens, attempt, '(s32 *)')
     elif 'wrong type argument to bit-complement' in message:
