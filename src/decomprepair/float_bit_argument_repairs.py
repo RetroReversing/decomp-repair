@@ -132,3 +132,31 @@ def variants(source, name, header='', arch='mips', flags=()):
         result.append((FAMILY, apply(edits)))  # every float-bit argument at once: what the original most likely had
     result.extend((FAMILY, apply([group])) for group in edits)
     return result[:LIMIT]
+
+
+def target_variants(source, name, header, arch, flags, rows):
+    """Prioritize a sole float argument when the target uses the float argument register."""
+    if '-msoft-float' in (flags or ()):
+        return []
+    target, candidate = ('\n'.join(' '.join(row[side].split()) for row in rows if row[side]) for side in (1, 2))
+    # The integer draft places its literal in the call's delay slot, while the
+    # target loads the same upper half through $at into the first float register.
+    pattern = (r'lui \$at, (0x[0-9a-fA-F]+|[0-9]+)\nmtc1 \$at, \$(?:f12|fa0)\n'
+               r'jal (' + IDENT + r')\n')
+    found = []
+    generated = None
+    for match in re.finditer(pattern, target):
+        bits = int(match[1], 0) << 16
+        literal = float_text(bits)
+        callee = re.escape(match[2])
+        if (not literal or not re.search(r'jal ' + callee + r'\nlui \$a0, ' + re.escape(match[1]) + r'(?:\n|$)',
+                                         candidate)):
+            continue
+        if generated is None:
+            generated = variants(source, name, header, arch, flags)
+        for family, proposed in reversed(generated):
+            if re.search(r'\b' + callee + r'\s*\(\s*' + re.escape(literal) + r'\s*\)', _blank(proposed)):
+                if (family, proposed) not in found:
+                    found.append((family, proposed))
+                break
+    return found
