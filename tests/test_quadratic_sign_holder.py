@@ -1,6 +1,6 @@
 """Keep the sign in a witnessed dead local while squaring a sampled axis."""
 
-from decomprepair.quadratic_sign_holder import FAMILY, variants
+from decomprepair.quadratic_sign_holder import CALL_AXIS, FAMILY, variants
 
 SOURCE = """\
 float sample(int port, int x, int y);
@@ -76,3 +76,50 @@ def test_groups_both_measured_sites_and_rejects_an_ambiguous_extra_site():
     assert family == FAMILY
     assert changed.count('if (held < 0.0f)') == 2
     assert not variants(SOURCE[:end] + block * 2 + SOURCE[end:], 'track', linked_twice)
+
+
+CALL_SOURCE = SOURCE.replace('    float held;', '    float held;\n    float scratch_result;').replace(
+    'axis = sample(port, 4, 5);\n'
+    '        scratch = axis;\n'
+    '        axis = (axis * axis) * 2.5f;\n'
+    '        if (scratch < 0.0f) {\n'
+    '            axis = -axis;\n'
+    '        }\n'
+    '        record(axis);',
+    'axis = sample(port, 0, 1);\n'
+    '        scratch = axis;\n'
+    '        axis = axis * 2.5f;\n'
+    '        if (mode == 1) {\n'
+    '            apply(port, scratch, 0.0f);\n'
+    '        } else {\n'
+    '            scratch_result = adjust(scratch);\n'
+    '            apply(port, scratch, scratch_result);\n'
+    '        }',
+)
+CALL_ROWS = [
+    'move $a1, $zero', 'jal sample', 'addiu $a2, $zero, 1',
+    'mov.s $f26, $f0', 'mov.s $f24, $f26', 'nop', 'nop', 'nop', 'nop', 'nop', 'nop', 'nop', 'nop',
+    'mfc1 $a1, $f24', 'jal apply', 'nop',
+    'jal adjust', 'mov.s $f12, $f24', 'mfc1 $a1, $f24', 'jal apply', 'nop',
+]
+CALL_ROWS = [(' ' if '$f24' not in op else 'r', op, op.replace('$f24', '$f22')) for op in CALL_ROWS]
+CALL_ROWS += [(' ', op, op) for op in DONOR]
+
+
+def test_reuses_the_same_holder_through_word_and_float_arguments():
+    [(label, changed)] = variants(CALL_SOURCE, 'track', CALL_ROWS)
+    assert label == CALL_AXIS
+    assert 'held = axis;' in changed
+    assert 'apply(port, held, 0.0f);' in changed
+    assert 'scratch_result = adjust(held);' in changed
+    assert 'apply(port, held, scratch_result);' in changed
+
+
+def test_rejects_unobserved_consumers_live_carrier_and_incoming_labels():
+    assert not variants(CALL_SOURCE.replace('adjust(scratch)', 'unseen(scratch)'), 'track', CALL_ROWS)
+    assert not variants(CALL_SOURCE.replace('        axis = axis * 2.5f;', '        axis = axis * held;'),
+                        'track', CALL_ROWS)
+    assert not variants(CALL_SOURCE.replace('scratch_result = adjust', 'again: scratch_result = adjust'),
+                        'track', CALL_ROWS)
+    no_float_slot = [(mark, left, left if 'mov.s $f12' in left else right) for mark, left, right in CALL_ROWS]
+    assert not variants(CALL_SOURCE, 'track', no_float_slot)
