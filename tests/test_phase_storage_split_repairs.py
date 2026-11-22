@@ -50,3 +50,11 @@ def test_a_union_used_whole_or_a_function_without_one_is_left_alone():
     assert not variants(SOURCE.replace('fill(store.pointer);', 'fill(&store);'), 'f')
     assert not variants(SOURCE.replace('fill(store.pointer);', 'copy(store);'), 'f')
     assert not variants('void f(void) { g(); }\n', 'f')
+
+
+def test_a_union_with_a_brace_initializer_gives_its_first_member_the_value():
+    source = SOURCE.replace('  } store;\n  store.pointer = arg0;', '  } store = {&table[1]};\n  store.pointer = arg0;')
+    text = _by_family(source)[FAMILY]
+    assert 'union' not in text and 'store.' not in text
+    assert 's32 *store_pointer = &table[1];' in text or 's32 * store_pointer = &table[1];' in text
+    assert 's32 store_value;' in text

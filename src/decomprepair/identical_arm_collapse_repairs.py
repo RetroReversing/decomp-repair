@@ -7,7 +7,8 @@ compiler folds the equal arms but keeps the condition's pseudo alive: on a 180-i
 (`gcc-2.7.2-kmc -G0 -mips3 -mgp32 -mfp32 -O2`) removing the dead `if (temp)` took 25 to 15, and it was what let two
 pointer locals be merged (15 -> 0). Only arms made of plain statements (no braces inside) that read the same after
 the whitespace is normalised, and a condition without a call, an assignment or an increment, are collapsed. The
-statements stay where the `if` was. A candidate for the exact judge, never a verdict."""
+statements stay where the `if` was (inside braces of their own when the `if` was the body of an `else`, which kept only the
+first of them before). A candidate for the exact judge, never a verdict."""
 import re
 
 from .integer_repair_support import edit, view
@@ -32,5 +33,10 @@ def variants(source, name, header=''):
         body = source[m.start('a'):m.end('a')]
         indent = re.match(r'[ \t]*', part.clean[part.clean.rfind('\n', 0, m.start())+1:m.start()])[0]
         lines = [line.strip() for line in body.strip().split('\n') if line.strip()]
-        out.append(edit(source, [(m.start(), m.end(), ('\n' + indent).join(lines))]))
+        text = ('\n' + indent).join(lines)
+        before = part.clean[:m.start()].rstrip()
+        if len(lines) > 1 and (before.endswith('else') or before.endswith(')')):
+            # the `if` is the unbraced body of an `else` or another statement: the arm's statements need their braces
+            text = '{\n' + indent + '  ' + ('\n' + indent + '  ').join(lines) + '\n' + indent + '}'
+        out.append(edit(source, [(m.start(), m.end(), text)]))
     return [(FAMILIES[0], c) for c in out[:LIMIT] if c != source]

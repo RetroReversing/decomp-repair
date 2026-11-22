@@ -8,7 +8,8 @@ first assignment to its last use, so it stays in a saved register across calls t
 argument and, later, a layout constant that was passed to one call; the target holds the constant in `$a1` (a pseudo of
 its own, never live across a call) where the union kept it in `$s0`.
 
-`phase_storage_split` replaces a local `union { T a; U b; } NAME;` whose members are only ever read and written as
+`phase_storage_split` replaces a local `union { T a; U b; } NAME;` (or `NAME = {init};`, which sets the first member: that
+local is declared with the initializer) whose members are only ever read and written as
 `NAME.a` / `NAME.b` with the locals `NAME_a` and `NAME_b`. It assumes the phases are disjoint, as the union that was
 written for them did: no member is read after the other was written (the function is not type-punning). Alone it can score
 worse (1397 -> 1458 on that function: the freed register shifts other choices); it is the first of the steps that matched
@@ -23,7 +24,7 @@ from .integer_repair_support import IDENT, edit, view
 FAMILY = 'phase_storage_split'
 COMBINED = 'phase_storage_split_narrow_share'
 FAMILIES = (FAMILY, COMBINED)
-UNION = re.compile(rf'(?m)^(?P<indent>[ \t]*)union\s*(?:{IDENT})?\s*{{(?P<members>[^{{}}]*)}}\s*(?P<name>{IDENT})\s*;[ \t]*\n?')
+UNION = re.compile(rf'(?m)^(?P<indent>[ \t]*)union\s*(?:{IDENT})?\s*{{(?P<members>[^{{}}]*)}}\s*(?P<name>{IDENT})\s*(?:=\s*{{(?P<init>[^{{}}]*)}}\s*)?;[ \t]*\n?')
 MEMBER = re.compile(rf'\s*(?P<type>(?:(?:unsigned|signed|const|volatile)\s+)*{IDENT}(?:\s+{IDENT})?[\s*]*?)\b(?P<member>{IDENT})\s*;')
 
 
@@ -51,8 +52,11 @@ def split(source, name):
                                                     part.clean[part.opening:part.end])]
         if len(uses) != len(members_used) + 1 or not members_used:
             continue  # the union is used whole (addressed, copied or passed), or only as the declaration
+        # A brace initializer sets the first member (C's rule): that member's local is declared with it.
+        first = ' = ' + union['init'].strip() if union['init'] and union['init'].strip() else ''
         edits = [(union.start(), union.end(),
-                  ''.join(f'{union["indent"]}{kind} {local}_{member};\n' for kind, member in members))]
+                  ''.join(f'{union["indent"]}{kind} {local}_{member}{first if index == 0 else ""};\n'
+                          for index, (kind, member) in enumerate(members)))]
         for hit in members_used:
             start = part.opening + hit.start()
             edits.append((start, part.opening + hit.end(), f'{local}_' + re.sub(rf'^{re.escape(local)}\s*\.\s*', '', hit.group())))
