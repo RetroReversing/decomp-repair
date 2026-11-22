@@ -274,3 +274,18 @@ def test_field_load_hoist():
     assert family == 'field_load_hoist' and 'u8 * __repair_hoisted;' in out
     assert '    __repair_hoisted = M2C_FIELD(arg0, u8 **, 0x6C);\n    if (temp_v1 & 0x400000) {' in out
     assert 'g(*__repair_hoisted);' in out
+
+
+def test_unsigned_parameter_shift_beyond_width_offers_unsigned_word():
+    source = """void f(u8 value, void *out) {
+    M2C_FIELD(out, s8 *, 0) = (s8)(value >> 8);
+    M2C_FIELD(out, s8 *, 1) = (s8)(value >> 0x18);
+}"""
+    candidates = texts(narrow_widening_repairs.variants(source, 'f'))
+    assert any('void f(u32 value, void *out)' in text for text in candidates)
+    assert any('void f(s32 value, void *out)' in text for text in candidates)
+    assert any('u32 value' in text for text in texts(narrow_widening_repairs.variants(source.replace('>> 8', '>> 08'), 'f')))
+    small = source.replace('>> 8', '>> 7').replace('>> 0x18', '>> 3')
+    assert not any('u32 value' in text for text in texts(narrow_widening_repairs.variants(small, 'f')))
+    signed = source.replace('u8 value', 's8 value')
+    assert not any('u32 value' in text for text in texts(narrow_widening_repairs.variants(signed, 'f')))
