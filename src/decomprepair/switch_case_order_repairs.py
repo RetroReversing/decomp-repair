@@ -12,11 +12,13 @@ import re
 
 from .csource import _blank, find
 from .goto_structure_repairs import parse
+from .mips_returns import instructions
 from .pattern_repairs import close
 
 FAMILY = 'switch_case_order'
 LOCAL_LABEL_FAMILY = 'switch_case_local_label_order'
-FAMILIES = (FAMILY, LOCAL_LABEL_FAMILY)
+LOWER_EMPTY_FAMILY = 'switch_empty_lower_case'
+FAMILIES = (FAMILY, LOCAL_LABEL_FAMILY, LOWER_EMPTY_FAMILY)
 
 LABEL = re.compile(r'(?m)^[ \t]*(?:case\s+(?P<value>[^:]+?)\s*|default\s*):')
 LIMIT = 8
@@ -79,7 +81,48 @@ def _depth(text, start, at):
     return depth
 
 
-def variants(source, name):
+_NUMBER = r'(?:0[xX][0-9a-fA-F]+|\d+)'
+_BYTE = re.compile(rf'lb\s+(\$\w+),\s*({_NUMBER})\(\$\w+\)')
+_LI = re.compile(rf'addiu\s+(\$\w+),\s*\$zero,\s*({_NUMBER})')
+_SLTI = re.compile(rf'slti\s+(\$\w+),\s*(\$\w+),\s*({_NUMBER})')
+
+
+def _lower_empty_targets(asm):
+    rows = instructions(asm) if asm else []
+    offsets = set()
+    for i in range(len(rows)-6):
+        byte, low, first, compare, check, high, second = rows[i:i+7]
+        access = _BYTE.fullmatch(byte)
+        left, right = _LI.fullmatch(low), _LI.fullmatch(high)
+        bound = _SLTI.fullmatch(compare)
+        if not all((access, left, right, bound)) or access[1] != bound[2] or right[2] != bound[3]:
+            continue
+        first_branch = rf'beq\s+{re.escape(access[1])},\s*{re.escape(left[1])},'
+        middle_branch = rf'bnez\s+{re.escape(bound[1])},'
+        last_branch = rf'beq\s+{re.escape(access[1])},\s*{re.escape(right[1])},'
+        if re.match(first_branch, first) and re.match(middle_branch, check) and re.match(last_branch, second):
+            offsets.add((int(access[2], 0), int(left[2], 0), int(right[2], 0)))
+    return offsets
+
+
+def _lower_empty_case(clean, opening, selector_start, selector_end, group_values, targets):
+    if not targets or len(group_values) != 2 or len(group_values[0]) != 1 or len(group_values[1]) != 1:
+        return None
+    low, high = (values[0] for values in group_values)
+    if low is None or high is None or low < 1 or high != low+1:
+        return None
+    selector = clean[selector_start:selector_end].strip()
+    if not re.fullmatch(r'[A-Za-z_]\w*', selector):
+        return None
+    preceding = re.search(rf'\b{selector}\s*=\s*([^;{{}}]+);\s*switch\s*\($',
+                          clean[opening:selector_start].rstrip())
+    if not preceding:
+        return None
+    offset = re.search(rf'[, +]\s*({_NUMBER})\s*\)+\s*$', preceding[1])
+    return low-1 if offset and (int(offset[1], 0), low, high) in targets else None
+
+
+def variants(source, name, asm=''):
     span = find(source, name)
     if not span:
         return []
@@ -93,7 +136,8 @@ def variants(source, name):
     jumps = {}
     for jump in _GOTO.finditer(clean, opening, end):
         jumps.setdefault(jump[1], []).append(jump.start())
-    labelled, result = [], []
+    empty, labelled, result = [], [], []
+    lower_targets = _lower_empty_targets(asm)
     for hit in re.finditer(r'\bswitch\s*\(', clean[opening:end]):
         paren = opening + hit.end() - 1
         after = close(clean, paren)
@@ -120,6 +164,11 @@ def variants(source, name):
             if extra:
                 candidates.append(arms + [extra])
         start = source.rfind('\n', 0, groups[0][0]) + 1
+        lower = _lower_empty_case(clean, opening, paren+1, after-1,
+                                  [values for _, _, values in groups], lower_targets)
+        if lower is not None and not clean[body_open+1:groups[0][0]].strip():
+            text = source[:start] + f'{indent}case {lower}: break;\n' + source[start:]
+            empty.append((LOWER_EMPTY_FAMILY, text))
         stop = source.rfind('\n', 0, body_close - 1) + 1  # the closing brace's line
         for arms in candidates[:LIMIT]:
             text = source[:start] + ''.join(arms) + source[stop:]
@@ -132,4 +181,4 @@ def variants(source, name):
     # Prefer a smaller arm reorder before adding a case or trying a larger switch.
     labelled.sort(key=lambda entry: entry[:2])
     local_choices = dict.fromkeys(text for _, _, text in labelled)
-    return [(LOCAL_LABEL_FAMILY, text) for text in list(local_choices)[:LIMIT]] + result
+    return empty[:3] + [(LOCAL_LABEL_FAMILY, text) for text in list(local_choices)[:LIMIT]] + result
