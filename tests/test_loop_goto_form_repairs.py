@@ -61,3 +61,39 @@ def test_nested_break_belongs_to_the_inner_switch():
 
 def test_no_loop_no_variant():
     assert g.variants('void f(void) { h(); }', 'f') == []
+
+
+SHARED = '''void f(Node *node) {
+    Node *next;
+    do {
+        next = node->next;
+        if (node->flag) {
+            node = next;
+            continue;
+        }
+        while (ready()) {
+            node = next;
+            continue;
+        }
+        visit(node);
+        node = next;
+    } while (node);
+}
+'''
+
+
+def test_shared_update_preserves_inner_continue():
+    text, = [text for family, text in g.variants(SHARED, 'f') if family == g.SHARED_UPDATE]
+    assert text.count('goto loop_update_1;') == 1
+    assert 'loop_update_1: node = next;' in text
+    assert 'while (ready()) {\n            node = next;\n            continue;' in text
+
+
+def test_shared_update_skips_shadowed_source():
+    source = SHARED.replace('if (node->flag) {', 'if (node->flag) {\n            Node *next = other();')
+    assert all(family != g.SHARED_UPDATE for family, _ in g.variants(source, 'f'))
+
+
+def test_shared_update_does_not_jump_over_declaration():
+    source = SHARED.replace('        visit(node);', '        Node *slots[count()];\n        visit(node);')
+    assert all(family != g.SHARED_UPDATE for family, _ in g.variants(source, 'f'))

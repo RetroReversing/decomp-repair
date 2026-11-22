@@ -21,11 +21,12 @@ a label or a `case`, is left alone: the rewrite would change where they land.
 import re
 
 from .csource import _blank, find
-from .goto_structure_repairs import _indent_of, blocks, parse, walk
+from .goto_structure_repairs import _children, _indent_of, blocks, parse, walk
 from .pattern_repairs import close
 
 FAMILY = 'loop_goto_form'
-FAMILIES = (FAMILY,)
+SHARED_UPDATE = 'loop_shared_update'
+FAMILIES = (FAMILY, SHARED_UPDATE)
 KINDS = ('do', 'while', 'for')
 
 
@@ -113,6 +114,54 @@ def _variant(source, clean, s):
     return head + out + rest
 
 
+def _continue_updates(stmts, clean, update):
+    """Find copies immediately before continues that reach this loop's test."""
+    for prev, jump in zip(stmts, stmts[1:]):
+        if (prev.kind == 'simple' and jump.kind == 'jump'
+                and re.fullmatch(r'continue\s*;', clean[jump.start:jump.end])
+                and re.sub(r'\s+', '', clean[prev.start:prev.end]) == update):
+            yield prev.start, jump.end
+    for stmt in stmts:
+        if stmt.kind not in (*KINDS, 'switch'):
+            for part in _children(stmt):
+                yield from _continue_updates(part['stmts'], clean, update)
+
+
+def _shared_update(source, clean, loop):
+    """Route duplicate local copies through the update already at the bottom."""
+    body = loop.parts['body']
+    if not body['block'] or not body['stmts'] or '#' in clean[body['open']:body['close']]:
+        return None
+    tail = body['stmts'][-1]
+    update = clean[tail.start:tail.end]
+    assignment = re.fullmatch(r'([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;', update)
+    if tail.kind != 'simple' or not assignment:
+        return None
+    copies = [(a, b) for a, b in _continue_updates(body['stmts'], clean, re.sub(r'\s+', '', update))
+              if source[a:b] == clean[a:b]]
+    if not copies:
+        return None
+    names = set(assignment.groups())
+    declaration = re.compile(r'[A-Za-z_]\w*(?:\s+|\s*\*)\s*(?:[A-Za-z_]|\()')
+    for stmt, nested in walk(body['stmts']):
+        if stmt.kind != 'simple' or nested:
+            continue
+        text = clean[stmt.start:stmt.end]
+        if declaration.match(text) and names.intersection(re.findall(r'[A-Za-z_]\w*', text)):
+            return None
+    # A forward jump must stay outside the scope of any declaration it skips.
+    first_copy = min(a for a, _ in copies)
+    if any(stmt.kind == 'simple' and declaration.match(clean[stmt.start:stmt.end])
+           for stmt in body['stmts'] if first_copy < stmt.start < tail.start):
+        return None
+    label = _fresh(source, 'loop_update_')
+    edits = [(a, b, f'goto {label};') for a, b in copies]
+    edits.append((tail.start, tail.start, f'{label}: '))
+    for a, b, replacement in sorted(edits, reverse=True):
+        source = source[:a] + replacement + source[b:]
+    return source
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -129,11 +178,13 @@ def variants(source, name):
         function = parse(clean, opening + 1, end - 1)
     except ValueError:
         return []
-    found = []
+    shared, found = [], []
     for stmts in blocks(function):
         for s in stmts:
             if s.kind in KINDS:
+                if text := _shared_update(source, clean, s):
+                    shared.append((SHARED_UPDATE, text))
                 text = _variant(source, clean, s)
                 if text and text != source:
                     found.append((FAMILY, text))
-    return found[:6]
+    return (shared + found)[:6]
