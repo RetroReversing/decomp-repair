@@ -317,17 +317,70 @@ def selected_byte_stores(source, name, header=''):
     return result[:4]
 
 
+
+def identical_uninitialized_arms(source, name, header=''):
+    """Drop an uninitialized local test when both arms execute the same source."""
+    from .pointer_pair_repairs import qualified_types
+
+    part = view(source, name)
+    if not part:
+        return []
+    types = rf'{INTEGER}|float|double|f32|f64'
+    candidates = re.compile(rf'\bif\s*\(\s*(?P<local>{IDENT})\s*\)\s*{{')
+    context = part.clean + '\n' + header
+    qualified = qualified_types(context)
+    macros = re.findall(r'(?m)^\s*#\s*define[^\n]*', context)
+    out = []
+    for hit in candidates.finditer(part.clean, part.opening + 1, part.end - 1):
+        local = hit['local']
+        if block_path(part, hit.start()) != [part.opening]:
+            continue
+        before = part.clean[part.opening:hit.start()]
+        if before.rstrip()[-1:] not in {';', '{', '}'}:
+            continue
+        declaration = re.search(rf'(?<=[;{{}}])\s*(?P<type>{types})\s+{local}\s*;', before)
+        if (not declaration or declaration['type'] in qualified
+                or block_path(part, part.opening + declaration.start('type')) != [part.opening]
+                or len(re.findall(rf'\b{local}\b', before)) != 1
+                or any(re.search(rf'\b{local}\b', macro) for macro in macros)):
+            continue
+        first = hit.end() - 1
+        first_end = close(part.clean, first, '{', '}')
+        alternate = re.match(r'\s*else\s*{', part.clean[first_end:]) if first_end else None
+        if not alternate:
+            continue
+        second = first_end + alternate.end() - 1
+        second_end = close(part.clean, second, '{', '}')
+        if not second_end:
+            continue
+        first_arm, second_arm = source[first:first_end], source[second:second_end]
+        if (first_arm != second_arm
+                or re.search(r'\b(?:case|default|__LINE__|asm|__asm__)\b|\b'+IDENT+r'\s*:(?!:)', first_arm)):
+            continue
+        # Keep the chosen lexical block and its original line numbers.
+        def blank(start, end):
+            return re.sub(r'[^\n]', ' ', source[start:end])
+
+        candidate = edit(source, [(hit.start(), first, blank(hit.start(), first)),
+                                  (first_end, second_end, blank(first_end, second_end))])
+        out.append(('common_scalar_tail', candidate))
+        if len(out) == 4:
+            break
+    return out
+
+
 def scalar_tails(source, name, header=''):
     """Sink shared scalar products or resets that can move past an independent local assignment."""
     from . import pointer_pair_repairs
     from .integer_repair_support import locals_for
     part, _, macros = pointer_pair_repairs.context(source, name, header)
+    identical = identical_uninitialized_arms(source, name, header)
     if not part:
-        return selected_byte_stores(source, name, header)
+        return identical + selected_byte_stores(source, name, header)
     locals_ = {decl['name'] for decl in locals_for(part)
                if part.clean[part.opening+1:decl.start()].count('{')
                == part.clean[part.opening+1:decl.start()].count('}')}
-    out = []
+    out = identical
     globals_ = set(re.findall(rf'\bextern\s+(?:s8|u8|s16|u16|s32|u32|int)\s+({IDENT})\s*;',
                               part.clean[:part.opening] + '\n' + header))
     reset = re.compile(rf'(?P<lhs>{IDENT})\s*=\s*0\s*;(?=\s*(?P<rhs>{IDENT})\s*=\s*{NUMBER}\s*;\s*$)')
