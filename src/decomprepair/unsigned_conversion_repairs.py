@@ -16,10 +16,12 @@ N64 function was 84.1% so and exact as `ret = (u8) (u32) temp_fv1;`. The conditi
 import re
 
 from .csource import _blank, find
+from .integer_repair_support import edit
 from .pattern_repairs import close
 
 FAMILY = 'float_unsigned_conversion'
-FAMILIES = (FAMILY,)
+SCHEDULING = 'float_unsigned_conversion_scheduling'
+FAMILIES = (FAMILY, SCHEDULING)
 
 IDENT = r'[A-Za-z_]\w*'
 CONDITION = re.compile(r'^\s*(?P<not>!\s*\(\s*)?(?:\(\s*(?:u32|unsigned(?:\s+int)?)\s*\)\s*)?(?P<float>' + IDENT
@@ -27,6 +29,39 @@ CONDITION = re.compile(r'^\s*(?P<not>!\s*\(\s*)?(?:\(\s*(?:u32|unsigned(?:\s+int
 ASSIGNED = re.compile(r'(?:register\s+)?(?P<var>' + IDENT + r')\s*=(?!=)')
 MASK = re.compile(r'&\s*(?P<mask>0[xX][fF]{2}|0[xX][fF]{4}|255|65535)\s*;')
 NARROW = {0xFF: 'u8', 0xFFFF: 'u16'}
+
+
+def _schedule_sites(source, condition, arms, ranges, cond_span, flipped, isolated):
+    """Record a positive branch to flip or a negative branch's high-bit write to isolate."""
+    if condition['op'] != '>=' or any(re.search(r'\b(?:for|while|do|switch|break|continue)\b', arm) for arm in arms):
+        return
+    value = condition['float']
+    high, low = (1, 0) if condition['not'] else (0, 1)
+    pattern = (rf'\b(?P<result>{IDENT})\s*=\s*\(s32\)\s*\(\s*{value}\s*-\s*2\.1474836e9f\s*\)\s*;'
+               rf'\s*(?P<bit>(?P=result)\s*=\s*(?P=result)\s*\|\s*0x80000000\s*;)')
+    hit = re.search(pattern, arms[high])
+    if not hit or not re.search(rf'\b{hit["result"]}\s*=\s*\(s32\)\s*{value}\s*;', arms[low]):
+        return
+    start, end = cond_span
+    if condition['not']:
+        bit_start, bit_end = (ranges[high][0] + position for position in hit.span('bit'))
+        isolated.append([(bit_start, bit_end, f'do {{ {source[bit_start:bit_end]} }} while (0);')])
+    else:
+        a, b = ranges
+        cond = source[start:end]
+        flipped.append([(start, end, f'!({cond.strip()})'),
+                        (*a, source[b[0]:b[1]]), (*b, source[a[0]:a[1]])])
+
+
+def _schedule_variants(source, flipped, isolated):
+    paired = []
+    for flip in flipped:
+        for fence in isolated:
+            if not flip[0][0] < fence[0][0] < flip[-1][1]:
+                paired.append((SCHEDULING, edit(source, flip + fence)))
+                if len(paired) == 4:
+                    return paired
+    return paired + [(SCHEDULING, edit(source, changes)) for changes in (flipped + isolated)[:4 - len(paired)]]
 
 
 def variants(source, name):
@@ -39,6 +74,7 @@ def variants(source, name):
     if not end:
         return []
     result = []
+    flipped, isolated = [], []
     for hit in re.finditer(r'\bif\s*\(', clean[opening:end]):
         cond_open = opening + hit.end() - 1
         cond_close = close(clean, cond_open)
@@ -60,6 +96,10 @@ def variants(source, name):
         arms = [clean[then_open + 1:then_close - 1], clean[else_open + 1:else_close - 1]]
         if any(re.search(r'\b(?:goto|return|if)\b|[{}]', arm) for arm in arms):
             continue
+        if '#' not in clean[opening:end]:
+            _schedule_sites(source, condition, arms,
+                            [(then_open + 1, then_close - 1), (else_open + 1, else_close - 1)],
+                            (cond_open + 1, cond_close - 1), flipped, isolated)
         targets = {m['var'] for arm in arms for m in ASSIGNED.finditer(arm)}
         flt = condition['float']
         if len(targets) != 1 or not all(flt in arm for arm in arms) or '0x80000000' not in ''.join(arms):
@@ -76,4 +116,4 @@ def variants(source, name):
             text = source[:opening + hit.start()] + form + source[else_close:]
             if text not in [t for _, t in result]:
                 result.append((FAMILY, text))
-    return result[:4]
+    return result[:4] + _schedule_variants(source, flipped, isolated)
