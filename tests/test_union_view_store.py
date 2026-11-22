@@ -52,3 +52,23 @@ def test_a_store_through_a_byte_offset_of_zero_keeps_the_address():
 def test_the_module_declares_itself():
     from decomprepair import registry
     assert 'union_view_store' in {r.module for r in registry.declared()}
+
+
+SHARED = '''void f(void *arg0, f32 a, f32 b, f32 c) {
+    { union { f32 f; int i; } v; v.f = a * b; *(int *)((char *)arg0 + 4) = v.i; }
+    (*(f32 *)((char *)(arg0) + 0x10)) = (f32) (((a * c) * b) - c);
+    (*(f32 *)((char *)(arg0) + 0x14)) = (f32) (((a * c) * a) + b);
+}
+'''
+
+
+def test_the_plain_store_comes_with_each_shared_product_named():
+    kids = p.variants(SHARED, 'f')
+    shared = [text for family, text in kids if family == p.FAMILY_SHARED]
+    assert shared and all('union' not in text for text in shared)
+    assert any('= (f32) ((temp * b) - c)' in text and '= (f32) ((temp * a) + b)' in text for text in shared)
+
+
+def test_no_shared_child_without_a_union_store():
+    source = SHARED.replace('{ union { f32 f; int i; } v; v.f = a * b; *(int *)((char *)arg0 + 4) = v.i; }', 'a = b;')
+    assert p.variants(source, 'f') == []
