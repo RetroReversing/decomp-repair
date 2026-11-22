@@ -28,6 +28,7 @@ import importlib
 import inspect
 import pathlib
 import re
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -49,6 +50,11 @@ class Repair:
 
     def runs_in(self, lane, arch=None):
         return lane in self.lanes and (not self.archs or arch is None or arch in self.archs)
+
+    def function(self):
+        """`variants` as its module has it now: a test or a hot patch that replaces the module's function is honoured."""
+        module = sys.modules.get(f'{__package__}.{self.module}')
+        return getattr(module, getattr(self.variants, '__name__', 'variants'), self.variants) if module else self.variants
 
     def arguments(self, context):
         """The keyword arguments of `variants` out of `context`."""
@@ -145,7 +151,7 @@ def run(module, **context):
         return []
     if isinstance(context.get('flags'), list):
         context['flags'] = tuple(context['flags'])
-    return pairs(repair, repair.variants(**repair.arguments(context)))
+    return pairs(repair, repair.function()(**repair.arguments(context)))
 
 
 all = declared  # the name callers use: `registry.all()`

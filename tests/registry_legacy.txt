@@ -657,7 +657,6 @@ stored_return_value_repairs
 volatile_read_inline_repairs
 switch_pointer_calls
 structured_loop_repairs
-walked_table_index_repairs
 symbol_base_repairs
 switch_default_if_repairs
 width_promotion_repairs
