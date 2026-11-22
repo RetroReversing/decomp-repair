@@ -11,10 +11,60 @@ import re
 
 from .integer_repair_support import locals_for, view
 from .line_scan import apply, lines, mentions
+from .pattern_repairs import close
 
 FAMILY = 'reused_temp_split'
-FAMILIES = (FAMILY,)
+RESTORE_FAMILY = 'switch_temporary_restore'
+FAMILIES = (FAMILY, RESTORE_FAMILY)
 LIMIT = 8
+
+
+def _restore_switch_writes(source, part, decls):
+    """Reconnect an unused generated switch-arm local to the local read after the switch."""
+    clean = part.clean
+    by_name = {decl['name']: decl for decl in decls}
+    switches = []
+    for match in re.compile(r'\bswitch\s*\(').finditer(clean, part.opening, part.end):
+        condition_end = close(clean, match.end() - 1, '(', ')')
+        if not condition_end or not (brace := re.match(r'\s*{', clean[condition_end:])):
+            continue
+        opening = condition_end + brace.end() - 1
+        if end := close(clean, opening, '{', '}'):
+            switches.append((opening, end))
+    result = []
+    if not switches:
+        return result
+    for name, decl in by_name.items():
+        split = re.fullmatch(r'([A-Za-z_]\w*)_b[1-9]\d*_*', name)
+        if not split or not (original := by_name.get(split[1])) or original['type'] != decl['type']:
+            continue
+        use_pattern = re.compile(rf'(?<![\w.>]){name}\b')
+        uses = list(use_pattern.finditer(clean, decl.end(), part.end))
+        if len(uses) != 1:
+            continue
+        use = uses[0]
+        start = clean.rfind('\n', 0, use.start()) + 1
+        if clean[start:use.start()].strip() or not re.match(r'\s*=(?!=)[^;{}]+;\s*break\s*;', clean[use.end():]):
+            continue
+        enclosing = [(start, end) for start, end in switches if start < use.start() < end]
+        if not enclosing:
+            continue
+        opening, end = enclosing[-1]
+        if original.start() >= opening or decl.start() >= opening:
+            continue
+        other = re.compile(rf'(?<![\w.>]){split[1]}\b')
+        arm_write = rf'(?m)^\s*{split[1]}\s*=(?!=)[^;{{}}]+;\s*break\s*;'
+        if not (re.search(r'\b(?:case\b[^:]+|default)\s*:', clean[opening:use.start()])
+                and re.search(arm_write, clean[opening:end])):
+            continue
+        later = other.search(clean, end, part.end)
+        if not later or re.match(r'\s*=(?!=)', clean[later.end():]):
+            continue
+        changes = [(decl.start(), decl.end(), ''), (use.start(), use.end(), split[1])]
+        result.append((RESTORE_FAMILY, apply(source, changes)))
+        if len(result) >= LIMIT:
+            break
+    return result
 
 
 def variants(source, name):
@@ -23,7 +73,9 @@ def variants(source, name):
         return []
     decls = locals_for(part)
     body = lines(part, source)
-    out = []
+    out = _restore_switch_writes(source, part, decls)
+    if len(out) >= LIMIT:
+        return out
     for decl in decls:
         local = decl['name']
         sets = [i for i, l in enumerate(body) if re.match(rf'{re.escape(local)} = ', l.stripped)
