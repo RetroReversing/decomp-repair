@@ -133,5 +133,92 @@ def variants(source, name, header, rows):
     if candidate := float_forward(source, name, header, part, rows):
         result.append(('kmc_float_forward_prototype', candidate))
     if saved_for_argument(rows):
-        result += [('kmc_widen_sign_local', candidate) for candidate in widen_sign_local(source, part)]
+        widened = widen_sign_local(source, part)
+        # Neither widening nor the address rewrite improves this near match alone.
+        # Offer the combination directly so a best-only beam can reach it.
+        for candidate in widened:
+            # Do not change type-sensitive operations or a shadowed name.
+            changed = next((m for m in re.finditer(rf'\b(?:s16|s8)\s+({IDENT})\b', part.body)
+                            if edit(source, [(part.opening+1+m.start(), part.opening+1+m.start()+3, 's32')]) == candidate), None)
+            if not changed:
+                continue
+            local = changed[1]
+            macros = re.findall(r'^\s*#\s*define\s+(' + IDENT + r')', header, re.M)
+            function_macros = re.findall(r'^\s*#\s*define\s+(' + IDENT + r')\s*\(', header, re.M)
+            if (local in macros or any(re.search(rf'\b{re.escape(macro)}\s*\(', part.body) for macro in function_macros)
+                    or len(re.findall(rf'\b(?:s8|u8|s16|u16|s32|u32|int)\s+{re.escape(local)}\b', part.body)) != 1
+                    or re.search(rf'\bsizeof\s*(?:\(\s*)*{re.escape(local)}\b', part.body)):
+                continue
+            result += [('kmc_staged_address_order', child) for child in staged_address_order(candidate, name, header)]
+        result += [('kmc_widen_sign_local', candidate) for candidate in widened]
+    return result
+
+
+def staged_address_order(source, name, header):
+    """Keep an address in a dead word local and delay commuting its unsigned add until combine.
+
+    KMC can substitute an early sign-extension copy into a subtraction. Widening a bounded
+    short local fixes that input but can disturb scheduling. Staging an indexed byte address in
+    an otherwise unused return local, and writing the unsigned sum as subtraction of a negation,
+    preserves the intended address while letting combine select the other `addu` input order.
+    This is for the 32-bit MIPS KMC profile: unsigned int and pointers have the same width and
+    KMC converts the intermediate signed word back to its original bit pattern.
+    """
+    part = view(source, name)
+    if not part or re.search(r'\b(?:volatile|asm|__asm__|goto)\b', part.clean):
+        return []
+    if re.search(r'^\s*#', source, re.M):
+        return []
+    macros = set(re.findall(r'^\s*#\s*define\s+(' + IDENT + r')\b', header, re.M))
+    body = part.body
+    pattern = (rf'\bdo\s*\{{\s*(?P<p>{IDENT})\s*=\s*(?P<base>{IDENT})\s*\+\s*'
+               rf'\(\s*(?P<index>{IDENT})\s*<<\s*3\s*\)\s*;\s*\}}\s*while\s*\(\s*0\s*\)\s*;')
+    result = []
+    for hit in re.finditer(pattern, body):
+        p, base, index = hit['p'], hit['base'], hit['index']
+        if {p, base, index, 'u8', 'u16', 's32'} & macros:
+            continue
+        # The byte pointers and the bounded halfword index are ordinary local values.
+        before = part.clean[:part.opening]
+        signature_match = re.search(rf'\b{re.escape(name)}\s*\([^{{}};]*\)\s*$', before)
+        if not signature_match:
+            continue
+        signature = signature_match.group()
+        top = body[:body.find('{')]
+        if (not re.search(rf'\bu8\s*\*\s*{re.escape(base)}\b', signature)
+                or not re.search(rf'\bu8\s*\*\s*{re.escape(p)}\b', top)
+                or len(re.findall(rf'\bu8\s*\*\s*{re.escape(p)}\b', body)) != 1):
+            continue
+        load = re.search(rf'\bs32\s+{re.escape(index)}\s*=\s*\*\s*\(\s*u16\s*\*\s*\)\s*\([^;{{}}]*\)\s*;', body[:hit.start()])
+        if (not load or re.search(r'[{}]', body[load.end():hit.start()])
+                or re.search(rf'\b{re.escape(index)}\s*(?:=(?!=)|[+\-*/%&|^]=|\+\+|--)|(?:\+\+|--)\s*{re.escape(index)}\b',
+                             body[load.end():hit.start()])
+                or re.search(rf'&\s*\(*\s*{re.escape(index)}\b', body)):
+            continue
+        for decl in re.finditer(rf'\bs32\s+({IDENT})\s*;', body[:hit.start()]):
+            temp = decl[1]
+            if (temp in {p, base, index} | macros or decl.start() > body.find('{')
+                    or re.search(rf'&\s*\(*\s*{re.escape(temp)}\b', body)):
+                continue
+            word = rf'(?<![\w.>]){re.escape(temp)}\b'
+            if re.search(word, body[:decl.start()] + body[decl.end():hit.start()]):
+                continue
+            # A carried value or a conditional overwrite would make the old
+            # value observable on another control-flow path.
+            if re.search(r'\b(?:for|while|do)\b', body[:hit.start()] + body[hit.end():]):
+                continue
+            after = body[hit.end():]
+            use = re.search(word, after)
+            if (not use or not re.match(r'\s*=(?!=)', after[use.end():])
+                    or re.search(r'[{}]|\b(?:if|switch|return|break|continue)\b', after[:use.start()])):
+                continue
+            statement = after[use.end():].split(';', 1)[0]
+            if re.search(word, statement):
+                continue
+            replacement = (f'{temp} = {index} << 3; '
+                           f'{temp} = (unsigned int){base} - (0U - (unsigned int){temp}); '
+                           f'{p} = (u8 *)(unsigned int){temp};')
+            result.append(edit(source, [(part.opening+1+hit.start(), part.opening+1+hit.end(), replacement)]))
+            if len(result) >= 4:
+                return result
     return result
