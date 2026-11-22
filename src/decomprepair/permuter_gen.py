@@ -11,6 +11,8 @@ In, on stdin, one job per line, each a JSON object:
     family    base, ido, gcc or mwcc: the weights decomp-permuter tuned per compiler (default_weights.toml)
     seed      any number: the same job gives the same variants
     count     how many variants to write
+    focus_lines  optional: lines of the source (1-based) whose differing instructions the caller wants repaired;
+                 rewrites then act around them most of the time (permuter_focus_lines.py), `focus_share` how much
 Out, on stdout, one JSON object per line: {"variant": C} for each variant, distinct and none the source itself,
 each the function alone plus whatever the randomizer added beside it (a helper it inlined code into); or
 {"error": why} when the C can't be read; then {"done": true}, and the next job. It runs for as long as its stdin
@@ -619,11 +621,13 @@ def type_names(header: str, source: str) -> str:
 def main() -> int:
     sys.path.insert(0, sys.argv[1])  # decomp-permuter's folder: its `src` package and its own copy of pycparser
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import src.randomizer as randomizer_module
     from perm_pycparser import c_ast, c_parser
     from perm_pycparser.plyparser import Coord
     from permuter_capture import protect_expand
     from permuter_clone import make_cloner
     from permuter_dependencies import GUARDED, RejectedRewrite, protect
+    from permuter_focus_lines import SHARE, Focus, install, lines_in_unit
     from permuter_formatting import LineGroups
     from src.ast_util import to_c
     from src.candidate import Candidate
@@ -632,6 +636,8 @@ def main() -> int:
     from src.perm.perm import EvalState
     from src.randomizer import Randomizer
 
+    focus = Focus()
+    install(randomizer_module, focus)  # (rewrites favour the job's focus lines; with none they act as decomp-permuter's)
     node_types = [cls for cls in c_ast.Node.__subclasses__() if cls.__module__ == c_ast.__name__]
     clone = make_cloner(node_types, Coord)
 
@@ -672,6 +678,9 @@ def main() -> int:
             yield {"error": f"{type(e).__name__}: {e}"}
             return
         seam = next(node for node in first.ast.ext if isinstance(node, c_ast.Typedef) and node.name == SOURCE_STARTS)
+        # `focus_lines`: lines of the job's source (1-based) the caller wants rewrites on, `focus_share` how often
+        focus.lines = lines_in_unit(job.get("focus_lines") or (), job["source"], msvc.source, seam.coord.line)
+        focus.share = float(job.get("focus_share", SHARE))
         line_groups = LineGroups(job['source'], job['header'], name, c_parser.CParser().parse)
         line_groups.bind_origins(next(node for node in first.ast.ext
                                      if isinstance(node, c_ast.FuncDef) and node.decl.name == name))
