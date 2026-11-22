@@ -60,3 +60,9 @@ def test_a_draft_with_every_slot_declared_is_unchanged():
 def test_rewrite_is_idempotent():
     once = rewrite(STACK + TABLE, 'f', 'addiu $sp, $sp, -0x70')
     assert once and rewrite(once, 'f', 'addiu $sp, $sp, -0x70') is None
+
+
+def test_a_return_of_a_slot_is_not_its_declaration():
+    source = 'u32 f(void) {\n    u32 sp0;\n\n    sp0 = (sp != NULL);\n    return sp0;\n}\n'
+    out = stack_frame(source, 'f', 'addiu $sp, $sp, -0x20')
+    assert '#define sp0 (*(u32 *)(sp + 0x0))' in out and 'return *' not in out and '    return sp0;' in out

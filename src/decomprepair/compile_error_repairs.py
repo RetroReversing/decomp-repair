@@ -12,7 +12,9 @@ repair here changes only that line, and only the expression the message is about
   type the assigned local has (a byte when that is not known).
 * `arithmetic on pointer to an incomplete type`: the same as an invalid binary `+`.
 * `pointer value used where a floating point value was expected`: `(f32) p` converts what `p` holds.
-* `incompatible type for argument N of `f'`: the callee's declaration drops its parameter list.
+* `source too large`: the draft without its comments and indentation, which m2c's big functions spend a fifth on.
+* `incompatible type for argument N of `f'`: the callee's declaration drops its parameter list; a function that has
+  only its definition (a call to itself) has the call's argument converted to the parameter's type.
 
 The compiler can't be told which of several operators on a line is the wrong one, so `attempt` picks the nth: a caller
 that compiles again, and meets the same message on the same line, asks for the next. Nothing here runs a compiler.
@@ -240,6 +242,43 @@ def _float_conversion(tokens, attempt):
     return [(tokens.starts[places[attempt] + 3], '(s32)')]
 
 
+def _split_arguments(tokens, open_at):
+    """Token index of the first token of each argument of the call whose `(` is at `open_at`."""
+    close = _match(tokens, open_at)
+    if close is None:
+        return []
+    starts, depth = [open_at + 1], 0
+    for i in range(open_at + 1, close):
+        if tokens[i] in _OPEN:
+            depth += 1
+        elif tokens[i] in _CLOSE:
+            depth -= 1
+        elif tokens[i] == ',' and depth == 0:
+            starts.append(i + 1)
+    return starts
+
+
+def _convert_argument(source, text, name, number):
+    """A call's `number`th argument converted to the type that parameter has in the definition of `name`."""
+    definition = re.search(r'^[A-Za-z_][^\n;()=]*\b' + re.escape(name) + r'\((?P<params>[^()\n]*)\)[ \t]*\{', source, re.M)
+    if not definition:
+        return None
+    params = [p.strip() for p in definition['params'].split(',')]
+    if not 1 <= number <= len(params) or not params[number - 1] or params[number - 1] == 'void':
+        return None
+    kind = re.sub(r'\b[A-Za-z_]\w*$', '', params[number - 1]).strip()
+    if not kind:
+        return None
+    tokens = _tokens(text)
+    for i in range(len(tokens) - 1):
+        if tokens[i] == name and tokens[i + 1] == '(' and (i == 0 or tokens[i - 1] not in ('.', '->')):
+            starts = _split_arguments(tokens, i + 1)
+            if number <= len(starts):
+                convert = f'({kind})' + ('(s32)' if kind.endswith('*') else '')
+                return [(tokens.starts[starts[number - 1]], convert)]
+    return None
+
+
 def _drop_parameters(source, name):
     """`source` with the declaration of `name` left without a parameter list, or None."""
     declaration = re.compile(r'^(?P<head>[A-Za-z_][^\n;()=]*\b' + re.escape(name) + r')\((?P<params>[^()\n]+)\);', re.M)
@@ -249,10 +288,31 @@ def _drop_parameters(source, name):
     return source[:found.start()] + found['head'] + '();' + source[found.end():]
 
 
+def compact(source):
+    """`source` without comments, indentation and trailing blanks; None when that changes nothing."""
+    out = re.sub(r'[ \t]*/\*.*?\*/', '', source)
+    out = re.sub(r'(?m)^[ \t]+', '', out)
+    out = re.sub(r'(?m)[ \t]+$', '', out)
+    out = re.sub(r'\n{3,}', '\n\n', out)
+    return out if out != source else None
+
+
 def repair(source, line, message, attempt=0):
     """`source` with line `line` (1-based) changed for the compiler's `message`, or None when nothing fits."""
-    if (found := re.search(r"incompatible type for argument \d+ of `(\w+)'", message)):
-        return _drop_parameters(source, found[1]) if attempt == 0 else None
+    if (found := re.search(r"incompatible type for argument (\d+) of `(\w+)'", message)):
+        if attempt:
+            return None
+        if (dropped := _drop_parameters(source, found[2])) is not None:
+            return dropped
+        lines = source.split('\n')
+        if not 1 <= line <= len(lines):
+            return None
+        edits = _convert_argument(source, lines[line - 1], found[2], int(found[1]))
+        if not edits:
+            return None
+        for position, insert in sorted(edits, reverse=True):
+            lines[line - 1] = lines[line - 1][:position] + insert + lines[line - 1][position:]
+        return '\n'.join(lines)
     lines = source.split('\n')
     if not 1 <= line <= len(lines):
         return None

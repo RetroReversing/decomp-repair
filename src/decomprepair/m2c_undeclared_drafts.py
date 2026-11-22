@@ -57,7 +57,7 @@ def table_reads(source, name=''):
 
 
 _SLOT = re.compile(r'\b(unksp|sp)([0-9A-F]+)\b')
-_DECLARED = re.compile(r'^[ \t]+(?P<type>[A-Za-z_][\w \t\*]*?)[ \t]*(?P<name>\b(?:unksp|sp)[0-9A-F]+)(?P<array>\[[^\]\n]*\])?;[^\n]*\n',
+_DECLARED = re.compile(r'^[ \t]+(?P<type>(?!(?:return|goto|else|case)\b)[A-Za-z_][\w \t\*]*?)[ \t]*(?P<name>\b(?:unksp|sp)[0-9A-F]+)(?P<array>\[[^\]\n]*\])?;[^\n]*\n',
                        re.M)
 
 
