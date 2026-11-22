@@ -18,13 +18,16 @@ Each rewrite keeps the meaning: only labels every `goto` of which lies in the re
 - `goto_shared_tail`: a `goto` into the tail of another arm or case (m2c merged two copies of the same statements)
   gets its own copy of the tail, when the tail ends in `return` or the `goto` is the last thing its path does before
   the `if` holding the label ends.
+- `goto_relocated_case_tail`: a nested tail follows its earlier guarded jump, with its late entry
+  jumping back to it and both paths retaining the switch's terminal continuation.
 """
 import re
 
 from .csource import _blank, find
 from .pattern_repairs import close, negate
 
-FAMILIES = ('goto_backward_loop', 'goto_forward_else', 'goto_shared_tail')
+RELOCATE_FAMILY = 'goto_relocated_case_tail'
+FAMILIES = ('goto_backward_loop', 'goto_forward_else', 'goto_shared_tail', RELOCATE_FAMILY)
 IDENT = r'[A-Za-z_]\w*'
 LOOPS = ('do', 'while', 'for', 'switch')
 
@@ -450,6 +453,62 @@ def _tail_variants(source, function):
     return found
 
 
+_CASE_DECLARATION = re.compile(rf'\s*{IDENT}(?:\s+|\s*\*\s*){IDENT}')
+
+
+def _tail_at_jump(source, clean, function):
+    """Move a simple shared case tail to its first guarded entry."""
+    if re.search(r'(?m)^\s*#|\b(?:__LINE__|__COUNTER__|setjmp|longjmp|asm|__asm__)\b', clean):
+        return []
+    paths = list(_paths(function))
+    sites = {id(st): trail for st, trail in paths}
+    results = []
+    for label, trail in paths:
+        switch = _breakable(trail)
+        if label.kind != 'label' or switch is None or switch.kind != 'switch':
+            continue
+        name = label.parts['name']
+        if re.search(rf'&&\s*{re.escape(name)}\b', clean):
+            continue
+        gotos = _gotos(function, name)
+        if len(gotos) != 1:
+            continue
+        jump = gotos[0][0]
+        origin = sites[id(jump)]
+        jump_body, jump_index, _ = origin[-1]
+        owner = origin[-2][2] if len(origin) >= 2 else None
+        if (jump.start >= label.start or owner is None or owner.kind != 'if'
+                or jump_index + 1 != len(jump_body) or _breakable(origin) is not switch
+                or not any(part['block'] and part['stmts'] is jump_body for part in _children(owner))):
+            continue
+        stmts, at, _ = trail[-1]
+        tail = stmts[at + 1:]
+        if not 2 <= len(tail) <= 16 or any(
+            st.kind != 'simple' or _CASE_DECLARATION.match(clean[st.start:st.end])
+            or re.match(r'\s*return\b', clean[st.start:st.end]) for st in tail
+        ):
+            continue
+        following = _continuation(source, sites[id(tail[-1])])
+        if not following or not re.fullmatch(rf'goto\s+{IDENT}\s*;', following[0]):
+            continue
+        raw = _span(source, tail[0].start, tail[-1].end)
+        if not all(_case_scope_allows_copy(source, site, switch, raw) for site in (origin, trail)):
+            continue
+        # Jumps into the earlier arm must not skip any declaration there (including
+        # a VLA whose name the relocated statements do not use).
+        if any(_CASE_DECLARATION.match(clean[st.start:st.end])
+               for block, index, owner in origin[1:] for st in block[:index]
+               if st.kind == 'simple' and owner is not switch):
+            continue
+        indent = _indent_of(source, jump.start)
+        moved = _lines(raw, indent[:-4] if len(indent) >= 4 else '').rstrip()
+        at_jump = f'{name}:\n{moved}\n{indent}{following[0]}'
+        old_entry = f'goto {name};'
+        text = (source[:jump.start] + at_jump + source[jump.end:label.start] + old_entry + source[tail[-1].end:])
+        results.append((RELOCATE_FAMILY, text))
+    return results[:3]
+
+
 def _into_later_arm(source, function, stmts, i, name):
     """`if (c) { T...; goto B; } M... if (d) { ... B: R... }` as `if (c) { T... R... } else { M... if (d) { ... R... } }`:
     after the later `if`, both ways go on to the same statements."""
@@ -499,7 +558,7 @@ def variants(source, name):
         function = parse(clean, opening + 1, end - 1)
     except ValueError:
         return []
-    result = []
+    result = _tail_at_jump(source, clean, function)
     for stmts in blocks(function):
         for i, s in enumerate(stmts):
             if s.kind == 'label':
