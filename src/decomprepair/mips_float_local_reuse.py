@@ -9,12 +9,14 @@ entry to its own lifetime.
 import re
 
 from .csource import _blank, find
-from .integer_repair_support import edit
+from .integer_repair_support import IDENT, edit
+from .mips_returns import instructions
 from .pattern_repairs import close
 
 FAMILY = 'mips_float_local_reuse'
 ACCUMULATOR_FAMILY = 'mips_float_accumulator_reuse'
-FAMILIES = (FAMILY, ACCUMULATOR_FAMILY)
+ACROSS_CALL_FAMILY = 'saved_float_across_call'
+FAMILIES = (FAMILY, ACCUMULATOR_FAMILY, ACROSS_CALL_FAMILY)
 _DECLARATION = re.compile(
     r'(?m)^[ \t]*(?P<type>f32|float)[ \t]+'
     r'(?P<name>(?:temp|var)_(?:fs(?P<reg>[0-5])|s[0-7])(?:_\d+)?)[ \t]*;[ \t]*\n')
@@ -126,7 +128,43 @@ def _accumulator_reuses(source, clean, opening, end, scopes, declarations):
     return [(ACCUMULATOR_FAMILY, text) for text in choices[:4]]
 
 
-def variants(source, name):
+_AFTER_DIFFERENCE = re.compile(rf'\s*=\s*(?P<expression>[^;{{}}]+);\s*{IDENT}\s*=\s*(?P<call>{IDENT})\s*\(')
+_OFFSET = re.compile(r'\+\s*(0[xX][0-9a-fA-F]+|[0-9]+)\s*\)')
+_LOAD_OFFSET = re.compile(r'lwc1\s+\$f\w+,\s*(0[xX][0-9a-fA-F]+|[0-9]+)\(\$\w+\)')
+
+
+def _saved_difference(rows, call, saved, offsets):
+    for i, row in enumerate(rows[:-1]):
+        if row != f'jal {call}' or not re.match(rf'sub\.s\s+\$f{saved},', rows[i+1]):
+            continue
+        before = rows[max(0, i-14):i]
+        loaded = {int(match[1], 0) for text in before if (match := _LOAD_OFFSET.fullmatch(text))}
+        if offsets <= loaded and any(text.startswith('mul.s ') for text in before):
+            return True
+    return False
+
+
+def _across_call_reuse(source, clean, lifetimes, asm):
+    rows = instructions(asm) if asm else []
+    if not rows:
+        return []
+    choices = []
+    lives = [life for bank in lifetimes.values() for life in bank]
+    for decl, refs in lives:
+        init = _AFTER_DIFFERENCE.match(clean, refs[0].end())
+        if not init or not all(token in init['expression'] for token in ('-', '*')):
+            continue
+        offsets = {int(match[1], 0) for match in _OFFSET.finditer(init['expression'])}
+        if len(offsets) != 2 or not _saved_difference(rows, init['call'], 20+2*int(decl['reg']), offsets):
+            continue
+        earlier = [life for life in lives if life[0]['type'] == decl['type']
+                   and life[0]['reg'] != decl['reg'] and life[1][-1].end() < refs[0].start()]
+        earlier.sort(key=lambda life: -life[1][-1].end())
+        choices.extend((ACROSS_CALL_FAMILY, _rewrite(source, [[life, (decl, refs)]])) for life in earlier[:4])
+    return choices[:6]
+
+
+def variants(source, name, asm=''):
     span = find(source, name)
     if not span:
         return []
@@ -179,4 +217,5 @@ def variants(source, name):
         if len(longest) >= 3:
             choices.append(_rewrite(source, [longest[:1] + longest[2:] if group is longest else group for group in bank]))
     accumulators = _accumulator_reuses(source, clean, opening, end, scopes, declarations)
-    return accumulators + [(FAMILY, text) for text in dict.fromkeys(label_choices + choices) if text != source][:12]
+    across_calls = _across_call_reuse(source, clean, lifetimes, asm)
+    return across_calls + accumulators + [(FAMILY, text) for text in dict.fromkeys(label_choices + choices) if text != source][:12]
