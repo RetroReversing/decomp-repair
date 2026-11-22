@@ -2,9 +2,12 @@
 
 import re
 
+from .balanced_predicate_projection import _ZERO_UNION, _known_zero
 from .goto_structure_repairs import _children, _indent_of, _paths, parse
-from .integer_repair_support import edit, view
+from .integer_repair_support import IDENT, edit, view
+from .local_flow import Flow
 from .mips_returns import instructions
+from .operand_lifetime_repairs import _visible
 from .pattern_repairs import close
 
 FAMILY = 'stored_float_zero'
@@ -133,3 +136,108 @@ def variants(source, name, asm):
         ]
         return [(FAMILY, edit(source, edits))]
     return []
+
+
+STACK_WORD = 'stack_vector_zero_word'
+_STACK_STORE = re.compile(rf'sw (\$zero|\$fp|\$s[0-7]), ({_NUMBER})\(\$sp\)')
+_STACK_ADDR = re.compile(rf'addiu (\$\w+), \$sp, ({_NUMBER})')
+_DELAY_CALL = re.compile(rf'jal ({IDENT})')
+_RECORD = re.compile(rf'\bstruct\s*\{{(?P<body>[^{{}}]*)\}}\s*(?P<name>{IDENT})\s*;')
+_RESET = re.compile(
+    rf'(?m)^[ \t]*(?P<lhs>(?P<path>(?P<record>{IDENT})\.(?P<slot>{IDENT}))\.(?P<field>{IDENT}))'
+    rf'\s*=\s*(?P<value>0\.0[fF]|{IDENT}\s*\.\s*{IDENT})\s*;\s*'
+    rf'(?:if\s*\(\s*)?(?P<call>{IDENT})\(\s*&\s*(?P=path)\.(?P<first>{IDENT})\s*[,)]'
+)
+
+
+def _stack_word_sites(rows):
+    aligned = [(target, candidate) for _, target, candidate in rows if target]
+    sites = set()
+    for i in range(2, len(aligned)):
+        target, candidate = map(_STACK_STORE.fullmatch, aligned[i])
+        if (not target or not candidate or target[1] != '$zero' or candidate[1] == '$zero'
+                or int(target[2], 0) != int(candidate[2], 0)):
+            continue
+        call, actual = aligned[i - 1]
+        match = _DELAY_CALL.fullmatch(call)
+        if not match or call != actual:
+            continue
+        setup, actual = aligned[i - 2]
+        moved = re.fullmatch(r'move \$a0, (\$\w+)', setup)
+        if setup != actual or not moved:
+            continue
+        for op, actual in reversed(aligned[max(0, i - 22):i - 2]):
+            address = _STACK_ADDR.fullmatch(op)
+            if address and address[1] == moved[1] and actual == op:
+                offset = int(target[2], 0) - int(address[2], 0)
+                if offset in (0, 4, 8):
+                    sites.add((match[1], offset // 4))
+                break
+            if re.match(rf'\w+ {re.escape(moved[1])}(?:,|$)', op):
+                break
+    return sites
+
+
+def _stack_vector_layout(part, context, reset):
+    records = [m for m in _RECORD.finditer(part.body) if m['name'] == reset['record']]
+    if len(records) != 1:
+        return None
+    record = records[0]
+    members = list(re.finditer(rf'\b(?P<type>{IDENT})\s+{reset["slot"]}\s*;', record['body']))
+    if len(members) != 1:
+        return None
+    member = members[0]
+    triple = rf'(?:(?:{_F32})\s+{IDENT}\s*;\s*){{3}}'
+    records = re.findall(rf'\btypedef\s+struct\s*{{\s*({triple})}}\s*{member["type"]}\s*;', context)
+    if len(records) != 1:
+        return None
+    components = re.findall(rf'{_F32}\s+({IDENT})\s*;', records[0])
+    if (components[0] != reset['first'] or len(set(components)) != 3 or reset['field'] not in components):
+        return None
+    start = part.opening + 1 + record.start('body') + member.start('type')
+    end = part.opening + 1 + record.start('body') + member.end('type')
+    return start, end, member['type'], components.index(reset['field'])
+
+
+def stack_word_variants(source, name, rows, *, header='', max_bytes=65536):
+    """Use a word view only for a proven positive-zero vector component."""
+    sites = _stack_word_sites(rows)
+    visible = _visible(source, name, header) if sites else None
+    if not visible:
+        return []
+    part, context = visible
+    if re.search(r'\btypedef\s+(?!float\s+f32\b)[^;{}]+\bf32\s*;', context):
+        return []
+    macros = set(re.findall(rf'(?m)^[ \t]*#\s*(?:define|undef)\s+({IDENT})', context))
+    choices = []
+    for reset in _RESET.finditer(part.clean, part.opening + 1, part.end):
+        layout = _stack_vector_layout(part, context, reset)
+        if (layout and (reset['call'], layout[3]) in sites
+                and not macros & (set(re.findall(IDENT, reset[0])) | {layout[2], 'f32', 'u32', 'value', 'words'})):
+            choices.append((reset, layout))
+    if len(choices) != 1:
+        return []
+    reset, (start, end, record_type, component) = choices[0]
+    try:
+        flow = Flow(part, ())
+    except (ValueError, RecursionError):
+        return []
+    parents = [[] for _ in flow.nodes]
+    for index, node in enumerate(flow.nodes):
+        for successor in node.successors:
+            parents[successor].append(index)
+    unions = {m['name']: m for m in _ZERO_UNION.finditer(part.clean, part.opening + 1, part.end)}
+    signature = part.clean[:part.opening].rsplit('(', 1)[-1]
+    pointers = set(re.findall(rf'(?:void|char)\s*\*\s*({IDENT})', signature)) - macros
+    position = next((i for i, node in enumerate(flow.nodes) if node.start <= reset.start('lhs') < node.end), None)
+    if position is None or not _known_zero(flow, parents, position, reset['value'], unions, pointers):
+        return []
+    edits = [
+        (start, end, f'union {{ {record_type} value; unsigned int words[3]; }}'),
+        (reset.start('lhs'), reset.end('value'), f'{reset["path"]}.words[{component}] = 0'),
+    ]
+    reference = re.compile(rf'\b{re.escape(reset["record"])}\s*\.\s*{re.escape(reset["slot"])}\b')
+    edits.extend((use.end(), use.end(), '.value')
+                 for use in reference.finditer(part.clean, end, part.end) if use.start() != reset.start('lhs'))
+    candidate = edit(source, edits)
+    return [(STACK_WORD, candidate)] if len(candidate.encode()) <= max_bytes else []

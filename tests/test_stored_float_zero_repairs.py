@@ -55,3 +55,59 @@ def test_skips_paths_bypassing_initialization_and_unbraced_resets():
     unbraced = SOURCE.replace(f'        {FIELD} = 0.0f;', f'        if (state) {FIELD} = 0.0f;')
     assert not repair.variants(bypass, 'f', TARGET)
     assert not repair.variants(unbraced, 'f', TARGET)
+
+
+STACK_SOURCE = '''\
+typedef struct { float x; float y; float z; } Vector;
+void update(void *context) {
+    union { unsigned int bits; float number; } zero;
+    struct { Vector vector; } frame;
+    zero.bits = (unsigned int)context & ~(unsigned int)context;
+    fill(&frame.vector.x);
+    frame.vector.y = zero.number;
+    consume(&frame.vector.x);
+    emit(frame.vector.z);
+}
+'''
+STACK_ROWS = [
+    (' ', 'jal fill', 'jal fill'),
+    (' ', 'addiu $s0, $sp, 0x20', 'addiu $s0, $sp, 0x20'),
+    (' ', 'move $a0, $s0', 'move $a0, $s0'),
+    (' ', 'jal consume', 'jal consume'),
+    ('r', 'sw $zero, 0x24($sp)', 'sw $s7, 0x24($sp)'),
+]
+
+
+def test_stack_vector_uses_a_word_view_for_the_proven_zero_only():
+    [(label, source)] = repair.stack_word_variants(STACK_SOURCE, 'update', STACK_ROWS)
+    assert label == repair.STACK_WORD
+    assert 'union { Vector value; unsigned int words[3]; } vector;' in source
+    assert 'frame.vector.words[1] = 0;' in source
+    assert 'fill(&frame.vector.value.x);' in source
+    assert 'consume(&frame.vector.value.x);' in source
+    assert 'emit(frame.vector.value.z);' in source
+
+
+def test_stack_word_requires_a_matching_call_offset_and_three_plain_float_fields():
+    assert not repair.stack_word_variants(STACK_SOURCE, 'update', STACK_ROWS[1:3] + STACK_ROWS[-1:])
+    for source in (
+        STACK_SOURCE.replace('    consume(', '    receive('),
+        STACK_SOURCE.replace('frame.vector.y =', 'frame.vector.z ='),
+        STACK_SOURCE.replace('float z;', 'float z; int extra;'),
+        STACK_SOURCE.replace('consume(&frame.vector.x)', 'consume(&frame.vector.y)'),
+    ):
+        assert not repair.stack_word_variants(source, 'update', STACK_ROWS)
+    assert not repair.stack_word_variants(STACK_SOURCE, 'update', STACK_ROWS, max_bytes=len(STACK_SOURCE))
+    assert not repair.stack_word_variants(STACK_SOURCE, 'update', STACK_ROWS, header='#define words something')
+
+
+def test_stack_word_requires_positive_zero_on_all_incoming_paths():
+    for changed in (
+        'if (context) zero.bits = 0;',
+        'zero.bits = 0x80000000U;',
+        'zero.bits = 0; touch(&zero);',
+        'zero.bits = 0; if (context) zero.number = 1.0f;',
+    ):
+        source = STACK_SOURCE.replace('zero.bits = (unsigned int)context & ~(unsigned int)context;', changed)
+        assert not repair.stack_word_variants(source, 'update', STACK_ROWS)
+    assert repair.stack_word_variants(STACK_SOURCE.replace('zero.number;', '0.0f;'), 'update', STACK_ROWS)
