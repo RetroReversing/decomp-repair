@@ -132,3 +132,101 @@ def variants(source, name, asm):
             if changes:
                 choices.append((FAMILY, edit(source, changes)))
     return choices[:3]
+
+
+ORDER_FAMILY = 'vector_output_load_order'
+_WORD = re.compile(rf'lw\s+(\$\w+),\s*({_NUMBER})\(\$(?!sp\b)\w+\)')
+_POINTER_READ = re.compile(
+    rf'(?P<local>{IDENT})\s*=\s*\*\(\s*\(\s*void\s*(?P<stars>\*\s*\*)\s*\)'
+    rf'\s*\(\s*\(\s*\(\s*char\s*\*\s*\)\s*{IDENT}\s*\)\s*\+\s*(?P<offset>{_NUMBER})\s*\)\s*\)\s*;'
+)
+
+
+def _ordered_site(target, candidate, old_call, new_call):
+    if new_call+5 >= len(target) or not _target_site(target, new_call):
+        return None
+    pointer_row = target[new_call+5]
+    pointer = _WORD.fullmatch(pointer_row)
+    expected = [target[new_call+1], pointer_row, *target[new_call+2:new_call+5]]
+    if not pointer or candidate[old_call+1:old_call+6] != expected:
+        return None
+    later = candidate[old_call+6:old_call+10]
+    for op in target[new_call+6:new_call+10]:
+        if _CONTROL.match(op):
+            break
+        if op in later and _STORE.fullmatch(op) and op.endswith(f'({pointer[1]})'):
+            return int(pointer[2], 0)
+    return None
+
+
+def _call_indexes(code):
+    calls = {}
+    for index, op in enumerate(code):
+        if op.startswith('jal '):
+            calls.setdefault(op[4:], []).append(index)
+    return calls
+
+
+def _ordered_load_edits(part, buffer, following, offset):
+    component = re.compile(
+        rf'(?P<local>{IDENT})\s*=\s*(?P<read>{re.escape(buffer)}\s*\[\s*(?P<index>[012])\s*\])\s*;'
+    )
+    if len(following) < 4 or any(stmt.kind != 'simple' for stmt in following[:4]):
+        return []
+    reads = [component.fullmatch(part.clean, stmt.start, stmt.end) for stmt in following[:3]]
+    pointer = _POINTER_READ.fullmatch(part.clean, following[3].start, following[3].end)
+    if (not all(reads) or [hit['index'] for hit in reads] != ['0', '1', '2']
+            or not pointer or len({pointer['local'], *(hit['local'] for hit in reads)}) != 4
+            or int(pointer['offset'], 0) != offset):
+        return []
+    star_start, star_end = pointer.span('stars')
+    changes = [(star_start, star_end, '* volatile *')]
+    for hit in reads:
+        start, end = hit.span('read')
+        changes.append((start, end, f'((volatile float *) {buffer})[{hit["index"]}]'))
+    return changes
+
+
+def ordered_snapshot_variants(source, name, rows):
+    """Trial the same four loads with their observed ordering on KMC."""
+    target = [op for _, op, _ in rows if op]
+    candidate = [op for _, _, op in rows if op]
+    old_calls = _call_indexes(candidate)
+    targets = {}
+    for callee, indexes in _call_indexes(target).items():
+        previous = old_calls.get(callee, ())
+        if len(previous) != len(indexes):
+            continue
+        offsets = [_ordered_site(target, candidate, old, new) for old, new in zip(previous, indexes)]
+        if any(offset is not None for offset in offsets):
+            targets[callee] = offsets
+    if not targets:
+        return []
+    part = view(source, name)
+    if not part:
+        return []
+    end = close(part.clean, part.opening, '{', '}')
+    if not end:
+        return []
+    try:
+        paths = _paths(parse(part.clean, part.opening+1, end-1))
+        sites = {}
+        for stmt, trail in paths:
+            call = _CALL.match(part.clean, stmt.start, stmt.end) if stmt.kind == 'simple' else None
+            if call and call['name'] in targets:
+                sites.setdefault(call['name'], []).append((trail, call['buf']))
+    except ValueError:
+        return []
+    result = []
+    for callee, calls in sites.items():
+        if len(calls) != len(targets[callee]):
+            continue
+        for (trail, buffer), offset in zip(calls, targets[callee]):
+            if (offset is None or not _local_array(part.body, buffer)
+                    or not _buffer_uses_are_reads_or_calls(part, callee, buffer)):
+                continue
+            siblings, index, _ = trail[-1]
+            changes = _ordered_load_edits(part, buffer, siblings[index+1:], offset)
+            if changes:
+                result.append((ORDER_FAMILY, edit(source, changes)))
+    return result[:2]

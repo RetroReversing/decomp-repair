@@ -56,3 +56,57 @@ def test_accepts_a_plain_stack_array():
     source = SOURCE.replace('struct { f32 vector[3]; } frame;', 'f32 vector[3];').replace('frame.vector', 'vector')
     [(_, text)] = repair.variants(source, 'f', asm(ROWS))
     assert 'repair_vector_0 = vector[0];' in text
+
+
+ORDER_SOURCE = SOURCE.replace(
+    '    *((float *) context) = 0.0f;\n', '', 1,
+).replace(
+    '    f32 x;', '    void *record;\n    f32 x;',
+).replace(
+    '    use(x, y, z);',
+    '    record = *((void **) (((char *) context) + 0x68));\n'
+    '    *((float *) (((char *) record) + 0x34)) = 0.0f;\n'
+    '    use(x, y, z);',
+)
+ORDER_ROWS = [
+    (' ', ROWS[0], ROWS[0]),
+    (' ', ROWS[1], ROWS[1]),
+    ('o', '', ROWS[5]),
+    *((' ', row, row) for row in ROWS[2:5]),
+    ('o', ROWS[5], ''),
+    *((' ', row, row) for row in ROWS[6:]),
+]
+
+
+def test_orders_three_existing_vector_loads_before_the_record_pointer():
+    [(family, text)] = repair.ordered_snapshot_variants(ORDER_SOURCE, 'f', ORDER_ROWS)
+    assert family == repair.ORDER_FAMILY
+    assert 'x = ((volatile float *) frame.vector)[0];' in text
+    assert 'y = ((volatile float *) frame.vector)[1];' in text
+    assert 'z = ((volatile float *) frame.vector)[2];' in text
+    assert 'record = *((void * volatile *)' in text
+    assert text.count('load(frame.vector, 3);') == 1
+    assert not repair.ordered_snapshot_variants(text, 'f', ORDER_ROWS)
+
+
+def test_ordered_snapshot_requires_the_same_link_load_at_the_same_call():
+    matched = [(' ', row, row) for row in ROWS]
+    wrong_register = [
+        (marker, target, candidate.replace('lw $v1,', 'lw $v0,'))
+        for marker, target, candidate in ORDER_ROWS
+    ]
+    assert not repair.ordered_snapshot_variants(ORDER_SOURCE, 'f', matched)
+    assert not repair.ordered_snapshot_variants(ORDER_SOURCE, 'f', wrong_register)
+    assert not repair.ordered_snapshot_variants(ORDER_SOURCE, 'f', ORDER_ROWS[:4] + ORDER_ROWS[5:])
+    assert not repair.ordered_snapshot_variants(ORDER_SOURCE, 'f', ORDER_ROWS + matched)
+
+
+def test_ordered_snapshot_requires_source_triplet_followed_by_the_witnessed_read():
+    for source in (
+        ORDER_SOURCE.replace('context) + 0x68', 'context) + 0x64'),
+        ORDER_SOURCE.replace('y = frame.vector[1];', 'x = frame.vector[1];'),
+        ORDER_SOURCE.replace('y = frame.vector[1];', 'y = frame.vector[2];'),
+        ORDER_SOURCE.replace('y = frame.vector[1];', 'other();\n    y = frame.vector[1];'),
+        ORDER_SOURCE.replace('load(frame.vector, 3);', 'saved = frame.vector;\n    load(frame.vector, 3);'),
+    ):
+        assert not repair.ordered_snapshot_variants(source, 'f', ORDER_ROWS)
