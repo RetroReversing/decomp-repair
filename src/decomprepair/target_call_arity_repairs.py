@@ -29,7 +29,7 @@ def _instructions(asm):
             yield m['op'], m['args'].strip()
 
 
-def calls(asm, consumed=False):
+def calls(asm, consumed=False, through=False):
     """[(callee, {register: constant or None})] for each `jal`, in order: the argument registers written since the
     previous call or branch target, and in the delay slot.
 
@@ -37,7 +37,15 @@ def calls(asm, consumed=False):
     $v0`) before the call counts as not set up for it: a value m2c saw left in `$a0` and passed on. Three N64
     functions passed such a leftover (a byte just stored, a switch's selector, a word copied through `$a1`) to a
     callee that takes fewer arguments, and each was exact without it. A value can be both used and passed, so this
-    is only an alternative reading, offered beside the ordinary one."""
+    is only an alternative reading, offered beside the ordinary one.
+
+    With `through`, an argument register that a load or store used as its *base address* before the call counts as
+    not set up for it too: a PS1/N64-era menu function held a record pointer in `$a1` (`lw $a1, 0($s1)`, then
+    `lw $v1, 0x28($a1)` and `sw $v1, 0x28($a1)`) and called three callees that take one argument; the draft passed
+    `$a1` to each, and the stray argument register changed the first scheduler's order of the next call's argument
+    setup (a load that the target places after a shift stayed before it, 60 until the three calls lost it, then
+    exact). A register is often both the pointer a function works through and its argument, so this too is only an
+    alternative reading."""
     found = []
     written = {}
     pending = None
@@ -60,6 +68,10 @@ def calls(asm, consumed=False):
             pending = args.split('+')[0].strip()
             continue
         store = op.startswith(('sw', 'sh', 'sb', 'sd', 'swc1', 'sdc1'))
+        if through and op.startswith(('lw', 'lh', 'lb', 'sw', 'sh', 'sb', 'ld', 'sd')):
+            base = re.search(r'\(\$(\w+)\)\s*$', args)
+            if base and base[1] in ARGREG:
+                written.pop(base[1], None)
         if consumed:
             operands = re.findall(r'\$(\w+)', args)
             if store and operands and op not in ('swc1', 'sdc1'):
@@ -110,7 +122,35 @@ def variants(source, name, asm):
     for text in _variants(source, name, asm, clean, opening, end, calls(asm, consumed=True)):
         if text not in result:
             result.append(text)
-    return result[:6]
+    for text in _variants(source, name, asm, clean, opening, end, calls(asm, through=True)):
+        if text not in result:
+            result.append(text)
+    for reading in ({}, {'consumed': True}, {'through': True}, {'consumed': True, 'through': True}):
+        merged = _merged(source, name, asm, reading)
+        if merged and merged not in [t for _, t in result]:
+            result.append((FAMILY, merged))
+    return result[:10]
+
+
+def _merged(source, name, asm, reading):
+    """Every callee's change of one reading applied together. A stray trailing argument is the same mistake at each
+    call of a function (m2c passed a leftover `$a1` to three one-argument callees), and one callee's change alone
+    leaves the argument registers set up as before, so none of the single-callee children scores better; the
+    whole set is the step. Only offered when it changes more than one callee."""
+    text, changed = source, 0
+    for _ in range(8):
+        span = find(text, name)
+        clean = _blank(text)
+        opening = clean.find('{', span[0], span[1]) if span else -1
+        end = close(clean, opening, '{', '}') if opening >= 0 else None
+        if not end:
+            break
+        steps = [t for f, t in _variants(text, name, asm, clean, opening, end, calls(asm, **reading))
+                 if len(t) < len(text)]
+        if not steps:
+            break
+        text, changed = steps[0], changed + 1
+    return text if changed > 1 else None
 
 
 def _variants(source, name, asm, clean, opening, end, jals):
@@ -118,6 +158,9 @@ def _variants(source, name, asm, clean, opening, end, jals):
     for callee, regs in jals:
         targets.setdefault(callee, []).append(regs)
     every = [m for m in re.finditer(r'\b(' + IDENT + r')\s*\(', clean[opening:end]) if m[1] not in NOT_CALLS]
+    # (the target makes a call inside another's argument first: order the C's calls by where each one closes, so a
+    # callee renamed in the assembly still pairs with its call when the C nests them)
+    every.sort(key=lambda m: close(clean, opening + m.end() - 1) or 0)
     sites = {}
     # (the target's assembly may name a callee by its address, `func_800A1BB0`, where the C has its symbol: when
     # the C makes as many calls as the target and every name both share sits at the same place, pair them in order)
