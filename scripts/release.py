@@ -34,6 +34,13 @@ def git(*args, cwd=".", check=True):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=check).stdout.strip()
 
 
+def identity(cwd="."):
+    """`-c user.name/user.email` for a commit or annotated tag when git has none configured (a CI runner, a test)."""
+    missing = [key for key in ("user.name", "user.email") if not git("config", key, cwd=cwd, check=False)]
+    defaults = {"user.name": "decomp-repair release", "user.email": "actions@users.noreply.github.com"}
+    return [part for key in missing for part in ("-c", f"{key}={defaults[key]}")]
+
+
 def parse(version):
     return tuple(int(part) for part in version.split("."))
 
@@ -116,9 +123,9 @@ def release(cwd=".", push=True, remote="origin", notes_path="release-notes.md"):
         if project_version(cwd) != version or not lock_has_it:
             bump_files(version, cwd)
             git("add", "pyproject.toml", "uv.lock", cwd=cwd)
-            git("commit", "-q", "-m", f"Release decomprepair {version}: {summary(subjects)}\n\n"
+            git(*identity(cwd), "commit", "-q", "-m", f"Release decomprepair {version}: {summary(subjects)}\n\n"
                 + "\n".join(f"- {s}" for s in subjects), cwd=cwd)
-        git("tag", "-a", tag, "-m", f"decomprepair {version}", cwd=cwd)
+        git(*identity(cwd), "tag", "-a", tag, "-m", f"decomprepair {version}", cwd=cwd)
         if not push:
             break
         pushed = subprocess.run(["git", "push", "--atomic", remote, "HEAD:refs/heads/main", f"refs/tags/{tag}"],
