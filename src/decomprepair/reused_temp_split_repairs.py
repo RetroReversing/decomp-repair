@@ -38,7 +38,8 @@ def variants(source, name):
             start, stop = body[sets[k]].start, body[end - 1].end if end > sets[k] else body[sets[k]].end
             span = part.clean[start:stop]
             edits = [(start + m.start(), start + m.end(), fresh) for m in re.finditer(rf'(?<![\w.>]){re.escape(local)}\b', span)]
-            if not edits:
+            # A write with no renamed use can still feed a join after another arm.
+            if len(edits) < 2:
                 continue
             edits.append((decl.end(), decl.end(), '\n' + (re.match(r'[ \t]*', source[source.rfind('\n', 0, decl.start()) + 1:])[0] or '  ')
                           + f'{decl["type"]} {fresh};'))
