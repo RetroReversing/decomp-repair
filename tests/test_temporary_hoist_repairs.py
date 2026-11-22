@@ -213,3 +213,12 @@ void func(s32 i, void *p)
     assert not any('temp = i * 12;\n    x = 1;' in t for t in out)
     assert any('i = 2;\n    temp = i * 12;\n    use(' in t for t in out)
     assert not any('temp = i * 12;\n  s32 x;' in t for t in out)
+
+
+def test_a_declaration_is_always_written_before_the_assignment_it_belongs_to():
+    # in a one-line block the head of the block and the start of the statement are the same place
+    source = "int func(int x) { int result; result = 0; side(); if (x >= 0) {result = result + x;} return result; }"
+    out = texts(source)
+    assert any('{int temp;' in t or '{\n  int temp;' in t or 'int temp;' in t.split('if (x >= 0)')[1] for t in out)
+    for text in out:
+        assert text.index('temp;') < text.index('temp = '), text

@@ -192,6 +192,7 @@ def _declaration_edit(source, types, sites, block, tmp, ty):
 
 
 def _apply(source, edits):
+    """The edits applied from the end of the text; of two at one place the later in the list ends up first."""
     for start, end, text in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
         source = source[:start] + text + source[end:]
     return source
@@ -243,26 +244,26 @@ def variants(source, name, header='', int_bits=None):
             decl = _declaration_edit(source, types, all_sites, function_block, tmp, ty)
             run = _run(source, types, private, all_sites, statements, site, statement, first, register_pure, tmp)
             if first.kind != 'num' or len(nodes) > 1:
-                add('temporary_hoist', _apply(source, [decl, hold] + uses))
+                add('temporary_hoist', _apply(source, [hold, decl] + uses))
                 early = _earliest(all_sites, statements, site, first, register_pure, types, private)
                 if early is not None:
                     up = _assignment(source, early, tmp, expression)
-                    add('temporary_hoist', _apply(source, [decl, up] + uses))
+                    add('temporary_hoist', _apply(source, [up, decl] + uses))
                     if site.block != function_block:
-                        add('temporary_hoist_block', _apply(source, [_declaration_edit(
-                            source, types, all_sites, site.block, tmp, ty), up] + uses))
+                        add('temporary_hoist_block', _apply(source, [up, _declaration_edit(
+                            source, types, all_sites, site.block, tmp, ty)] + uses))
                 if site.block != function_block:
                     block_decl = _declaration_edit(source, types, all_sites, site.block, tmp, ty)
-                    add('temporary_hoist_block', _apply(source, [block_decl, hold] + uses))
+                    add('temporary_hoist_block', _apply(source, [hold, block_decl] + uses))
                 if len(nodes) > 1:
-                    add('temporary_hoist', _apply(source, [decl, hold, uses[0]]))
+                    add('temporary_hoist', _apply(source, [hold, decl, uses[0]]))
             if run:
-                add('temporary_hoist', _apply(source, [decl, hold] + uses + run))
+                add('temporary_hoist', _apply(source, [hold, decl] + uses + run))
         for sibling in _pairs(source, types, statement, tmp):
             expression, replacement, ty = sibling
             decl = _declaration_edit(source, types, all_sites, function_block, tmp, ty)
             hold = _assignment(source, site, tmp, expression)
-            add('temporary_hoist_pair', _apply(source, [decl, hold, replacement]))
+            add('temporary_hoist_pair', _apply(source, [hold, decl, replacement]))
     return result[:LIMIT]
 
 
