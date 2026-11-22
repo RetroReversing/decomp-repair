@@ -71,3 +71,5 @@ def test_requires_plain_local_argument_and_dead_pointer_on_both_join_paths():
     assert not variants(SOURCE.replace('        mode = 1;', '        mode = 2;', 1), 'visit', ROWS, '', CALLEES)
     assert not variants(SOURCE.replace('    check_mode:', '    escape(&current);\n    check_mode:'),
                         'visit', ROWS, '', CALLEES)
+    shadowed = SOURCE.replace('    check_mode:', '    { s32 current; current = 0; }\n    check_mode:')
+    assert not variants(shadowed, 'visit', ROWS, '', CALLEES)
