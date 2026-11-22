@@ -63,6 +63,40 @@ def _independent(a, b):
         and ra not in _names(b[2][len(rb):]) and rb not in _names(a[2][len(ra):])
 
 
+def _increment_reset(source, clean, opening, end):
+    """Swap an increment and an independent scalar reset, including across blank lines."""
+    body = clean[opening + 1:end]
+    pattern = re.compile(rf'(?m)^(?P<indent>[ \t]+)(?P<counter>{_ID})\+\+;(?P<space>\s*)'
+                         rf'(?P=indent)(?P<flag>{_ID})\s*=\s*0;[ \t]*$')
+    result = []
+    for m in pattern.finditer(body):
+        counter, flag = m['counter'], m['flag']
+        if counter == flag:
+            continue
+        prefix = body[:m.start()].rstrip()
+        if prefix and prefix[-1] not in ';{}:':
+            continue  # an unbraced branch could govern only the increment
+        for var in (counter, flag):
+            decl = list(re.finditer(rf'(?:^|[;{{}}])\s*(?:s32|u32|int|long|unsigned\s+int)\s+{var}\s*;', body))
+            shadows = re.findall(rf'(?:^|[;{{}}])\s*(?:(?:const|volatile|unsigned|signed|struct)\s+)*{_ID}\s+{var}\s*(?:[;=\[])', body)
+            if len(decl) != 1 or len(shadows) != 1 or decl[0].end() > m.start():
+                break
+            before = body[:decl[0].start()]
+            if before.count('{') != before.count('}') or re.search(rf'&\s*{var}\b', body):
+                break
+        else:
+            a, b = opening + 1 + m.start(), opening + 1 + m.end()
+            # Do not move comments, which may describe one of the statements.
+            original = source[a:b]
+            match = pattern.fullmatch(original)
+            if not match:
+                continue
+            replacement = (f"{m['indent']}{flag} = 0;{m['space']}"
+                           f"{m['indent']}{counter}++;")
+            result.append((FAMILY, source[:a] + replacement + source[b:]))
+    return result
+
+
 def variants(source, name, arch='mips', asm='', header=''):
     """Each proposal moves one assignment of a run up or down across independent neighbours; MIPS only."""
     if arch != 'mips':
@@ -72,8 +106,11 @@ def variants(source, name, arch='mips', asm='', header=''):
         return []
     clean = _blank(source)
     opening = clean.find('{', *span)
-    if opening < 0 or re.search(r'\bvolatile\b|^\s*#', clean[span[0]:span[1]], re.M):
+    if opening < 0 or re.search(r'^\s*#', clean[span[0]:span[1]], re.M):
         return []
+    targeted = _increment_reset(source, clean, opening, span[1])
+    if re.search(r'\bvolatile\b', clean[span[0]:span[1]]):
+        return targeted[:LIMIT]
     per_run = []
     for run in _runs(clean, opening, span[1]):
         result = []
@@ -93,7 +130,7 @@ def variants(source, name, arch='mips', asm='', header=''):
                     result.append((FAMILY, source[:run[0].start()] + text + source[run[-1].end():]))
         per_run.append(result)
     # round-robin across the runs, so a function with many of them does not spend the cap on the first
-    result = []
+    result = targeted
     for k in range(max((len(r) for r in per_run), default=0)):
         result += [r[k] for r in per_run if k < len(r)]
     seen, unique = set(), []

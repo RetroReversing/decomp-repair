@@ -45,3 +45,21 @@ def test_proposals_are_capped_and_distinct():
     many = 'void f(void) {\n' + ''.join(f'    v{i} = a{i} + 1;\n' for i in range(12)) + '}\n'
     srcs = _all(many)
     assert len(srcs) == len(set(srcs)) <= 48
+
+
+def test_independent_increment_and_reset_across_blank_line():
+    source = '''int f(void) {
+    volatile int *p;
+    int counter;
+    int found;
+next:
+    counter++;
+
+    found = 0;
+    if (*p) goto next;
+    return found + counter;
+}'''
+    assert any('found = 0;\n\n    counter++;' in s for s in _all(source))
+    assert not _all(source.replace('int counter;', 'volatile int counter;'))
+    assert not _all(source.replace('next:', 'if (*p)'))
+    assert not _all(source.replace('return found + counter;', 'return *(&counter);'))
