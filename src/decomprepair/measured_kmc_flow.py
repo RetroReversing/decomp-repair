@@ -1183,6 +1183,68 @@ def _split_saved_flag_mask(source, name, rows):
                          (entry + start, entry + stop, split)])
 
 
+def _capture_loop_float_before_setup(source, name, header, rows):
+    """Capture a repeated scalar load before the guarded loop's stack cursor setup."""
+    symbols = set()
+    for a, b, hi, lo, c, d in zip(rows, rows[1:], rows[2:], rows[3:], rows[4:], rows[5:]):
+        high = re.fullmatch(rf'lui \$at, %hi\(({IDENT})\)', hi[1])
+        cursor = re.fullmatch(rf'addiu (\$\w+), \$sp, ({NUMBER})', c[1])
+        counter = re.fullmatch(r'move (\$\w+), \$zero', d[1])
+        if (not high or not cursor or not counter or cursor[1] == counter[1]
+                or hi[1] != hi[2] or lo[1] != lo[2] or a[1] or b[1] or c[2] or d[2]
+                or a[2] != c[1] or b[2] != d[1]
+                or not re.fullmatch(rf'lwc1 \$f\d+, %lo\({re.escape(high[1])}\)\(\$at\)', lo[1])):
+            continue
+        symbols.add(high[1])
+    if len(symbols) != 1 or not (part := view(source, name)):
+        return None
+    symbol = symbols.pop()
+    capture = '__repair_loop_float'
+    context = header + '\n' + part.clean[:part.opening]
+    if len(re.findall(rf'\bextern\s+(?:f32|float)\s+{symbol}\s*;', context)) != 1:
+        return None
+    if re.search(rf'\b(?:volatile|const\s+volatile)\b[^;\n]*\b{symbol}\b|\b{capture}\b', context + part.body):
+        return None
+    start_loop = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)(?P<out>{IDENT})\s*=\s*(?P<array>{IDENT});\s*'
+        rf'{IDENT}\s*=\s*0\s*;\s*do\s*{{'
+    )
+    choices = []
+    for hit in start_loop.finditer(part.clean, part.opening + 1, part.end):
+        array, out = hit['array'], hit['out']
+        prefix = part.clean[part.opening + 1:hit.start()]
+        if not re.search(rf'(?m)^[ \t]*{IDENT}\s+{array}\s*\[\s*{NUMBER}\s*\]\s*;', prefix):
+            continue
+        if len(re.findall(rf'\b{array}\b', prefix)) != 1:
+            continue
+        end = close(part.clean, hit.end() - 1, '{', '}')
+        if not end:
+            continue
+        body = part.clean[hit.end():end - 1]
+        refs = list(re.finditer(rf'(?<![\w.>]){symbol}\b', body))
+        if len(refs) < 2 or re.search(r'\b(?:goto|return|if|switch|for|while)\b|[{}]', body):
+            continue
+        if re.search(rf'\b{IDENT}\s*\(|&\s*{symbol}\b|\b{symbol}\s*[-+*/|&^]?=(?!=)', body):
+            continue
+        if not all(re.fullmatch(rf'{IDENT}|{out}->{IDENT}', item.strip())
+                   for item in re.findall(r'(?m)^[ \t]*(.+?)\s*[-+*/|&^]?=(?!=)', body)):
+            continue
+        # Only a simple local comparison, or its source-owned inline equivalent,
+        # can repeat the loop without writing the captured scalar.
+        tail = part.clean[end:part.end]
+        test = re.match(rf'\s*while\s*\(\s*{IDENT}\s*<\s*{IDENT}\s*\)\s*;', tail)
+        if not test:
+            test = re.match(rf'\s*while\s*\(\s*({IDENT})\(\s*{IDENT}\s*,\s*{IDENT}\s*\)\s*\)\s*;', tail)
+            if not test or not re.search(
+                rf'\binline\s+static\s+int\s+{test[1]}\s*\(\s*s32\s+({IDENT})\s*,\s*s32\s+({IDENT})\s*\)'
+                r'\s*{\s*return\s+\1\s*<\s*\2\s*;\s*}', context
+            ):
+                continue
+        choices.append([(hit.start(), hit.start(), f'{hit["indent"]}f32 {capture} = {symbol};\n'),
+                        *((hit.end() + ref.start(), hit.end() + ref.end(), capture) for ref in refs)])
+    return edit(source, choices[0]) if len(choices) == 1 else None
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -1224,6 +1286,8 @@ def variants(source, name, header, rows):
         return [('measured_byte_pair_scan', candidate)]
     if candidate := masked_lookup_switch.candidate(source, name, header, rows):
         return [('measured_masked_lookup_switch', candidate)]
+    if candidate := _capture_loop_float_before_setup(source, name, header, rows):
+        return [('measured_capture_loop_float', candidate)]
     if candidate := _stage_volatile_float_pair(source, name, header, rows):
         return [('measured_volatile_float_pair', candidate)]
     if candidate := _split_saved_flag_mask(source, name, rows):
