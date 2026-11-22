@@ -118,3 +118,6 @@ def variants(source, name, header=''):
     if chain := _chain(normal, name, header):
         out.append((CHAIN_FAMILY, chain))
     return list(dict.fromkeys(out))[:LIMIT]
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header')}  # the registry: no caller wiring (registry.py)
