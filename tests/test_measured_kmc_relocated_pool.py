@@ -39,3 +39,12 @@ def test_requires_target_and_matching_addresses():
     assert not variants(SOURCE, 'f', 'extern s32 index;', ROWS, RESOLVE)
     assert not variants(SOURCE.replace('s32 *cursor', 'volatile s32 *cursor'), 'f', '', ROWS, RESOLVE)
     assert not variants(SOURCE, 'f', '', [(' ', line, line) for line in TARGET], RESOLVE)
+
+
+def test_recovers_old_value_return_when_signature_is_unconstrained():
+    results = dict(variants(SOURCE, 'f', '', ROWS, RESOLVE))
+    fixed = results['measured_relocated_pool_return']
+    assert 'extern s32 table[];' in fixed
+    assert 's32 f(void)' in fixed
+    assert 'return __repair_pool_old;' in fixed
+    assert 'measured_relocated_pool_return' not in dict(variants(SOURCE, 'f', 'void f(void);', ROWS, RESOLVE))
