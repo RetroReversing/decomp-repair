@@ -84,3 +84,19 @@ def test_a_callee_with_conflicting_argument_types_loses_its_parameter_list():
     out = repair(source, 3, "incompatible type for argument 1 of `g'")
     assert out == 'void g();\nvoid f(void) {\n    g(x, 1.0f);\n}\n'
     assert repair(out, 3, "incompatible type for argument 1 of `g'") is None
+
+
+def test_a_call_to_itself_converts_the_argument_to_the_parameters_type():
+    source = 'void f(void *a, s32 b) {\n    f(x, y);\n}\n'
+    once = repair(source, 2, "incompatible type for argument 1 of `f'")
+    assert once == 'void f(void *a, s32 b) {\n    f((void *)(s32)x, y);\n}\n'
+    twice = repair(once, 2, "incompatible type for argument 2 of `f'")
+    assert twice == 'void f(void *a, s32 b) {\n    f((void *)(s32)x, (s32)y);\n}\n'
+    assert repair(source, 2, "incompatible type for argument 3 of `f'") is None
+
+
+def test_compact_drops_comments_and_indentation_only():
+    from decomprepair.compile_error_repairs import compact
+    source = 'void f(void) {\n    case 1:   /* switch 1 */\n        x = a  + b; \n\n\n\n}\n'
+    assert compact(source) == 'void f(void) {\ncase 1:\nx = a  + b;\n\n}\n'
+    assert compact('x;\n') is None
