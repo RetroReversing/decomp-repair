@@ -201,3 +201,81 @@ def variants(source, name, rows, *, header='', max_bytes=None):
                 if len(proposals) == 4:
                     return proposals
     return proposals
+
+
+REGISTER_CLAMP = 'split_bound_register_roles'
+_REGISTER_CLAMP = re.compile(
+    rf'(?m)^(?P<pad>[ \t]*)(?P<bound>{IDENT})\s*=\s*(?P<lower>{_LITERAL})\s*;\s*'
+    rf'(?P<value>{IDENT})\s*=\s*(?P<load>{_FIELD})\s*;\s*'
+    r'if\s*\(\(\s*(?P=value)\s*<\s*(?P=lower)\s*\)\s*\|\|'
+    rf'\s*\(\(\s*(?P=bound)\s*=\s*(?P<upper>{_LITERAL})\s*,\s*(?P=value)\s*>\s*(?P=upper)\s*\)\s*\)\s*\)\s*'
+    rf'\{{\s*(?P<store>{_FIELD})\s*=\s*(?P=bound)\s*;\s*\}}'
+)
+
+
+def _swapped_bounds(rows):
+    """Require the two field stores and comparisons to swap the same registers."""
+    for index in range(len(rows) - 18):
+        window = rows[index:index + 19]
+        left = [op for _, op, _ in window]
+        high, low = _LUI.fullmatch(left[0]), _ORI.fullmatch(left[1])
+        next_high, next_low = _LUI.fullmatch(left[9]), _ORI.fullmatch(left[10])
+        load = _LOAD.fullmatch(left[3])
+        lower = re.fullmatch(rf'mtc1 \$at, ({_FPR})', left[2])
+        if not (high and low and next_high and next_low and load and lower):
+            continue
+        value, offset, base = load.groups()
+        bound = lower[1]
+        store = f'swc1 {bound}, {offset}{base}'
+        if (value == bound or not left[7].startswith('bc1tl ') or not left[16].startswith('bc1f ')
+                or left[4:7] != [f'c.lt.s {value}, {bound}', 'nop', 'nop']
+                or left[8] != store or left[11:16] != [left[2], 'nop', f'c.lt.s {bound}, {value}', 'nop', 'nop']
+                or left[18] != store):
+            continue
+        swapped = left.copy()
+        swapped[2:5] = [f'mtc1 $at, {value}', f'lwc1 {bound}, {offset}{base}', f'c.lt.s {bound}, {value}']
+        swapped[8] = swapped[18] = f'swc1 {value}, {offset}{base}'
+        swapped[11] = swapped[2]
+        swapped[13] = f'c.lt.s {value}, {bound}'
+        if swapped == [op for _, _, op in window]:
+            yield (integer(offset), integer(high[1]) << 16 | integer(low[1]),
+                   integer(next_high[1]) << 16 | integer(next_low[1]))
+
+
+def split_register_variants(source, name, rows, *, header=''):
+    witnesses = set(_swapped_bounds(rows))
+    visible = _visible(source, name, header) if witnesses else None
+    if not visible:
+        return []
+    part, context = visible
+    typedefs = re.findall(r'\btypedef\s+([^;{}]+?)\s+f32\s*;', context)
+    if any(alias.strip() != 'float' for alias in typedefs):
+        return []
+    macros = set(re.findall(rf'(?m)^[ \t]*#\s*(?:define|undef)\s+({IDENT})', context))
+    floats = _typed_locals(part, r'(?:f32|float)')
+    proposals = []
+    for match in _REGISTER_CLAMP.finditer(part.clean, part.opening + 1, part.end):
+        pad, value, bound, lower, upper = (match[key] for key in ('pad', 'value', 'bound', 'lower', 'upper'))
+        if (value == bound or any(local not in floats or not _in_scope(part, floats[local][1], match.start())
+                                  or _escaped(part.body, local) or floats[local][0] in macros
+                                  for local in (value, bound))):
+            continue
+        before = part.clean[part.opening + 1:match.start()].rstrip()
+        if (before and before[-1] not in ';{}:') or macros & set(re.findall(IDENT, match[0])):
+            continue
+        if len(re.findall(rf'\b{bound}\b', part.body)) != 4:
+            continue
+        prefix = part.clean[:part.opening]
+        field = _field(match['load'], prefix)
+        if (not field or _field(match['store'], prefix) != field
+                or (field[1], _bits(lower), _bits(upper)) not in witnesses):
+            continue
+        load = source[match.start('load'):match.end('load')]
+        store = source[match.start('store'):match.end('store')]
+        changed = (f'{pad}{value} = {load};\n'
+                   f'{pad}if ({value} < {lower}) {{\n{pad}  {store} = {lower};\n'
+                   f'{pad}}} else if ({value} > {upper}) {{\n{pad}  {store} = {upper};\n{pad}}}')
+        proposals.append((REGISTER_CLAMP, edit(source, [(match.start(), match.end(), changed)])))
+        if len(proposals) == 4:
+            break
+    return proposals
