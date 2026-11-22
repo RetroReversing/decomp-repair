@@ -119,3 +119,74 @@ def variants(source, name, limit=8):
         if len(result) >= limit:
             break
     return result[:limit]
+
+
+_RECORD_COPY = re.compile(
+    r'(?m)^(?P<indent>[ \t]*)(?P<local>[A-Za-z_]\w*)\s*=\s*(?P<address>[^;{}\n]+);[ \t]*\n'
+    r'[ \t]*\*\s*\(\s*\(\s*(?P<record>[A-Za-z_]\w*)\s*\*\s*\)\s*(?P<array>[A-Za-z_]\w*)\s*\)'
+    r'\s*=\s*\*\s*\(\s*\(\s*(?P=record)\s*\*\s*\)\s*(?P=local)\s*\)\s*;')
+_WORD_READ = re.compile(r'lw (\$\w+), (?:(0x[0-9a-f]+|[0-9]+))?\((\$\w+)\)')
+
+
+def _indexed_copy_registers(rows):
+    for i, (_, target, current) in enumerate(rows[:-3]):
+        left, right = _WORD_READ.fullmatch(target), _WORD_READ.fullmatch(current)
+        if not left or not right or int(left[2] or '0', 0) or int(right[2] or '0', 0):
+            continue
+        # The address and first data word exchange registers while the destination stays put.
+        if left[1] == left[3] or (left[1], left[3]) != (right[3], right[1]):
+            continue
+        following = [(_WORD_READ.fullmatch(a), _WORD_READ.fullmatch(b)) for _, a, b in rows[i + 1:i + 3]]
+        if not all(a and b and a[1] == b[1] and int(a[2] or '0', 0) == int(b[2] or '0', 0) == step
+                   and a[3] == left[3] and b[3] == right[3] for step, (a, b) in zip((4, 8), following)):
+            continue
+        _, store, old_store = rows[i + 3]
+        if (store.startswith(f'sw {left[1]}, ') and store.endswith('($sp)')
+                and old_store == store.replace(f'sw {left[1]}, ', f'sw {right[1]}, ', 1)):
+            return True
+    return False
+
+
+def measured_record_copy_inline(source, name, rows, header=''):
+    """Inline the sole address use when the measured three-word copy swaps its registers."""
+    if not _indexed_copy_registers(rows):
+        return []
+
+    from .csource import _blank
+    from .frame_padding_repairs import declaration_ends
+
+    part = view(source, name)
+    if not part or re.search(r'\b(?:asm|__asm|__asm__)\b', part.body):
+        return []
+    declarations = {}
+    begin = part.opening + 1
+    for end in declaration_ends(part):
+        decl = re.fullmatch(r'\s*(?:void\s*\*\s*([A-Za-z_]\w*)|f32\s+([A-Za-z_]\w*)\s*\[\s*3\s*\])\s*;',
+                            part.clean[begin:end])
+        if decl:
+            declarations[decl[1] or decl[2]] = 'pointer' if decl[1] else 'array'
+        begin = end
+
+    macro_text = (_blank(header) + '\n' + part.clean).replace('\\\n', ' ')
+    macros = re.findall(r'(?m)^[ \t]*#\s*(?:define|undef)\s+([^\n]+)', macro_text)
+    out = []
+    for hit in _RECORD_COPY.finditer(part.clean, part.opening + 1, part.end):
+        local, array, record = (hit[k] for k in ('local', 'array', 'record'))
+        if declarations.get(local) != 'pointer' or declarations.get(array) != 'array':
+            continue
+        if part.clean[part.opening + 1:hit.start()].rstrip()[-1:] not in (';', '{', '}'):
+            continue
+        if not re.search(r'\+.*\*|\*.*\+', hit['address']):
+            continue
+        if len(re.findall(rf'\b{local}\b', part.body)) != 3:
+            continue
+        shadow = rf'\b[A-Za-z_]\w*(?:\s+\**\s*|\s*\*+\s*){array}\s*(?=[;=,\[])'
+        if len(re.findall(shadow, part.body)) != 1:
+            continue
+        if any({local, array, record, 'f32'} & set(re.findall(r'[A-Za-z_]\w*', macro)) for macro in macros):
+            continue
+        if hit[0] != source[hit.start():hit.end()]:
+            continue
+        replacement = f"{hit['indent']}*(({record} *) {array}) = *(({record} *) (void *)({hit['address']}));"
+        out.append((FAMILY, edit(source, [(hit.start(), hit.end(), replacement)])))
+    return out[:3]
