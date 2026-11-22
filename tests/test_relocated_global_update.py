@@ -181,3 +181,41 @@ def test_branch_byte_rejects_a_different_machine_store_address_and_volatile_head
     assert not rewrite_branch_byte(_BRANCH_BYTE_SOURCE, 'clear_pending', asm, resolve=resolve)
     assert not rewrite_branch_byte(_BRANCH_BYTE_SOURCE, 'clear_pending', _BRANCH_BYTE_ASM,
                                    'extern volatile char state[];', resolve)
+
+
+INCREMENT = '''
+#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))
+extern M2C_UNK arena;
+void update(void *p) {
+    use(p);
+    M2C_FIELD(&arena, s32 *, 0x40) = (s32) (M2C_FIELD(&arena, s32 *, 0x40) + 1);
+}
+'''
+INCREMENT_ASM = '''
+/* 00 80001000 0C000000 */ jal use
+/* 04 80001004 00000000 */ nop
+/* 08 80001008 3C028003 */ lui $v0, %hi(arena + 0x40)
+/* 0C 8000100C 8C429120 */ lw $v0, %lo(arena + 0x40)($v0)
+/* 10 80001010 24420001 */ addiu $v0, $v0, 1
+/* 14 80001014 3C018003 */ lui $at, %hi(arena + 0x40)
+/* 18 80001018 AC229120 */ sw $v0, %lo(arena + 0x40)($at)
+/* 1C 8000101C 03E00008 */ jr $ra
+/* 20 80001020 00000000 */ nop
+'''
+
+
+def test_recover_direct_word_increment_at_verified_relocations():
+    candidate = repair.rewrite_increment(INCREMENT, 'update', INCREMENT_ASM, resolve=SYMBOLS.get)
+    assert candidate == INCREMENT.replace('void update', 'extern s32 D_80029120;\n\nvoid update').replace(
+        'M2C_FIELD(&arena, s32 *, 0x40)', 'D_80029120')
+
+
+@pytest.mark.parametrize('source,asm,symbols', [
+    (INCREMENT, INCREMENT_ASM.replace('8C429120', '8C429124'), SYMBOLS),
+    (INCREMENT, INCREMENT_ASM.replace('AC229120', 'AC229124'), SYMBOLS),
+    (INCREMENT.replace('+ 1);', '+ 2);'), INCREMENT_ASM, SYMBOLS),
+    (INCREMENT.replace('(type_ptr)((s8 *)(expr) + (offset))', '(type_ptr)(side_effect())'), INCREMENT_ASM, SYMBOLS),
+    (INCREMENT, INCREMENT_ASM, {'arena': 0x800290E0}),
+])
+def test_increment_rejects_unproven_addresses_and_macros(source, asm, symbols):
+    assert repair.rewrite_increment(source, 'update', asm, resolve=symbols.get) is None
