@@ -129,3 +129,20 @@ def test_a_volatile_local_still_gives_no_liveness():
 }
 '''
     assert local_flow.analyze(unusual, 'f') is None
+
+
+def test_float_and_pointer_phase_splits_survive_a_second_call_on_the_same_text():
+    # The flow is cached per text and hands back the first call's declaration objects: splits() matched the wide
+    # locals by identity, so the second call on one source returned nothing.
+    from decomprepair import phase_lifetime_repairs
+    source = '''void f(s32 *b) {
+    s32 *p;
+    p = b;
+    *p = 1;
+    p = b + 4;
+    *p = 2;
+    *p = 3;
+}
+'''
+    first = phase_lifetime_repairs.splits(source, 'f')
+    assert first and phase_lifetime_repairs.splits(source, 'f') == first

@@ -58,6 +58,9 @@ def splits(source, name, header=''):
         return []
     part = view(source, name)
     wide = _float_pointer_locals(part) if part else []
+    # By name: a cached flow (local_flow.analyze keeps one per text) hands back the declaration objects of the first
+    # call, so an identity test (`decl in wide`) failed on every later call and dropped every float and pointer local.
+    wide_names = {decl['name'] for decl in wide}
     flow = local_flow.analyze(source,name,declarations=(locals_for(part) + wide) if wide else None)
     if not flow:
         return []
@@ -68,7 +71,7 @@ def splits(source, name, header=''):
             continue
         variable = decl['name']
         fresh = '__repair_phase_'+variable
-        if fresh in source or (decl['type'] not in INTEGER_TYPES and decl not in wide):
+        if fresh in source or (decl['type'] not in INTEGER_TYPES and decl['name'] not in wide_names):
             continue
         definitions = [i for i,node in enumerate(flow.nodes) if variable in node.defines
                        and not node.start <= decl.start() < node.end]
