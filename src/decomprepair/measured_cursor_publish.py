@@ -2,6 +2,7 @@
 
 import re
 
+from .compiler_phase_repairs import fresh
 from .integer_repair_support import IDENT, edit, view
 from .loaded_byte_repairs import declarators
 
@@ -132,8 +133,76 @@ def _word_store_orders(source, part, rows):
     return choices if len(choices) == 1 else []
 
 
+_COMMAND = re.compile(
+    rf'(?m)^(?P<pad>[ \t]+)(?P<first>\*\(\(s32 \*\) \(\(\(char \*\) (?P<global>{IDENT})\) \+ 0\)\)'
+    rf'\s*=\s*{IMM};)'
+    rf'(?P<gap>(?:\s*{IDENT}\s*=\s*(?:{IDENT}|{IMM});){{0,5}})'
+    rf'\s*(?P<second>\*\(\(s32 \*\) \(\(\(char \*\) (?P=global)\) \+ 4\)\)\s*=\s*[^;{{}}]+;)'
+    rf'(?P<tail>(?:\s*{IDENT}\s*=\s*(?:{IDENT}|(?P=global)\s*\+\s*8)\s*;){{4}})'
+)
+_GLOBAL_LOAD = re.compile(rf'(?P<op>lw|lbu) (?P<reg>{REG}), %lo\((?P<sym>{IDENT})\)\((?P=reg)\)')
+_BYTE_PUBLISH = re.compile(rf'sb ({REG}), %lo\(({IDENT})\)\(\$at\)')
+_COPY = re.compile(rf'\s*({IDENT})\s*=\s*({IDENT})\s*;')
+
+
+def _command_cursor_evidence(rows):
+    for i, (_, wanted, actual) in enumerate(rows):
+        a, b = (_WORD_STORE.fullmatch(op) for op in (wanted, actual))
+        if not a or not b or a['offset'] != '4' or b['offset'] != '4' or a['base'] == b['base']:
+            continue
+        before = rows[max(0, i - 32):i]
+        reloads = [_GLOBAL_LOAD.fullmatch(right) for _, left, right in before if not left]
+        for reload in reloads:
+            if not reload or reload['op'] != 'lw' or reload['reg'] != b['base']:
+                continue
+            symbol, base = reload['sym'], a['base']
+            if not any(_WORD_STORE.fullmatch(left) and left.endswith(f', ({base})') for _, left, _ in before):
+                continue
+            window = [left for _, left, _ in rows[i + 1:i + 23] if left]
+            advance = f'addiu {base}, {base}, 8'
+            publish = f'sw {base}, %lo({symbol})($at)'
+            if advance not in window or publish not in window:
+                continue
+            loads = {m['reg']: m['sym'] for line in window[:window.index(advance)]
+                     if (m := _GLOBAL_LOAD.fullmatch(line)) and m['op'] == 'lbu'}
+            pairs = [(m[2], loads[m[1]]) for line in window[window.index(publish) + 1:]
+                     if (m := _BYTE_PUBLISH.fullmatch(line)) and m[1] in loads]
+            if len(pairs) == 3 and len({name for pair in pairs for name in pair}) == 6:
+                yield symbol, tuple(pairs)
+
+
+def _command_cursor(source, part, rows):
+    sites = set(_command_cursor_evidence(rows))
+    if not sites:
+        return []
+    result = []
+    for m in _COMMAND.finditer(part.clean, part.opening + 1, part.end):
+        symbol = m['global']
+        tail = m['tail']
+        colors = {tuple(x.groups()) for x in _COPY.finditer(tail)}
+        order = [pairs for cursor, pairs in sites if cursor == symbol and set(pairs) == colors]
+        if len(order) != 1 or not re.search(rf'\b{symbol}\s*=\s*{symbol}\s*\+\s*8\s*;', tail):
+            continue
+        if not re.search(rf'\bextern\s+void\s*\*\s*{symbol}\s*;', part.clean[:part.opening]):
+            continue
+        if (source[m.start():m.end()] != m[0] or part.clean[:m.start()].rstrip()[-1:] not in ';{}'
+                or len(re.findall(rf'\b{symbol}\b', m['first'] + m['gap'] + m['second'])) != 2
+                or re.search(r'(?m)^\s*#', part.body)):
+            continue
+        local = fresh(source, '', 'repair_command_cursor')
+        pad = m['pad']
+        stores = re.sub(rf'\b{symbol}\b', local, m['first'] + m['gap'] + '\n' + pad + m['second'])
+        updates = '\n'.join(f'{destination} = {value};' for destination, value in order[0])
+        updates = updates.replace('\n', '\n' + pad + '  ')
+        replacement = (f'{pad}{{\n{pad}  void *{local};\n{pad}  {local} = {symbol};\n{pad}  {stores}'
+                       f'\n{pad}  {updates}\n{pad}  {local} += 8;\n{pad}  {symbol} = {local};\n{pad}}}')
+        result.append(('measured_captured_command_cursor', edit(source, [(m.start(), m.end(), replacement)])))
+    return result if len(result) == 1 else []
+
+
 def variants(source, name, rows):
     """Try the independently evidenced cursor and initialization repairs."""
     if not rows or not (part := view(source, name)):
         return []
-    return _publish(source, part, rows) + _zero_orders(source, part, rows) + _word_store_orders(source, part, rows)
+    return (_publish(source, part, rows) + _zero_orders(source, part, rows)
+            + _word_store_orders(source, part, rows) + _command_cursor(source, part, rows))
