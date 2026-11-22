@@ -106,8 +106,9 @@ def variants(source, name, rows, header='', max_bytes=65536):
             continue
         init = inits[0]
         previous = part.clean[part.opening:init.start()].rstrip()
-        if (block_path(part, init.start()) != [part.opening]
-                or (previous[-1:] not in ('{', '}', ';') and not re.search(rf'\b{IDENT}\s*:$', previous))):
+        while label := re.search(rf'\b{IDENT}\s*:$', previous):
+            previous = previous[:label.start()].rstrip()
+        if previous[-1:] not in ('{', '}', ';'):
             continue
         end = _phase_end(part, init.end() - 1)
         if not end or sites[-1].end() > end or not _private_zero_uses(part, word, init, end, arg, macros, zero):
