@@ -2,6 +2,7 @@
 
 import re
 import struct
+from itertools import islice
 
 from .clamp_return_local import _field
 from .integer_repair_support import IDENT, NUMBER, edit, integer
@@ -9,6 +10,7 @@ from .operand_lifetime_repairs import _escaped, _in_scope, _typed_locals, _visib
 
 FAMILY = 'float_clamp_scale_stage'
 IN_PLACE = 'float_clamp_axis_stage'
+SIGNED_SQUARE = 'float_clamp_signed_square'
 _FPR = r'\$f(?:[12]?[0-9]|3[01])'
 _SAVED = r'\$f(?:20|22|24|26|28|30)'
 _LITERAL = r'\d+\.\d+[fF]'
@@ -25,15 +27,29 @@ _BLEND = (
     rf'(?P<store>{_FIELD})\s*=\s*(?P=result);\s*if\s*\(\s*(?P=result)\s*<\s*\(-(?P<bound>{_LITERAL})\)\s*\)\s*\{{'
 )
 _SOURCE = re.compile(_BLEND)
-_RELOADED = re.compile(
-    _BLEND
-    + rf'\s*(?P<lower>{_FIELD})\s*=\s*-(?P=bound)\s*;\s*\}}\s*else\s*'
+_CLAMP_TAIL = (
+    rf'\s*(?P<lower>{_FIELD})\s*=\s*-(?P=bound)\s*;\s*\}}\s*else\s*'
     rf'if\s*\(\s*(?P=result)\s*>\s*(?P=bound)\s*\)\s*\{{\s*(?P<upper>{_FIELD})\s*=\s*(?P=bound)\s*;'
-    rf'\s*\}}\s*(?P=axis)\s*=\s*(?P<reload>{_FIELD})\s*;'
+    r'\s*\}'
 )
+_RELOADED = re.compile(_BLEND + _CLAMP_TAIL + rf'\s*(?P=axis)\s*=\s*(?P<reload>{_FIELD})\s*;')
+_SIGNED = re.compile(
+    rf'(?m)^[ \t]*(?P<original>{IDENT})\s*=\s*(?P<before>{IDENT})\s*;\s*'
+    rf'(?P=before)\s*=\s*(?P=before)\s*\*\s*(?P=before)\s*;\s*'
+    rf'if\s*\(\s*(?P<check>(?P=original))\s*<\s*0\.0[fF]\s*\)\s*'
+    rf'\{{\s*(?P=before)\s*=\s*-(?P=before)\s*;\s*\}}\s*\n'
+)
+_SAVED_SIGN = re.compile(
+    rf'\s*\{{\s*(?:f32|float)\s+(?P<saved>{IDENT})\s*=\s*(?P<start>{IDENT})\s*;\s*'
+    rf'(?P=start)\s*=\s*(?P<field>{_FIELD})\s*;\s*(?P<global>{IDENT})\s*-=\s*(?P=start)\s*;\s*'
+    rf'(?P=start)\s*=\s*(?P=saved)\s*;\s*\}}\s*'
+    rf'(?P=start)\s*=\s*{IDENT}\((?P<arguments>[^;{{}}\n]+)\)\s*;'
+)
+_RELOADED_CLAMP = re.compile(_BLEND + _CLAMP_TAIL)
+_SIGN_COPY = re.compile(rf'mov\.s ({_SAVED}), ({_SAVED})')
 
 
-def _witnesses(rows):
+def _witnesses(rows, *, signed=False):
     targets = [(i, marker, left) for i, (marker, left, _) in enumerate(rows) if left]
     witnesses = set()
     for current in range(3, len(targets) - 2):
@@ -51,6 +67,8 @@ def _witnesses(rows):
         load = _LOAD.fullmatch(targets[current + 1][2])
         if not load or not re.fullmatch(rf'sub\.s {_FPR}, {re.escape(mul[1])}, {re.escape(load[1])}', targets[current + 2][2]):
             continue
+        if signed and not _sign_copy(rows, targets, current, mul[1]):
+            continue
         start, end = targets[current - 2][0], targets[current + 2][0]
         nearby = [right for _, _, right in rows[start:end + 1] if right]
         for first, second, third in zip(nearby, nearby[1:], nearby[2:]):
@@ -60,6 +78,76 @@ def _witnesses(rows):
                     and re.fullmatch(rf'sub\.s {_FPR}, {re.escape(other_mul[1])}, {re.escape(other_load[1])}', third)):
                 witnesses.add((integer(load[2]), (integer(upper[1]) << 16) | (integer(lower[1]) if lower else 0)))
     return witnesses
+
+
+def _sign_copy(rows, targets, current, axis):
+    for i in range(max(2, current - 14), current - 4):
+        index, _, op = targets[i]
+        copy = _SIGN_COPY.fullmatch(op)
+        if not copy or copy[2] != axis or copy[1] == axis:
+            continue
+        zero = re.fullmatch(rf'mtc1 \$zero, ({_FPR})', targets[i - 1][2])
+        candidate_zero = re.fullmatch(rf'mtc1 \$zero, ({_FPR})', rows[targets[i - 1][0]][2])
+        compare, _, comparison = targets[i + 1]
+        if (zero and candidate_zero and comparison == f'c.lt.s {copy[1]}, {zero[1]}'
+                and rows[index][2] == 'nop' and rows[compare][2] == f'c.lt.s $f0, {candidate_zero[1]}'
+                and targets[i + 5][2] == f'mul.s {axis}, {axis}, {axis}'
+                and targets[i + 6][2] == f'neg.s {axis}, {axis}'):
+            return True
+    return False
+
+
+def _signed_square(source, part, context, macros, types, prefix, witness):
+    clamps = {m.start(): m for m in _RELOADED_CLAMP.finditer(part.clean, part.opening + 1, part.end)}
+    direct = {m.start(): m for m in _RELOADED.finditer(part.clean, part.opening + 1, part.end)}
+    for square in _SIGNED.finditer(part.clean, part.opening + 1, part.end):
+        clamp = clamps.get(square.end())
+        axis, original = square['before'], square['original']
+        if not clamp or clamp['axis'] != axis:
+            continue
+        result, scale = clamp['result'], clamp['scale']
+        locals_used = (axis, original, clamp['old'], result)
+        if len(set(locals_used)) != 4 or any(
+            local not in types or not _in_scope(part, types[local][1], square.start())
+            or _escaped(part.body, local) for local in locals_used
+        ):
+            continue
+        if len(re.findall(rf'\b{original}\b', part.body)) != 3:
+            continue
+        if any(re.search(rf'\b(?:volatile|_Atomic)\b[^;{{}}\n]*\b{local}\b', context) for local in locals_used):
+            continue
+        field = _field(clamp['field'], prefix)
+        if not field or field[0] in locals_used or any(
+            _field(clamp[key], prefix) != field for key in ('store', 'lower', 'upper')
+        ):
+            continue
+        try:
+            bits = struct.unpack('>I', struct.pack('>f', float(scale[:-1])))[0]
+        except OverflowError:
+            continue
+        if (field[1], bits) not in witness:
+            continue
+        reload = direct.get(clamp.start())
+        restored = _SAVED_SIGN.match(part.clean, clamp.end(), part.end)
+        if not (reload and _field(reload['reload'], prefix) == field):
+            # The old axis may be restored briefly if it is overwritten before the next use.
+            if (not restored or restored['start'] != axis or _field(restored['field'], prefix) != field
+                    or restored['saved'] in (*locals_used, restored['global'])
+                    or restored['global'] in locals_used or axis in re.findall(IDENT, restored['arguments'])):
+                continue
+            reload = restored
+        snippet = source[square.start():reload.end()]
+        if re.search(r'/[*/]|#', snippet) or macros & set(re.findall(IDENT, snippet)):
+            continue
+        prior = part.clean[part.opening + 1:square.start()].rstrip()
+        if prior and prior[-1] not in ';{}:':
+            continue
+        yield SIGNED_SQUARE, edit(source, [
+            (*square.span('original'), result),
+            (*square.span('check'), result),
+            (clamp.start(), clamp.start(), f'{clamp["pad"]}{axis} *= {scale};\n'),
+            (*clamp.span('multiply'), axis),
+        ])
 
 
 def variants(source, name, rows, *, header=''):
@@ -72,8 +160,11 @@ def variants(source, name, rows, *, header=''):
         return []
     types = _typed_locals(part, r'(?:f32|float)')
     macros = set(re.findall(rf'(?m)^[ \t]*#\s*(?:define|undef)\s+({IDENT})', context))
-    proposals = []
     prefix = part.clean[:part.opening]
+    signed = _witnesses(rows, signed=True)
+    proposals = list(islice(_signed_square(source, part, context, macros, types, prefix, signed), 4)) if signed else []
+    if len(proposals) == 4:
+        return proposals
     reloaded = {hit.start(): hit for hit in _RELOADED.finditer(part.clean, part.opening + 1, part.end)}
     for m in _SOURCE.finditer(part.clean, part.opening + 1, part.end):
         axis, result, scale = m['axis'], m['result'], m['scale']
