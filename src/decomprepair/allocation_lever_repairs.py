@@ -111,6 +111,40 @@ def _distinct(a, b):
     return not isinstance(a[1], int) or abs(a[1] - b[1]) >= max(a[2], b[2])
 
 
+def _field_swaps(source, clean, statements, declarations):
+    """Each neighbouring pair of plain stores to different fields of one record, swapped (the pair that matters is one of
+    dozens in a record initializer, so these have a budget of their own)."""
+    swaps = []
+    for first, second in zip(statements, statements[1:]):
+        if first in declarations or second in declarations or clean[first.end():second.start()].strip():
+            continue
+        a, b = _field_store(first['body'].strip()), _field_store(second['body'].strip())
+        if a and b and a[0] == b[0] and _distinct(a, b):
+            text = (source[:first.start()] + source[second.start():second.end()] + '\n' + source[first.start():first.end()]
+                    + source[second.end():])
+            if text not in swaps and len(swaps) < FIELD_LIMIT:
+                swaps.append(text)
+    return swaps
+
+
+def field_store_swaps(source, name):
+    """Only the field-store swaps, as `(family, text)` pairs: for a lane that cannot afford the other levers' proposals
+    (`variants` also swaps operands and moves declarations, which every function has)."""
+    span = find(source, name)
+    if not span:
+        return []
+    clean = _blank(source)
+    opening = clean.find('{', span[0], span[1])
+    end = close(clean, opening, '{', '}') if opening >= 0 else None
+    if not end:
+        return []
+    statements = [m for m in STATEMENT.finditer(clean, opening + 1, end)
+                  if not re.match(r'\s*(?:return|goto|break|continue|case|default|if|for|while|do|else)\b', m['body'])]
+    declarations = [m for m in statements if re.match(r'\s*(?:(?:unsigned|signed|const|volatile|register)\s+)*'
+                                                       + IDENT + r'[\s*]+' + IDENT + r'\s*;$', m['body'])]
+    return [(FAMILY, text) for text in _field_swaps(source, clean, statements, declarations)]
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -130,18 +164,7 @@ def variants(source, name):
                   if not re.match(r'\s*(?:return|goto|break|continue|case|default|if|for|while|do|else)\b', m['body'])]
     declarations = [m for m in statements if re.match(r'\s*(?:(?:unsigned|signed|const|volatile|register)\s+)*'
                                                        + IDENT + r'[\s*]+' + IDENT + r'\s*;$', m['body'])]
-    # two plain stores to different fields of one record: independent although both name the base. Kept apart from the
-    # other levers' budget: a record initializer has dozens of neighbouring pairs and the swap that matters is one.
-    swaps = []
-    for first, second in zip(statements, statements[1:]):
-        if first in declarations or second in declarations or clean[first.end():second.start()].strip():
-            continue
-        a, b = _field_store(first['body'].strip()), _field_store(second['body'].strip())
-        if a and b and a[0] == b[0] and _distinct(a, b):
-            text = (source[:first.start()] + source[second.start():second.end()] + '\n' + source[first.start():first.end()]
-                    + source[second.end():])
-            if text not in swaps and len(swaps) < FIELD_LIMIT:
-                swaps.append(text)
+    swaps = _field_swaps(source, clean, statements, declarations)
     for m in statements:
         if m in declarations:
             continue
