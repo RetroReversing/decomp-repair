@@ -259,10 +259,87 @@ def _reorder_swapped_float_locals(source, name, rows):
     return [('measured_float_declaration_swap', edit(source, edits[0]))] if len(edits) == 1 else []
 
 
+_FLOAT_STACK_STORE = re.compile(rf'swc1 ({F32_REG}), {NUMBER}\(\$sp\)')
+_FLOAT_LT = re.compile(rf'c\.lt\.s ({F32_REG}), ({F32_REG})')
+_FLOAT_MUL = re.compile(rf'mul\.s {F32_REG}, ({F32_REG}), ({F32_REG})')
+_TRUNC = re.compile(rf'trunc\.w\.s ({F32_REG}), ({F32_REG})')
+_INT_TRANSFER = re.compile(rf'mfc1 (\$\w+), ({F32_REG})')
+
+
+def _paired_conversion_evidence(rows):
+    """Find an extra round trip between the spill and the guarded float products."""
+    witnesses = 0
+    for at, (_, target, candidate) in enumerate(rows):
+        trunc = _TRUNC.fullmatch(candidate)
+        if target or not trunc or at == 0:
+            continue
+        a, b = (_FLOAT_STACK_STORE.fullmatch(op) for op in rows[at - 1][1:])
+        if not a or not b or trunc[2] != b[1]:
+            continue
+        before_compare = []
+        cmp = other_cmp = None
+        for _, left, right in rows[at + 1:at + 8]:
+            cmp = _FLOAT_LT.fullmatch(left)
+            if cmp:
+                other_cmp = _FLOAT_LT.fullmatch(right)
+                break
+            if left or not right:
+                break
+            if right != 'nop':
+                before_compare.append(right)
+        else:
+            continue
+        if not cmp or not other_cmp or len(before_compare) != 3 or cmp[1] != a[1]:
+            continue
+        transfer = _INT_TRANSFER.fullmatch(before_compare[0])
+        converted = other_cmp[1]
+        if (not transfer or transfer[2] != trunc[1]
+                or before_compare[1:] != [f'mtc1 {transfer[1]}, {converted}', f'cvt.s.w {converted}, {converted}']):
+            continue
+        products = [(_FLOAT_MUL.fullmatch(left), _FLOAT_MUL.fullmatch(right))
+                    for _, left, right in rows[at + 1:at + 22] if _FLOAT_MUL.fullmatch(left)]
+        if len(products) < 3:
+            continue
+        expected = [a[1] in op.groups() for op, _ in products[:3]]
+        actual = [right[1] if right else '' for _, right in products[:3]]
+        if all(expected) and actual == [b[1], b[1], converted]:
+            witnesses += 1
+    return witnesses == 1
+
+
+def _paired_conversion(source, name, rows):
+    if not _paired_conversion_evidence(rows) or not (part := view(source, name)):
+        return []
+    cast = r'(?:int|s32)'
+    shape = re.compile(
+        rf'(?m)^[ \t]*(?P<saved>{IDENT})\s*=\s*(?P<value>{IDENT})\s*;\s*'
+        rf'if\s*\(\s*\(\s*(?P=value)\s*>=\s*0\.0[fF]\s*\)\s*&&\s*'
+        rf'(?P<comparison>\(\s*\(\s*\({cast}\)\s*(?P=value)\s*\)\s*<\s*(?P<bound>{IDENT})\s*\))\s*\)\s*\{{'
+        rf'\s*(?:{IDENT}\s*=\s*[^;{{}}]*;\s*)?'
+        rf'(?:{IDENT}\s*=\s*{IDENT}\s*-\s*\(\s*(?P=value)\s*\*\s*{IDENT}\s*\)\s*;\s*){{2}}'
+        rf'{IDENT}\s*=\s*{IDENT}\s*-\s*\(\s*(?P<product>\(\s*\({cast}\)\s*(?P=value)\s*\))\s*\*\s*{IDENT}\s*\)\s*;'
+    )
+    matches = []
+    for m in shape.finditer(part.clean, part.opening + 1, part.end):
+        names, _ = _unused_float_locals(part, m.start())
+        saved, value, bound = m['saved'], m['value'], m['bound']
+        if len({saved, value, bound}) != 3 or not {saved, value, bound} <= names:
+            continue
+        region = m[0][m.end('comparison') - m.start():]
+        if re.search(rf'(?:\b{saved}\s*=(?!=)|\b{value}\s*=(?!=))', region):
+            continue
+        matches.append(edit(source, [
+            (*m.span('comparison'), f'({m["saved"]} < {m["bound"]})'),
+            (*m.span('product'), m['saved']),
+        ]))
+    return [('untruncated_float_compare_and_product', matches[0])] if len(matches) == 1 else []
+
+
 def repeated_products(source, name, rows):
     """Stage the same interpolation across conversions without reordering products."""
     if _multiply_conversion_sites(rows) < 2 or not (part := view(source, name)):
-        return (_stage_subtracted_product(source, name, rows)
+        return (_paired_conversion(source, name, rows)
+                or _stage_subtracted_product(source, name, rows)
                 or _stage_comparison_load(source, name, rows)
                 or _reorder_swapped_float_locals(source, name, rows))
     if re.search(r'\b(?:goto|for|while|do|asm|__asm__)\b', part.body):
