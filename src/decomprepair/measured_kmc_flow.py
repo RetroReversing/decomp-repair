@@ -6,6 +6,7 @@ import struct
 from . import goto_structure_repairs, masked_lookup_switch
 from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for, plain_repair_view, view
 from .mips import normalized_integer_lines
+from .parameter_shape_repairs import _params, _signature
 from .pattern_repairs import close
 
 _MOVE_LIMIT = re.compile(
@@ -1004,6 +1005,54 @@ def _stage_volatile_float_pair(source, name, header, rows):
     return edit(source, [(*hit.span(), fixed)])
 
 
+def _parameter_store_widths(source, name, header, rows):
+    """KMC schedules saved argument copies differently when their formal widths differ."""
+    changed = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
+    if len(changed) != 4 or not 0 < changed[0] < 24:
+        return None
+    first = changed[0]
+    if changed != list(range(first, first + 4)):
+        return None
+    if any(re.match(r'(?:b\w*|j\w*)\s', left) for _, left, _ in rows[:first]):
+        return None
+    target = [rows[i][1] for i in changed]
+    current = [rows[i][2] for i in changed]
+    if current != target[2:] + target[:2]:
+        return None
+    copies = [re.fullmatch(r'move \$(s[0-7]), \$a([0-3])', op) for op in target[1::2]]
+    if not all(copies) or copies[0][1] == copies[1][1]:
+        return None
+    for op, copy in zip(target[::2], copies):
+        saved = copy[1]
+        if not re.fullmatch(r'sw \$' + saved + rf', {NUMBER}\(\$sp\)', op):
+            return None
+        store = re.compile(r'sb \$' + saved + rf', {NUMBER}\(\$[a-z0-9]+\)')
+        if sum(mark == ' ' and bool(store.fullmatch(left)) for mark, left, _ in rows[first + 4:]) != 1:
+            return None
+    found = _signature(source, name)
+    if not found:
+        return None
+    clean, opening, end, start, paren = found
+    params = _params(clean, start, paren)
+    indexes = [int(copy[2]) for copy in copies]
+    if len(params) != clean[start + 1:paren].count(',') + 1 or max(indexes) >= len(params):
+        return None
+    narrow, wide = (params[index] for index in indexes)
+    if narrow[2].strip() != 'u8' or wide[2].strip() != 's32':
+        return None
+    declaration = rf'\b{re.escape(name)}\s*\('
+    if len(re.findall(declaration, clean)) != 1 or re.search(declaration, header):
+        return None
+    body = clean[opening:end]
+    for _, _, _, param in (narrow, wide):
+        uses = list(re.finditer(rf'(?<![\w.>]){re.escape(param)}\b', body))
+        if len(uses) != 1 or not re.search(rf'{IDENT}->{IDENT}\s*=\s*$', body[:uses[0].start()]):
+            return None
+        if not re.match(r'\s*;', body[uses[0].end():]):
+            return None
+    return edit(source, [(narrow[0], narrow[1], 's32 '), (wide[0], wide[1], 'u8 ')])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -1047,6 +1096,8 @@ def variants(source, name, header, rows):
         return [('measured_masked_lookup_switch', candidate)]
     if candidate := _stage_volatile_float_pair(source, name, header, rows):
         return [('measured_volatile_float_pair', candidate)]
+    if candidate := _parameter_store_widths(source, name, header, rows):
+        return [('measured_parameter_store_widths', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
