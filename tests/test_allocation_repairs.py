@@ -121,3 +121,24 @@ def test_guard_inversion_finds_the_function_return_after_a_braced_guard():
     assert 'if (p != NULL) {' in fixed
     assert fixed.index('M2C_FIELD') < fixed.index('return 1;') < fixed.index('return 0;')
     assert not guard.variants(source.replace('    return 1;', '    if (p) { return 1; }'), 'f')
+
+
+def test_measured_slot_orders_swap_only_reciprocal_named_slots():
+    from decomprepair.allocation_repairs import measured_slot_orders
+
+    source = """void f(void) {
+    int spDC;
+    volatile int padding[2];
+    void *spD4;
+    sink(spD4, spDC);
+}"""
+    rows = [
+        ('s', 'sw $t0, 0xd4($sp)', 'sw $t0, 0xdc($sp)'),
+        ('s', 'sw $t0, 0xdc($sp)', 'sw $t0, 0xd4($sp)'),
+    ]
+    expected = source.replace('int spDC;', 'FIRST').replace('void *spD4;', 'int spDC;')
+    expected = expected.replace('FIRST', 'void *spD4;')
+    assert measured_slot_orders(source, 'f', rows) == [('spill_declaration_order', expected)]
+    assert not measured_slot_orders(source, 'f', rows[:1])
+    assert not measured_slot_orders(source, 'f', rows, '#define spD4 slot')
+    assert not measured_slot_orders(source.replace('int spDC;', 'int spDC = 0;'), 'f', rows)

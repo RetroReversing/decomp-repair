@@ -37,6 +37,57 @@ def declaration_orders(source,name,header=''):
     return out[:6]
 
 
+_STACK_STORE = re.compile(r'sw (\$\w+), (0x[0-9a-f]+|[0-9]+)\(\$sp\)')
+_NAMED_SLOT = re.compile(r'(?:(?:s32|u32|int|unsigned int)\s+|void\s*\*\s*)(sp[0-9a-fA-F]+)\s*;')
+
+
+def measured_slot_orders(source, name, rows, header=''):
+    """Try swapped declarations when stack-offset names agree with reciprocal store differences."""
+    slots = set()
+    for marker, target, candidate in rows:
+        if marker != 's':
+            continue
+        left, right = _STACK_STORE.fullmatch(target), _STACK_STORE.fullmatch(candidate)
+        if left and right and left[1] == right[1]:
+            a, b = (int(match[2], 16 if match[2].startswith('0x') else 10) for match in (left, right))
+            if a != b:
+                slots.add((left[1], a, b))
+    pairs = sorted({(a, b) for reg, a, b in slots if a < b and (reg, b, a) in slots})
+    if not pairs:
+        return []
+
+    from .frame_padding_repairs import declaration_ends
+
+    part = view(source, name)
+    if not part or re.search(r'\b(?:asm|__asm|__asm__)\b|(?m:^[ \t]*#)', part.body):
+        return []
+    declarations = {}
+    macros = set(re.findall(rf'(?m)^\s*#\s*(?:define|undef)\s+({IDENT})', source + '\n' + header))
+    begin = part.opening + 1
+    for end in declaration_ends(part):
+        clean = part.clean[begin:end]
+        start = end - len(clean.lstrip())
+        hit = _NAMED_SLOT.fullmatch(part.clean[start:end])
+        if hit and hit[1] not in macros and source[start:end] == part.clean[start:end]:
+            offset = int(hit[1][2:], 16)
+            declarations[offset] = (start, end) if offset not in declarations else None
+        begin = end
+
+    out = []
+    for a, b in pairs:
+        first, second = declarations.get(a), declarations.get(b)
+        if first and second:
+            start, end = first
+            other_start, other_end = second
+            out.append(('spill_declaration_order', edit(source, [
+                (start, end, source[other_start:other_end]),
+                (other_start, other_end, source[start:end]),
+            ])))
+            if len(out) == 6:
+                break
+    return out
+
+
 def pointer_aliases(source,name,header=''):
     part,pointers,macros = pointer_pair_repairs.context(source,name,header)
     fresh = '__repair_argument_pointer'
