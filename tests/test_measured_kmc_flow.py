@@ -492,3 +492,28 @@ void probe(u32 n) {
     assert candidate.index('__repair_table_base = table;') < candidate.index('index * sizeof(Entry)')
     assert not variants(source.replace('volatile ', ''), 'probe', '', rows)
     assert not variants(source.replace('(u32)table', '(u32)other'), 'probe', '', rows)
+
+
+def test_nonnull_call_result_leaves_the_store_and_guard_on_the_original_result():
+    source = """void probe(void *record, int size) {
+    void *result;
+    result = allocate(record, size);
+    M2C_FIELD(record, void **, 8) = result;
+    if (result != NULL) {
+        int bits = M2C_FIELD(result, s32 *, 0);
+        M2C_FIELD(result, s32 *, 4) = bits | M2C_FIELD(result, s32 *, 8);
+    }
+}"""
+    rows = measured(('jal allocate', 'move $a0, $s0'))
+    rows += [
+        ('o', '', 'move $a1, $v0'),
+        ('r', 'beqz $v0, 0xd4', 'beqz $a1, 0xd4'),
+        ('r', 'sw $v0, 8($s0)', 'sw $a1, 8($s0)'),
+        ('o', 'move $a1, $v0', ''),
+    ]
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_nonnull_call_result'
+    assert 'if (result != NULL) {\n        void *__repair_nonnull_result = result;' in candidate
+    assert candidate.count('M2C_FIELD(__repair_nonnull_result,') == 3
+    assert not variants(source.replace('void **, 8', 'void **, 12'), 'probe', '', rows)
+    assert not variants(source.replace('int bits', 'consume(result); int bits'), 'probe', '', rows)
