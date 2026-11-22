@@ -17,6 +17,8 @@ FAMILY = 'reused_temp_split'
 RESTORE_FAMILY = 'switch_temporary_restore'
 FAMILIES = (FAMILY, RESTORE_FAMILY)
 LIMIT = 8
+_LABEL = re.compile(r'(?m)(?:^|[;{}:])\s*([A-Za-z_]\w*)\s*:(?!:)')
+_GOTO = re.compile(r'\bgoto\s+([A-Za-z_]\w*)\s*;')
 
 
 def _restore_switch_writes(source, part, decls):
@@ -74,6 +76,9 @@ def variants(source, name):
     decls = locals_for(part)
     body = lines(part, source)
     out = _restore_switch_writes(source, part, decls)
+    labels = {label[1]: label.start(1) for label in _LABEL.finditer(part.clean, part.opening, part.end)}
+    jumps = [(jump.start(), labels[jump[1]]) for jump in _GOTO.finditer(part.clean, part.opening, part.end)
+             if jump[1] in labels]
     if len(out) >= LIMIT:
         return out
     for decl in decls:
@@ -88,6 +93,10 @@ def variants(source, name):
             while re.search(rf'\b{fresh}\b', part.clean):
                 fresh += '_'
             start, stop = body[sets[k]].start, body[end - 1].end if end > sets[k] else body[sets[k]].end
+            # An incoming goto can skip the write that initializes the new local.
+            # A jump to a label before the split still executes that write.
+            if any(start < target < stop and not start <= jump < stop for jump, target in jumps):
+                continue
             span = part.clean[start:stop]
             edits = [(start + m.start(), start + m.end(), fresh) for m in re.finditer(rf'(?<![\w.>]){re.escape(local)}\b', span)]
             # A write with no renamed use can still feed a join after another arm.
