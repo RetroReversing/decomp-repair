@@ -82,7 +82,7 @@ def _increment_reset(source, clean, opening, end):
             if len(decl) != 1 or len(shadows) != 1 or decl[0].end() > m.start():
                 break
             before = body[:decl[0].start()]
-            if before.count('{') != before.count('}') or re.search(rf'&\s*{var}\b', body):
+            if before.count('{') != before.count('}') or re.search(rf'&\s*\(*\s*{var}\b', body):
                 break
         else:
             a, b = opening + 1 + m.start(), opening + 1 + m.end()

@@ -42,7 +42,7 @@ def variants(source, name, arch='mips'):
             prefix = body[:declarations[0].start()]
             if prefix.count('{') != prefix.count('}'):
                 break  # only unshadowed function-scope locals
-            if re.search(rf'&\s*{re.escape(var)}\b', body):
+            if re.search(rf'&\s*\(*\s*{re.escape(var)}\b', body):
                 break
         else:
             start = opening + 1 + hit.start('zero')
