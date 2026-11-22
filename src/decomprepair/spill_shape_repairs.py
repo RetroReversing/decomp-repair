@@ -74,7 +74,14 @@ def volatile_read_variants(source, name):
 
 def _struct(part):
     """(start, end, fields, variable) of the first local `struct { ... } NAME;` of scalar fields, or None."""
-    for hit in re.finditer(r'\bstruct\s*\{', part.clean):
+    found = _structs(part)
+    return found[0] if found else None
+
+
+def _structs(part):
+    """Every local `struct { ... } NAME;` of scalar fields, a `volatile` before `struct` or before `NAME` included."""
+    out = []
+    for hit in re.finditer(r'(?:\bvolatile\s+)?\bstruct\s*\{', part.clean):
         if hit.start() < part.opening:
             continue
         depth, pos = 0, hit.end() - 1
@@ -84,7 +91,7 @@ def _struct(part):
             if depth == 0:
                 break
             pos += 1
-        tail = re.match(rf'\s*({IDENT})\s*;', part.clean[pos + 1:part.end])
+        tail = re.match(rf'\s*(?:volatile\s+)?({IDENT})\s*;', part.clean[pos + 1:part.end])
         if not tail:
             continue
         fields = []
@@ -99,15 +106,21 @@ def _struct(part):
                 break
             fields.append(decl)
         if fields:
-            return hit.start(), pos + 1 + tail.end(), fields, tail[1]
-    return None
+            out.append((hit.start(), pos + 1 + tail.end(), fields, tail[1]))
+    return out
 
 
 def state_unwrap_variants(source, name):
     part = view(source, name)
-    found = part and _struct(part)
-    if not found:
+    if not part:
         return []
+    out = []
+    for found in _structs(part):
+        out += _unwrap_state(source, part, found)
+    return out
+
+
+def _unwrap_state(source, part, found):
     start, end, fields, var = found
     body = part.clean[end:part.end]
     if re.search(rf'(?<![\w.>])&?\s*{re.escape(var)}\b(?!\s*\.)', body):

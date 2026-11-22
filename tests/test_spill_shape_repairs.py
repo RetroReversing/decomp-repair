@@ -127,3 +127,22 @@ def test_every_family_runs_through_variants():
     names = {family for family, _ in spill.variants(SOURCE, NAME)}
     assert {'volatile_read_drop', 'volatile_state_unwrap', 'identical_arm_collapse'} <= names
     assert spill.variants('int x;', NAME) == []
+
+
+def test_a_volatile_struct_and_a_second_struct_are_unwrapped_too():
+    text = '''void g(s32 a, s32 b)
+{
+  volatile struct { s32 x; s32 y; } st;
+  struct { s32 z; } volatile two;
+  st.x = a;
+  st.y = b + 1;
+  two.z = st.y;
+  h(st.x, st.y, two.z);
+}
+'''
+    found = [t for _, t in spill.state_unwrap_variants(text, 'g')]
+    assert len(found) == 2
+    first = next(t for t in found if 'st.' not in t)
+    assert 'volatile' not in first.split('struct { s32 z; }')[0] and 'h(a, st_y, two.z);' in first
+    second = next(t for t in found if 'two.' not in t)
+    assert 'volatile struct { s32 x; s32 y; } st;' in second and 'h(st.x, st.y, two_z);' in second

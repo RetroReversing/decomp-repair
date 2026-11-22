@@ -8,6 +8,12 @@ boundaries and nothing else survives into the object, so staging the shift in a 
 } while (0);` and `b * s`) fixes the order. Measured on a 719-instruction N64 function (`gcc-2.7.2-kmc -G0 -mips3
 -mgp32 -mfp32 -O2`): 435 -> 400, the five rows of the chain gone. Each shift that is one operand of a product in an
 assignment gets one variant. A candidate rewrite; the exact judge decides.
+
+`product_shift_hoist` is the plain form: `s = t >> 8;` with no scope, placed right after the last assignment of `t`
+in the same block (past statements and nested blocks that don't mention it). On the same function, the shift of an
+accumulator written back into its product and the product moved past an `if` scored 1280; the `do { } while (0)`
+stage at the product gave 1260, the plain stage at the product 1280, and the plain stage after the accumulator's
+last write 0 (the scheduler sees the shift before the loads between, as the target computed it).
 """
 import re
 
@@ -17,7 +23,8 @@ from .loaded_byte_repairs import declarators
 
 FAMILY = 'product_shift_stage'
 MASKED_PRODUCT = 'masked_product_stage'
-FAMILIES = (FAMILY, MASKED_PRODUCT)
+HOIST = 'product_shift_hoist'
+FAMILIES = (FAMILY, MASKED_PRODUCT, HOIST)
 _SHIFT = re.compile(r'\((?P<v>[A-Za-z_]\w*) >> (?P<n>\d+)\)')
 
 
@@ -77,5 +84,29 @@ def variants(source, name):
             replaced = line.source[:line.source.index(hit[0])] + local + line.source[line.source.index(hit[0]) + len(hit[0]):]
             out.append((FAMILY, apply(source, [declaration, (line.start, line.start, scope),
                                                (line.start, line.start + len(line.source), replaced)])))
+            after = _last_write(body, body.index(line), hit['v'])
+            if after is not None:
+                stage = f'{body[after].indent}{local} = {hit["v"]} >> {hit["n"]};\n'
+                out.append((HOIST, apply(source, [declaration, (body[after].end, body[after].end, stage),
+                                                  (line.start, line.start + len(line.source), replaced)])))
             break
     return out
+
+
+def _last_write(body, index, var):
+    """Index of the line, in the block of line `index`, that last assigns `var` before it; None when a nested block
+    or a line that isn't a plain assignment mentions it first, or the block starts first."""
+    indent = body[index].indent
+    mention = re.compile(rf'(?<![\w.>]){re.escape(var)}\b')
+    write = re.compile(rf'^{re.escape(var)}\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)')
+    for i in range(index - 1, -1, -1):
+        line = body[i]
+        if len(line.indent) < len(indent):
+            return None
+        if not mention.search(line.text):
+            continue
+        if line.indent != indent or not line.stripped.endswith(';'):
+            return None
+        if write.match(line.stripped):
+            return i
+    return None

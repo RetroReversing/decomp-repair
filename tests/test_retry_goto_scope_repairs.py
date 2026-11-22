@@ -78,3 +78,10 @@ def test_other_constant_steps_keep_their_step():
         assert f'next = slot {step};\n      slot = next;' in child
     mixed = SOURCE.replace('next = slot + 1; goto skip;', 'next = slot + 2; goto skip;')
     assert all('skip:' in child for _, child in repair.variants(mixed, 'f'))  # two different steps: not one join
+
+
+def test_a_join_other_gotos_reach_keeps_its_label():
+    shared = SOURCE.replace('      if ((slot ==', '      if (pick == 3) { next = slot + 2; goto skip; }\n      if ((slot ==')
+    family, child = repair.variants(shared, 'f')[0]
+    assert 'do { goto retry; } while (0);' in child
+    assert 'next = slot + 1;\n      skip:\n      slot = next;' in child and child.count('goto skip;') == 1
