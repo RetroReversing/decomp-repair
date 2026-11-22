@@ -108,7 +108,7 @@ def _copy(source, name):
     return result[:LIMIT]
 
 
-_STORE = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<lhs>[^;=\n]*\*[^;=\n]+?)[ \t]*=[ \t]*\((?P<type>s16|u16|s8|u8)\)[ \t]*\((?P<sum>[^;]+)\)[ \t]*;[ \t]*$')
+_STORE = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<lhs>[^;=\n]*\*[^;=\n]+?)[ \t]*=[ \t]*\((?P<type>s16|u16|s8|u8)\)[ \t]*\((?P<sum>[^;]+)\)[ \t]*;[ \t]*$')
 
 
 def _top_level_plus(text):
