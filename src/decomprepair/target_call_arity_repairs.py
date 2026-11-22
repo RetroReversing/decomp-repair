@@ -177,11 +177,13 @@ def _variants(source, name, asm, clean, opening, end, jals):
         if len(parens) != len(wanted):
             continue
         add, drop = [], []
+        call_shapes = []
         for paren, regs in zip(parens, wanted):
             closing = close(clean, paren)
             inner = clean[paren + 1:closing - 1]
             args = [a for a in m2cfix._split_top_level(inner)] if inner.strip() else []
             count = max((ARGREG.index(r) + 1 for r in regs), default=0)
+            call_shapes.append((count, args))
             if len(args) < count <= 4:
                 missing = [regs.get(ARGREG[i]) for i in range(len(args), count)]
                 if any(v is None for v in missing):
@@ -191,7 +193,8 @@ def _variants(source, name, asm, clean, opening, end, jals):
                                                      for k, v in enumerate(missing))))
             elif count < len(args) <= 4 and add == []:
                 drop.append((paren + 1 + _offset(inner, count), closing - 1))
-        for edits, change in ((add, 'add'), (drop if len(drop) == len(parens) else None, 'drop')):
+        mixed_drop = _mixed_drop_safe(clean, call_shapes, len(drop))
+        for edits, change in ((add, 'add'), (drop if len(drop) == len(parens) or mixed_drop else None, 'drop')):
             if not edits:
                 continue
             text = source
@@ -214,6 +217,26 @@ def _variants(source, name, asm, clean, opening, end, jals):
                         if both not in [t for _, t in result]:
                             result.append((FAMILY, both))
     return result
+
+
+def _mixed_drop_safe(clean, shapes, dropped):
+    """Some calls already have the measured arity; only drop a plain nonvolatile global pointer at the others."""
+    counts = {count for count, _ in shapes}
+    if len(counts) != 1 or not dropped or dropped == len(shapes):
+        return False
+    count = counts.pop()
+    if not count or any(len(args) < count or len(args) > count + 1 for _, args in shapes):
+        return False
+    for _, args in shapes:
+        if len(args) == count:
+            continue
+        extra = args[-1].strip()
+        if (not re.fullmatch(IDENT, extra)
+                or not re.search(rf'\bextern\s+void\s*\*\s*{re.escape(extra)}\s*;', clean)
+                or re.search(rf'\bvolatile\b[^;]*\b{re.escape(extra)}\b', clean)
+                or re.search(rf'(?m)^\s*#\s*define\s+{re.escape(extra)}\b', clean)):
+            return False
+    return True
 
 
 def _number(value):
