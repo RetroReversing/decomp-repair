@@ -247,3 +247,99 @@ def scoped_field_reads(source, name, rows):
                 (access.start(), access.start(), capture), (*access.span('base'), local),
             ])))
     return proposals[:4]
+
+
+_TABLE_WALK = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<local>{IDENT})\s*=\s*&(?P<table>{IDENT})\s*;\s*'
+    rf'(?P=local)\s*\+=\s*{IDENT}\s*;\s*(?P=local)\s*\+=\s*{IDENT}\s*;\s*'
+    rf'{IDENT}\s*=\s*{IDENT}\s*;\s*if\s*\(\s*\(\s*\*(?P=local)\s*\)\s*==')
+_TABLE_BASE = re.compile(r'lui (\$\w+), %hi\(([A-Za-z_]\w*)\)')
+
+
+def _table_register_swaps(rows):
+    found = set()
+    for i, (_, target, candidate) in enumerate(rows[:-1]):
+        a, b = _TABLE_BASE.fullmatch(target), _TABLE_BASE.fullmatch(candidate)
+        if not a or not b or a[1] == b[1] or a[2] != b[2]:
+            continue
+        _, left, right = rows[i + 1]
+        if (left == f'addiu {a[1]}, {a[1]}, %lo({a[2]})'
+                and right == f'addiu {b[1]}, {b[1]}, %lo({b[2]})'):
+            found.add(a[2])
+    return found
+
+
+def measured_table_compare_pointer(source, name, rows, header=''):
+    """Give one guarded table walk its own pointer through the final comparison."""
+    from .call_lifetime_repairs import block_path
+    from .frame_padding_repairs import declaration_ends
+    from .integer_repair_support import edit, view
+
+    tables = _table_register_swaps(rows)
+    part = view(source, name) if tables else None
+    fresh = '__repair_table_compare'
+    if not part or fresh in source + header or re.search(r'\b(?:asm|__asm|__asm__|goto|setjmp|longjmp)\b', part.body):
+        return []
+    macros = re.findall(r'(?m)^[ \t]*#\s*(?:define|undef)\s+([^\n]+)',
+                        (_blank(header) + '\n' + part.clean).replace('\\\n', ' '))
+    declarations = set()
+    begin = part.opening + 1
+    for end in declaration_ends(part):
+        decl = re.fullmatch(rf'\s*s32\s*\*\s*({IDENT})\s*;', part.clean[begin:end])
+        if decl:
+            declarations.add(decl[1])
+        begin = end
+
+    guards = set()
+    for m in re.finditer(r'\bif\s*\(', part.body):
+        end = close(part.clean, part.opening + m.end())
+        brace = re.match(r'\s*\{', part.clean[end:]) if end else None
+        if brace:
+            guards.add(end + brace.end() - 1)
+    switches = set()
+    for m in re.finditer(r'\bswitch\s*\(', part.body):
+        prefix = part.body[:m.start()].rstrip()
+        if prefix and prefix[-1] not in ';{}':
+            continue
+        end = close(part.clean, part.opening + m.end())
+        brace = re.match(r'\s*\{', part.clean[end:]) if end else None
+        if brace:
+            switches.add(end + brace.end() - 1)
+
+    out = []
+    for hit in _TABLE_WALK.finditer(part.clean, part.opening + 1, part.end):
+        local, table = hit['local'], hit['table']
+        if local not in declarations or table not in tables:
+            continue
+        if any({local, table} & set(re.findall(IDENT, macro)) or re.match(r's32\b', macro) for macro in macros):
+            continue
+        if re.search(rf'(?<!&)\&(?!&)\s*\(*\s*{local}\b', part.body):
+            continue
+        path = block_path(part, hit.start())
+        if len(path) != 3 or path[1] not in switches or path[2] not in guards:
+            continue
+        prefix = part.clean[path[2] + 1:hit.start()].rstrip()
+        shadow = rf'\b{IDENT}(?:\s+\**\s*|\s*\*+\s*){local}\s*(?=[;=,\[])'
+        if (prefix and prefix[-1] not in ';{}') or len(re.findall(shadow, part.body)) != 1:
+            continue
+        if re.search(rf'\b{local}\b', prefix):
+            continue
+        if re.search(rf'\b{local}\b', part.clean[hit.end():part.end]):
+            continue
+        prior = part.clean[part.opening + 1:path[2]]
+        if len(re.findall(rf'\b{local}\b', prior)) < 2 or re.search(
+                rf'\b{IDENT}(?:\s+\**\s*|\s*\*+\s*){local}\s*(?=[;=,\[])', part.clean[path[2] + 1:hit.start()]):
+            continue
+        if hit[0] != source[hit.start():hit.end()]:
+            continue
+        moved = re.sub(rf'\b{local}\b', fresh, hit[0])
+        earliest = re.search(r'\S', part.clean[path[2] + 1:hit.start()])
+        declaration = f"s32 *{fresh};"
+        edits = [(hit.start(), hit.end(), moved)]
+        if earliest:
+            insert = path[2] + 1 + earliest.start()
+            edits.append((insert, insert, declaration + '\n' + hit['indent']))
+        else:
+            edits.append((hit.start(), hit.start(), hit['indent'] + declaration + '\n'))
+        out.append(('table_compare_pointer_scope', edit(source, edits)))
+    return out[:2]
