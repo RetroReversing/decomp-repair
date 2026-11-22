@@ -588,3 +588,42 @@ def test_shade_clamp_storage_preserves_the_packing_local():
     assert 'shade = __repair_clamped_shade & 0xff;' in candidate
     assert not variants(source.replace('s32 shade;', 's32 shade; use(&shade);'), 'probe', '', rows)
     assert not variants(source.replace('shade += 0x10;', 'shade += 0x11;'), 'probe', '', rows)
+
+
+def test_unsigned_table_guard_requires_two_unsigned_loads_from_the_same_table():
+    source = """extern char table[];
+s32 probe(s32 base, s16 index) {
+    s32 offset;
+    s32 result;
+    offset = index * 0xE8;
+    result = 1;
+    if (M2C_FIELD((base + (*(table + offset) * 2)), s16 *, 0x1BC) == 0) {
+        result = 1;
+        if ((check(base, index) << 0x10) == 0) {
+            result = *(table + offset) == 0;
+        }
+    }
+    return result;
+}
+"""
+    rows = measured((
+        'addiu $sp, $sp, -24', 'sll $a1, $a1, 16', 'sra $a1, $a1, 16',
+        'sll $v0, $a1, 3', 'subu $v0, $v0, $a1', 'sll $v0, $v0, 2',
+        'addu $v0, $v0, $a1', 'sw $s0, 16($sp)', 'sll $s0, $v0, 3',
+        'sw $ra, 20($sp)', 'lui $v0, %hi(table)', 'addu $v0, $v0, $s0',
+    ))
+    load = ('|', 'lbu $v0, %lo(table)($v0)', 'lb $v0, %lo(table)($v0)')
+    rows += [load]
+    rows += measured((
+        'sll $v0, $v0, 1', 'addu $v0, $a0, $v0', 'lh $v0, 0x1bc($v0)',
+        'bnez $v0, 0x6c', 'addiu $v0, $zero, 1', 'jal check', 'nop', 'sll $v0, $v0, 16',
+        'bnez $v0, 0x6c', 'addiu $v0, $zero, 1', 'lui $v0, %hi(table)', 'addu $v0, $v0, $s0',
+    ))
+    rows += [load] + measured(('sltiu $v0, $v0, 1', 'lw $ra, 20($sp)', 'jr $ra'))
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_unsigned_table_guard'
+    assert 'extern u8 table[];' in candidate
+    assert '((s32)(u32)base + (table[offset] << 1))' in candidate
+    assert 'return *(table + offset) == 0;' in candidate
+    assert not variants(source, 'probe', 'extern char table[];', rows)
+    assert not variants(source.replace('check(base, index)', 'other(base, index)'), 'probe', '', rows)
