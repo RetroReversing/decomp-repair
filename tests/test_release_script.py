@@ -19,7 +19,11 @@ def git(cwd, *args):
 
 
 @pytest.fixture
-def repo(tmp_path):
+def repo(tmp_path, monkeypatch):
+    # like a CI runner: no git identity configured anywhere, so the script supplies its own
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     work = tmp_path / "work"
