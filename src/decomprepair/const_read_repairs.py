@@ -38,13 +38,22 @@ def early_load(asm):
 
 
 def _written(body, var):
-    """Whether `var`'s memory is written, passed on, or stepped (so making it const could break or change the C)."""
+    """Whether `var`'s memory is written, passed on, or stepped (so making it const could break or change the C).
+
+    A struct pointer read through its fields (`p->x`) is not written (0.5.587: it used to count as written, so a
+    `V3 *p` parameter was never made const)."""
     v = re.escape(var)
     if re.search(rf'M2C_FIELD\(\s*{v}\s*,[^;]*?\)\s*(?:[-+*/|&^]|<<|>>)?=(?!=)', body):
         return True
     if re.search(rf'(?:\*\s*\(?\s*{v}\b[^;=]*|\b{v}\s*\[[^\]]*\]\s*)(?:[-+*/|&^]|<<|>>)?=(?!=)', body):
         return True
-    if re.search(rf'\b{v}\s*->', body) or re.search(rf'(?:\+\+|--)\s*{v}\b|\b{v}\s*(?:\+\+|--)|\b{v}\s*[-+]?=(?!=)', body):
+    # a struct pointer's fields: reading `v->f` leaves it const-able, assigning, stepping or taking the address of one does not
+    chain = r'(?:\s*->\s*\w+|\s*\.\s*\w+|\s*\[[^\]]*\])+'
+    if re.search(rf'(?<![\w.>]){v}{chain}\s*(?:[-+*/|&^]|<<|>>)?=(?!=)', body):
+        return True
+    if re.search(rf'(?:\+\+|--)\s*{v}{chain}|(?<![\w.>]){v}{chain}\s*(?:\+\+|--)', body) or re.search(rf'&\s*\(?\s*{v}\b', body):
+        return True
+    if re.search(rf'(?:\+\+|--)\s*{v}\b|\b{v}\s*(?:\+\+|--)|\b{v}\s*[-+]?=(?!=)', body):
         return True
     # passed bare to a call: the callee may write through it, or need it non-const
     calls = re.sub(r'M2C_FIELD\(', '(', body)  # (m2c's field macro is a read, not a call)
