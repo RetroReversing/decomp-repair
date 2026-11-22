@@ -2,7 +2,7 @@
 
 import re
 
-from .csource import find
+from .csource import _blank, find
 from .integer_repair_support import IDENT, NUMBER, edit, integer, view
 from .mips import abi_register_names
 from .mips_addresses import resolved
@@ -343,3 +343,61 @@ def rewrite_increment(source, name, asm, header='', resolve=None):
             continue
         return _direct_word(source,name,header,resolve,address,[draft.span('field'),draft.span('read')])
     return None
+
+
+def rewrite_hoisted_word_read(source, name, rows, asm, header='', resolve=None):
+    """Use a direct alias when a target reloads a word instead of its hoisted address."""
+    if resolve is None or 'M2C_FIELD' not in source:
+        return None
+    context = header+'\n'+source
+    definitions = re.findall(r'^\s*#\s*define\s+M2C_FIELD([^\n]*)',context,re.M)
+    if (len(definitions)!=1 or re.sub(r'\s+','',definitions[0]) !=
+            '(expr,type_ptr,offset)(*(type_ptr)((s8*)(expr)+(offset)))' or
+            re.search(r'^\s*#\s*undef\s+M2C_FIELD\b',context,re.M)):
+        return None
+    reg = r'\$[a-z0-9]+'
+    direct = re.compile(rf'lw (?P<value>{reg}), %lo\((?P<symbol>{IDENT})\)\((?P<valuebase>{reg})\)')
+    indirect = re.compile(rf'lw (?P<value>{reg}), (?:0)?\((?P<base>{reg})\)')
+    targets = []
+    for mark,left,right in rows:
+        a,b = direct.fullmatch(left),indirect.fullmatch(right)
+        if mark==' ' or not a or not b or a['value']!=b['value'] or a['valuebase']!=a['value']:
+            continue
+        symbol = re.escape(a['symbol'])
+        scratch = re.escape(b['base'])
+        if (not any(re.fullmatch(rf'lui {re.escape(a["value"])}, %hi\({symbol}\)',x) for _,x,_ in rows)
+                or not any(re.fullmatch(rf'lui {scratch}, %hi\({symbol}\)',y) for _,_,y in rows)
+                or not any(re.fullmatch(rf'addiu {scratch}, {scratch}, %lo\({symbol}\)',y) for _,_,y in rows)):
+            continue
+        address = resolve(a['symbol'])
+        if address is not None:
+            targets.append((a['value'],address))
+    if len(targets)!=1:
+        return None
+    value,address = targets[0]
+    lines = [f'{op} {" ".join(args.split())}'.strip() for op,args in _instructions(abi_register_names(asm))]
+    words = instructions(asm)
+    if len(lines)!=len(words):
+        return None
+    high = re.compile(rf'lui {re.escape(value)}, %hi\((?P<base>{IDENT})(?: \+ (?P<offset>{NUMBER}))?\)')
+    low = re.compile(rf'lw {re.escape(value)}, %lo\((?P<base>{IDENT})(?: \+ (?P<offset>{NUMBER}))?\)\({re.escape(value)}\)')
+    proven = False
+    for i in range(len(lines)-1):
+        a,b = high.fullmatch(lines[i]),low.fullmatch(lines[i+1])
+        if not a or not b or (a['base'],a['offset'])!=(b['base'],b['offset']):
+            continue
+        base = resolve(a['base'])
+        pair = words[i].to_bytes(4,'big')+words[i+1].to_bytes(4,'big')
+        if (base is not None and base+integer(a['offset'] or '0')==address and
+                words[i]>>26==15 and words[i+1]>>26==35 and resolved(pair).get(4)==address):
+            proven = True
+    if not proven or not (part := view(source,name)):
+        return None
+    field = re.compile(rf'M2C_FIELD\(\s*&\s*(?P<base>{IDENT})\s*,\s*s32\s*\*\s*,\s*(?P<offset>{NUMBER})\s*\)')
+    macros = set(re.findall(r'^\s*#\s*define\s+('+IDENT+r')',_blank(context),re.M))
+    matches = []
+    for hit in field.finditer(part.clean,part.opening+1,part.end-1):
+        base = resolve(hit['base'])
+        if base is not None and hit['base'] not in macros and base+integer(hit['offset'])==address:
+            matches.append(hit.span())
+    return _direct_word(source,name,header,resolve,address,matches) if len(matches)==1 else None
