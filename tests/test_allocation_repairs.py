@@ -142,3 +142,25 @@ def test_measured_slot_orders_swap_only_reciprocal_named_slots():
     assert not measured_slot_orders(source, 'f', rows[:1])
     assert not measured_slot_orders(source, 'f', rows, '#define spD4 slot')
     assert not measured_slot_orders(source.replace('int spDC;', 'int spDC = 0;'), 'f', rows)
+
+
+def test_measured_array_orders_need_two_displaced_ranges():
+    from decomprepair.allocation_repairs import measured_array_orders
+
+    source = """void f(void) {
+    float sp40[3];
+    float sp50[3];
+    sink(sp40, sp50);
+}"""
+    rows = [
+        ('i', 'sw $v1, 0x40($sp)', 'sw $v0, 0x30($sp)'),
+        ('s', 'sw $a1, 0x44($sp)', 'sw $a1, 0x34($sp)'),
+        ('s', 'sw $a2, 0x50($sp)', 'sw $a2, 0x40($sp)'),
+        ('s', 'lw $a1, 0x54($sp)', 'lw $a1, 0x44($sp)'),
+    ]
+    expected = source.replace('float sp40[3];\n    float sp50[3];', 'float sp50[3];\n    float sp40[3];')
+    assert measured_array_orders(source, 'f', rows) == [('spill_declaration_order', expected)]
+    assert not measured_array_orders(source, 'f', rows[:-1])
+    assert not measured_array_orders(source.replace('sp50[3]', 'sp50[4]'), 'f', rows)
+    assert not measured_array_orders(source.replace('float sp50', 'int n; float sp50'), 'f', rows)
+    assert not measured_array_orders(source, 'f', rows, '#define sp50 other')

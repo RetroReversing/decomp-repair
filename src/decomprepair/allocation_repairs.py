@@ -88,6 +88,58 @@ def measured_slot_orders(source, name, rows, header=''):
     return out
 
 
+_STACK_WORD = re.compile(r'(lw|sw|lwc1|swc1) (\$\w+), (0x[0-9a-f]+|[0-9]+)\(\$sp\)')
+_NAMED_ARRAY = re.compile(r'(?:(?:f32|float|s32|u32|int|unsigned int)\s+)'
+                          r'(sp[0-9a-fA-F]+)\s*\[\s*([2-9]|[1-9][0-9])\s*\]\s*;')
+
+
+def measured_array_orders(source, name, rows, header=''):
+    """Try adjacent equal-size arrays when both named stack ranges have the same displacement."""
+    offsets = {}
+    for marker, target, candidate in rows:
+        if marker not in ('s', 'i'):
+            continue
+        left, right = _STACK_WORD.fullmatch(target), _STACK_WORD.fullmatch(candidate)
+        if not left or not right or left[1] != right[1]:
+            continue
+        a, b = (int(match[3], 16 if match[3].startswith('0x') else 10) for match in (left, right))
+        if a != b:
+            offsets.setdefault(a - b, set()).add(a)
+    if not any(len(words) >= 4 for words in offsets.values()):
+        return []
+
+    from .frame_padding_repairs import declaration_ends
+
+    part = view(source, name)
+    if not part or re.search(r'\b(?:asm|__asm|__asm__)\b', part.body):
+        return []
+    macros = set(re.findall(rf'(?m)^\s*#\s*(?:define|undef)\s+({IDENT})', source + '\n' + header))
+    begin = part.opening + 1
+    previous = None
+    out = []
+    for end in declaration_ends(part):
+        start = end - len(part.clean[begin:end].lstrip())
+        text = source[start:end]
+        current = _NAMED_ARRAY.fullmatch(text)
+        if current and not (macros & set(re.findall(IDENT, text))):
+            base = int(current[1][2:], 16)
+            length = int(current[2])
+            if previous and previous[2] == length and abs(previous[3] - base) >= 4 * length:
+                required = {base, base + 4, previous[3], previous[3] + 4}
+                if any(required <= changed for changed in offsets.values()):
+                    a, b, _, _ = previous
+                    out.append(('spill_declaration_order', edit(source, [
+                        (a, b, text), (start, end, source[a:b]),
+                    ])))
+                    if len(out) == 4:
+                        break
+            previous = (start, end, length, base)
+        else:
+            previous = None
+        begin = end
+    return out
+
+
 def pointer_aliases(source,name,header=''):
     part,pointers,macros = pointer_pair_repairs.context(source,name,header)
     fresh = '__repair_argument_pointer'
