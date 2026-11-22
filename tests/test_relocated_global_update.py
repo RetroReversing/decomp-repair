@@ -219,3 +219,43 @@ def test_recover_direct_word_increment_at_verified_relocations():
 ])
 def test_increment_rejects_unproven_addresses_and_macros(source, asm, symbols):
     assert repair.rewrite_increment(source, 'update', asm, resolve=symbols.get) is None
+
+
+HOISTED_READ = '''
+#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))
+extern s32 arena;
+void apply(s32 *p) {
+    *p += M2C_FIELD(&arena, s32 *, 0x40);
+}
+'''
+HOISTED_ASM = '''
+/* 00 80001000 3C028003 */ lui $v0, %hi(arena + 0x40)
+/* 04 80001004 8C429120 */ lw $v0, %lo(arena + 0x40)($v0)
+/* 08 80001008 00431021 */ addu $v0, $v0, $v1
+'''
+HOISTED_ROWS = [
+    ('>', '', 'lui $t0, %hi(bias)'),
+    ('>', '', 'addiu $t0, $t0, %lo(bias)'),
+    ('<', 'lui $v0, %hi(bias)', ''),
+    ('i', 'lw $v0, %lo(bias)($v0)', 'lw $v0, ($t0)'),
+]
+HOISTED_SYMBOLS = {**SYMBOLS, 'bias': 0x80029120}
+
+
+def test_replace_hoisted_word_address_with_verified_direct_alias():
+    candidate = repair.rewrite_hoisted_word_read(HOISTED_READ, 'apply', HOISTED_ROWS, HOISTED_ASM,
+                                                  resolve=HOISTED_SYMBOLS.get)
+    assert candidate == HOISTED_READ.replace('void apply', 'extern s32 D_80029120;\n\nvoid apply').replace(
+        'M2C_FIELD(&arena, s32 *, 0x40)', 'D_80029120')
+
+
+def test_hoisted_word_read_requires_matching_address_and_macro():
+    assert repair.rewrite_hoisted_word_read(HOISTED_READ, 'apply', [], HOISTED_ASM,
+                                            resolve=HOISTED_SYMBOLS.get) is None
+    assert repair.rewrite_hoisted_word_read(HOISTED_READ, 'apply', HOISTED_ROWS,
+                                            HOISTED_ASM.replace('8C429120','8C429124'),
+                                            resolve=HOISTED_SYMBOLS.get) is None
+    assert repair.rewrite_hoisted_word_read(HOISTED_READ.replace('0x40)', '0x44)'), 'apply', HOISTED_ROWS,
+                                            HOISTED_ASM, resolve=HOISTED_SYMBOLS.get) is None
+    assert repair.rewrite_hoisted_word_read(HOISTED_READ, 'apply', HOISTED_ROWS, HOISTED_ASM,
+                                            '#define arena other', HOISTED_SYMBOLS.get) is None
