@@ -162,3 +162,15 @@ def test_graph_answers_are_shared_between_copies_but_follow_edge_cuts():
         node.successors = set()  # a repair cutting every edge in place
     assert dominators(first) == {first.entry: {first.entry}}
     assert len(dominators(second)) > 1  # the other copy's graph is untouched
+
+
+def test_declarations_found_by_a_pattern_without_a_type_group_are_analysed():
+    """The cache key once read d['type'] and a declaration without that group raised IndexError (0.5.577)."""
+    import re
+    local_flow._cache.clear()
+    declarations = list(re.finditer(r'int\s+(?P<name>\w+)\s*;', SOURCE))
+    assert [d['name'] for d in declarations] == ['value', 'other']
+    flow = local_flow.analyze(SOURCE, 'sample', declarations=declarations)
+    assert flow is not None and flow.names == {'value', 'other'}
+    again = local_flow.analyze(SOURCE, 'sample', declarations=declarations)
+    assert again is not flow and again.names == flow.names
