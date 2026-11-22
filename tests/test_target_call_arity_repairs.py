@@ -190,3 +190,22 @@ move $a2, $s2
     assert 'check(owner, x, y)' in alternatives[1][1]
     assert (t.FAMILY, expected) not in t.variants(source, 'run', assembly.replace('nop', 'nop\nmove $a3, $s4'))
     assert (t.FAMILY, expected) not in t.variants(source.replace('check(owner,', 'check(next(),'), 'run', assembly)
+
+
+def test_measured_call_drop_prioritizes_a_consumed_literal():
+    from decomprepair import target_call_arity_repairs as repair
+
+    source = 's32 convert(s32, s32);\nvoid f(s32 *p) { *p = convert(*p, 0x1000040); }\n'
+    target = ['lui $a1, 0x100', 'ori $a1, $a1, 0x40', 'or $v0, $v0, $a1',
+              'jal convert', 'addu $a0, $a0, $v0']
+    candidate = ['lui $a1, 0x100', 'ori $a1, $a1, 0x40', 'or $v0, $v0, $a2',
+                 'jal convert', 'addu $a0, $a0, $v0']
+    rows = [('o', a, b) for a, b in zip(target, candidate)]
+    asm = '\n'.join(target)
+    (family, text), = repair.measured_variants(source, 'f', asm, rows)
+    assert family == 'target_call_arity'
+    assert 'convert(*p)' in text and 'convert(s32)' in text
+    assert not repair.measured_variants(source, 'f', asm, [(' ', x, x) for x in target])
+    assert not repair.measured_variants(source.replace('0x1000040', 'side_effect()'), 'f', asm, rows)
+    assert not repair.measured_variants(source, 'f', asm, [('o', a, b.replace('convert', 'other'))
+                                                        for a, b in zip(target, candidate)])

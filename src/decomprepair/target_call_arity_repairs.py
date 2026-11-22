@@ -324,3 +324,60 @@ def _prototype(text, callee, name, change, edits, clean, parens):
         params = params[:count]
     new = ', '.join(params) if params else 'void'
     return text[:proto.start(1)] + new + text[proto.end(1):]
+
+
+def measured_variants(source, name, asm, rows):
+    """Try dropping a literal argument when the measured call setup no longer supplies it."""
+    target = calls(asm, consumed=True)
+    candidate = calls('\n'.join(row[2] for row in rows if row[2]), consumed=True)
+    if len(target) != len(candidate) or not target:
+        return []
+    clean = _blank(source)
+    span = find(source, name)
+    if not span:
+        return []
+    opening = clean.find('{', span[0], span[1])
+    body = clean[opening:span[1]]
+    wanted = {}
+    for (callee, target_regs), (other, candidate_regs) in zip(target, candidate):
+        if callee != other:
+            return []
+        count = max((ARGREG.index(r) + 1 for r in target_regs), default=0)
+        actual = max((ARGREG.index(r) + 1 for r in candidate_regs), default=0)
+        if count and actual > count:
+            wanted.setdefault(callee, set()).add(count)
+    if not wanted:
+        return []
+    safe = {}
+    for callee, counts in wanted.items():
+        if len(counts) != 1:
+            continue
+        count = next(iter(counts))
+        sites = list(re.finditer(r'\b' + re.escape(callee) + r'\s*\(', body))
+        if not sites:
+            continue
+        for site in sites:
+            start = site.end() - 1
+            end = close(body, start)
+            args = m2cfix._split_top_level(body[start + 1:end - 1]) if end else []
+            if len(args) <= count or any(not re.fullmatch(r'\s*(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*\s*', a)
+                                        for a in args[count:]):
+                break
+        else:
+            safe[callee] = count
+    if not safe:
+        return []
+    result = []
+    for family, proposed in variants(source, name, asm):
+        clean_proposed = _blank(proposed)
+        new_span = find(proposed, name)
+        if not new_span:
+            continue
+        new_body = clean_proposed[clean_proposed.find('{', new_span[0], new_span[1]):new_span[1]]
+        for callee, count in safe.items():
+            sites = list(re.finditer(r'\b' + re.escape(callee) + r'\s*\(', new_body))
+            if sites and all((end := close(new_body, site.end() - 1)) and
+                             len(m2cfix._split_top_level(new_body[site.end():end - 1])) == count for site in sites):
+                result.append((family, proposed))
+                break
+    return result
