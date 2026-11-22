@@ -64,3 +64,12 @@ def test_empty_varargs_leaf_requires_all_four_registers_at_home():
     assert variants(source, 'f', asm) == [('varargs_signature', 'void f(s32 first, ...) { }\n')]
     assert not variants(source, 'f', asm.replace('$a3, 12', '$a3, 16'))
     assert not variants(source.replace('{ }', '{ use(a); }'), 'f', asm)
+
+
+def test_empty_varargs_leaf_accepts_final_spill_before_return():
+    source = 'void f(s32 first, M2C_UNK a, M2C_UNK b, M2C_UNK c) { }\n'
+    asm = 'sw $a0, ($sp)\nsw $a1, 4($sp)\nsw $a2, 8($sp)\nsw $a3, 12($sp)\njr $ra\nnop'
+    assert variants(source, 'f', asm) == [('varargs_signature', 'void f(s32 first, ...) { }\n')]
+    assert not variants(source, 'f', asm.replace('$a3, 12', '$a3, 16'))
+    assert not variants(source, 'f', asm.replace('\nnop', '\naddiu $v0, $zero, 1'))
+    assert not variants(source.replace('{ }', '{ use(a); }'), 'f', asm)
