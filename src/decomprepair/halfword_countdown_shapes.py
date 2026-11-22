@@ -26,7 +26,8 @@ FAMILY = 'halfword_countdown_combo'
 SUCCESSOR = 'unsigned_successor_compare'
 COUNTER = 'masked_halfword_counter'
 COUNTDOWN = 'field_countdown_compound'
-FAMILIES = (FAMILY, SUCCESSOR, COUNTER, COUNTDOWN)
+SIGNED_ENTRY = 'signed_entry_halfword_counter'
+FAMILIES = (FAMILY, SUCCESSOR, COUNTER, COUNTDOWN, SIGNED_ENTRY)
 
 _ID = r'[A-Za-z_]\w*'
 _UNSIGNED = r'(?:u32|unsigned(?:\s+int)?)'
@@ -157,6 +158,65 @@ def _match_field(clean, cursor, field):
     return pos if got == wanted else None
 
 
+_SIGNED = r'(?:s32|int|signed(?:\s+int)?)'
+_SIGNED_ENTRY = re.compile(
+    r'\bif\s*\(\s*(?P<timer>' + _ID + r')\s*==\s*0\s*\)\s*\{'
+    r'[^{}]*?\b(?P<index>' + _ID + r')\s*=\s*0\s*;\s*'
+    r'(?P<bound>' + _ID + r')\s*=\s*&\s*(?P<global>' + _ID + r')\s*;\s*if\s*\(\s*'
+    r'(?P<guard>\(\s*\(\s*' + _UNSIGNED + r'\s*\)\s*(?P=timer)\s*\)\s*<\s*'
+    r'\(\s*\(\s*' + _UNSIGNED + r'\s*\)\s*\(\s*\*\s*(?P=bound)\s*\)\s*\))\s*\)\s*\{')
+_IDENTICAL_CALL = re.compile(
+    r'\bif\s*\(\s*(?P<local>' + _ID + r')\s*\)\s*\{\s*'
+    r'(?P<call>' + _ID + r')\s*\(\s*\)\s*;\s*\}\s*else\s*\{\s*(?P=call)\s*\(\s*\)\s*;\s*\}')
+
+
+def _signed_entry(source, body):
+    """Try a signed bound and a halfword counter together on a zero-count entry path."""
+    clean = _blank(source)
+    start, end = body
+    for hit in _SIGNED_ENTRY.finditer(clean, start, end):
+        timer, index, bound, symbol = (hit[key] for key in ('timer', 'index', 'bound', 'global'))
+        decl = re.search(r'(?m)^[ \t]*(?P<type>' + _SIGNED + r')\s+' + index + r'\s*;', clean[start:hit.start()])
+        locals_before_entry = clean[start:hit.start()]
+        if (not decl
+                or not re.search(r'(?m)^[ \t]*' + _SIGNED + r'\s+' + timer + r'\s*;', locals_before_entry)
+                or not re.search(r'(?m)^[ \t]*' + _SIGNED + r'\s*\*\s*' + bound + r'\s*;', locals_before_entry)):
+            continue
+        if not re.search(r'(?m)^[ \t]*(?:extern\s+)?' + _SIGNED + r'\s+' + symbol + r'\s*;', clean[:start]):
+            continue
+        # The outer guard proves the timer is zero. Nothing may assign to it or
+        # export its address before the signed comparison.
+        prefix = clean[hit.end('timer'):hit.start('guard')]
+        if re.search(r'\b' + timer + r'\b', prefix) or re.search(r'&\s*' + timer + r'\b', clean[start:end]):
+            continue
+        loop_end = _close(clean, hit.end() - 1, '{', '}')
+        if not loop_end or not re.search(r'\bwhile\s*\(\s*\(\s*' + index + r'\s*&\s*0x[fF]{4}\s*\)\s*<',
+                                         clean[hit.end():loop_end]):
+            continue
+        index_use = re.compile(r'\b' + index + r'\b')
+        rest = clean[start + decl.end():end]
+        masked = re.sub(r'\b' + index + r'\s*&\s*0x(?:[fF]{4}|[fF]{2})\b', '', rest)
+        writes = re.sub(r'\b' + index + r'\s*(?:=\s*0|\+\+|\+=\s*1)\s*;', '', masked)
+        if index_use.search(writes):
+            continue
+        edits = [(start + decl.start('type'), start + decl.end('type'), 'u16'),
+                 (*hit.span('guard'), f'{timer} < *{bound}')]
+        # A pure local test whose two arms call the same function is a single
+        # call. This also drops a possible read of an uninitialized local.
+        for diamond in _IDENTICAL_CALL.finditer(clean, start, hit.start()):
+            local = diamond['local']
+            if local == timer:
+                edits.append((diamond.start(), diamond.end(), diamond['call'] + '();'))
+        return _apply_edits(source, edits)
+    return None
+
+
+def _apply_edits(source, edits):
+    for start, end, replacement in sorted(edits, reverse=True):
+        source = source[:start] + replacement + source[end:]
+    return source
+
+
 def variants(source, name, arch=None):
     if arch not in (None, 'mips'):
         return []
@@ -169,7 +229,8 @@ def variants(source, name, arch=None):
     if not end:
         return []
     body = (opening, end)
-    result, applied = [], []
+    signed_entry = _signed_entry(source, body)
+    result, applied = ([(SIGNED_ENTRY, signed_entry)] if signed_entry else []), []
     for family, edit in ((SUCCESSOR, _successor), (COUNTER, _counter), (COUNTDOWN, _countdown)):
         text = edit(source, body)
         if text and text != source:
