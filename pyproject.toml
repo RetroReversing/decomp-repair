@@ -33,6 +33,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pycparser>=2.22",
     "pytest>=9.1.1",
     "ruff==0.14.0",
 ]
