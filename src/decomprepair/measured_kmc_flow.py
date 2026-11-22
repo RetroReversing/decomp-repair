@@ -835,6 +835,68 @@ def _shade_clamp_storage(source, name, header, rows):
     return edit(source, [(start, end, declaration + clamp), (*hit.span('mask'), f'{local} & 0xff')])
 
 
+_TABLE_GUARD = re.compile(
+    rf'\s*s32\s+(?P<offset>{IDENT});\s*s32\s+(?P<result>{IDENT});\s*'
+    rf'(?P=offset)\s*=\s*(?P<index>{IDENT})\s*\*\s*(?:0x[Ee]8|232);\s*(?P=result)\s*=\s*1;\s*'
+    rf'if\s*\(M2C_FIELD\(\((?P<base>{IDENT})\s*\+\s*\(\*\((?P<table>{IDENT})\s*\+\s*(?P=offset)\)'
+    rf'\s*\*\s*2\)\),\s*s16 \*,\s*(?P<field>{NUMBER})\)\s*==\s*0\)\s*\{{\s*'
+    rf'(?P=result)\s*=\s*1;\s*if\s*\(\((?P<call>{IDENT})\((?P=base),\s*(?P=index)\)'
+    rf'\s*<<\s*0x10\)\s*==\s*0\)\s*\{{\s*'
+    rf'(?P=result)\s*=\s*\*\((?P=table)\s*\+\s*(?P=offset)\)\s*==\s*0;\s*'
+    rf'\}}\s*\}}\s*return\s+(?P=result);\s*'
+)
+_TABLE_GUARD_TARGET = re.compile(
+    rf'lui \$v0, %hi\((?P<table>{IDENT})\)\naddu \$v0, \$v0, \$s0\n'
+    rf'lbu \$v0, %lo\((?P=table)\)\(\$v0\)\nsll \$v0, \$v0, 1\n'
+    rf'addu \$v0, \$a0, \$v0\nlh \$v0, (?P<field>{NUMBER})\(\$v0\)\n'
+    rf'bnez \$v0, (?P<exit>{NUMBER})\naddiu \$v0, \$zero, 1\n'
+    rf'jal (?P<call>{IDENT})\nnop\nsll \$v0, \$v0, 16\n'
+    rf'bnez \$v0, (?P=exit)\naddiu \$v0, \$zero, 1\n'
+    rf'lui \$v0, %hi\((?P=table)\)\naddu \$v0, \$v0, \$s0\n'
+    rf'lbu \$v0, %lo\((?P=table)\)\(\$v0\)\nsltiu \$v0, \$v0, 1'
+)
+
+
+def _unsigned_table_guard(source, name, header, rows):
+    """Recover an unsigned byte-table query whose two guards share an early return."""
+    if not 29 <= len(rows) <= 38:
+        return None
+    target = '\n'.join(normalized_integer_lines(left for _, left, _ in rows if left))
+    witness = _TABLE_GUARD_TARGET.search(target)
+    if not witness:
+        return None
+    table = witness['table']
+    signed = f'lb $v0, %lo({table})($v0)'
+    unsigned = f'lbu $v0, %lo({table})($v0)'
+    if sum(left == unsigned and right == signed for _, left, right in rows) != 2:
+        return None
+    part = view(source, name)
+    if not part or not (end := close(part.clean, part.opening, '{', '}')):
+        return None
+    part.end = end
+    draft = _TABLE_GUARD.fullmatch(part.body)
+    if not draft or draft['table'] != table or draft['call'] != witness['call']:
+        return None
+    if integer(draft['field']) != integer(witness['field']):
+        return None
+    base, index, offset = (draft[key] for key in ('base', 'index', 'offset'))
+    prefix = part.clean[:part.opening]
+    if not re.search(rf'\bs32\s+{re.escape(name)}\(s32\s+{base},\s*s16\s+{index}\)\s*$', prefix):
+        return None
+    decl = re.search(rf'\bextern\s+(?P<type>char)\s+{table}\s*\[\s*\]\s*;', prefix)
+    if (not decl or len(re.findall(rf'\b{table}\b', part.clean)) != 3 or re.search(rf'\b{table}\b', header)
+            or re.search(r'/[*/]', source[part.opening + 1:part.end - 1])):
+        return None
+    field, call = draft['field'], draft['call']
+    fixed = (
+        f'\n    s32 {offset} = {index} * 0xE8;\n'
+        f'    if (M2C_FIELD(((s32)(u32){base} + ({table}[{offset}] << 1)), s16 *, {field}) != 0 ||\n'
+        f'        ({call}({base}, {index}) << 0x10) != 0) return 1;\n'
+        f'    return *({table} + {offset}) == 0;\n'
+    )
+    return edit(source, [(*decl.span('type'), 'u8'), (part.opening + 1, part.end - 1, fixed)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -870,6 +932,8 @@ def variants(source, name, header, rows):
         return [('measured_initial_record_pointer', candidate)]
     if candidate := _shade_clamp_storage(source, name, header, rows):
         return [('measured_shade_clamp_storage', candidate)]
+    if candidate := _unsigned_table_guard(source, name, header, rows):
+        return [('measured_unsigned_table_guard', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
