@@ -1,4 +1,4 @@
-from decomprepair.oscillator_phase_hold import FAMILY, variants
+from decomprepair.oscillator_phase_hold import FAMILY, PRODUCT, product_variants, variants
 
 SOURCE = """
 extern f32 phase;
@@ -66,3 +66,64 @@ def test_checks_the_saved_value_and_existing_use_boundaries():
     assert variants(SOURCE.replace('update_position(record);', 'before(&carry_z);'), 'update', ROWS) == []
     assert variants(SOURCE.replace('axis_x = *record;', 'axis_x += *record;'), 'update', ROWS) == []
     assert variants(SOURCE, 'update', ROWS, header='#define poll(a,b,c) opaque(a,b,c)') == []
+
+
+PRODUCT_SOURCE = """\
+extern f32 phase;
+extern f32 axis_z;
+f32 wave(f32 phase);
+f32 poll(s32 slot, s32 x, s32 y);
+void update(f32 *axis_x_out, s32 slot)
+{
+    f32 holder;
+    f32 axis_x;
+    f32 input;
+    f32 carry_x;
+    f32 carry_z;
+    f32 product;
+    f32 drive;
+    drive = wave(phase);
+    axis_x = wave(phase + 1.0f);
+    carry_x = 0.0f;
+    carry_z = 0.0f;
+    product = drive * (wave(phase * 3.0f) * 0.1f);
+    axis_z = product;
+    *axis_x_out = axis_x;
+    phase += 0.01f;
+    input = poll(slot, 4, 5);
+    carry_x += axis_x;
+    carry_z += product;
+    report(carry_x, carry_z, input);
+    holder = poll(slot, 2, 3) * 0.5f;
+    report(holder);
+}
+"""
+PRODUCT_OPS = [
+    'jal wave', 'nop', 'mul.s $f0, $f0, $f22', 'mul.s $f24, $f20, $f0',
+    'swc1 $f24, %lo(axis_z)($at)', 'jal poll', 'addiu $a2, $zero, 5',
+    'mtc1 $s2, $f16', 'nop', 'add.s $f16, $f16, $f24', 'mfc1 $s2, $f16',
+]
+PRODUCT_ROWS = [('r' if '$f24' in op else ' ', op, op.replace('$f24', '$f20')) for op in PRODUCT_OPS]
+PRODUCT_ROWS += [(' ', op, op) for op in [
+    'addiu $a1, $zero, 2', 'jal poll', 'addiu $a2, $zero, 3',
+    'lui $at, 0x3f00', 'ori $at, $at, 0', 'mtc1 $at, $f6', 'nop',
+    'mul.s $f24, $f0, $f6', *(['nop'] * 10),
+]]
+
+
+def test_reuses_saved_product_for_the_global_and_later_accumulation():
+    [(label, changed)] = product_variants(PRODUCT_SOURCE, 'update', PRODUCT_ROWS)
+    assert label == PRODUCT
+    assert 'holder = drive * (wave(phase * 3.0f) * 0.1f);' in changed
+    assert 'axis_z = holder;' in changed
+    assert 'carry_z += holder;' in changed
+
+
+def test_rejects_missing_store_witness_unproved_holder_or_escaping_product():
+    incomplete = [row for row in PRODUCT_ROWS if 'swc1' not in row[1]]
+    assert not product_variants(PRODUCT_SOURCE, 'update', incomplete)
+    assert not product_variants(PRODUCT_SOURCE.replace(' * 0.5f;', ' * 0.25f;'), 'update', PRODUCT_ROWS)
+    escaped = PRODUCT_SOURCE.replace('report(carry_x, carry_z, input);', 'escape(&product);')
+    assert not product_variants(escaped, 'update', PRODUCT_ROWS)
+    used = PRODUCT_SOURCE.replace('report(carry_x, carry_z, input);', 'report(holder);')
+    assert not product_variants(used, 'update', PRODUCT_ROWS)

@@ -2,8 +2,13 @@
 
 import re
 
+from .balanced_clamp_predicates import _bits
 from .integer_repair_support import IDENT, edit
+from .local_flow import Flow
 from .operand_lifetime_repairs import _escaped, _in_scope, _typed_locals, _visible, block_path
+from .quadratic_sign_holder import _DONOR, _call
+from .quadratic_sign_holder import _witnesses as _sample_witnesses
+from .trig_axis_reuse import _DECL
 
 FAMILY = 'oscillator_phase_hold'
 FRESH = 'repair_axis_z'
@@ -142,3 +147,89 @@ def variants(source, name, rows, *, header=''):
         if not macros.intersection(identifiers):
             options.append(edit(source, edits))
     return [(FAMILY, options[0])] if len(options) == 1 else []
+
+
+
+PRODUCT = 'saved_oscillator_product_holder'
+_PRODUCT_MUL = re.compile(rf'mul\.s ({SAVED_FLOAT}), ({SAVED_FLOAT}), \$f0')
+_REUSE_PRODUCT = re.compile(
+    rf'(?m)^[ \t]*(?P<product>{IDENT})\s*=\s*{IDENT}\s*\*\s*\(\s*(?P<factor>{IDENT})\('
+    rf'[^;{{}}\n]+\)\s*\*\s*{LITERAL}\s*\)\s*;\s*'
+    rf'(?P<global>{IDENT})\s*=\s*(?P<published>(?P=product))\s*;\s*'
+    rf'\*\s*{IDENT}\s*=\s*{IDENT}\s*;\s*{IDENT}\s*\+=\s*{LITERAL}\s*;\s*'
+    rf'{IDENT}\s*=\s*(?P<callee>{IDENT})\([^;{{}}\n]+\)\s*;\s*'
+    rf'{IDENT}\s*\+=\s*{IDENT}\s*;\s*{IDENT}\s*\+=\s*(?P<added>(?P=product))\s*;'
+)
+
+
+def _product_witnesses(rows):
+    for at, (_, left, right) in enumerate(rows):
+        target, current = _PRODUCT_MUL.fullmatch(left), _PRODUCT_MUL.fullmatch(right)
+        if (not target or not current or target[1] == target[2] or current[1] != current[2]
+                or target[2] != current[2]):
+            continue
+        expected, carried = target[1], current[1]
+        previous = next((m[1] for _, op, other in reversed(rows[max(at - 12, 0):at])
+                         if op == other and (m := _CALL.fullmatch(op))), None)
+        if not previous:
+            continue
+        for end, (_, op, other) in enumerate(rows[at + 1:at + 14], at + 1):
+            store = _PUBLISH.fullmatch(op)
+            if not store or store['z'] != expected or other != op.replace(expected + ',', carried + ',', 1):
+                continue
+            next_call = next(((i, m[1]) for i, (_, text, alternate) in enumerate(rows[end + 1:end + 5], end + 1)
+                              if text == alternate and (m := _CALL.fullmatch(text))), None)
+            if not next_call:
+                continue
+            i, sample = next_call
+            if any((acc := _ACCUMULATE.fullmatch(later)) and acc['axis'] == expected
+                   and alternate == later.rsplit(', ', 1)[0] + ', ' + carried
+                   for _, later, alternate in rows[i + 2:i + 20]):
+                yield store['global'], previous, sample, expected
+
+
+def product_variants(source, name, rows, *, header=''):
+    measured = set(_product_witnesses(rows))
+    visible = _visible(source, name, header) if measured else None
+    if not visible:
+        return []
+    part, context = visible
+    typedefs = re.findall(r'\btypedef\s+([^;{}]+?)\s+f32\s*;', context)
+    if any(alias.strip() != 'float' for alias in typedefs):
+        return []
+    _, donors, _ = _sample_witnesses(rows)
+    if not donors:
+        return []
+    ordinary = _typed_locals(part, r'(?:f32|float)')
+    declarations = {m['name']: m for m in _DECL.finditer(part.clean, part.opening + 1, part.end)
+                    if m['name'] in ordinary and m.start() == ordinary[m['name']][1]}
+    try:
+        flow = Flow(part, declarations.values())
+    except (ValueError, RecursionError):
+        return []
+    macros = set(re.findall(rf'(?m)^[ \t]*#\s*(?:define|undef)\s+({IDENT})', context))
+    choices = []
+    for m in _REUSE_PRODUCT.finditer(part.clean, part.opening + 1, part.end):
+        product = m['product']
+        before = part.clean[part.opening + 1:m.start()].rstrip()
+        if (product not in flow.names or (before and before[-1] not in ';{}:')
+                or macros & set(re.findall(IDENT, m[0]))
+                or len(re.findall(rf'\b{product}\b', part.body)) != 4):
+            continue
+        for donor in _DONOR.finditer(part.clean, part.opening + 1, part.end):
+            holder = donor['holder']
+            if (holder == product or holder not in flow.names or donor['callee'] != m['callee']
+                    or ordinary[holder][0] in macros or macros & set(re.findall(IDENT, donor[0]))
+                    or re.search(rf'\b{holder}\b', m[0]) or not flow.dead(holder, m.start('product'))
+                    or not _in_scope(part, declarations[holder].start(), m.start('product'))):
+                continue
+            if not any((*_call(donor), _bits(donor['gain']), reg) in donors
+                       for global_, factor, sample, reg in measured
+                       if (global_, factor, sample) == (m['global'], m['factor'], m['callee'])):
+                continue
+            option = (PRODUCT, edit(source, [(*m.span(key), holder) for key in ('product', 'published', 'added')]))
+            if option not in choices:
+                choices.append(option)
+            if len(choices) == 4:
+                return choices
+    return choices
