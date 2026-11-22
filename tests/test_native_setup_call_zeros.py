@@ -58,3 +58,13 @@ def test_zero_calls_require_a_dominating_unescaped_zero_word():
         SOURCE.replace('if (!actor) return;', 'if (!actor) goto skip;').replace('draw(y);', 'skip: draw(y);'),
     ):
         assert not variants(source, 'f', ROWS, header='#define mutate(x) ((x) = 1)')
+
+
+
+def test_zero_calls_can_follow_an_unconditionally_entered_nested_reset():
+    start = SOURCE.index('    cleared.bits =')
+    end = SOURCE.rfind('}')
+    nested = SOURCE[:start] + '    if (first) {\n    phase:\n' + SOURCE[start:end] + '    }\n' + SOURCE[end:]
+    assert variants(nested, 'f', ROWS)
+    conditional_reset = nested.replace('    phase:', '    if (third)\n    phase:')
+    assert not variants(conditional_reset, 'f', ROWS)
