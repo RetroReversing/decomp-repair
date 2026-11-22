@@ -77,3 +77,48 @@ def test_accepts_a_proven_zero_word_with_an_ordinary_pointer_parameter():
     assert not variants(source.replace('void *record', 'void *volatile record'), 'adjust', ROWS)
     assert not variants(source.replace('vertical = zero.number;', 'hook(&zero);\n    vertical = zero.number;'),
                         'adjust', ROWS)
+
+
+SUBTRACT_SOURCE = '''
+extern f32 lift;
+void adjust(void *record, int bypass)
+{
+    f32 vertical;
+    union { u32 bits; f32 number; } zero;
+    zero.bits = (u32)record & ~(u32)record;
+    vertical = zero.number;
+    vertical = zero.number - lift;
+    report(vertical);
+}
+'''
+SUBTRACT_ROWS = [
+    (' ', 'lui $at, %hi(lift)', 'lui $at, %hi(lift)'),
+    (' ', 'lwc1 $f0, %lo(lift)($at)', 'lwc1 $f0, %lo(lift)($at)'),
+    ('r', 'mtc1 $s6, $f16', 'mtc1 $fp, $f16'),
+    (' ', 'nop', 'nop'),
+    ('r', 'sub.s $f16, $f16, $f0', 'sub.s $f0, $f16, $f0'),
+    ('r', 'mfc1 $s6, $f16', 'mfc1 $s6, $f0'),
+]
+
+
+def test_reuses_proven_zero_to_subtract_the_witnessed_global():
+    from decomprepair.balanced_predicate_projection import SUBTRACT
+
+    [(family, changed)] = variants(SUBTRACT_SOURCE, 'adjust', SUBTRACT_ROWS)
+    assert family == SUBTRACT
+    assert changed == SUBTRACT_SOURCE.replace('vertical = zero.number - lift;', 'vertical -= lift;')
+    literal = SUBTRACT_SOURCE.replace('zero.number', '0.0f')
+    assert variants(literal, 'adjust', SUBTRACT_ROWS)
+
+
+def test_rejects_a_nonzero_input_or_previous_accumulator_value():
+    assert not variants(SUBTRACT_SOURCE.replace('vertical = zero.number;', 'vertical = 1.0f;'),
+                        'adjust', SUBTRACT_ROWS)
+    assert not variants(SUBTRACT_SOURCE.replace('    vertical = zero.number - lift;',
+                                                '    if (bypass) zero.bits = 1;\n    vertical = zero.number - lift;'),
+                        'adjust', SUBTRACT_ROWS)
+    assert not variants(SUBTRACT_SOURCE.replace('    vertical = zero.number;',
+                                                '    if (!bypass) vertical = zero.number;'),
+                        'adjust', SUBTRACT_ROWS)
+    assert not variants(SUBTRACT_SOURCE, 'adjust', SUBTRACT_ROWS[:-1])
+    assert not variants(SUBTRACT_SOURCE.replace('- lift;', '- weight;'), 'adjust', SUBTRACT_ROWS)

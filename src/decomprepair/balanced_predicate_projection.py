@@ -12,6 +12,7 @@ from .local_flow import Flow
 from .operand_lifetime_repairs import _escaped, _in_scope, _typed_locals, _visible
 
 FAMILY = 'balanced_predicate_projection'
+SUBTRACT = 'carried_zero_global_subtract'
 _FPR = r'\$f(?:[12]?[0-9]|3[01])'
 _FIELD = re.compile(rf'lwc1 ({_FPR}), ({NUMBER})\((\$\w+)\)')
 _CALL = re.compile(rf'jal ({IDENT})')
@@ -26,6 +27,36 @@ _ZERO_UNION = re.compile(
     rf'\bunion\s*\{{\s*(?:u32|unsigned\s+int)\s+(?P<bits>{IDENT})\s*;\s*'
     rf'(?:f32|float)\s+(?P<number>{IDENT})\s*;\s*\}}\s*(?P<name>{IDENT})\s*;'
 )
+
+_SUBTRACTION = re.compile(
+    rf'(?m)^[ \t]*(?P<acc>{IDENT})\s*(?P<initial>=\s*(?P<zero>0\.0[fF]|{IDENT}\s*\.\s*{IDENT})\s*-\s*)'
+    rf'(?P<symbol>{IDENT})\s*;'
+)
+_GLOBAL = re.compile(rf'lwc1 ({_FPR}), %lo\(({IDENT})\)\(\$at\)')
+
+
+def _subtraction_evidence(rows):
+    target = [(i, left) for i, (_, left, _) in enumerate(rows) if left]
+    witnesses = set()
+    for i in range(1, len(target) - 3):
+        position, op = target[i]
+        carry, candidate = _CARRY.fullmatch(op), _CARRY.fullmatch(rows[position][2])
+        if not carry or not candidate or carry[1] == candidate[1] or carry[2] != candidate[2]:
+            continue
+        earlier = target[max(0, i - 4):i]
+        load = next((m for row, line in reversed(earlier) if line == rows[row][2]
+                     and (m := _GLOBAL.fullmatch(line))), None)
+        if not load:
+            continue
+        gpr, register = carry.groups()
+        scratch = load[1]
+        if (register == scratch or [line for _, line in target[i + 1:i + 4]] !=
+                ['nop', f'sub.s {register}, {register}, {scratch}', f'mfc1 {gpr}, {register}']):
+            continue
+        right = [rows[row][2] for row, _ in target[i + 1:i + 4]]
+        if right == ['nop', f'sub.s {scratch}, {register}, {scratch}', f'mfc1 {gpr}, {scratch}']:
+            witnesses.add(load[2])
+    return witnesses
 
 
 def _evidence(rows):
@@ -65,7 +96,7 @@ def _evidence(rows):
     return result
 
 
-def _prior_references(flow, parents, index, name):
+def _prior_references(flow, parents, index, name, ignore=None):
     """Find the first other reference on each incoming path, including back edges."""
     if index == flow.entry:
         return None
@@ -80,7 +111,8 @@ def _prior_references(flow, parents, index, name):
             continue
         seen.add(node_index)
         node = flow.nodes[node_index]
-        if reference.search(flow.part.clean[node.start:node.end]):
+        statement = flow.part.clean[node.start:node.end].strip()
+        if reference.search(statement) and not (ignore and ignore.fullmatch(statement)):
             hits.add(node_index)
         else:
             if node_index == flow.entry or not parents[node_index]:
@@ -89,39 +121,47 @@ def _prior_references(flow, parents, index, name):
     return hits
 
 
-def _positive_zero(flow, parents, projection, acc, unions, pointer_parameters):
-    def statement(index):
-        node = flow.nodes[index]
-        return flow.part.clean[node.start:node.end].strip()
+def _statement(flow, index):
+    node = flow.nodes[index]
+    return flow.part.clean[node.start:node.end].strip()
 
-    for index in _prior_references(flow, parents, projection, acc) or (None,):
-        if index is None:
+
+def _known_zero(flow, parents, index, expression, unions, pointer_parameters):
+    if re.fullmatch(r'0\.0[fF]', expression):
+        return True
+    member = re.fullmatch(rf'({IDENT})\s*\.\s*({IDENT})', expression)
+    union = unions.get(member[1]) if member else None
+    if (not union or union['number'] != member[2] or _escaped(flow.part.body, union['name'])
+            or not _in_scope(flow.part, union.start(), flow.nodes[index].start)):
+        return False
+    read = re.compile(rf'{IDENT}\s*=\s*{union["name"]}\s*\.\s*{union["number"]}\s*;')
+    writes = _prior_references(flow, parents, index, union['name'], ignore=read)
+    if not writes:
+        return False
+    zero = rf'(?:0[uU]?|\((?:u32|unsigned\s+int)\)\s*({IDENT})\s*&\s*~\((?:u32|unsigned\s+int)\)\s*\1)'
+    assign = rf'{union["name"]}\s*\.\s*{union["bits"]}\s*=\s*{zero}\s*;'
+    for write in writes:
+        definition = re.fullmatch(assign, _statement(flow, write))
+        if not definition or (definition[1] and definition[1] not in pointer_parameters):
             return False
-        assignment = re.fullmatch(rf'{acc}\s*=\s*(.+?)\s*;', statement(index))
-        if not assignment:
+    return True
+
+
+def _positive_zero(flow, parents, projection, acc, unions, pointer_parameters):
+    refs = _prior_references(flow, parents, projection, acc)
+    if not refs:
+        return False
+    for index in refs:
+        assignment = re.fullmatch(rf'{acc}\s*=\s*(.+?)\s*;', _statement(flow, index))
+        if not assignment or not _known_zero(flow, parents, index, assignment[1], unions, pointer_parameters):
             return False
-        if re.fullmatch(r'0\.0[fF]', assignment[1]):
-            continue
-        member = re.fullmatch(rf'({IDENT})\s*\.\s*({IDENT})', assignment[1])
-        union = unions.get(member[1]) if member else None
-        if (not union or union['number'] != member[2] or _escaped(flow.part.body, union['name'])
-                or not _in_scope(flow.part, union.start(), flow.nodes[index].start)):
-            return False
-        writes = _prior_references(flow, parents, index, union['name'])
-        if not writes:
-            return False
-        zero = rf'(?:0[uU]?|\((?:u32|unsigned\s+int)\)\s*({IDENT})\s*&\s*~\((?:u32|unsigned\s+int)\)\s*\1)'
-        assign = rf'{union["name"]}\s*\.\s*{union["bits"]}\s*=\s*{zero}\s*;'
-        for write in writes:
-            definition = re.fullmatch(assign, statement(write))
-            if not definition or (definition[1] and definition[1] not in pointer_parameters):
-                return False
     return True
 
 
 def variants(source, name, rows, *, header=''):
     witness = _evidence(rows)
-    visible = _visible(source, name, header) if witness else None
+    subtract_globals = _subtraction_evidence(rows)
+    visible = _visible(source, name, header) if witness or subtract_globals else None
     if not visible:
         return []
     part, context = visible
@@ -193,4 +233,19 @@ def variants(source, name, rows, *, header=''):
             ])))
             if len(proposals) == 4:
                 return proposals
+    for subtraction in _SUBTRACTION.finditer(part.clean, part.opening + 1, part.end):
+        acc, symbol = subtraction['acc'], subtraction['symbol']
+        node = flow.at(subtraction.start('acc'))
+        if (symbol not in subtract_globals or not node or acc not in flow.names
+                or not _in_scope(part, floats[acc][1], subtraction.start('acc'))
+                or not macros_safe(source, header, part.body, {acc, symbol, *unions})):
+            continue
+        if not re.search(rf'\bextern\s+(?:f32|float)\s+{symbol}\s*;', context):
+            continue
+        index = indices[node.start]
+        if (_positive_zero(flow, parents, index, acc, unions, pointer_parameters)
+                and _known_zero(flow, parents, index, subtraction['zero'], unions, pointer_parameters)):
+            proposals.append((SUBTRACT, edit(source, [(*subtraction.span('initial'), '-= ')])))
+            if len(proposals) == 4:
+                break
     return proposals
