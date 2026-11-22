@@ -48,3 +48,31 @@ def test_parallel_cursor_rejects_shadowed_base_pointer():
     source = SOURCE.replace('    lead =', '    { unsigned short *base = words;\n    lead =')
     source = source.replace('while (i < n);', 'while (i < n); }')
     assert not variants(source, 'scan')
+
+
+def test_folds_fixed_stride_index_into_advancing_cursor():
+    source = """
+int f(unsigned char *input, unsigned char count) {
+    unsigned char *cursor = input;
+    unsigned char *anchor;
+    unsigned char limit;
+    unsigned int index;
+    int sum;
+    limit = count;
+    index = 0;
+    sum = 0;
+    anchor = cursor + 2;
+    do {
+        sum += anchor[((s32) (index * 3)) - 1] + anchor[index * 3];
+        cursor += 3;
+        index += 1;
+    } while (index < limit);
+    return sum;
+}
+"""
+    [(family, candidate)] = variants(source, 'f')
+    assert family == 'parallel_byte_cursor'
+    assert 'sum += cursor[1] + cursor[2];' in candidate
+    assert not variants(source.replace('cursor += 3;', 'if (sum) cursor += 3;'), 'f')
+    assert not variants(source.replace('anchor = cursor + 2;', 'anchor = cursor + 2;\n    cursor++;'), 'f')
+    assert not variants(source.replace('index += 1;', 'index += 1;\n        anchor++;'), 'f')
