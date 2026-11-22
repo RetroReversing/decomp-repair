@@ -52,3 +52,54 @@ def test_loops_that_share_a_nest_are_not_merged():
 }
 '''
     assert not merged(nested)
+
+
+ARMS = '''void f(u8 *text, s32 n)
+{
+    u32 color;
+    s32 index;
+    s32 i;
+    i = 0;
+    do
+    {
+        switch (text[i])
+        {
+            case 5:
+                color = table[text[i + 1]];
+                put(color >> 24, color);
+                break;
+            case 7:
+                color = table[text[i + 1] & 0xF];
+                put(color >> 24, color);
+                break;
+            default:
+                index = text[i] - 0x21;
+                draw(index);
+                break;
+        }
+        i += 1;
+    }
+    while (i < n);
+}
+'''
+
+
+def test_a_colour_word_and_an_index_of_different_signedness_share_one_variable_inside_a_loop():
+    texts = merged(ARMS)
+    assert texts, 'the pair sits in one loop body but each is assigned before it is read: it stays'
+    shared = [t for t in texts if 'index' not in t]
+    assert len(shared) == 2
+    kept_early = [t for t in shared if 'u32 color;' in t]
+    kept_late = [t for t in shared if 's32 color;' in t]
+    assert kept_early and kept_late, 'once with the earlier type and once with the later one'
+    assert all('color = text[i] - 0x21;' in t and 'draw(color);' in t for t in shared)
+
+
+def test_a_later_local_read_before_it_is_assigned_in_the_loop_is_not_merged():
+    carried = ARMS.replace('index = text[i] - 0x21;\n                draw(index);', 'draw(index);\n                index = text[i] - 0x21;')
+    assert not merged(carried)
+
+
+def test_only_word_sized_integer_types_are_exchanged():
+    narrow = ARMS.replace('s32 index;', 's16 index;')
+    assert not merged(narrow)
