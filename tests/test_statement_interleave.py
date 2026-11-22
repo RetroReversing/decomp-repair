@@ -63,3 +63,24 @@ next:
     assert not _all(source.replace('int counter;', 'volatile int counter;'))
     assert not _all(source.replace('next:', 'if (*p)'))
     assert not _all(source.replace('return found + counter;', 'return *(&counter);'))
+
+
+def test_counter_reset_can_move_past_independent_setup_calls():
+    source = """void f(void) {
+    s32 counter;
+    counter = 0;
+    setup();
+    prepare(lookup(1));
+    configure(7);
+    do {
+        observe(counter);
+        counter += 1;
+    } while (counter < 4);
+}"""
+    results = [text for _, text in variants(source, 'f')]
+    assert any('configure(7);\n    counter = 0;' in text for text in results)
+    blocked = source.replace('setup();', 'setup(counter);')
+    assert not any('configure(7);\n    counter = 0;' in text for _, text in variants(blocked, 'f'))
+    escaped = source.replace('counter = 0;', 'keep(&counter);\n    counter = 0;')
+    assert not any('configure(7);\n    counter = 0;' in text for _, text in variants(escaped, 'f'))
+    assert not any('counter = 0;' in text for _, text in variants(source, 'f', header='#define setup() setup_impl(counter)'))
