@@ -46,7 +46,7 @@ def _cast_field_stores(source, clean, start, end):
     matches = list(stores.finditer(clean, start, end))
     result = []
     for left, right in zip(matches, matches[1:]):
-        if clean[left.end():right.start()] != '\n':
+        if clean[left.end():right.start()] != '\n' or clean[start:left.start()].rstrip()[-1:] not in {';', '{', '}'}:
             continue
         fields = ('indent', 'type', 'base')
         if left['type'] not in word_views or any(left[key] != right[key] for key in fields):

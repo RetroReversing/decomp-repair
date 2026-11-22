@@ -202,3 +202,4 @@ void f(void *base) {
     assert not variants(source.replace('0x28', '0x3D'), 'f')
     assert not variants(source.replace('0x28', '0x3C'), 'f')
     assert not variants(source.replace('int v', 'volatile int v'), 'f')
+    assert not variants(source.replace('    ((Word', '    if (base)\n    ((Word', 1), 'f')
