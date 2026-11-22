@@ -23,7 +23,7 @@ _LITERAL = r'\d+\.\d+[fF]'
 _PREDICATES = re.compile(
     rf'(?m)^[ \t]*(?P<first>{IDENT})\s*=\s*1\s*;\s*'
     rf'if\s*\(!\((?P<value>{IDENT})\s*<=\s*(?P<limit>{_LITERAL})\)\)\s*'
-    rf'\{{\s*(?P=first)\s*=\s*0\s*;\s*\}}\s*'
+    rf'\{{\s*(?P=first)\s*=\s*(?:\(unsigned\s+int\)\s*)?0\s*;\s*\}}\s*'
     rf'^(?P<pad>[ \t]*)(?P<second>{IDENT})\s*=\s*1\s*;\s*'
     rf'if\s*\(!\((?P=value)\s*>=\s*\(-(?P=limit)\)\)\)\s*'
     rf'\{{\s*(?P=second)\s*=\s*0\s*;\s*\}}\s*'
@@ -44,7 +44,7 @@ def _bits(target, index, register):
     return (integer(upper[1]) << 16) | integer(lower[1]) if upper and lower else None
 
 
-def _earlier(rows, target):
+def _earlier(rows, target, *, same_comparisons=True):
     for i, (start, op) in enumerate(target):
         match = _SAVED_COMPARE.fullmatch(op)
         if not match:
@@ -55,15 +55,23 @@ def _earlier(rows, target):
             continue
         for j in range(i + 5, min(i + 13, len(target) - 7)):
             index, op = target[j]
-            if op != f'c.le.s {bound}, {value}' or _bits(target, j, bound) != bits | 0x80000000:
+            reverse = re.fullmatch(rf'c\.le\.s ({_FPR}), {re.escape(value)}', op)
+            if not reverse or (same_comparisons and reverse[1] != bound):
+                continue
+            if _bits(target, j, reverse[1]) != bits | 0x80000000:
                 continue
             following = [op for _, op in target[j + 1:j + 8]]
             if (following[:2] != ['addiu $v0, $zero, 1', 'nop'] or not following[2].startswith('bc1t ')
                     or following[3:] != ['xori $v1, $v1, 1', 'move $v0, $zero', 'xori $v0, $v0, 1', 'or $v0, $v1, $v0']):
                 continue
             other = [right for _, _, right in rows[index:target[j + 7][0] + 1] if right]
-            if (rows[start][2] == match[0] and rows[index][2] == op and other[1:3] == ['nop', 'nop']
-                    and len(other) > 4 and other[3].startswith('bc1t ') and other[4] == 'addiu $v0, $zero, 1'):
+            if same_comparisons:
+                agrees = rows[start][2] == match[0] and rows[index][2] == op
+            else:
+                candidate = _SAVED_COMPARE.fullmatch(rows[start][2])
+                agrees = candidate and re.fullmatch(rf'c\.le\.s {_FPR}, {re.escape(candidate[1])}', rows[index][2])
+            if (agrees and other[1:3] == ['nop', 'nop'] and len(other) > 4
+                    and other[3].startswith('bc1t ') and other[4] == 'addiu $v0, $zero, 1'):
                 yield index, value, bits
 
 
