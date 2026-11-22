@@ -29,7 +29,7 @@ def variants(source, name):
         if not hit or not body[i + 1].stripped.startswith('if (') or body[i + 2].stripped != '{':
             continue
         closing = block_end(body, i + 2)
-        if closing is None or not re.fullmatch(rf'{hit["v"]} = [^;]*;', body[i + 3].stripped):
+        if closing is None or not any(re.fullmatch(rf'{hit["v"]} = [^;]*;', l.stripped) for l in body[i + 3:closing]):
             continue
         indent = line.indent
         scope = f'{indent}do\n{indent}{{\n{indent}  {line.stripped}\n{indent}}}\n{indent}while (0);\n'
