@@ -15,6 +15,18 @@ Hypothesis, not confirmed in the compiler source: another local declared at the 
 a byte parameter, which cse folds away but which still counted one reference) took the slot ahead of it, and declaring
 the length later in the numbering put its slot after that one.
 
+`array_declaration_scope_sink` is the same move for the locals that keep a stack slot of their own. Hypothesis, from
+one 842-instruction lit-actor drawer (same compiler and flags) and not confirmed in the compiler source: an array (or a
+`volatile` scratch) takes its frame slot when its declaration is expanded, while a scalar whose address is taken
+(`&sp20`) takes one when the first `&` is expanded, which is later in the code than the function's opening. So an array
+declared at the top of the function sat *below* fifteen addressed byte locals, the target had it *above* them (the
+byte locals at `0x20(sp)`, the vector at `0x30(sp)`, this build at `0x38` and `0x28`), and declaring it at the start of
+the one `switch` body that uses it moved it after them. The same function reserves eight bytes more than its locals
+use, which the agents had declared as a `volatile u64` at the top of the function; there it pushes every addressed local
+up by eight, so the family also offers the array and that unused scratch moved together (the scratch right after the
+array). No score is claimed beyond the frame: the offsets of the fifteen byte locals and the vector matched, the
+function stayed at 10,000 for other reasons.
+
 `declaration_scope_sink` offers, for a scalar or pointer local declared without an initializer at the top of the
 function whose every reference lies inside one inner block (not a loop body, which would change what survives an
 iteration), the same function with the declaration moved to the first line of that block. Locals with a narrow type
@@ -25,7 +37,8 @@ import re
 from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'declaration_scope_sink'
-FAMILIES = (FAMILY,)
+ARRAY_FAMILY = 'array_declaration_scope_sink'
+FAMILIES = (FAMILY, ARRAY_FAMILY)
 LIMIT = 8
 NARROW = re.compile(r'\b(?:u8|s8|u16|s16|char|short)\b')
 DECLARATION = re.compile(rf'\s*(?P<type>(?:(?:unsigned|signed|const|register)\s+)*{IDENT}(?:\s+{IDENT})?[\s*]*?)\b(?P<name>{IDENT})\s*;')
@@ -91,7 +104,63 @@ def variants(source, name):
         rank = 0 if NARROW.search(match['type']) else 1
         result.append((rank, len(result), source_edit(source, match, insert_at, text)))
     result.sort(key=lambda item: item[:2])
-    return [(FAMILY, text) for _, _, text in result[:LIMIT]]
+    return array_variants(source, name) + [(FAMILY, text) for _, _, text in result[:LIMIT]]
+
+
+ARRAY = re.compile(rf'(?P<type>(?:(?:unsigned|signed|const|register|volatile)\s+)*{IDENT}(?:\s+{IDENT})?[\s*]*?)\b(?P<name>{IDENT})\s*(?P<dims>(?:\[[^\]\n]*\])+)\s*;')
+SCRATCH = re.compile(rf'(?P<type>volatile\s+(?:{IDENT}\s+)*{IDENT}[\s*]*?)\b(?P<name>{IDENT})\s*;')
+BLOCK_HEAD = re.compile(r'\b(?:for|while)\s*\([^{};]*\)\s*$|\bdo\s*$')
+
+
+def array_variants(source, name):
+    """Arrays declared at the top of the function that only one block uses, declared at the start of that block.
+
+    The holder may be a `switch` body (a declaration before its first label is legal C and expands when the body
+    opens). An unused `volatile` scratch is offered moved along with the array, right after it, because the scratch
+    only reserves frame bytes and the array's slot must come before it."""
+    part = view(source, name)
+    if not part or re.search(r'\b(?:asm|__asm__|setjmp|longjmp)\b|^\s*#', part.body, re.M):
+        return []
+    clean = part.clean
+    blocks = _blocks(clean, part.opening, part.end)
+    top = [block for block in blocks if block[0] == part.opening]
+    if not top:
+        return []
+    body_start, body_end = part.opening + 1, top[0][1]
+
+    def depth0(pattern):
+        found = []
+        for match in pattern.finditer(clean, body_start, body_end):
+            depth = clean.count('{', body_start, match.start()) - clean.count('}', body_start, match.start())
+            if depth == 0 and not CONTROL.search(match['type']) and match['type'].strip().split()[-1] not in KEYWORDS:
+                found.append(match)
+        return found
+
+    scratches = [match for match in depth0(SCRATCH)
+                 if not [hit for hit in re.finditer(rf'(?<![\w.>]){re.escape(match['name'])}\b', clean[body_start:body_end])
+                         if not match.start() <= body_start + hit.start() < match.end()]]
+    result = []
+    for match in depth0(ARRAY):
+        local = match['name']
+        references = [body_start + hit.start() for hit in re.finditer(rf'(?<![\w.>]){re.escape(local)}\b', clean[body_start:body_end])]
+        references = [offset for offset in references if not match.start() <= offset < match.end()]
+        redeclared = [hit for hit in re.finditer(rf'\b({IDENT})[\s*]+{re.escape(local)}\s*[;,\[=](?!=)', clean[body_start:body_end])
+                      if hit[1] not in KEYWORDS]
+        if not references or len(redeclared) != 1:
+            continue
+        holder = _innermost([block for block in blocks if block[0] > part.opening], references)
+        if not holder or BLOCK_HEAD.search(clean[max(0, holder[0] - 120):holder[0]].rstrip()[-120:]):
+            continue
+        line = source[match.start():match.end()]
+        indent = re.search(r'[ \t]*$', source[:match.start()].rsplit('\n', 1)[-1])[0]
+        insert_at = holder[0] + 1
+        alone = source_edit(source, match, insert_at, f'\n{indent}  {line.strip()}')
+        result.append(alone)
+        for scratch in scratches:
+            both = edit(source, [(match.start(), match.end(), ''), (scratch.start(), scratch.end(), ''),
+                                 (insert_at, insert_at, f'\n{indent}  {line.strip()}\n{indent}  {source[scratch.start():scratch.end()].strip()}')])
+            result.append(both)
+    return [(ARRAY_FAMILY, text) for text in result[:LIMIT]]
 
 
 def source_edit(source, match, insert_at, text):

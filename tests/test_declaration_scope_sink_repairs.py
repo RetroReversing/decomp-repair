@@ -1,4 +1,4 @@
-from decomprepair.declaration_scope_sink_repairs import FAMILY, variants
+from decomprepair.declaration_scope_sink_repairs import ARRAY_FAMILY, FAMILY, variants
 
 SOURCE = """void *spawn(void *arg0, s32 arg1)
 {
@@ -48,3 +48,49 @@ def test_narrow_locals_come_first():
     found = _sunk(source)
     assert found[0].index('u16 len;') > found[0].index('if (obj')
     assert 's32 wide;' in found[0].split('if (obj')[0]
+
+
+ARRAYS = """void draw(u8 *arg0, void *arg1, s32 kind)
+{
+  volatile u64 padding;
+  u8 sp20;
+  u8 sp21;
+  f32 sp30[3];
+  find(arg0, &sp20, &sp21);
+  switch (kind)
+  {
+    case 1:
+      break;
+    case 2:
+      sp30[0] = *(f32 *) (arg0 + 0x24);
+      rotate(arg1, sp30);
+      break;
+  }
+}
+"""
+
+
+def _arrays(source=ARRAYS):
+    return [text for family, text in variants(source, 'draw') if family == ARRAY_FAMILY]
+
+
+def test_an_array_used_by_one_switch_body_is_declared_at_its_start():
+    found = _arrays()
+    assert len(found) == 2
+    alone, both = found
+    assert alone.index('f32 sp30[3];') > alone.index('switch (kind)')
+    assert alone.index('f32 sp30[3];') < alone.index('case 1:')
+    assert 'volatile u64 padding;' in alone.split('switch (kind)')[0]
+    # the unused volatile scratch moves with it, right after the array: the array's slot must come first
+    assert both.index('volatile u64 padding;') == both.index('f32 sp30[3];') + len('f32 sp30[3];\n    ')
+    assert both.count('volatile u64 padding;') == 1 and both.index('volatile u64 padding;') > both.index('switch (kind)')
+
+
+def test_an_array_used_outside_the_block_or_a_source_without_arrays_gets_no_array_variant():
+    assert not _arrays(ARRAYS.replace('  switch (kind)', '  sp30[1] = 0;\n  switch (kind)'))
+    assert not _arrays(SOURCE)
+
+
+def test_an_array_in_a_loop_body_stays():
+    looped = ARRAYS.replace('  switch (kind)\n  {', '  while (kind--)\n  {').replace('    case 1:\n      break;\n    case 2:\n', '')
+    assert not _arrays(looped)
