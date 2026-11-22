@@ -46,3 +46,36 @@ def test_left_alone_when_an_arm_falls_through_or_holds_a_label():
     assert o.variants(SOURCE.replace('            return;\n        }\n        break;', '            return;\n        }'), 'f') == []
     assert o.variants(SOURCE.replace('        D = 0xF;\n', 'L1:\n        D = 0xF;\n'), 'f') == []
     assert o.variants('void f(void) {\n    switch (D) {\n    case 1:\n        break;\n    }\n}\n', 'f') == []
+
+
+LOCAL_TAIL = '''
+void f(int state, int ready) {
+    switch (state) {
+    case 2:
+        finish();
+        break;
+    case 1:
+        if (ready) {
+            if (retry()) goto store_state;
+            send();
+        } else {
+store_state:
+            set_state();
+        }
+        break;
+    }
+}
+'''
+
+
+def test_can_reorder_an_arm_with_a_local_goto():
+    choices = [text for family, text in o.variants(LOCAL_TAIL, 'f') if family == o.LOCAL_LABEL_FAMILY]
+    assert any(text.index('case 1:') < text.index('case 2:') and 'case 3:' not in text
+               and 'goto store_state;' in text for text in choices)
+
+
+def test_leaves_cross_arm_jumps_and_conditional_exits_alone():
+    external = LOCAL_TAIL.replace('        finish();', '        goto store_state;')
+    fallthrough = LOCAL_TAIL.replace('        break;\n    }', '        if (ready) break;\n    }')
+    assert not o.variants(external, 'f')
+    assert not o.variants(fallthrough, 'f')
