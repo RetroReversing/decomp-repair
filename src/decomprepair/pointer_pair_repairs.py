@@ -247,28 +247,25 @@ def call_stages(source,name,header=''):
 
 
 def initialized(flow, variable):
+    """Is the variable assigned on every path before each read? (greatest fixpoint, blocks in ascending order)"""
     if flow.entry is None:return False
-    reachable=set();pending=[flow.entry]
-    while pending:
-        index=pending.pop()
-        if index in reachable:continue
-        reachable.add(index);pending.extend(flow.nodes[index].successors)
-    predecessors={i:set() for i in reachable}
-    for i in reachable:
-        for successor in flow.nodes[i].successors:predecessors[successor].add(i)
-    outgoing={i:True for i in reachable};incoming={i:True for i in reachable}
+    order,predecessors=flow.reachability()
+    if not any(variable in flow.nodes[i].uses for i in order):return True  # no read to prove
+    ordered=sorted(order)
+    assignment=re.compile(rf'\s*{re.escape(variable)}\s*=(?!=).*;\s*',re.S)
+    # whether a block is exactly `variable = ...;` never changes between passes
+    assigned={i:bool(assignment.fullmatch(flow.part.clean[flow.nodes[i].start:flow.nodes[i].end]))
+              for i in ordered if variable in flow.nodes[i].defines}
+    outgoing={i:True for i in ordered};incoming={i:True for i in ordered}
     changed=True
     while changed:
         changed=False
-        for i in sorted(reachable):
-            node=flow.nodes[i]
+        for i in ordered:
             prior=i!=flow.entry and bool(predecessors[i]) and all(outgoing[p] for p in predecessors[i])
-            text=flow.part.clean[node.start:node.end]
-            assigned=bool(re.fullmatch(rf'\s*{re.escape(variable)}\s*=(?!=).*;\s*',text,re.S))
-            after=assigned if variable in node.defines else prior
+            after=assigned[i] if i in assigned else prior
             if incoming[i]!=prior or outgoing[i]!=after:changed=True
             incoming[i],outgoing[i]=prior,after
-    return all(variable not in flow.nodes[i].uses or incoming[i] for i in reachable)
+    return all(variable not in flow.nodes[i].uses or incoming[i] for i in ordered)
 
 
 def reuse(source,name,header=''):
