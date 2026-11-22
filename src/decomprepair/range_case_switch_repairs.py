@@ -25,7 +25,8 @@ from .switch_default_tail_repairs import _has_outer_break
 
 FAMILY = 'range_case_switch'
 JOINED_FAMILY = 'joined_range_case_switch'
-FAMILIES = (FAMILY, JOINED_FAMILY)
+BOUNDED_FAMILY = 'bounded_mode_switch'
+FAMILIES = (FAMILY, JOINED_FAMILY, BOUNDED_FAMILY)
 
 IDENT = r'[A-Za-z_]\w*'
 SHAPE = re.compile(
@@ -104,6 +105,40 @@ def _joined_variants(source, name, clean, opening, end):
             yield JOINED_FAMILY, source[:hit.start()] + text + source[upper_end:]
 
 
+_GUARD = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)if\s*\(\s*\(\s*\(\s*(?P<name>{IDENT})\s*>=\s*0\s*\)'
+    r'\s*&&\s*\(\s*(?P=name)\s*>=\s*(?P<low>[1-8])\s*\)\s*\)'
+    r'\s*&&\s*\(\s*(?P=name)\s*<\s*(?P<high>[2-9])\s*\)\s*\)\s*{')
+
+
+def _bounded_variants(source, name, clean, opening, end):
+    part = view(source, name)
+    if not part:
+        return
+    declared = {entry['name']: entry.start() for entry in locals_for(part)}
+    for hit in _GUARD.finditer(clean, opening, end):
+        if declared.get(hit['name'], end) >= hit.start():
+            continue
+        low, high = int(hit['low']), int(hit['high'])
+        if not 1 <= high-low <= 4:
+            continue
+        body_at = hit.end() - 1
+        body_end = close(clean, body_at, '{', '}')
+        if not body_end or re.match(r'\s*else\b', clean[body_end:end]):
+            continue
+        body = clean[body_at+1:body_end-1]
+        if not body.strip() or _has_outer_break(body) or re.search(r'\b(?:case|default)\b', body):
+            continue
+        indent = hit['indent']
+        lower = ' '.join(f'case {value}:' for value in range(low))
+        active = ' '.join(f'case {value}:' for value in range(low, high))
+        region = (f'{indent}switch ({hit["name"]}) {{\n'
+                  f'{indent}    {lower} break;\n'
+                  f'{indent}    {active} {{{source[body_at+1:body_end-1]}}} break;\n'
+                  f'{indent}    default: break;\n{indent}}}')
+        yield BOUNDED_FAMILY, source[:hit.start()] + region + source[body_end:]
+
+
 def _body(text, indent):
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
     return ''.join(f'{indent}    {line}\n' for line in lines) + f'{indent}    break;\n'
@@ -130,4 +165,5 @@ def variants(source, name):
         text = (f'{indent}switch ({hit["x"]}) {{\n{indent}{low}\n{_body(a, indent)}'
                 f'{indent}case {k}:\n{_body(b, indent)}{indent}}}\n')
         result.append((FAMILY, source[:hit.start()] + text + source[hit.end():]))
-    return result + list(_joined_variants(source, name, clean, opening, end))[:4]
+    return (list(_bounded_variants(source, name, clean, opening, end))[:4]
+            + result + list(_joined_variants(source, name, clean, opening, end))[:4])
