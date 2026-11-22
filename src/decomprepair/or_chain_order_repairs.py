@@ -35,14 +35,14 @@ def weighted_pack(source, part, header):
     Each one-shot loop runs exactly once. The shifts, OR and store retain
     their order, and the temporary locals must be dead after the store.
     """
-    if '__repair_or_part' in source or re.search(r'\bvolatile\b', part.body):
+    if '__repair_or_part' in header + source or re.search(r'\bvolatile\b', part.body):
         return []
     pattern = (rf'\bu32\s+(?P<high>{IDENT})\s*=\s*(?P<value>{IDENT})\s*<<\s*16\s*;\s*'
                rf'u32\s+(?P<low>{IDENT})\s*=\s*(?P=value)\s*<<\s*8\s*;\s*'
                rf'do\s*{{\s*(?P<dest>{IDENT}(?:(?:->|\.){IDENT})*)\s*=\s*(?P<expr>[^;{{}}]+);'
                rf'\s*}}\s*while\s*\(\s*0\s*\)\s*;')
     macros = set(re.findall(rf'^\s*#\s*define\s+({IDENT})\b', header + '\n' + source, re.M))
-    if 'u32' in macros:
+    if {'u32', 'do', 'while'} & macros:
         return []
     for hit in re.finditer(pattern, part.clean, re.M):
         if not part.opening < hit.start() < hit.end() < part.end:
