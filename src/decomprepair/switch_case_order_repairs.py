@@ -11,13 +11,17 @@ import itertools
 import re
 
 from .csource import _blank, find
+from .goto_structure_repairs import parse
 from .pattern_repairs import close
 
 FAMILY = 'switch_case_order'
-FAMILIES = (FAMILY,)
+LOCAL_LABEL_FAMILY = 'switch_case_local_label_order'
+FAMILIES = (FAMILY, LOCAL_LABEL_FAMILY)
 
 LABEL = re.compile(r'(?m)^[ \t]*(?:case\s+(?P<value>[^:]+?)\s*|default\s*):')
 LIMIT = 8
+_NAMED_LABEL = re.compile(r'(?m)(?:^|(?<=[;{}:]))\s*([A-Za-z_]\w*)\s*:(?!:)')
+_GOTO = re.compile(r'\bgoto\s+([A-Za-z_]\w*)\s*;')
 
 
 def _number(text):
@@ -27,9 +31,23 @@ def _number(text):
         return None
 
 
-def _arms(clean, start, end):
+def _labels_are_internal(body, arm_start, arm_end, jumps):
+    labels = {m[1] for m in _NAMED_LABEL.finditer(body) if m[1] != 'default'}
+    if not labels:
+        return True
+    try:
+        last = parse(body, 0, len(body))[-1]
+    except ValueError:
+        return False
+    if not re.fullmatch(r'(?:break|return\b[^;]*)\s*;', body[last.start:last.end], re.S):
+        return False
+    return all(jumps.get(label) and all(arm_start <= pos < arm_end for pos in jumps[label])
+               for label in labels)
+
+
+def _arms(clean, start, end, jumps):
     """[(label text start, arm end, values)] for a switch body clean[start:end], or None when an arm falls through or
-    holds a label of its own."""
+    has a label reachable from outside the arm."""
     labels = [m for m in LABEL.finditer(clean, start, end) if _depth(clean, start, m.start()) == 0]
     if len(labels) < 2:
         return None
@@ -43,8 +61,10 @@ def _arms(clean, start, end):
             j += 1
         arm_end = labels[j + 1].start() if j + 1 < len(labels) else end
         body = clean[labels[j].end():arm_end].strip()
-        # each arm ends its own way out, and holds no label a goto could reach
-        if not re.search(r'(?:\bbreak|\breturn\b[^;]*)\s*;$', body) or re.search(r'(?m)^[ \t]*[A-Za-z_]\w*\s*:(?!:)', body):
+        # Each arm has its own exit. Any shared tail label must stay private
+        # to that arm, so a jump from elsewhere cannot use its old placement.
+        if (not re.search(r'(?:\bbreak|\breturn\b[^;]*)\s*;$', body)
+                or not _labels_are_internal(body, labels[j].end(), arm_end, jumps)):
             return None
         values = [_number(m['value']) if m['value'] else None for m in labels[i:j + 1]]
         groups.append((first.start(), arm_end, values))
@@ -68,7 +88,12 @@ def variants(source, name):
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
         return []
-    result = []
+    if re.search(r'\bgoto\s*\*', clean[opening:end]):
+        return []
+    jumps = {}
+    for jump in _GOTO.finditer(clean, opening, end):
+        jumps.setdefault(jump[1], []).append(jump.start())
+    labelled, result = [], []
     for hit in re.finditer(r'\bswitch\s*\(', clean[opening:end]):
         paren = opening + hit.end() - 1
         after = close(clean, paren)
@@ -76,7 +101,7 @@ def variants(source, name):
         if body_open < 0 or clean[after:body_open].strip():
             continue
         body_close = close(clean, body_open, '{', '}')
-        groups = _arms(clean, body_open + 1, body_close - 1)
+        groups = _arms(clean, body_open + 1, body_close - 1, jumps)
         if not groups or len(groups) > 4:
             continue
         texts = [source[a:b].rstrip('\n ') + '\n' for a, b, _ in groups]
@@ -86,8 +111,9 @@ def variants(source, name):
             v is not None for _, _, vs in groups for v in vs) else None
         original = tuple(range(len(groups)))
         orders = [o for o in itertools.permutations(original) if o != original]
+        has_local_label = any(m[1] != 'default' for m in _NAMED_LABEL.finditer(clean, groups[0][0], groups[-1][1]))
         candidates = []
-        for order in [original] + orders:
+        for order in (orders + [original] if has_local_label else [original] + orders):
             arms = [texts[k] for k in order]
             if order != original:
                 candidates.append(arms)
@@ -97,6 +123,13 @@ def variants(source, name):
         stop = source.rfind('\n', 0, body_close - 1) + 1  # the closing brace's line
         for arms in candidates[:LIMIT]:
             text = source[:start] + ''.join(arms) + source[stop:]
-            if text != source and text not in [t for _, t in result]:
+            if text == source:
+                continue
+            if has_local_label:
+                labelled.append((len(groups), len(arms) > len(groups), text))
+            elif text not in [t for _, t in result]:
                 result.append((FAMILY, text))
-    return result
+    # Prefer a smaller arm reorder before adding a case or trying a larger switch.
+    labelled.sort(key=lambda entry: entry[:2])
+    local_choices = dict.fromkeys(text for _, _, text in labelled)
+    return [(LOCAL_LABEL_FAMILY, text) for text in list(local_choices)[:LIMIT]] + result
