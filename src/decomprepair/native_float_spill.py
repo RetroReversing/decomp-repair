@@ -12,6 +12,7 @@ from .operand_lifetime_repairs import _escaped, _visible
 from .pattern_repairs import close
 
 FAMILY = 'native_float_spill'
+SETUP_COPY = 'native_float_setup_copy'
 _LOAD = re.compile(r'lwc1 (\$f\d+), (0x[\da-f]+)\(\$sp\)')
 _STORE = re.compile(r'swc1 (\$f\d+), (0x[\da-f]+)\((\$\w+)\)')
 _POINTER_SLOT = re.compile(r'lw (\$t\d+), (0x[\da-f]+)\((\$s\d+)\)')
@@ -26,6 +27,74 @@ _START = re.compile(
     rf'[ \t]*(?P<y>{IDENT})\s*=\s*(?P=view)\s*;[ \t]*\n'
     rf'[ \t]*(?P<z>{IDENT})\s*=\s*0\.0f\s*;[ \t]*\n'
 )
+
+_SAVED = r'\$(?:s[0-7]|fp)'
+_SETUP_COPY = re.compile(
+    rf'(?m)^[ \t]*(?P<owner>{IDENT})\.(?P<bits>{IDENT})\s*=\s*'
+    rf'\((?P<word>u32|unsigned\s+int)\)\s*(?P<arg>{IDENT})\s*&\s*~\((?P=word)\)\s*(?P=arg)\s*;[ \t]*\n'
+    rf'[ \t]*\{{[ \t]*\n[ \t]*(?P<kind>float|f32)\s+(?P<x>{IDENT})\s*=\s*0\.0f\s*;[ \t]*\n'
+    rf'[ \t]*(?P<speed>{IDENT})\s*=\s*(?P<view>(?P=owner)\.(?P<number>{IDENT}))\s*;[ \t]*\n'
+    rf'[ \t]*(?P<global>{IDENT})\s*=\s*0\.0f\s*;[ \t]*\n'
+    rf'(?P<copy>(?P<pad>[ \t]*)(?P<y>{IDENT})\s*=\s*0\.0f\s*;[ \t]*\n)'
+    rf'[ \t]*(?P<z>{IDENT})\s*=\s*0\.0f\s*;[ \t]*\n'
+    rf'[ \t]*(?P<setup>{IDENT})\(\s*(?P=arg)\s*\)\s*;[ \t]*\n'
+    rf'(?=[ \t]*if\s*\()'
+)
+
+
+def _setup_copy_witnesses(rows):
+    reloads = Counter(hit[2] for _, target, candidate in rows
+                      if target == candidate and (hit := _LOAD.fullmatch(target)) and hit[1] == '$f16')
+    for i, (_, target, candidate) in enumerate(rows[4:-5], 4):
+        call = re.fullmatch(rf'jal ({IDENT})', target) if target == candidate else None
+        if not call:
+            continue
+        store = re.fullmatch(rf'sw ({_SAVED}), (0x[\da-f]+)\(\$sp\)', rows[i - 3][1])
+        if not store or reloads[store[2]] < 2 or rows[i - 3][1] != rows[i - 3][2]:
+            continue
+        copied = re.fullmatch(rf'move ({_SAVED}), {re.escape(store[1])}', rows[i + 4][1])
+        other = re.fullmatch(rf'move ({_SAVED}), ({_SAVED})', rows[i + 4][2])
+        global_store = re.fullmatch(rf'sw {re.escape(store[1])}, %lo\(({IDENT})\)\(\$at\)', rows[i - 1][1])
+        if (copied and other and copied[1] != other[1] and other[2] != store[1] and global_store
+                and rows[i + 3][1] == rows[i + 3][2] and rows[i + 3][1].startswith('lbu $v0, ')
+                and any(a == b == f'move {store[1]}, $zero' for _, a, b in rows[max(0, i - 7):i - 3])):
+            yield call[1], global_store[1]
+
+
+def setup_copy_variants(source, name, rows, header='', max_bytes=65536):
+    witnesses = set(_setup_copy_witnesses(rows))
+    visible = _visible(source, name, header) if witnesses else None
+    if not visible:
+        return []
+    part, context = visible
+    macros = set(re.findall(rf'(?m)^\s*#\s*(?:define|undef)\s+({IDENT})', context))
+    signature = part.clean[part.clean.rfind('}', 0, part.opening) + 1:part.opening]
+    if (any(' '.join(typ.split()) != 'float' for typ in re.findall(r'\btypedef\s+([^;{}]+?)\s+f32\s*;', context))
+            or any(' '.join(typ.split()) != 'unsigned int'
+                   for typ in re.findall(r'\btypedef\s+([^;{}]+?)\s+u32\s*;', context))):
+        return []
+    for hit in _SETUP_COPY.finditer(part.clean, part.opening + 1, part.end):
+        names = {hit[key] for key in ('owner', 'arg', 'x', 'y', 'z', 'global', 'speed')}
+        if (len(names) != 7 or (hit['setup'], hit['global']) not in witnesses
+                or macros & set(re.findall(IDENT, hit[0]))
+                or any(_escaped(part.body, hit[key]) for key in ('owner', 'arg', 'y'))
+                or not _plain_scalar(part, hit['y'], hit['kind'], hit.start())
+                or not re.search(rf'[(,]\s*void\s*\*\s*{hit["arg"]}\s*[,)]', signature)
+                or re.search(rf'\b{IDENT}\s+\**\s*{hit["arg"]}\s*[,;=\[]', part.body)):
+            continue
+        expected = tuple(hit[key] for key in ('owner', 'bits', 'number', 'kind', 'word'))
+        declarations = [decl for decl in _WORD_FLOAT.finditer(part.clean, part.opening + 1, hit.start())
+                        if tuple(decl[key] for key in ('owner', 'word', 'number', 'float', 'type')) == expected]
+        if (len(declarations) != 1 or block_path(part, declarations[0].start()) != [part.opening]
+                or len(re.findall(rf'\}}\s*{hit["owner"]}\b', part.body)) != 1):
+            continue
+        raw = f'{hit["owner"]}.{hit["bits"]}'
+        pad = hit['pad']
+        insert = f'{pad}{raw} = ({raw} >> 16) << 16;\n{pad}{hit["y"]} = {hit["view"]};\n'
+        trial = edit(source, [(*hit.span('copy'), ''), (hit.end(), hit.end(), insert)])
+        if len(trial.encode()) <= max_bytes:
+            return [(SETUP_COPY, trial)]
+    return []
 
 
 def _stack_reload_witnesses(rows):
