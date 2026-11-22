@@ -3,6 +3,7 @@
 Keep source layout and shared headers intact. These are candidates, not equivalence proofs: every result must
 pass the ordinary compiler and linked/object judge. The shared draft pass reaches ROM and imported projects.
 """
+import itertools
 import re
 
 from .csource import _blank, find
@@ -17,6 +18,67 @@ def uses(text, name):
     """A field with the same spelling is not a use of the local variable."""
     return [m for m in re.finditer(r'\b'+re.escape(name)+r'\b', text)
             if not text[:m.start()].rstrip().endswith(('.', '->'))]
+
+
+_PLAIN_LOCAL = re.compile(r'[ \t]*(?P<type>(?:unsigned[ \t]+|signed[ \t]+)?(?:' + SCALAR + r'))[ \t]+(?P<name>' + IDENT + r')[ \t]*;')
+
+
+def declaration_moves(source, name):
+    """Each plain scalar local moved to the front or the back of the run of scalar locals (not only swapped with a neighbour).
+
+    Which saved register or spill slot a variable gets can follow the order it was declared in (IDO numbers its
+    candidates in declaration order, GCC 2.x breaks ties by it), and an adjacent swap only reaches the orders one
+    transposition away. An IDO reader whose function kept `pos`, `w` and `avail` in registers across two calls needed
+    `avail` first: from `pos, w, avail` that is three adjacent swaps, each of which scores the same as the draft,
+    so a one-step search never reached it. Only the run of plain integer declarations that follows the function's
+    arrays and records (a block of locals declared one per line), and nothing is moved across an initialised or
+    array declaration, so every stack object keeps its offset.
+    """
+    from .frame_padding_repairs import declaration_ends
+    from .integer_repair_support import view
+    part = view(source, name)
+    if not part:
+        return []
+    run, begin = [], part.opening + 1
+    for end in declaration_ends(part):
+        hit = _PLAIN_LOCAL.fullmatch(part.clean[begin:end].lstrip(' \t\r\n'))
+        if hit and len(uses(part.clean[part.opening:part.end], hit['name'])) == 1:
+            begin = end  # an unused local keeps its place: it only reserves its word of frame
+            continue
+        if hit:
+            start = end - len(part.clean[begin:end].lstrip(' \t\r\n'))
+            run.append((start, end))
+        elif run:
+            break
+        begin = end
+    if len(run) < 3:
+        return []
+    texts = [source[a:b] for a, b in run]
+    if len(run) <= 4:  # every order: three adjacent swaps are as far as the one a reader needed
+        orders = [[texts[k] for k in perm] for perm in itertools.permutations(range(len(run)))]
+    else:
+        orders = [texts[::-1]]
+        for index in range(len(run)):
+            for target in (0, len(run) - 1):
+                order = [texts[k] for k in range(len(run)) if k != index]
+                order.insert(target, texts[index])
+                orders.append(order)
+    result = []
+    for order in orders:
+        item = ('local_declaration_order', _splice(source, run, order))
+        if order != texts and item not in result:
+            result.append(item)
+    return result
+
+
+def _splice(source, slots, order):
+    out, previous = [], 0
+    for (a, b), text in zip(slots, order):
+        out.append(source[previous:a])
+        out.append(text)
+        previous = b
+    out.append(source[previous:])
+    return ''.join(out)
 
 
 def variants(source, name):
@@ -35,8 +97,9 @@ def variants(source, name):
     while match := DECL.match(body, pos):
         declarations.append(match)
         pos = match.end()
+    moves = declaration_moves(source, name)
     if not declarations:
-        return []  # do not spend repair trials on parameter-only wrappers with no local storage
+        return moves  # no local storage to size: only a function with arrays and scalars can reorder
     result = []
 
     def emit(family, edits):
@@ -84,4 +147,5 @@ def variants(source, name):
         emit('local_declaration_order', [(a,b,source[c:d]),(c,d,source[a:b])])
     swaps = [r for r in result if r[0] == "local_declaration_order"]
     other = [r for r in result if r[0] != "local_declaration_order"]
-    return (swaps + other)[:LIMIT]
+    swaps += [r for r in moves if r not in swaps]
+    return (swaps + other)[:LIMIT + len(moves)]
