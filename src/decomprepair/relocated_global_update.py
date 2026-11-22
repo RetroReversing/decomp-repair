@@ -8,6 +8,7 @@ from .mips import abi_register_names
 from .mips_addresses import resolved
 from .sdk_io_repairs import instructions
 from .target_call_arity_repairs import _instructions
+from .target_memory_repairs import _statement
 
 TARGET = re.compile(
     rf'lui \$v0, %hi\((?P<base>{IDENT})(?: \+ (?P<offset>{NUMBER}))?\)\n'
@@ -287,4 +288,58 @@ def rewrite_branch_byte(source, name, asm, header='', resolve=None):
         definition = find(source, name)[0]
         return edit(source, [(definition, definition, f'extern u8 {alias};\n\n'),
                              (*draft.span('field'), alias), (*draft.span('clear'), alias)])
+    return None
+
+
+INCREMENT_TARGET = re.compile(
+    rf'lui (?P<readreg>\$\w+), %hi\((?P<base>{IDENT})(?: \+ (?P<offset>{NUMBER}))?\)\n'
+    r'lw (?P<value>\$\w+), %lo\((?P=base)(?(offset) \+ (?P=offset))\)\((?P=readreg)\)\n'
+    rf'addiu (?P=value), (?P=value), (?P<amount>{NUMBER})\n'
+    r'lui (?P<storereg>\$\w+), %hi\((?P=base)(?(offset) \+ (?P=offset))\)\n'
+    r'sw (?P=value), %lo\((?P=base)(?(offset) \+ (?P=offset))\)\((?P=storereg)\)'
+)
+INCREMENT_DRAFT = re.compile(
+    rf'(?P<field>M2C_FIELD\(\s*&\s*(?P<base>{IDENT})\s*,\s*s32\s*\*\s*,\s*(?P<offset>{NUMBER})\s*\))'
+    rf'\s*=\s*\(\s*s32\s*\)\s*\(\s*(?P<read>(?P=field))\s*\+\s*(?P<amount>{NUMBER})\s*\)\s*;'
+)
+
+
+def rewrite_increment(source, name, asm, header='', resolve=None):
+    """Name a relocated word directly when the target increments that exact address."""
+    if resolve is None or 'M2C_FIELD' not in source or '%hi(' not in asm:
+        return None
+    # Do not replace a project-specific macro which can perform additional work.
+    definitions = re.findall(r'^\s*#\s*define\s+M2C_FIELD([^\n]*)',header+'\n'+source,re.M)
+    if (len(definitions)!=1 or re.sub(r'\s+','',definitions[0]) !=
+            '(expr,type_ptr,offset)(*(type_ptr)((s8*)(expr)+(offset)))'
+            or re.search(r'^\s*#\s*undef\s+M2C_FIELD\b',header+'\n'+source,re.M)):
+        return None
+    part = view(source,name)
+    if not part:
+        return None
+    lines = [f'{op} {" ".join(args.split())}' for op,args in _instructions(abi_register_names(asm))]
+    words = instructions(asm)
+    if len(lines)!=len(words):
+        return None
+    targets = list(INCREMENT_TARGET.finditer('\n'.join(lines)))
+    if len(targets)!=1:
+        return None
+    target = targets[0]
+    index = '\n'.join(lines)[:target.start()].count('\n')
+    address = resolve(target['base'])
+    if address is None:
+        return None
+    address += integer(target['offset'] or '0')
+    for high,low,opcode in ((index,index+1,35),(index+3,index+4,43)):
+        if words[high]>>26!=15 or words[low]>>26!=opcode:
+            return None
+        pair = words[high].to_bytes(4,'big')+words[low].to_bytes(4,'big')
+        if resolved(pair).get(4)!=address:
+            return None
+    for draft in INCREMENT_DRAFT.finditer(part.clean,part.opening+1,part.end):
+        base = resolve(draft['base'])
+        if (not _statement(part,draft.start()) or base is None or base+integer(draft['offset'])!=address
+                or integer(draft['amount'])!=integer(target['amount'])):
+            continue
+        return _direct_word(source,name,header,resolve,address,[draft.span('field'),draft.span('read')])
     return None
