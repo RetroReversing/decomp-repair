@@ -184,3 +184,6 @@ def variants(source, name):
             if text != source and (FAMILY, text) not in out:
                 out.append((FAMILY, text))
     return out
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 75}  # the registry: no caller wiring (registry.py)

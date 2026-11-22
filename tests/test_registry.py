@@ -111,3 +111,11 @@ REPAIR = {'families': FAMILIES, 'variants': variants}
     assert registry.run(name, source=SOURCE, name='f', header='') == [('only', SOURCE + '1')]
     with pytest.raises(ValueError):
         registry.run('not_declared', source=SOURCE, name='f')
+
+
+def test_a_replaced_module_function_is_the_one_that_runs(monkeypatch):
+    repair = registry.get('string_walk_index')
+    module = importlib.import_module('decomprepair.string_walk_index')
+    monkeypatch.setattr(module, 'variants', lambda source, name: [source + 'patched'])
+    assert registry.run('string_walk_index', source=SOURCE, name='f') == [('string_walk_index', SOURCE + 'patched')]
+    assert repair.function() is module.variants
