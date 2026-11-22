@@ -1,6 +1,7 @@
 """Recover KMC source lifetimes for measured address and call operands."""
 
 import re
+from collections import Counter
 
 from .integer_repair_support import IDENT, NUMBER, edit, integer, view
 from .large_stack_drafts import _shape
@@ -76,7 +77,49 @@ _FORWARD = re.compile(
 )
 
 
+def _member_byte_add_order(source, name, header, rows, flags):
+    """Preserve the byte offset as the first input to repeated pointer sums."""
+    if '-mgp32' not in flags or {'-mgp64', '-mabi=64', '-mabi=n32'} & set(flags):
+        return None
+    add = re.compile(r'addu (\$\w+), (\$\w+), (\$\w+)')
+    swaps = Counter()
+    for mark, left, right in rows:
+        if mark != 'r' or not (target := add.fullmatch(left)) or not (actual := add.fullmatch(right)):
+            continue
+        if target[2] != target[3] and target.groups() == (actual[1], actual[3], actual[2]):
+            swaps[target.groups()] += 1
+    if len(swaps) != 1 or not 2 <= (count := next(iter(swaps.values()))) <= 8:
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    pattern = re.compile(
+        rf'(?P<offset>{IDENT})\s*\+\s*\(\s*\(\s*char\s*\*\s*\)\s*'
+        rf'(?P<base>{IDENT}\s*->\s*{IDENT})\s*\)'
+    )
+    sites = list(pattern.finditer(part.clean, part.opening + 1, part.end))
+    if len(sites) != count or len({hit['offset'] for hit in sites}) != 1:
+        return None
+    offset = sites[0]['offset']
+    member = sites[0]['base'].split('->')[1].strip()
+    if any(hit['base'].split('->')[1].strip() != member for hit in sites):
+        return None
+    if len(re.findall(rf'(?m)^[ \t]*(?:s32|u32|int)\s+{offset}\s*;', part.body)) != 1:
+        return None
+    context = header + '\n' + part.clean[:part.opening]
+    if not re.search(rf'\b{IDENT}\s*\*\s*{member}\s*;', context) or re.search(
+        rf'(?m)^[ \t]*#\s*define\s+(?:{offset}|u32)\b', context
+    ):
+        return None
+    if any(re.search(r'/[*/]', source[hit.start():hit.end()]) for hit in sites):
+        return None
+    return edit(source, [(hit.start(), hit.end(), f'(u32){offset} + (u32){source[slice(*hit.span("base"))]}')
+                         for hit in sites])
+
+
 def variants(source, name, header, rows, flags=()):
+    if candidate := _member_byte_add_order(source, name, header, rows, flags):
+        return [('measured_member_byte_add_order', candidate)]
     changed = [i for i, (mark, _, _) in enumerate(rows) if mark != ' ']
     if not changed or len(rows) not in (11, 12, 20, 21, 22, 29) or '__repair_address_' in source + header:
         return []
