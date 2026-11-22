@@ -85,3 +85,62 @@ def test_a_store_through_an_argument_keeps_it_an_argument():
 /* c */  nop
 '''
     assert t.calls(asm, consumed=True) == [('put', {'a0': None})]
+
+
+THROUGH = '''void put();
+void f(void *p) {
+    void *r = *(void **)p;
+    *(int *)((char *)r + 0x28) = 1;
+    put(3, r);
+}
+'''
+THROUGH_ASM = '''/* 0 */  lw         $a1, 0x0($s1)
+/* 4 */  lw         $v1, 0x28($a1)
+/* 8 */  addiu      $a0, $zero, 0x3
+/* c */  jal        put
+/* 10 */  sw         $v1, 0x28($a1)
+'''
+
+
+def test_a_pointer_loaded_through_an_argument_register_may_not_be_an_argument():
+    # A record pointer held in $a1 and dereferenced twice, then a one-argument call: the draft passed $a1, and the
+    # stray argument register changed the first scheduler's order in the next call's argument setup.
+    assert t.calls(THROUGH_ASM)[0][1] == {'a0': 3}
+    texts = [text for _, text in t.variants(THROUGH, 'f', THROUGH_ASM)]
+    assert any('put(3);' in x for x in texts)
+
+
+MERGED = '''void put();
+void other();
+void f(void *p, int a) {
+    void *r = *(void **)p;
+    *(int *)((char *)r + 0x28) = 1;
+    put(3, r);
+    other(3, r);
+    wrap(get(a, r), r);
+}
+'''
+MERGED_ASM = '''/* 0 */  lw         $a1, 0x0($s1)
+/* 4 */  lw         $v1, 0x28($a1)
+/* 8 */  addiu      $a0, $zero, 0x3
+/* c */  jal        put
+/* 10 */  sw         $v1, 0x28($a1)
+/* 14 */  lw         $a1, 0x4($s1)
+/* 18 */  lw         $v0, 0x28($a1)
+/* 1c */  jal        other
+/* 20 */  addiu      $a0, $zero, 0x3
+/* 24 */  lw         $a1, 0x0($s1)
+/* 28 */  sw         $v0, 0x10($a1)
+/* 2c */  jal        renamedget
+/* 30 */  lbu        $a0, 0x8($s2)
+/* 34 */  jal        renamedwrap
+/* 38 */  andi       $a0, $v0, 0xFFFF
+'''
+
+
+def test_every_callee_loses_the_stray_argument_together_and_nested_calls_pair_in_evaluation_order():
+    # One callee's change alone leaves the first scheduler's argument-register order as it was (60 against 60 on the
+    # function this came from); all three together were exact. The assembly renamed the inner and outer callee.
+    texts = [text for _, text in t.variants(MERGED, 'f', MERGED_ASM)]
+    both = [x for x in texts if 'put(3);' in x and 'other(3);' in x and 'wrap(get(a))' in x]
+    assert both
