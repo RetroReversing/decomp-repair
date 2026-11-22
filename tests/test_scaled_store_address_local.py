@@ -1,6 +1,6 @@
 """A byte store at `base[K + (index * S)]` written through a pointer local holding the scaled address."""
-from decomprepair import scaled_store_address_local as p
 from decomprepair import registry
+from decomprepair import scaled_store_address_local as p
 
 SOURCE = '''typedef unsigned char u8;
 extern short table[];
