@@ -674,6 +674,54 @@ def _volatile_table_base(source, name, header, rows):
     return edit(source, [(*hit.span(), fixed)])
 
 
+_NONNULL_RESULT = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<result>{IDENT})\s*=\s*(?P<callee>{IDENT})'
+    rf'\((?P<record>{IDENT}),\s*{IDENT}\);\s*'
+    rf'M2C_FIELD\((?P=record), void \*\*, (?P<slot>{NUMBER})\)\s*=\s*(?P=result);\s*'
+    rf'if\s*\((?P=result)\s*!=\s*NULL\)\s*\{{'
+)
+
+
+def _nonnull_call_result(source, name, header, rows):
+    """Keep the result in the return register until its non-null branch."""
+    changes = [(i, row) for i, row in enumerate(rows) if row[0] != ' ']
+    if len(changes) != 4:
+        return None
+    first = changes[0][0]
+    if [i for i, _ in changes] != list(range(first, first + 4)) or first < 2:
+        return None
+    move, branch, store, delayed = (row for _, row in changes)
+    if move != ('o', '', 'move $a1, $v0') or delayed != ('o', move[2], ''):
+        return None
+    guard = re.fullmatch(rf'beqz \$v0, ({NUMBER})', branch[1])
+    field = re.fullmatch(rf'sw \$v0, ({NUMBER})\(\$s\d+\)', store[1])
+    if not guard or not field or branch != ('r', branch[1], f'beqz $a1, {guard[1]}'):
+        return None
+    if store != ('r', store[1], store[1].replace('$v0', '$a1')):
+        return None
+    call = re.fullmatch(rf'jal ({IDENT})', rows[first - 2][1])
+    part = view(source, name)
+    local = '__repair_nonnull_result'
+    if not part or not call or local in source or local in header:
+        return None
+    hits = [hit for hit in _NONNULL_RESULT.finditer(part.clean, part.opening + 1, part.end)
+            if hit['callee'] == call[1] and integer(hit['slot']) == integer(field[1])]
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    end = close(part.clean, hit.end() - 1, '{', '}')
+    if not end:
+        return None
+    result = hit['result']
+    body = source[hit.end():end - 1]
+    pointer_field = re.compile(rf'(\bM2C_FIELD\(\s*){result}\b')
+    if (len(pointer_field.findall(body)) != 3 or len(re.findall(rf'\b{result}\b', body)) != 3
+            or re.search(r'/[*/]|\b(?:goto|case|default)\b', source[hit.start():end])):
+        return None
+    fixed = f'\n{hit["indent"]}    void *{local} = {result};' + pointer_field.sub(rf'\g<1>{local}', body)
+    return edit(source, [(hit.end(), end - 1, fixed)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -703,6 +751,8 @@ def variants(source, name, header, rows):
         return [('measured_record_float_reset', candidate)]
     if candidate := _volatile_table_base(source, name, header, rows):
         return [('measured_volatile_table_base', candidate)]
+    if candidate := _nonnull_call_result(source, name, header, rows):
+        return [('measured_nonnull_call_result', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
