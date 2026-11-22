@@ -32,6 +32,23 @@ _OFFSET = r'(?:0x[0-9A-Fa-f]+|\d+|[A-Za-z_]\w*)'
 # a bare `((&sym) + offset)` with no byte cast. Group 1 is the field type, 2 the address, 3 or 4 the base's name.
 PRINTED = re.compile(r'\*\(\(' + _KIND + r' ?\*\) (\(\(\((?:char|u8|s8) \*\) \(?&?([A-Za-z_]\w*)\)?\) \+ ' + _OFFSET + r'\)'
                      r'|\(\(&([A-Za-z_]\w*)\) \+ ' + _OFFSET + r'\))\)')
+# The compact spelling a hand-cleaned or search-saved source carries: `*(s32 *)((char *)(base) + 0x74C)`, with no space
+# between the closing parenthesis and the next cast and the base parenthesised or bare. Same groups as PRINTED (1 the
+# field type, 2 the address, 3 the base's name, 4 unused) so the sites merge into one list. A pointer held in a global
+# and read at a fixed offset is the usual case: the load through `(char *)` is not a struct member to the scheduler.
+COMPACT = re.compile(r'\*\(' + _KIND + r' ?\*\) ?(\(\((?:char|u8|s8) ?\*\) ?\(?&?([A-Za-z_]\w*)\)?()'
+                     r' ?\+ ?' + _OFFSET + r'\))')
+
+
+def printed_sites(clean, opening, end):
+    """Every printed or compact access in the function, in source order, none inside another."""
+    sites = list(PRINTED.finditer(clean, opening, end)) + list(COMPACT.finditer(clean, opening, end))
+    sites.sort(key=lambda site: (site.start(), -site.end()))
+    result = []
+    for site in sites:
+        if not result or site.start() >= result[-1].end():
+            result.append(site)
+    return result
 
 
 def printed_variants(source, name):
@@ -49,7 +66,7 @@ def printed_variants(source, name):
     part = view(source, name)
     if not part:
         return []
-    sites = list(PRINTED.finditer(part.clean, part.opening, part.end))
+    sites = printed_sites(part.clean, part.opening, part.end)
     if not sites:
         return []
 
