@@ -73,7 +73,7 @@ def _arms(clean, source):
         stop = _close(clean, other.end() - 1, '{', '}') if other else None
         if not stop or _CALL.search(clean[paren:after]) or re.search(r'(?<![=!<>])=(?!=)', clean[paren:after]):
             continue
-        one, two = source[first.end():end - 1], source[other.end():stop - 1]
+        one = source[first.end():end - 1]
         if _norm(clean[first.end():end - 1]) == _norm(clean[other.end():stop - 1]) and _norm(one):
             found.append((hit.start(), stop, one))
     return found
