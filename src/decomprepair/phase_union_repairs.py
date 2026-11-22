@@ -46,7 +46,7 @@ def keep_lines(text, replacement=""):
     return replacement+"\n"*max(0,text.count("\n")-replacement.count("\n"))
 
 
-FAMILIES = ('pointer_integer_phase_union', 'integer_array_pointer_phase')
+FAMILIES = ('pointer_integer_phase_union', 'integer_array_pointer_phase', 'split_pointer_integer_phase')
 LIMIT = 8
 
 
@@ -152,6 +152,76 @@ def array_variants(source, name, arch, flags=(), header=''):
     return list(dict.fromkeys(out))[:LIMIT]
 
 
+def split_variants(source, name, arch, header=''):
+    """Separate a generated union whose pointer and integer never share a live value."""
+    part = view(source, name)
+    if not part or '__repair_phase_storage' not in part.body:
+        return []
+    context = header + '\n' + source
+    declaration = re.compile(
+        rf'\bunion\s*{{\s*(?P<pointer>{IDENT}\s*\*)\s*pointer\s*;'
+        rf'\s*(?P<integer>{IDENT}|unsigned\s+int)\s+value\s*;\s*}}'
+        r'\s*(?P<union>__repair_phase_storage\w*)\s*;')
+    macros = set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})', context))
+    if macros & {'pointer', 'value'}:
+        return []
+    called_macros = macros & set(re.findall(rf'\b({IDENT})\s*\(', part.body))
+    result = []
+    for decl in declaration.finditer(part.clean, part.opening + 1, part.end - 1):
+        if block_path(part, decl.start()) != [part.opening]:
+            continue
+        if integer_abi.scalar(decl['integer'], context, arch) not in {(32, True), (32, False)}:
+            continue
+        stored = decl['union']
+        pointer = stored + '_pointer'
+        integer = stored + '_value'
+        if re.search(rf'\b(?:{pointer}|{integer})\b', context):
+            continue
+        if re.search(rf'(?m)^\s*#\s*define[^\n]*\b{stored}\b', context):
+            continue
+        if any(re.search(rf'\b{macro}\s*\([^;{{}}]*\b{stored}\b', part.body)
+               for macro in called_macros):
+            continue
+        by_member = {'pointer': [], 'value': []}
+        for ref in re.finditer(rf'\b{stored}\b', part.clean[decl.end():part.end - 1]):
+            start = decl.end() + ref.start()
+            stop = decl.end() + ref.end()
+            member = re.match(r'\s*\.\s*(pointer|value)\b', part.clean[stop:])
+            if not member or re.search(r'(?<!&)&(?!&)\s*(?:\(\s*)*$', part.clean[:start]):
+                break
+            by_member[member[1]].append((start, stop + member.end()))
+        else:
+            if not all(by_member.values()):
+                continue
+            # Analyze the separated scalar names in the existing CFG. The pointer
+            # remains a pointer in the emitted C; it is a scalar for liveness.
+            accesses = [(a, b, local) for key, local in (('pointer', pointer), ('value', integer))
+                        for a, b in by_member[key]]
+            decls = f'{decl["pointer"]} {pointer}; {decl["integer"]} {integer};'
+            candidate = edit(source, [*accesses, (decl.start(), decl.end(), decls)])
+            split = view(candidate, name)
+            if not split:
+                continue
+            declarations = [d for d in pointer_declarations(split)[0] + locals_for(split)
+                            if d['name'] in {pointer, integer}]
+            if len(declarations) != 2:
+                continue
+            flow = local_flow.analyze(candidate, name, declarations=declarations)
+            if not flow or not local_flow.disjoint(flow, *declarations):
+                continue
+            dom = dominators(flow)
+            for d in declarations:
+                local = d['name']
+                defs = {i for i, node in enumerate(flow.nodes) if local in node.defines
+                        and not node.start <= d.start() < node.end}
+                if any(local in node.uses and not ((dom.get(i, set()) - {i}) & defs)
+                       for i, node in enumerate(flow.nodes)):
+                    break
+            else:
+                result.append((FAMILIES[2], candidate))
+    return result[:LIMIT]
+
+
 def variants(source,name,arch,flags=(),header=''):
     # This first adapter requires explicit 32-bit code-generation metadata. Do not
     # assume that an x86/ARM family label alone proves pointer width.
@@ -172,7 +242,7 @@ def variants(source,name,arch,flags=(),header=''):
         return []
     dom = dominators(flow)
     macros = re.findall(r'^\s*#\s*define\s+[^\n]+',source+'\n'+header,re.M)
-    result = []
+    result = split_variants(source, name, arch, header)
     for scalar in scalars:
         typ = scalar['type']
         if typ not in {'u8','unsigned char','u32','s32','int','unsigned int'}:
