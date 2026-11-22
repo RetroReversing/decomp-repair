@@ -722,6 +722,119 @@ def _nonnull_call_result(source, name, header, rows):
     return edit(source, [(hit.end(), end - 1, fixed)])
 
 
+_INITIAL_RECORD = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<pointer>{IDENT})\s*=\s*'
+    rf'M2C_FIELD\({IDENT}, void \*\*, (?P<slot>{NUMBER})\);\s*'
+    rf'{IDENT}\s*=\s*1;\s*if\s*\((?P=pointer)\s*!=\s*NULL\)\s*\{{\s*'
+    rf'{IDENT}\s*=\s*\*\(u32 \*\)\(\(s8 \*\)(?P=pointer)\s*\+\s*(?P<word>{NUMBER})\);\s*'
+    rf'if\s*\(M2C_FIELD\((?P=pointer), u8 \*, (?P<byte>{NUMBER})\)\s*!=\s*{NUMBER}\)'
+)
+
+
+def _initial_record_pointer(source, name, header, rows):
+    """Split the guarded initial record read from subsequent pointer reloads."""
+    if len(rows) < 7 or tuple(row[0] for row in rows[:7]) != (' ', 'r', ' ', 'r', ' ', 'r', 'r'):
+        return None
+    target = normalized_integer_lines(row[1] for row in rows[:7])
+    current = normalized_integer_lines(row[2] for row in rows[:7])
+    load = re.fullmatch(rf'lw \$v0, ({NUMBER})\(\$a3\)', target[1])
+    byte = re.fullmatch(rf'lbu \$v1, ({NUMBER})\(\$v0\)', target[5])
+    word = re.fullmatch(rf'lw \$a0, ({NUMBER})\(\$v0\)', target[6])
+    if not load or not byte or not word or not target[3].startswith('beqz $v0, '):
+        return None
+    expected = list(target)
+    for i in (1, 3, 5, 6):
+        expected[i] = target[i].replace('$v0', '$a1')
+    if tuple(expected) != current:
+        return None
+    part = view(source, name)
+    local = '__repair_initial_record'
+    if not part or local in source or local in header:
+        return None
+    hits = list(_INITIAL_RECORD.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    if any(integer(hit[key]) != integer(match[1]) for key, match in
+           (('slot', load), ('byte', byte), ('word', word))):
+        return None
+    pointer = hit['pointer']
+    prefix = part.clean[part.opening + 1:hit.start()]
+    tail = part.clean[hit.end():part.end]
+    references = re.compile(rf'\b{pointer}\b')
+    if (len(references.findall(prefix)) != 1 or not re.search(rf'(?m)^[ \t]*void\s*\*\s*{pointer}\s*;', prefix)
+            or re.search(r'\bgoto\b', part.body)
+            or re.search(r'/[*/]', source[hit.start():hit.end()])):
+        return None
+    # Every later use must be in the store immediately following its own reload,
+    # possibly separated by scalar assignments. No read can cross a block edge.
+    reload_and_store = re.compile(
+        rf'(?m)^[ \t]*{pointer} = M2C_FIELD\({IDENT}, void \*\*, {NUMBER}\);\s*'
+        rf'(?:{IDENT} = [^;{{}}]+;\s*)*M2C_FIELD\({pointer}, u32 \*, {NUMBER}\) = [^;{{}}]+;'
+    )
+    for reload in reversed(list(reload_and_store.finditer(tail))):
+        if tail[:reload.start()].rstrip()[-1:] not in ('{', '}', ';'):
+            return None
+        statement = reload[0].partition(';')[2]
+        field_reads = re.findall(rf'\bM2C_FIELD\(\s*{pointer}\s*,', statement)
+        if len(field_reads) != len(references.findall(statement)):
+            return None
+        if re.search(r'\b(?:case|default|if|else|switch|while|for)\b|:', statement):
+            return None
+        tail = tail[:reload.start()] + tail[reload.end():]
+    if references.search(tail):
+        return None
+    fixed = re.sub(rf'\b{pointer}\b', local, source[hit.start():hit.end()])
+    return edit(source, [(*hit.span(), f'{hit["indent"]}void *{local};\n{fixed}')])
+
+
+_SHADE_CLAMP = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)if \((?P<shade>{IDENT}) != 0xFF\) \{{(?P<clamp>\s*'
+    rf'if \((?P<sum>{IDENT}) >= 0\) \{{\s*(?P=shade) \+= 0x10;\s*'
+    rf'if \((?P=sum) >= 0x100\) \{{\s*(?P=shade) = 0xFF;\s*\}}\s*'
+    rf'\}} else \{{\s*(?P=shade) = 0;\s*\}})\s*'
+    rf'{IDENT} = M2C_FIELD\({IDENT}, void \*\*, 0x10\);\s*'
+    rf'(?P=shade) = (?P<mask>(?P=shade) & 0xFF);'
+)
+
+
+def _shade_clamp_storage(source, name, header, rows):
+    """Keep the byte and its signed clamp in separate locals until packing."""
+    target = normalized_integer_lines(left for _, left, _ in rows if left)
+    current = normalized_integer_lines(right for _, _, right in rows if right)
+    if len(target) != len(current):
+        return None
+    witnesses = [
+        i for i, op in enumerate(target[:-13])
+        if op == 'lbu $v1, 16($v0)' and current[i] == 'lbu $a0, 16($v0)'
+        and target[i + 3] == 'addiu $v0, $v1, 16' and current[i + 3] == 'addiu $a2, $a0, 16'
+        and target[i + 4].startswith('bltz $v0, ')
+        and current[i + 4] == target[i + 4].replace('$v0', '$a2')
+        and target[i + 5] == 'slti $v0, $v0, 256' and current[i + 5] == 'slti $v0, $a2, 256'
+        and target[i + 12] == 'andi $v1, $v1, 255' and current[i + 12] == 'andi $a0, $a0, 255'
+    ]
+    if len(witnesses) != 1:
+        return None
+    part = view(source, name)
+    local = '__repair_clamped_shade'
+    if not part or local in source or local in header:
+        return None
+    hits = list(_SHADE_CLAMP.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    shade = hit['shade']
+    prefix = part.clean[part.opening + 1:hit.start()]
+    if (not re.search(rf'(?m)^[ \t]*s32 {shade};', prefix)
+            or re.search(rf'&\s*\(*\s*{shade}\b', part.body)
+            or re.search(r'/[*/]', source[hit.start():hit.end()])):
+        return None
+    start, end = hit.span('clamp')
+    clamp = re.sub(rf'\b{shade}\b', local, source[start:end])
+    declaration = f'\n{hit["indent"]}    s32 {local} = {shade};'
+    return edit(source, [(start, end, declaration + clamp), (*hit.span('mask'), f'{local} & 0xff')])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -753,6 +866,10 @@ def variants(source, name, header, rows):
         return [('measured_volatile_table_base', candidate)]
     if candidate := _nonnull_call_result(source, name, header, rows):
         return [('measured_nonnull_call_result', candidate)]
+    if candidate := _initial_record_pointer(source, name, header, rows):
+        return [('measured_initial_record_pointer', candidate)]
+    if candidate := _shade_clamp_storage(source, name, header, rows):
+        return [('measured_shade_clamp_storage', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']

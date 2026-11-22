@@ -517,3 +517,74 @@ def test_nonnull_call_result_leaves_the_store_and_guard_on_the_original_result()
     assert candidate.count('M2C_FIELD(__repair_nonnull_result,') == 3
     assert not variants(source.replace('void **, 8', 'void **, 12'), 'probe', '', rows)
     assert not variants(source.replace('int bits', 'consume(result); int bits'), 'probe', '', rows)
+
+
+def test_initial_record_pointer_requires_a_fresh_reload_before_each_later_store():
+    source = """int probe(void *owner) {
+    void *record;
+    int ok;
+    u32 word;
+    record = M2C_FIELD(owner, void **, 4);
+    ok = 1;
+    if (record != NULL) {
+        word = *(u32 *)((s8 *)record + 0x10);
+        if (M2C_FIELD(record, u8 *, 0x11) != 0x6b) {
+            record = M2C_FIELD(owner, void **, 4);
+            M2C_FIELD(record, u32 *, 0x10) = word;
+        }
+    }
+    return ok;
+}"""
+    rows = [
+        (' ', 'move $a3, $a0', 'move $a3, $a0'),
+        ('r', 'lw $v0, 4($a3)', 'lw $a1, 4($a3)'),
+        (' ', 'addiu $t0, $zero, 1', 'addiu $t0, $zero, 1'),
+        ('r', 'beqz $v0, 0xd8', 'beqz $a1, 0xd8'),
+        (' ', 'nop', 'nop'),
+        ('r', 'lbu $v1, 0x11($v0)', 'lbu $v1, 0x11($a1)'),
+        ('r', 'lw $a0, 0x10($v0)', 'lw $a0, 0x10($a1)'),
+    ]
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_initial_record_pointer'
+    assert 'if (__repair_initial_record != NULL)' in candidate
+    assert 'M2C_FIELD(record, u32 *, 0x10) = word;' in candidate
+    assert not variants(source.replace('    return ok;', '    return record != NULL;'), 'probe', '', rows)
+    assert not variants(source.replace('            record =', '            if (word) record ='), 'probe', '', rows)
+    assert not variants(source.replace('            record =', '            if (word)\n                record ='), 'probe', '', rows)
+
+
+def test_shade_clamp_storage_preserves_the_packing_local():
+    source = """void probe(void *owner, s32 value, s32 adjusted) {
+    s32 shade;
+    void *record;
+    shade = value;
+    if (shade != 0xFF) {
+        if (adjusted >= 0) {
+            shade += 0x10;
+            if (adjusted >= 0x100) {
+                shade = 0xFF;
+            }
+        } else {
+            shade = 0;
+        }
+        record = M2C_FIELD(owner, void **, 0x10);
+        shade = shade & 0xFF;
+        save(record, shade);
+    }
+}"""
+    rows = [
+        ('r', 'lbu $v1, 0x10($v0)', 'lbu $a0, 0x10($v0)'),
+        *measured(('nop', 'nop')),
+        ('r', 'addiu $v0, $v1, 0x10', 'addiu $a2, $a0, 0x10'),
+        ('r', 'bltz $v0, 0x90', 'bltz $a2, 0x90'),
+        ('r', 'slti $v0, $v0, 0x100', 'slti $v0, $a2, 0x100'),
+        *measured(('nop',) * 6),
+        ('r', 'andi $v1, $v1, 0xff', 'andi $a0, $a0, 0xff'),
+        *measured(('jr $ra',)),
+    ]
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_shade_clamp_storage'
+    assert 'if (shade != 0xFF) {\n        s32 __repair_clamped_shade = shade;' in candidate
+    assert 'shade = __repair_clamped_shade & 0xff;' in candidate
+    assert not variants(source.replace('s32 shade;', 's32 shade; use(&shade);'), 'probe', '', rows)
+    assert not variants(source.replace('shade += 0x10;', 'shade += 0x11;'), 'probe', '', rows)
