@@ -75,7 +75,7 @@ def variants(source, name, rows, header=''):
         if not groups or not part.clean[enclosing:groups[-1]].rstrip().endswith(('(', '&&', '||')):
             continue
         names = {array, helper, slot, result, base, table}
-        if len(names) != 6 or any(names & set(re.findall(IDENT, macro)) for macro in macros):
+        if len(names) != 6 or any((names | {'s8', 'f32'}) & set(re.findall(IDENT, macro)) for macro in macros):
             continue
         if not re.search(rf'\bvoid\s*\*\s*{helper}\s*\(\s*void\s*\*\*\s*({IDENT})\s*\)\s*\{{\s*return\s+\*\1\s*;\s*\}}',
                          part.clean[:part.opening]):

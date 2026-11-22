@@ -30,3 +30,4 @@ def test_schedule_independent_guard_loads():
     assert not variants(SOURCE.replace('&& ((', '&& opaque((').replace('ready(record))))', 'ready(record)))'), 'f', ROWS)
     assert not variants(SOURCE.replace('return *addr;', 'log(); return *addr;'), 'f', ROWS)
     assert not variants(SOURCE.replace('slot = slot_for(base);', 'slot = slot_for(&record);'), 'f', ROWS)
+    assert not variants(SOURCE, 'f', ROWS, '#define s8 volatile char')
