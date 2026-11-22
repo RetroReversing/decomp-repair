@@ -131,3 +131,14 @@ def rewrite_byte_toggle(source, name, asm, header=''):
     return edit(source, [(*hit.span('condition'), f"{hit['value']} & {hit['bit']}"),
                          (*hit.span('set'), source[slice(*hit.span('clear'))]),
                          (*hit.span('clear'), source[slice(*hit.span('set'))])])
+
+
+def measured_null_return_variants(source, name, rows):
+    """Try an inverted null guard when the target branches around a zero return."""
+    target, candidate = ('\n'.join(' '.join(row[side].split()) for row in rows if row[side]) for side in (1, 2))
+    target_guard = (r'\bbnez \$v0, [^\n]+\nnop\nj [^\n]+\n'
+                    r'(?:move \$v0, \$zero|addu \$v0, \$zero, \$zero)')
+    candidate_guard = r'\bbeql \$v0, \$zero, [^\n]+\n(?:move \$v0, \$zero|addu \$v0, \$zero, \$zero)'
+    if not re.search(target_guard, target) or not re.search(candidate_guard, candidate):
+        return []
+    return variants(source, name)
