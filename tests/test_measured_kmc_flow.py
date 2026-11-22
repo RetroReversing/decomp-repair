@@ -670,3 +670,31 @@ next:
     assert candidate.count('index++; continue;') == 2
     assert not variants(source, 'probe', 's32 probe(s32, s32, s32);', rows)
     assert not variants(source.replace('0x138', '0x134'), 'probe', '', rows)
+
+
+def test_volatile_float_pair_preserves_both_reads_and_the_original_local():
+    source = """extern void *table[];
+void probe(s32 i) {
+    volatile f32 values[4];
+    f32 pitch;
+    void *volatile *cursor;
+    cursor = &table[i];
+    values[0] = (*(f32 *)((char *)(*cursor) + 0x34));
+    pitch = (*(f32 *)((char *)(*cursor) + 0x38));
+    values[2] = 0;
+    values[1] = pitch;
+    consume(pitch);
+}"""
+    rows = [
+        (' ', 'swc1 $f0, 0x28($sp)', 'swc1 $f0, 0x28($sp)'),
+        ('r', 'lw $v0, ($s4)', 'lw $v0, ($s3)'),
+        ('r', 'lwc1 $f0, 0x38($v0)', 'lwc1 $f2, 0x38($v0)'),
+        (' ', 'sw $zero, 0x30($sp)', 'sw $zero, 0x30($sp)'),
+        ('r', 'swc1 $f0, 0x2c($sp)', 'swc1 $f2, 0x2c($sp)'),
+    ]
+    [(family, fixed)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_volatile_float_pair'
+    assert fixed.count('(char *)(*cursor)') == 2
+    assert 'pitch = __repair_loaded_float;' in fixed
+    assert not variants(source.replace('volatile f32 values', 'f32 values'), 'probe', '', rows)
+    assert not variants(source.replace('0x38', '0x3C'), 'probe', '', rows)

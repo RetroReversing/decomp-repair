@@ -953,6 +953,57 @@ def _byte_pair_scan(source, name, header, rows):
     return edit(source, [(signature.start(), end, fixed)])
 
 
+_FLOAT_PAIR = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<cursor>{IDENT}) = &(?P<table>{IDENT})\[(?P<index>{IDENT})\];\s*'
+    rf'(?P<first_store>(?P<stack>{IDENT})\[0\] = \(\*\(f32 \*\)\(\(char \*\)\(\*(?P=cursor)\) \+ {NUMBER}\)\);)\s*'
+    rf'(?P<temp>{IDENT}) = (?P<load>\(\*\(f32 \*\)\(\(char \*\)\(\*(?P=cursor)\) \+ (?P<field>{NUMBER})\)\));\s*'
+    rf'(?P=stack)\[2\] = 0;\s*(?P=stack)\[1\] = (?P=temp);'
+)
+
+
+def _stage_volatile_float_pair(source, name, header, rows):
+    """Stage a volatile table base and isolate the second float read."""
+    for i in range(len(rows) - 4):
+        if tuple(row[0] for row in rows[i + 2:i + 5]) != ('r', ' ', 'r'):
+            continue
+        target, current = (normalized_integer_lines(row[k] for row in rows[i:i + 5]) for k in (1, 2))
+        load = re.fullmatch(rf'lwc1 \$f0, (?P<field>{NUMBER})\(\$v0\)', target[2])
+        first = re.fullmatch(rf'swc1 \$f0, (?P<slot>{NUMBER})\(\$sp\)', target[0])
+        if not load or not first or not re.fullmatch(r'lw \$v0, \(\$s[0-7]\)', target[1]):
+            continue
+        slot = int(first['slot'])
+        if (target[3:] == (f'sw $zero, {slot + 8}($sp)', f'swc1 $f0, {slot + 4}($sp)')
+                and current[2:] == (target[2].replace('$f0', '$f2'), target[3], target[4].replace('$f0', '$f2'))):
+            break
+    else:
+        return None
+    part = view(source, name)
+    local_base, local_float = '__repair_float_table', '__repair_loaded_float'
+    if not part or any(local in source or local in header for local in (local_base, local_float)):
+        return None
+    hits = list(_FLOAT_PAIR.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    cursor, table, index, stack, temp = (hit[k] for k in ('cursor', 'table', 'index', 'stack', 'temp'))
+    if (integer(hit['field']) != integer(load['field']) or len({cursor, table, index, stack, temp}) != 5
+            or not re.search(rf'(?m)^[ \t]*void \*volatile \*{cursor};', part.body)
+            or not re.search(rf'(?m)^[ \t]*volatile f32 {stack}\[4\];', part.body)
+            or not re.search(rf'(?m)^[ \t]*f32 {temp};', part.body)
+            or not re.search(rf'\bextern void \*{table}\[\];', header + '\n' + part.clean[:part.opening])
+            or re.search(r'/[*/]', source[hit.start():hit.end()])):
+        return None
+    indent = hit['indent']
+    first_store = hit['first_store']
+    fixed = (
+        f'{indent}{{ void *volatile *{local_base} = {table}; {cursor} = {local_base} + {index}; }}\n'
+        f'{indent}{first_store}\n'
+        f'{indent}{{ f32 {local_float} = {hit["load"]}; {temp} = {local_float}; '
+        f'{stack}[2] = 0; {stack}[1] = {local_float}; }}'
+    )
+    return edit(source, [(*hit.span(), fixed)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -994,6 +1045,8 @@ def variants(source, name, header, rows):
         return [('measured_byte_pair_scan', candidate)]
     if candidate := masked_lookup_switch.candidate(source, name, header, rows):
         return [('measured_masked_lookup_switch', candidate)]
+    if candidate := _stage_volatile_float_pair(source, name, header, rows):
+        return [('measured_volatile_float_pair', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
