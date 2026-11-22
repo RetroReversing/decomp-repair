@@ -63,3 +63,39 @@ def test_the_printed_member_form_leaves_m2c_macro_sources_to_the_macro_family():
     macro = '#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))\n'
     assert not printed_variants(macro + PRINTED_SOURCE, 'setup')
     assert not printed_variants('void f(void) { g(); }\n', 'f')
+
+
+SYMBOL_SOURCE = """typedef struct { s16 slot; u16 flags; } Entry;
+extern u16 D_800C02D8;
+extern u8 D_800C02DC;
+extern Entry *D_800C02D4;
+void setup(s32 idx)
+{
+  s32 offset;
+  u16 size;
+  u8 count;
+  Entry *first;
+  offset = idx * 32;
+  first = *((Entry **) (((u8 *) (&D_800C02D4)) + offset));
+  size = *((u16 *) (((u8 *) (&D_800C02D8)) + offset));
+  count = *((u8 *) ((&D_800C02DC) + offset));
+  use(first, size, count);
+}
+"""
+
+
+def test_a_symbol_based_field_with_a_variable_offset_becomes_the_member_form():
+    # An N64 map-table setup (KMC gcc 2.7.2) wrote its record fields as `*((u16 *) (((u8 *) (&D_800C02D8)) + offset))`:
+    # no `char` cast, the address of a symbol as the base, a variable offset. None of that matched the printed form, so
+    # the member form (which moves a load above a store to a scalar global, as the original's `table[i].size` did) was
+    # never offered; one member read plus two loop and ordering changes took the function from 85 to 0.
+    from decomprepair.field_struct_view_repairs import printed_variants
+    found = dict.fromkeys(c for _, c in printed_variants(SYMBOL_SOURCE, 'setup'))
+    everything = max(found, key=lambda c: c.count('->v'))
+    assert everything.count('->v') == 3 and '*((u16 *)' not in everything and '*((u8 *)' not in everything
+    assert '(((Field_u16 *) (((u8 *) (&D_800C02D8)) + offset))->v)' in everything
+    assert '(((Field_u8 *) ((&D_800C02DC) + offset))->v)' in everything
+    assert '(((Field_MapEntry_' not in everything and 'typedef struct { Entry * v; } Field_Entry;' in everything
+    assert '(((Field_Entry *) (((u8 *) (&D_800C02D4)) + offset))->v)' in everything
+    # each symbol's accesses alone are offered too
+    assert any(c.count('->v') == 1 and 'Field_u16 *)' in c for c in found)

@@ -25,8 +25,13 @@ MEMBER_FORM = ('#define M2C_FIELD(expr, type_ptr, offset) '
                '(((struct { __typeof__(*(type_ptr)0) v; } *)((s8 *)(expr) + (offset)))->v)')
 
 
-PRINTED = re.compile(r'\*\(\((s8|u8|s16|u16|s32|u32|f32|void \*) \*\) (\(\(\(char \*\) ([A-Za-z_]\w*)\) \+ '
-                     r'(?:0x[0-9A-Fa-f]+|\d+)\))\)')
+_KIND = r'(s8|u8|s16|u16|s32|u32|f32|void ?\*|[A-Za-z_]\w*(?: ?\*)?)'
+_OFFSET = r'(?:0x[0-9A-Fa-f]+|\d+|[A-Za-z_]\w*)'
+# `*((T *) (((char *) base) + 0x10))`, the spelling m2c's printer and the saved sources carry, and the ones a cleaned
+# source grows: the byte cast written `u8`, the base a symbol's address `(&sym)`, the offset a variable, or the address
+# a bare `((&sym) + offset)` with no byte cast. Group 1 is the field type, 2 the address, 3 or 4 the base's name.
+PRINTED = re.compile(r'\*\(\(' + _KIND + r' ?\*\) (\(\(\((?:char|u8|s8) \*\) \(?&?([A-Za-z_]\w*)\)?\) \+ ' + _OFFSET + r'\)'
+                     r'|\(\(&([A-Za-z_]\w*)\) \+ ' + _OFFSET + r'\))\)')
 
 
 def printed_variants(source, name):
@@ -61,7 +66,7 @@ def printed_variants(source, name):
         header = ''.join(f'typedef struct {{ {kind} v; }} {label};\n' for label, kind in sorted(types.items()))
         return edit_source(source, edits, find(source, name)[0], header)
     groups = [sites, [site for site in sites if is_store(site)], [site for site in sites if not is_store(site)]]
-    groups += [[site for site in sites if site[3] == base] for base in dict.fromkeys(site[3] for site in sites)][:6]
+    groups += [[site for site in sites if (site[3] or site[4]) == base] for base in dict.fromkeys(site[3] or site[4] for site in sites)][:6]
     seen, result = set(), []
     for group in groups:
         key = tuple(site.start() for site in group)
