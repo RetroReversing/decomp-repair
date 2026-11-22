@@ -106,3 +106,77 @@ def variants(source, name, header='', arch=None):
         result.append((FAMILIES[0],edit(source,changes)))
         if len(result)>=LIMIT:break
     return list(dict.fromkeys(result))
+
+
+_STATE_STORE = re.compile(
+    rf'\s*(?P<dst>\*\(\(s16\s*\*\)\s*\(\(\(char\s*\*\)\s*(?P<base>{IDENT})\)'
+    rf'\s*\+\s*(?P<offset>0[xX][0-9a-fA-F]+|[0-9]+)\)\))'
+    rf'\s*=\s*(?P<value>{IDENT})\s*;')
+_HALFWORD = re.compile(r'sh (\$\w+), (0x[0-9a-f]+|[0-9]+)\((\$\w+)\)')
+
+
+def _state_store_witness(rows, offset, values):
+    for index, (_, target, candidate) in enumerate(rows):
+        left, right = _HALFWORD.fullmatch(target), _HALFWORD.fullmatch(candidate)
+        if not left or not right or left[1] == right[1] or left.groups()[1:] != right.groups()[1:]:
+            continue
+        if int(left[2], 0) != offset:
+            continue
+        for _, earlier, _ in rows[max(0, index - 3):index]:
+            setup = re.fullmatch(rf'addiu {re.escape(left[1])}, \$zero, (-?0x[0-9a-f]+|-?[0-9]+)', earlier)
+            if setup and int(setup[1], 0) in values:
+                return True
+    return False
+
+
+def measured_state_store_arms(source, name, rows, header=''):
+    """Store each branch's selected constant at the arm end."""
+    from .csource import _blank
+    from .integer_repair_support import integer, locals_for
+
+    if not any(_HALFWORD.fullmatch(a) and _HALFWORD.fullmatch(b) and a != b for _, a, b in rows):
+        return []
+    part = view(source, name)
+    if not part or re.search(r'\b(?:asm|__asm|__asm__|__LINE__)\b', part.body):
+        return []
+    context = (_blank(header) + '\n' + part.clean).replace('\\\n', ' ')
+    macros = re.findall(r'(?m)^[ \t]*#\s*(?:define|undef)\s+([^\n]+)', context)
+    local_names = {d['name'] for d in locals_for(part) if d['type'] == 's16'}
+    result = []
+    for hit in re.finditer(r'\bif\s*\(', part.body):
+        start = part.opening + 1 + hit.start()
+        if part.clean[part.opening + 1:start].rstrip()[-1:] not in ('{', '}', ';'):
+            continue
+        found = chain(part, start)
+        if not found or len(found[0]) != 2:
+            continue
+        arms, end = found
+        tail = _STATE_STORE.match(part.clean, end)
+        if not tail or tail['value'] not in local_names:
+            continue
+        var = tail['value']
+        if len(re.findall(rf'\b{var}\b', part.body)) != 4:
+            continue
+        if any({var, tail['base'], 's16'} & set(re.findall(IDENT, macro)) for macro in macros):
+            continue
+        edits, values = [], []
+        for a, b in arms:
+            body = part.clean[a+1:b-1]
+            # The other operation is a single raw word store with no nested control flow.
+            choice = rf'{var}\s*=\s*(?P<constant>0[xX][0-9a-fA-F]+|[0-9]+)\s*;'
+            store = r'\*\(\(s32\s*\*\)[^;{}]*=\s*[^;{}]*;'
+            if not re.fullmatch(rf'\s*(?:{choice}\s*{store}|{store}\s*{choice.replace("?P<constant>", "?P<after>")})\s*', body):
+                break
+            assignment = re.search(choice, body)
+            left, right = (a + 1 + n for n in assignment.span())
+            if source[left:right] != part.clean[left:right]:
+                break
+            constant = assignment['constant']
+            values.append(integer(constant))
+            edits.extend(((left, right, ''), (b-1, b-1, f"    {tail['dst']} = {constant};\n")))
+        if (len(edits) != 4 or len(set(values)) != 2 or max(values) > 0x7fff
+                or source[end:tail.end()] != tail[0]
+                or not _state_store_witness(rows, integer(tail['offset']), values)):
+            continue
+        result.append(('branch_state_store', edit(source, edits + [(end, tail.end(), '')])))
+    return result[:3]
