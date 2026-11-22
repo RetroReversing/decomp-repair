@@ -4,6 +4,8 @@ Unknown syntax gives no advice. Branches, switch fallthrough, loop back edges an
 edges: a later textual assignment alone never proves a value dead. This does not judge compiled C.
 """
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from .integer_repair_support import IDENT, locals_for, refs, view
@@ -26,6 +28,7 @@ class Node:
 class Flow:
     def __init__(self, part, declarations=None):
         self.part = part
+        self._memo = {}  # (see memo): shared with the copies clone() makes
         self.locals = [decl for decl in (locals_for(part) if declarations is None else declarations)
                        if not re.search(rf'(?<!&)&(?!&)\s*(?:\(\s*)*{decl["name"]}\b', part.body)]
         if len(self.locals) > MAX_LOCALS:
@@ -50,15 +53,29 @@ class Flow:
                     node.live = live
                     changed = True
 
-    def reachability(self):
-        """(blocks reachable from the entry in reverse postorder, their predecessors), reused until an edge changes.
+    def memo(self) -> dict:
+        """Answers about this flow's graph (reachability, dominators), shared with the copies analyze() hands out, and
+        keyed by the graph's edges so a repair that cuts edges in place never sees an answer for the uncut graph."""
+        return self.__dict__.setdefault('_memo', {})
 
-        Some repairs cut a flow's edges in place, so the graph is checked on every call (a sort of the edges, far
-        cheaper than the dominator and initialization passes that ask for it a dozen times per function)."""
-        shape = (self.entry, tuple(tuple(sorted(node.successors)) for node in self.nodes))
-        held = self.__dict__.get('_reachability')
-        if held is not None and held[0] == shape:
-            return held[1]
+    def shape(self):
+        return (self.entry, tuple(tuple(sorted(node.successors)) for node in self.nodes))
+
+    def remembered(self, kind, shape, compute):
+        memo = self.memo()
+        key = (kind, shape)
+        if key not in memo:
+            if len(memo) >= 16:
+                memo.clear()
+            memo[key] = compute()
+        return memo[key]
+
+    def reachability(self):
+        """(blocks reachable from the entry in reverse postorder, their predecessors); treat the result as read-only."""
+        shape = self.shape()
+        return self.remembered('reachability', shape, lambda: self._reachability())
+
+    def _reachability(self):
         order, seen = [], set()
         if self.entry is not None:
             seen.add(self.entry)
@@ -78,9 +95,16 @@ class Flow:
         for index in order:
             for child in sorted(self.nodes[index].successors):
                 predecessors[child].append(index)
-        result = (order, predecessors)
-        self.__dict__['_reachability'] = (shape, result)
-        return result
+        return order, predecessors
+
+    def clone(self):
+        """An independent copy (repairs cut edges and edit sets in place); the parsed text and the memo are shared."""
+        other = Flow.__new__(Flow)
+        other.__dict__.update(self.__dict__)
+        other.locals, other.names = list(self.locals), set(self.names)
+        other.nodes = [Node(n.start, n.end, set(n.uses), set(n.defines), set(n.successors), set(n.live)) for n in self.nodes]
+        other.labels, other.gotos = dict(self.labels), list(self.gotos)
+        return other
 
     def node(self, start, end, successors=()):
         """Only a plain scalar assignment kills an incoming value; unknown updates stay reads."""
@@ -268,13 +292,43 @@ class Flow:
         return node is not None and variable not in node.live
 
 
+CACHE_SIZE = 64
+_cache: OrderedDict = OrderedDict()
+_cache_lock = threading.Lock()
+_NONE = object()
+
+
 def analyze(source, name, *, declarations=None, allow_unrelated_volatile=False):
     """Return conservative liveness, or no advice for extensions and escaped control flow.
 
     A caller may explicitly analyze only provided ordinary locals while retaining
     unrelated volatile operations in the CFG. This opt-in proves scalar dominance;
     it does not authorize moving volatile accesses or calls.
-    """
+
+    About 40 repair families analyse the same function one after another, and parsing it was a tenth of a live Deep
+    Permuter run's CPU, so the flow is built once per (text, function, locals) and each caller gets a copy of its own
+    (they edit the sets and cut edges in place)."""
+    try:
+        key = (source, name, None if declarations is None else tuple((d.start(), d.end(), d['name'], d['type']) for d in declarations),
+               bool(allow_unrelated_volatile))
+        hash(key)
+    except (AttributeError, KeyError, TypeError):
+        return _analyze(source, name, declarations, allow_unrelated_volatile)
+    with _cache_lock:
+        held = _cache.get(key)
+        if held is not None:
+            _cache.move_to_end(key)
+    if held is None:
+        result = _analyze(source, name, declarations, allow_unrelated_volatile)
+        with _cache_lock:
+            _cache[key] = _NONE if result is None else result.clone()
+            while len(_cache) > CACHE_SIZE:
+                _cache.popitem(last=False)
+        return result
+    return None if held is _NONE else held.clone()
+
+
+def _analyze(source, name, declarations, allow_unrelated_volatile):
     part = view(source, name)
     if not part or re.search(r'\b(?:asm|__asm__|setjmp|_setjmp|sigsetjmp|longjmp)\b', part.clean):
         return None

@@ -43,6 +43,24 @@ def declarations(part):
                sum(m['name']==decl['name'] for m in re.finditer(pattern,part.body))==1]
 
 
+def _dominators(flow):
+    order, predecessors = flow.reachability()
+    position = {index: bit for bit, index in enumerate(order)}
+    everything = (1 << len(order)) - 1
+    masks = {index: (1 << position[index]) if index == flow.entry else everything for index in order}
+    changed = True
+    while changed:
+        changed = False
+        for index in order[1:]:
+            value = everything
+            for parent in predecessors[index]:
+                value &= masks[parent]
+            value |= 1 << position[index]
+            if value != masks[index]:
+                masks[index], changed = value, True
+    return {index: frozenset(order[bit] for bit in range(len(order)) if mask >> bit & 1) for index, mask in masks.items()}
+
+
 def dominators(flow):
     """Unknown/unreachable blocks cannot prove an initialization, including forward-jump entries.
 
@@ -51,26 +69,8 @@ def dominators(flow):
     stay the same since a dozen repair families ask for the same function. The caller gets sets of its own."""
     if flow.entry is None:
         return {}
-    shape = (flow.entry, tuple(tuple(sorted(node.successors)) for node in flow.nodes))
-    held = flow.__dict__.get('_dominators')
-    if held is None or held[0] != shape:
-        order, predecessors = flow.reachability()
-        position = {index: bit for bit, index in enumerate(order)}
-        everything = (1 << len(order)) - 1
-        masks = {index: (1 << position[index]) if index == flow.entry else everything for index in order}
-        changed = True
-        while changed:
-            changed = False
-            for index in order[1:]:
-                value = everything
-                for parent in predecessors[index]:
-                    value &= masks[parent]
-                value |= 1 << position[index]
-                if value != masks[index]:
-                    masks[index], changed = value, True
-        held = flow.__dict__['_dominators'] = (shape, {index: frozenset(order[bit] for bit in range(len(order)) if mask >> bit & 1)
-                                                      for index, mask in masks.items()})
-    return {index: set(members) for index, members in held[1].items()}
+    held = flow.remembered('dominators', flow.shape(), lambda: _dominators(flow))
+    return {index: set(members) for index, members in held.items()}
 
 
 def variants(source, name, header=''):
