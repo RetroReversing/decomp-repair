@@ -629,6 +629,51 @@ def _stage_record_float_reset(source, name, rows):
     return edit(source, [(*hit.span(), fixed)])
 
 
+_VOLATILE_TABLE = re.compile(
+    rf'\b(?P<dst>{IDENT})\s*=\s*\((?P<type>{IDENT})\s*\*\)'
+    rf'\(\(u32\)\((?P<index>{IDENT})\s*\*\s*sizeof\((?P=type)\)\)\s*\+\s*\(u32\)(?P<base>{IDENT})\);'
+)
+
+
+def _volatile_table_base(source, name, header, rows):
+    """Stage the volatile table read before scaling its index."""
+    changed = [(i, row) for i, row in enumerate(rows) if row[0] != ' ']
+    if len(changed) != 2:
+        return None
+    (first, earlier), (last, later) = changed
+    shift = 'sll $v1, $v0, 1'
+    if last != first + 3 or earlier != ('o', '', shift) or later != ('o', shift, ''):
+        return None
+    target = normalized_integer_lines(row[1] for row in rows[first + 1:last + 4])
+    if len(target) != 6:
+        return None
+    hi = re.fullmatch(rf'lui \$a0, %hi\(({IDENT})\)', target[0])
+    if not hi or target[1:] != (
+        f'lw $a0, %lo({hi[1]})($a0)', shift, 'addu $v1, $v1, $v0',
+        'sll $v1, $v1, 2', 'addu $v1, $v1, $a0',
+    ):
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    hits = list(_VOLATILE_TABLE.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    dst, record, index, base = (hit[key] for key in ('dst', 'type', 'index', 'base'))
+    staged_base, offset = '__repair_table_base', '__repair_table_offset'
+    context = header + '\n' + part.clean[:part.opening]
+    if (base != hi[1] or not re.search(rf'\bextern\s+{record}\s*\*\s*volatile\s+{base}\s*;', context)
+            or not re.search(rf'\bu32\s+{index}\b', part.body[:hit.start() - part.opening - 1])
+            or any(local in source or local in header for local in (staged_base, offset))
+            or re.search(r'/[*/]', source[hit.start():hit.end()])):
+        return None
+    fixed = (f'{{ {record} *{staged_base} = {base}; '
+             f'u32 {offset} = {index} * sizeof({record}); '
+             f'{dst} = ({record} *)({offset} + (u32){staged_base}); }}')
+    return edit(source, [(*hit.span(), fixed)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -656,6 +701,8 @@ def variants(source, name, header, rows):
         return [('measured_link_pointer_reload', candidate)]
     if candidate := _stage_record_float_reset(source, name, rows):
         return [('measured_record_float_reset', candidate)]
+    if candidate := _volatile_table_base(source, name, header, rows):
+        return [('measured_volatile_table_base', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
