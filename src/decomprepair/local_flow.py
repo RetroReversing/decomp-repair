@@ -298,6 +298,16 @@ _cache_lock = threading.Lock()
 _NONE = object()
 
 
+def _declaration_key(declaration):
+    """What makes two declarations the same input: where they are, what they name, and the pattern that found them
+    (not every pattern has a `type` group)."""
+    try:
+        kind = declaration['type']
+    except (IndexError, KeyError):
+        kind = None
+    return (declaration.start(), declaration.end(), declaration['name'], kind, getattr(declaration, 're', None))
+
+
 def analyze(source, name, *, declarations=None, allow_unrelated_volatile=False):
     """Return conservative liveness, or no advice for extensions and escaped control flow.
 
@@ -309,10 +319,10 @@ def analyze(source, name, *, declarations=None, allow_unrelated_volatile=False):
     Permuter run's CPU, so the flow is built once per (text, function, locals) and each caller gets a copy of its own
     (they edit the sets and cut edges in place)."""
     try:
-        key = (source, name, None if declarations is None else tuple((d.start(), d.end(), d['name'], d['type']) for d in declarations),
+        key = (source, name, None if declarations is None else tuple(_declaration_key(d) for d in declarations),
                bool(allow_unrelated_volatile))
         hash(key)
-    except (AttributeError, KeyError, TypeError):
+    except (AttributeError, IndexError, KeyError, TypeError):
         return _analyze(source, name, declarations, allow_unrelated_volatile)
     with _cache_lock:
         held = _cache.get(key)
