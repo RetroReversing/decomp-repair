@@ -29,7 +29,6 @@ the judge decides."""
 import re
 
 from .join_tail_arm_split_repairs import _blocks, _body, _cut, _gotos, _label
-from .pattern_repairs import close
 
 FAMILY = 'goto_arm_label_copy'
 FAMILIES = (FAMILY,)
