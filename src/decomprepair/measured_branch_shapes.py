@@ -6,6 +6,8 @@ from .integer_repair_support import IDENT, NUMBER, edit, integer, locals_for
 
 
 def variants(part, name, header, rows, changed):
+    if len(changed) == 1:
+        return _lookup_loop_exit(part, header, rows, changed[0])
     if len(changed) == 5 and (candidate := _mask_divisor(part, name, header, rows, changed)):
         return [('measured_divisor_store_order', candidate)]
     if len(changed) == 6 and (candidate := _mode_branches(part, header, rows, changed)):
@@ -13,6 +15,68 @@ def variants(part, name, header, rows, changed):
     if len(changed) == 3 and (candidate := _branch_constant_store(part, header, rows, changed)):
         return [('measured_branch_constant_store', candidate)]
     return []
+
+
+def _lookup_loop_exit(part, header, rows, index):
+    """Route the second zero-count check to the function's shared tail."""
+    target, actual = rows[index][1:]
+    branch = re.fullmatch(rf'beqz (\$\w+), ({NUMBER})', target)
+    if not branch or not re.fullmatch(rf'beqz {re.escape(branch[1])}, {NUMBER}', actual):
+        return []
+    # The earlier zero check already exits, and only the generated loop check lands at the match.
+    previous = next((i for i in range(index - 1, max(-1, index - 10), -1)
+                     if rows[i][1] == rows[i][2] == target), None)
+    if previous is None or not previous or not re.match(rf'lhu {re.escape(branch[1])}, ', rows[previous - 1][1]):
+        return []
+    if not any(row[1] == row[2] and re.fullmatch(r'beq \$\w+, \$\w+, ' + re.escape(actual.rsplit(' ', 1)[1]),
+                                                 row[1]) for row in rows[index + 1:index + 14]):
+        return []
+    loop = re.compile(
+        rf'(?m)^(?P<indent>[ \t]*)for\s*\(\s*(?P<i>{IDENT})\s*=\s*0\s*;\s*(?P=i)\s*<\s*(?P<n>{IDENT})'
+        rf'\s*;\s*(?P=i)\+\+\s*\)\s*{{\s*if\s*\(\s*'
+        rf'(?P<test>{IDENT}\s*\[\s*{IDENT}\s*\+\s*(?P=i)\s*\]\s*\.\s*{IDENT}\s*==\s*{IDENT})'
+        r'\s*\)\s*{\s*break\s*;\s*}\s*}'
+    )
+    hits = list(loop.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return []
+    hit = hits[0]
+    n, counter, indent = hit['n'], hit['i'], hit['indent']
+    prefix = part.clean[part.opening + 1:hit.start()]
+    if not re.search(rf'\b{n}\s*=\s*{IDENT}\s*\[\s*{IDENT}\s*\]\s*\.\s*{IDENT}\s*;\s*'
+                     rf'if\s*\(\s*{n}\s*!=\s*0\s*\)\s*{{\s*'
+                     rf'{IDENT}\s*=\s*{IDENT}\s*\[\s*{IDENT}\s*\]\s*\.\s*{IDENT}\s*;\s*$', prefix):
+        return []
+    if prefix.count('{') - prefix.count('}') != 1:
+        return []
+    suffix = part.clean[hit.end():part.end]
+    tail = re.search(rf'(?m)^([ \t]*)({IDENT}\s*\(\s*\)\s*;\s*return\s+0\s*;\s*}})\s*$', suffix)
+    if not tail or suffix[:tail.start()].count('}') - suffix[:tail.start()].count('{') != 1:
+        return []
+    if re.search(r'\b(?:repair_lookup_exit|repair_lookup_scan|repair_lookup_found)\b', part.clean + '\n' + header):
+        return []
+    if re.search(r'/[*/]', part.source[hit.start():hit.end()]):
+        return []
+    test = part.source[slice(*hit.span('test'))]
+    replacement = (
+        f'{indent}{counter} = 0;\n'
+        f'{indent}if (!(unsigned short){n}) goto repair_lookup_exit;\n'
+        f'{indent}repair_lookup_scan: if ({test}) goto repair_lookup_found;\n'
+        f'{indent}if (++{counter} < {n}) goto repair_lookup_scan;\n'
+        f'{indent}repair_lookup_found: ;'
+    )
+    tail_at = hit.end() + tail.start(2)
+    edits = [(hit.start(), hit.end(), replacement), (tail_at, tail_at, 'repair_lookup_exit: ')]
+    result = [('measured_lookup_loop_exit', edit(part.source, edits))]
+    # Explicit loop entry can shrink the frame. Try a naturally aligned reservation
+    # only when the source already has an unreferenced two-word pad at entry.
+    pad = re.match(r'\s*(?P<decl>volatile\s+s32\s+(?P<name>pad\w*)\s*\[\s*2\s*\]\s*;)', prefix)
+    if pad and len(re.findall(rf'(?<![\w.>]){pad["name"]}\b', part.body)) == 1:
+        opening = part.opening + 1
+        start, stop = pad.span('decl')
+        result.append(('measured_lookup_loop_exit_aligned',
+                       edit(part.source, [*edits, (opening + start, opening + stop, f'f64 {pad["name"]}[2];')])))
+    return result
 
 
 def _branch_constant_store(part, header, rows, changed):
