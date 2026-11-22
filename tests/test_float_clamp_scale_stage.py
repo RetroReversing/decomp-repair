@@ -76,3 +76,61 @@ def test_reloaded_axis_can_hold_a_scale_with_both_literal_words():
         source.replace('axis * 0.12f', 'axis * 0.13f'),
     ):
         assert all(family != IN_PLACE for family, _ in variants(changed, 'adjust', rows))
+
+
+def test_pairs_signed_square_capture_and_in_place_scale_before_reload():
+    from decomprepair.float_clamp_scale_stage import SIGNED_SQUARE
+
+    sign = '''    original = axis;
+    axis = axis * axis;
+    if (original < 0.0f) {
+        axis = -axis;
+    }
+'''
+    source = SOURCE.replace('f32 axis,', 'f32 original, axis,').replace('    old =', sign + '    old =')
+    source = source[:source.rindex('}')] + '''
+    else if (result > 32.0f) {
+        *((f32 *) (((char *) record) + 0x48)) = 32.0f;
+    }
+    axis = *((f32 *) (((char *) record) + 0x48));
+    report(axis, result);
+}
+'''
+    prefix = [
+        (' ', 'jal sample', 'jal sample'),
+        (' ', 'nop', 'nop'),
+        (' ', 'mov.s $f26, $f0', 'mov.s $f26, $f0'),
+        ('r', 'mtc1 $zero, $f0', 'mtc1 $zero, $f2'),
+        ('o', 'mov.s $f24, $f26', 'nop'),
+        ('r', 'c.lt.s $f24, $f0', 'c.lt.s $f0, $f2'),
+        (' ', 'nop', 'nop'),
+        (' ', 'nop', 'nop'),
+        (' ', 'bc1f .Lpositive', 'bc1f .Lpositive'),
+        (' ', 'mul.s $f26, $f26, $f26', 'mul.s $f26, $f26, $f26'),
+        (' ', 'neg.s $f26, $f26', 'neg.s $f26, $f26'),
+    ]
+
+    def candidates(code, rows):
+        return [text for family, text in variants(code, 'adjust', rows) if family == SIGNED_SQUARE]
+
+    [changed] = candidates(source, prefix + ROWS)
+    assert 'result = axis;\n    axis = axis * axis;' in changed
+    assert 'if (result < 0.0f)' in changed
+    assert 'axis *= 32.0f;\n    old =' in changed
+    assert 'result = ((axis - old)' in changed
+    assert not candidates(source, ROWS)
+    assert not candidates(source.replace('report(axis, result);', 'report(axis, original);'), prefix + ROWS)
+    assert not candidates(source.replace('    axis = *((', '    inspect(axis);\n    axis = *(('), prefix + ROWS)
+    assert not candidates(source.replace('    axis = sample();', '    escape(&result);\n    axis = sample();'),
+                          prefix + ROWS)
+
+    restored = source.replace(
+        '    axis = *((f32 *) (((char *) record) + 0x48));',
+        '    { f32 capture = axis;\n'
+        '      axis = *((f32 *) (((char *) record) + 0x48));\n'
+        '      total -= axis;\n'
+        '      axis = capture; }\n'
+        '    axis = next_sample(record);',
+    )
+    assert candidates(restored, prefix + ROWS)
+    assert not candidates(restored.replace('next_sample(record)', 'next_sample(axis)'), prefix + ROWS)
