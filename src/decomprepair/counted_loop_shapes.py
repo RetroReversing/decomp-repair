@@ -33,6 +33,7 @@ All of them are proposals: they are tried against the exact judge, one at a time
 (`counted_loop_chain`).
 """
 import re
+from functools import lru_cache
 
 from .integer_repair_support import edit, view
 from .pattern_repairs import close
@@ -97,62 +98,84 @@ def _bound(test):
     return (hit[1], hit[2]) if hit else (None, None)
 
 
+_IF = re.compile(r'\bif\s*\(')
+_FOR = re.compile(r'\bfor\s*\(')
+_OPEN = re.compile(r'\s*\{')
+_DO_BLOCK = re.compile(r'\bdo\s*\{')
+_GUARD_HEAD = re.compile(r'\s*((?:' + IDENT + r'\s*=\s*[^;{}]+;\s*)*)do\s*\{')
+_WHILE = re.compile(r'\s*while\s*\(')
+_END = re.compile(r'\s*;\s*\}')
+_FOR_INIT = re.compile(r'\s*(' + IDENT + r')\s*=\s*0\s*')
+
+
 def _loops(part):
-    """Every guarded `do` loop and every `for (i = 0; ...)` loop in the function, in order."""
-    clean = part.clean
+    """Every guarded `do` loop and every `for (i = 0; ...)` loop in the function, in order.
+
+    Seven families ask for the same function's loops, so the answer is kept for the last few sources and handed out as
+    new `Loop` objects (callers may change theirs). The scan matches in place (`pattern.match(text, pos, endpos)`)
+    instead of slicing the rest of the function for every `if`, and passes over any `if` block that holds no `do {`."""
+    fields = _scan(part.source, part.clean, part.opening, part.end)
+    return [Loop(part=part, **found) for found in fields]
+
+
+@lru_cache(maxsize=16)
+def _scan(source, clean, opening, end):
     found = []
-    for guard in re.finditer(r'\bif\s*\(', clean[part.opening:part.end]):
-        at = part.opening + guard.start()
-        cond_end = close(clean, part.opening + guard.end() - 1)
+    for guard in _IF.finditer(clean, opening, end):
+        at = guard.start()
+        cond_end = close(clean, guard.end() - 1)
         if cond_end is None:
             continue
-        brace = re.match(r'\s*\{', clean[cond_end:])
+        brace = _OPEN.match(clean, cond_end)
         if not brace:
             continue
-        block_open = cond_end + brace.end() - 1
+        block_open = brace.end() - 1
         block_end = close(clean, block_open, '{', '}')
         if block_end is None:
             continue
-        head = re.match(r'\s*((?:' + IDENT + r'\s*=\s*[^;{}]+;\s*)*)do\s*\{', clean[block_open + 1:block_end])
+        # the block must begin with assignments and then `do {`: a block with no `do {` at all cannot
+        if not _DO_BLOCK.search(clean, block_open + 1, block_end):
+            continue
+        head = _GUARD_HEAD.match(clean, block_open + 1, block_end)
         if not head:
             continue
-        brace_at = block_open + 1 + head.end() - 1
+        brace_at = head.end() - 1
         body_close = close(clean, brace_at, '{', '}')
-        tail = re.match(r'\s*while\s*\(', clean[body_close:]) if body_close else None
+        tail = _WHILE.match(clean, body_close) if body_close else None
         if not tail:
             continue
-        test_open = body_close + tail.end() - 1
+        test_open = tail.end() - 1
         test_end = close(clean, test_open)
-        after = re.match(r'\s*;\s*\}', clean[test_end:]) if test_end else None
-        if not after or test_end + after.end() != block_end:
+        after = _END.match(clean, test_end) if test_end else None
+        if not after or after.end() != block_end:
             continue
         test = clean[test_open + 1:test_end - 1]
         counter, bound = _bound(test)
         if not counter:
             continue
-        found.append(Loop(kind='guarded', part=part, start=at, end=block_end, guard=clean[part.opening + guard.end():cond_end - 1],
-                          pre=clean[block_open + 1:block_open + 1 + head.start(1) + len(head[1])].strip() if head[1] else '',
-                          pre_span=(block_open + 1 + head.start(1), block_open + 1 + head.end(1)),
+        found.append(dict(kind='guarded', start=at, end=block_end, guard=clean[guard.end():cond_end - 1],
+                          pre=clean[block_open + 1:head.start(1) + len(head[1])].strip() if head[1] else '',
+                          pre_span=(head.start(1), head.end(1)),
                           body_start=brace_at + 1, body_end=body_close - 1, test=test, test_span=(test_open + 1, test_end - 1),
                           counter=counter, bound=bound))
-    for loop in re.finditer(r'\bfor\s*\(', clean[part.opening:part.end]):
-        at = part.opening + loop.start()
-        head_end = close(clean, part.opening + loop.end() - 1)
+    for loop in _FOR.finditer(clean, opening, end):
+        at = loop.start()
+        head_end = close(clean, loop.end() - 1)
         if head_end is None:
             continue
-        header = clean[part.opening + loop.end():head_end - 1].split(';')
-        brace = re.match(r'\s*\{', clean[head_end:])
+        header = clean[loop.end():head_end - 1].split(';')
+        brace = _OPEN.match(clean, head_end)
         if len(header) != 3 or not brace:
             continue
-        brace_at = head_end + brace.end() - 1
+        brace_at = brace.end() - 1
         body_close = close(clean, brace_at, '{', '}')
         counter, bound = _bound(header[1])
-        init = re.fullmatch(r'\s*(' + IDENT + r')\s*=\s*0\s*', header[0])
+        init = _FOR_INIT.fullmatch(header[0])
         if body_close is None or not counter or not init or init[1] != counter:
             continue
-        found.append(Loop(kind='for', part=part, start=at, end=body_close, guard=None, pre='', pre_span=None, body_start=brace_at + 1,
+        found.append(dict(kind='for', start=at, end=body_close, guard=None, pre='', pre_span=None, body_start=brace_at + 1,
                           body_end=body_close - 1, test=header[1].strip(), counter=counter, bound=bound))
-    return sorted(found, key=lambda loop: loop.start)
+    return tuple(sorted(found, key=lambda loop: loop['start']))
 
 
 def _statements(clean, start, end):
