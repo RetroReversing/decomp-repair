@@ -587,6 +587,48 @@ def _link_pointer_reload(source, name, rows):
     ])
 
 
+_RECORD_RESET = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<load>{IDENT} = M2C_FIELD\((?P<record>{IDENT}), s32 \*, 0\);)\s*'
+    rf'(?P<zeroes>M2C_FIELD\((?P=record), s8 \*, 0x18\) = 0;\s*'
+    rf'M2C_FIELD\((?P=record), u8 \*, 0x19\) = 0U;\s*'
+    rf'M2C_FIELD\((?P=record), s8 \*, 0x1[Cc]\) = 0;\s*'
+    rf'M2C_FIELD\((?P=record), s8 \*, 0x1[Dd]\) = 0;\s*'
+    rf'M2C_FIELD\((?P=record), s16 \*, 0x14\) = 0;\s*'
+    rf'M2C_FIELD\((?P=record), s32 \*, 0x10\) = 0;)\s*'
+    rf'(?P<reset>M2C_FIELD\((?P=record), f32 \*, 0x[Cc]\) = 1\.0f;)'
+)
+
+
+def _stage_record_float_reset(source, name, rows):
+    """Place a disjoint float reset before the saved pointer reload."""
+    changed = [(i, row) for i, row in enumerate(rows) if row[0] != ' ']
+    if len(changed) != 2:
+        return None
+    (first, earlier), (last, later) = changed
+    load = 'lw $a0, ($s0)'
+    if last != first + 3 or earlier != ('o', '', load) or later != ('o', load, ''):
+        return None
+    target = normalized_integer_lines(row[1] for row in rows[first + 1:last + 7])
+    if target != (
+        'lui $at, 16256', 'mtc1 $at, $f0', load, 'sb $zero, 24($s0)',
+        'sb $zero, 25($s0)', 'sb $zero, 28($s0)', 'sb $zero, 29($s0)',
+        'sh $zero, 20($s0)', 'sw $zero, 16($s0)',
+    ):
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    hits = list(_RECORD_RESET.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    if re.search(r'/[*/]', source[hit.start():hit.end()]):
+        return None
+    indent = hit['indent']
+    fixed = f'{indent}{hit["reset"]}\n{indent}{hit["load"]}\n{indent}{hit["zeroes"]}'
+    return edit(source, [(*hit.span(), fixed)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -612,6 +654,8 @@ def variants(source, name, header, rows):
         return [('measured_scaled_field_store', candidate)]
     if candidate := _link_pointer_reload(source, name, rows):
         return [('measured_link_pointer_reload', candidate)]
+    if candidate := _stage_record_float_reset(source, name, rows):
+        return [('measured_record_float_reset', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
