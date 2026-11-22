@@ -103,3 +103,50 @@ def test_a_later_local_read_before_it_is_assigned_in_the_loop_is_not_merged():
 def test_only_word_sized_integer_types_are_exchanged():
     narrow = ARMS.replace('s32 index;', 's16 index;')
     assert not merged(narrow)
+
+
+CROSS = '''u32 f(s32 size, s32 tag, s32 mask)
+{
+    if (tag == 45) {
+        return 0;
+    } else {
+        u32 temp;
+        u32 inverse;
+        u32 start;
+        temp = gBottom + mask;
+        inverse = ~mask;
+        start = inverse & temp;
+        return start;
+    }
+    while (size != 0) {
+        u32 extra;
+        extra = size & mask;
+        size -= extra;
+    }
+    return 1;
+}
+'''
+
+
+def test_a_merge_across_blocks_declares_the_survivor_for_the_whole_function():
+    from decomprepair.disjoint_local_merge_repairs import SWAP_FAMILY
+    found = [(family, text) for family, text in variants(CROSS, 'f') if 'extra' not in text and 'temp = ' in text
+             and 'size & mask' in text]
+    merged = [text for family, text in found if family == FAMILY and 'temp = size & mask;' in text]
+    assert merged, found
+    assert merged[0].startswith('u32 f(s32 size, s32 tag, s32 mask)\n{\n    u32 temp;\n')
+    assert '        u32 temp;\n' not in merged[0]
+    swapped = [text for family, text in found if family == SWAP_FAMILY and 'temp = size & mask;' in text]
+    assert swapped and 'start = temp & inverse;' in swapped[0]
+
+
+def test_a_binary_and_with_a_local_is_not_an_address():
+    from decomprepair.integer_repair_support import _address_taken
+    assert not _address_taken('x = y & n;', 'n')
+    assert not _address_taken('x = a[i] & n;', 'n')
+    assert not _address_taken('x = (a + b) & n;', 'n')
+    assert not _address_taken('if (a && n)', 'n')
+    assert _address_taken('f(&n);', 'n')
+    assert _address_taken('p = (u32 *)&n;', 'n')
+    assert _address_taken('x = (s32)&n;', 'n')
+    assert _address_taken('return &n;', 'n')
