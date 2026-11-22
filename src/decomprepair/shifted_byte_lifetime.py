@@ -27,7 +27,8 @@ _PATTERN = re.compile(
 
 def variants(source, name, header=""):
     span = find(source, name)
-    if not span or re.search(r'\b(?:volatile|asm|__asm__)\b|^\s*#', source + '\n' + header, re.M):
+    if (not span or re.search(r'\b(?:volatile|asm|__asm__)\b', source + '\n' + header)
+            or re.search(r'^\s*#', source, re.M)):
         return []
     clean = _blank(source)
     opening = clean.find('{', span[0], span[1])
