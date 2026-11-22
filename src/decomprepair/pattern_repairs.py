@@ -1,6 +1,7 @@
 """Bounded source experiments learned from repair evidence; the exact judge decides every result."""
 
 import re
+from functools import lru_cache
 
 from . import call_result_repairs, expression_locals, loop_repairs, m2cfix, temporary_repairs, value_repairs
 from .csource import _blank, find
@@ -9,12 +10,28 @@ IDENT = r'[A-Za-z_]\w*'
 TYPE = r'(?:void\s*\*|[su](?:8|16|32)|unsigned\s+(?:char|short|int)|char|short|int)'
 
 
+@lru_cache(maxsize=16)
+def _brackets(left, right):
+    return re.compile('[' + re.escape(left + right) + ']')
+
+
 def close(text, start, left='(', right=')'):
+    """The position just past the bracket that closes the one at `start` (or, when `start` is no bracket, `start + 1`:
+    the depth is 0 there already). Only the brackets are visited: a C function is mostly not brackets, and a Python
+    loop over every character of it was the cost of every family that reads loops."""
+    if left == right:  # (no caller does this: keep what the plain scan answered)
+        for pos in range(start, len(text)):
+            return pos + 1
+        return None
+    if start >= len(text):
+        return None
+    if text[start] != left and text[start] != right:
+        return start + 1
     depth = 0
-    for pos in range(start,len(text)):
-        depth += (text[pos] == left) - (text[pos] == right)
+    for hit in _brackets(left, right).finditer(text, start):
+        depth += 1 if hit[0] == left else -1
         if depth == 0:
-            return pos+1
+            return hit.end()
     return None
 
 
