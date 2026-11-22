@@ -310,7 +310,12 @@ def refine_draft(draft: str, name: str, asm: str) -> str | None:
     body = re.sub(r"(M2C_FIELD\([^;]*?\)) = (?:\(\w+\) )?\(\1 ([&|^+-]) ([^;]+?)\);", r"\1 \2= \3;", body)
     for decl in re.finditer(r"^\s*((?:s|u)(?:8|16|32|64)|f32|f64) \*(var_\w+);", body, re.M):
         ctype, var = decl.group(1), decl.group(2)
-        if re.search(r"\b%s [+-]= %s;" % (re.escape(var), _NUMBER), body):
+        steps = re.findall(r"\b%s [+-]= (%s);" % (re.escape(var), _NUMBER), body)
+        # m2c writes a typed pointer's steps in bytes, so a step that isn't a whole number of elements was already
+        # written in elements (a u16 walk by `+= 3` loads with `lhu`, which a 3-byte stride couldn't): made `char *`
+        # it would step 3 bytes where the code steps 6 (a KMC gcc 2.7.2 collision sweep's triangle loops did).
+        size = {"8": 1, "16": 2, "32": 4, "64": 8}.get(re.sub(r"\D", "", ctype), 4)
+        if steps and all(int(step.rstrip("uU"), 0) % size == 0 for step in steps):
             # (the declaration is set aside while the uses are cast: it holds `*var` too)
             body = body.replace(decl.group(0), "\0DECL\0", 1)
             body = re.sub(r"\*%s\b(?!\s*[+-]=)" % re.escape(var), "*(%s *)%s" % (ctype, var), body)
