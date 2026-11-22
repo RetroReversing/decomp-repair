@@ -212,3 +212,120 @@ def test_every_family_is_named_and_offered_through_variants():
     families = {family for family, _ in repair.variants(UNION, 'f') + repair.variants(ARMS, 'f')
                 + repair.variants(LABEL, 'f') + repair.variants(COPY, 'f') + repair.variants(CHAIN, 'f')}
     assert families <= set(repair.FAMILIES) and {'phase_union_unshare', 'join_tail_arm_split', 'goto_body_copy', 'goto_chain_tail_split'} <= families
+
+
+# --- goto_run_copy ---------------------------------------------------------------------------------------------------
+# A state machine of labelled arms entered by a switch of gotos, shaped like a KMC-compiled save-slot function (1140
+# -> 0 there); checked on a small function of the same shape, never on game code.
+
+RUN = '''s32 f(s32 c) {
+  u8 *b;
+  b = gTable;
+  g(1, b);
+  if (c == 1) {
+    goto first;
+  }
+  b = gOther;
+  g(2, b);
+first:
+  h(b);
+  if (w() == 0) {
+    goto out;
+  }
+  k(b + 12);
+  return 1;
+out:
+  g(3, 0);
+  return 0;
+}
+'''
+
+TWO_RUNS = '''s32 f(s32 c) {
+  u8 *b;
+  s32 n;
+  b = gTable;
+  g(1, b);
+  if (c == 1) {
+    goto first;
+  }
+  if (c == 2) {
+    b = gOther;
+    g(2, b);
+    goto second;
+  }
+  b = gThird;
+  g(4, b);
+first:
+  h(b);
+  if (w() == 0) {
+    return 5;
+  }
+  goto second;
+second:
+  k(b + 12);
+  return 1;
+}
+'''
+
+
+def test_the_run_after_a_label_that_two_places_reach_is_copied_with_a_pointer_per_assignment():
+    (family, out), = repair.run_variants(RUN, 'f')
+    assert family == 'goto_run_copy'
+    # the goto's copy keeps the first pointer, the fall-through arm and the original run take the new one
+    assert '''  if (c == 1) {
+    h(b);
+    if (w() == 0) {
+      goto out;
+    }
+    k(b + 12);
+    return 1;
+  }''' in out
+    assert 'u8 *b_w1;' in out and 'b_w1 = gOther;' in out and 'h(b_w1);' in out and 'k(b_w1 + 12);' in out
+    assert 'goto first' not in out and out.count('h(') == 2
+
+
+def test_a_label_reached_by_one_place_only_is_left_alone():
+    single = RUN.replace('  if (c == 1) {\n    goto first;\n  }\n', '')
+    assert repair.run_variants(single, 'f') == []
+    assert repair._run_label_copies(single, 'f') == []
+
+
+def test_a_goto_that_is_the_body_of_an_unbraced_if_gets_braces_around_the_copy():
+    unbraced = RUN.replace('  if (c == 1) {\n    goto first;\n  }\n', '  if (c == 1)\n    goto first;\n')
+    (family, out), = repair.run_variants(unbraced, 'f')
+    assert 'goto first' not in out and out.count('{') == out.count('}')
+    head = out.index('if (c == 1)')
+    assert out.index('{', head) < out.index('h(b);') < out.index('}', head) < out.index('b_w1 = gOther;')
+
+
+def test_a_run_holding_a_label_or_a_loop_exit_is_not_copied():
+    nested = RUN.replace('    goto out;', 'again:\n    goto out;')
+    assert repair._run_label_copies(nested, 'f', 'first') == []
+    loop_exit = RUN.replace('  k(b + 12);', '  break;')
+    assert repair._run_label_copies(loop_exit, 'f', 'first') == []
+    plain = RUN.replace('  k(b + 12);', '  s32 later;\n  k(b + 12);')
+    assert repair._run_label_copies(plain, 'f', 'first') == []
+
+
+def test_a_run_that_falls_into_the_next_label_ends_each_copy_with_a_jump_to_it():
+    falling = TWO_RUNS.replace('  goto second;\nsecond:', 'second:')
+    (label, out, run), = repair._run_label_copies(falling, 'f', 'first')
+    assert label == 'first' and '''  if (c == 1) {
+    h(b);
+    if (w() == 0) {
+      return 5;
+    }
+    goto second;
+  }''' in out and 'h(b);' in run
+    assert [fam for fam, _ in repair.run_variants(falling, 'f')] == ['goto_run_copy']
+
+
+def test_the_web_split_leaves_a_pointer_whose_reads_are_reached_by_both_assignments():
+    assert repair.web_split(RUN, 'f') is None
+    split = repair.web_split(RUN.replace('first:\n  h(b);', 'first:\n  h(b);\n  b = gThird;\n  h(b);'), 'f')
+    assert split is not None and 'b_w1' in split[0] and split[1] == ['b']
+
+
+def test_the_run_copy_is_offered_through_variants_and_named():
+    families = {family for family, _ in repair.variants(RUN, 'f')}
+    assert 'goto_run_copy' in families and 'goto_run_copy' in repair.FAMILIES

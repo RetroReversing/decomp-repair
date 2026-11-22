@@ -338,11 +338,26 @@ def analyze(source, name, *, declarations=None, allow_unrelated_volatile=False):
     return None if held is _NONE else held.clone()
 
 
+_VOLATILE_CAST = re.compile(r'\(\s*volatile\s+(?:[A-Za-z_]\w*\s+)*[A-Za-z_]\w*\s*\*+\s*\)')
+
+
+def _function_volatile(part):
+    """The function's own text with the volatile accesses that cannot touch a local taken out.
+
+    A `volatile` in a declaration outside the function (`extern volatile s32 gStatus;`) and a `*(volatile T *)&global`
+    read or write inside it name memory no local is stored in; a local whose address is taken is not tracked at all
+    (`Flow.locals`). A game's status words and hardware registers are read this way, and one such read used to
+    switch off every liveness-based family for the whole function (a save-slot state machine's saved best carried two
+    of them, so none of the ~40 families that read `local_flow` ever proposed anything for it). A `volatile` local, or
+    a qualifier the cast pattern does not recognise, still declines."""
+    return _VOLATILE_CAST.sub(' ', part.clean[part.opening:part.end])
+
+
 def _analyze(source, name, declarations, allow_unrelated_volatile):
     part = view(source, name)
     if not part or re.search(r'\b(?:asm|__asm__|setjmp|_setjmp|sigsetjmp|longjmp)\b', part.clean):
         return None
-    if re.search(r'\bvolatile\b',part.clean):
+    if re.search(r'\bvolatile\b',_function_volatile(part)):
         ordinary = {(d.start(),d.end(),d['name'],d['type']) for d in locals_for(part)}
         if not allow_unrelated_volatile or not declarations or any(
                 (d.start(),d.end(),d['name'],d['type']) not in ordinary for d in declarations):

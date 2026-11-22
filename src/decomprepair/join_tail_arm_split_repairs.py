@@ -34,7 +34,15 @@ Three families, all offered on the whole function and all proposals the judge de
   half of the function also sets) may have to stay shared while the others split (a KMC-compiled N64 function, 80 -> 0:
   the child pointer stayed shared, the saved-state pointer and the value split per arm, and the last arm took every
   name of its own).
+- `goto_run_copy`: the same for a draft whose arms are labelled blocks reached by a `switch` of gotos, where the shared
+  part is a whole run of statements (calls, tests, a block copy) rather than one statement: a label at the top level
+  that two or more places reach (gotos, and the block above falling into it) has its run copied in place of every
+  `goto`, and a table pointer that the arms each assigned (`base = gTable;` at four arm heads, read by the run) becomes
+  one local per definition web. A save-slot state machine (KMC GCC 2.7.2, `-O2 -G8`) went 1140 -> 0 on exactly this:
+  every arm had its own single-set pointer, which the scheduler treats as a birth (placed beside its use) where the
+  shared multi-set pointer sat first in the block, and cross-jumping after allocation merged the identical tails.
 """
+import itertools
 import re
 
 from . import local_flow
@@ -49,7 +57,8 @@ TAIL_FAMILY = 'join_tail_arm_split'
 COPY_FAMILY = 'goto_body_copy'
 UNION_FAMILY = 'phase_union_unshare'
 CHAIN_FAMILY = 'goto_chain_tail_split'
-FAMILIES = (RENAME_FAMILY, TAIL_FAMILY, COPY_FAMILY, UNION_FAMILY, CHAIN_FAMILY)
+RUN_FAMILY = 'goto_run_copy'
+FAMILIES = (RENAME_FAMILY, TAIL_FAMILY, COPY_FAMILY, UNION_FAMILY, CHAIN_FAMILY, RUN_FAMILY)
 
 LIMIT = 10
 _KEYWORDS = {'if', 'else', 'while', 'for', 'do', 'switch', 'return', 'goto', 'break', 'continue', 'case', 'default',
@@ -668,6 +677,221 @@ def chain_variants(source, name):
                     if renamed != text:
                         out.append((CHAIN_FAMILY, renamed))
     return out[:LIMIT * 2]
+# --- goto_run_copy ---------------------------------------------------------------------------------------------------
+
+RUN_LIMIT_ITEMS = 60
+RUN_LABELS = 10  # labels tried per function: each is a copy and a flow analysis
+_RUN_LABEL = re.compile(rf'(?:^|[;{{}}])\s*(?!case\b|default\b)({IDENT})\s*:(?!:)')
+_RUN_BOUND = re.compile(r'\b(?:break|continue|case|default)\b')
+_DECLARATION = re.compile(rf'(?!(?:return|goto|else|do)\b)(?:const\s+|volatile\s+|unsigned\s+|signed\s+)*{IDENT}\b(?:\s+{IDENT}\b)?\s*\**\s*\b{IDENT}\b\s*(?:=|;|\[)')
+
+
+def web_split(source, name):
+    """Each local the arms assign separately, read by code several arms share, split into one local per web.
+
+    A web is a set of plain assignments (`v = E;`, E not reading v) that reach a common read; two webs are unrelated
+    values the draft kept in one name. The first web keeps the name, the others get `v_w1`, `v_w2`, ... declared beside
+    the original. Returns `(text, names)` or None when no local has two webs or a read is reached by an unknown value."""
+    part, end, clean = _body(source, name)
+    if not part:
+        return None
+    declarations = _declarations(part)
+    flow = local_flow.analyze(source, name, declarations=declarations)
+    if flow is None:
+        return None
+    reachable = set(dominators(flow))
+    edits, taken, split = [], set(), []
+    for decl in declarations:
+        variable = decl['name']
+        if variable not in flow.names:
+            continue
+        defs = [i for i in reachable if variable in flow.nodes[i].defines and not flow.nodes[i].start <= decl.start() < flow.nodes[i].end]
+        if len(defs) < 2:
+            continue
+        pattern = re.compile(rf'\s*{re.escape(variable)}\s*=(?!=)[^;]*;\s*')
+        if any(variable in flow.nodes[i].uses or not pattern.fullmatch(clean[flow.nodes[i].start:flow.nodes[i].end])
+               for i in defs):
+            continue
+        incoming = reaching(flow, variable, reachable)
+        parent = {i: i for i in defs}
+
+        def root(i, parent=parent):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        unknown = False
+        for i in reachable:
+            node = flow.nodes[i]
+            if variable not in node.uses:
+                continue
+            if not incoming[i] or -1 in incoming[i]:
+                unknown = True
+                break
+            first = min(incoming[i])
+            for d in incoming[i]:
+                parent[root(d)] = root(first)
+        if unknown:
+            continue
+        webs = {}
+        for i in defs:
+            webs.setdefault(root(i), []).append(i)
+        if len(webs) < 2:
+            continue
+        ordered = sorted(webs.values(), key=lambda members: min(flow.nodes[m].start for m in members))
+        web_of = {}
+        for k, members in enumerate(ordered):
+            for m in members:
+                web_of[m] = k
+        mentions = refs(part, decl)
+        rename = {}
+        ok = True
+        for hit in mentions:
+            owner = [i for i in reachable if flow.nodes[i].start <= hit.start() < flow.nodes[i].end
+                     and (variable in flow.nodes[i].uses or i in web_of)]
+            if len(owner) != 1:
+                ok = False
+                break
+            i = owner[0]
+            rename[hit.start()] = web_of[i] if i in web_of else web_of[root(min(incoming[i]))]
+        if not ok:
+            continue
+        fresh = {}
+        for k in range(1, len(ordered)):
+            fresh[k] = _fresh(variable, clean, taken, tag='w')
+        for hit in mentions:
+            k = rename[hit.start()]
+            if k:
+                edits.append((hit.start(), hit.end(), fresh[k]))
+        line = clean.rfind('\n', 0, decl.start()) + 1
+        indent = re.match(r'[ \t]*', source[line:])[0]
+        edits.append((decl.end(), decl.end(), ''.join(f'\n{indent}{_type_text(decl)}{fresh[k]};' for k in sorted(fresh))))
+        split.append(variable)
+    if not edits:
+        return None
+    for start, stop, text in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
+        source = source[:start] + text + source[stop:]
+    return source, split
+
+
+def _run_label_copies(source, name, label=None, only=None):
+    """(label, text, the run copied) for each top-level label whose run is copied in place of its gotos."""
+    part, end, clean = _body(source, name)
+    if not part:
+        return []
+    items = _items(clean, part.opening + 1, end - 1)
+    if not items:
+        return []
+    out = []
+    for k, item in enumerate(items):
+        found = _label(clean, *item)
+        if not found or (label and found != label):
+            continue
+        run = []
+        j = k + 1
+        terminated = False
+        while j < len(items):
+            text = clean[items[j][0]:items[j][1]]
+            if _label(clean, *items[j]):
+                break
+            run.append(items[j])
+            j += 1
+            if re.match(r'(?:return\b|goto\b)', text):
+                terminated = True
+                break
+        # the run ends on a jump, or falls into the next label (which each copy then jumps to)
+        landing = _label(clean, *items[j]) if j < len(items) and not terminated else None
+        if not run or not (terminated or landing) or len(run) > RUN_LIMIT_ITEMS:
+            continue
+        run_text = source[run[0][0]:run[-1][1]]
+        run_clean = clean[run[0][0]:run[-1][1]]
+        if _RUN_LABEL.search(run_clean) or _RUN_BOUND.search(run_clean) or any(
+                _DECLARATION.match(clean[a:b]) for a, b in run):
+            continue
+        jumps = [m for m in _gotos(clean, part, found)]
+        before = clean[items[k - 1][0]:items[k - 1][1]] if k else ''
+        falls_in = bool(k) and not re.match(r'(?:return\b|goto\b)', before) and not _label(clean, *items[k - 1])
+        # a jump already inside the run (`goto found;` from the run itself) is left alone
+        inside = [m for m in jumps if run[0][0] <= part.opening + m.start() < run[-1][1]]
+        outside = [m for m in jumps if m not in inside]
+        if len(outside) + (1 if falls_in else 0) < 2 or not outside:
+            continue
+        targets = [outside] if only is None else [[outside[i]] for i in only if i < len(outside)]
+        for chosen in targets:
+            edits = []
+            for jump in chosen:
+                at = part.opening + jump.start()
+                stop = part.opening + jump.end()
+                line = source.rfind('\n', 0, at) + 1
+                indent = re.match(r'[ \t]*', source[line:])[0]
+                first_line = source.rfind('\n', 0, run[0][0]) + 1
+                was = re.match(r'[ \t]*', source[first_line:])[0]
+                rows = run_text.strip().split('\n')
+                body = '\n'.join([rows[0]] + [indent + row[len(was):] if row.startswith(was) and row.strip() else row
+                                              for row in rows[1:]])
+                if landing:
+                    body += f'\n{indent}goto {landing};'
+                prefix = clean[:at].rstrip()
+                braced = prefix[-1:] == ')' or prefix.endswith('else')
+                edits.append((at, stop, '{\n' + indent + '  ' + body + '\n' + indent + '}' if braced else body))
+            if len(chosen) == len(outside) and not falls_in:
+                # every way in was replaced: the original run and its label are dead
+                edits.append(_cut(source, items[k][0], run[-1][1]))
+            elif len(chosen) == len(outside):
+                edits.append(_cut(source, *items[k]))  # the label alone: nothing jumps to it any more
+            text = source
+            for start, stop, replacement in sorted(edits, key=lambda e: e[0], reverse=True):
+                text = text[:start] + replacement + text[stop:]
+            if text != source:
+                out.append((found, text, run_clean))
+    return out
+
+
+def _pointer_names(source, name):
+    part, _, _ = _body(source, name)
+    return {d['name'] for d in _declarations(part) if d['type'].strip().endswith('*')} if part else set()
+
+
+def run_variants(source, name):
+    """The run of a label that several places reach copied in place of each goto, with the locals the copies read
+    split into one per assignment web, offered for one label at a time and for every label whose copy splits a pointer
+    at once (a table pointer assigned at each arm head is the value whose single-set copies matter; copying a run to
+    split a counter alone is the weaker bet, so those come after)."""
+    part, end, clean = _body(source, name)
+    if not part:
+        return []
+    pointers = _pointer_names(source, name)
+    labels = []
+    for found, _, _ in _run_label_copies(source, name):
+        if found not in labels:
+            labels.append(found)
+    labels = labels[:RUN_LABELS]
+    strong, weak, seen = [], [], set()
+    for found in labels:
+        for _, text, run in _run_label_copies(source, name, found)[:1]:
+            split = web_split(text, name)
+            if not split or split[0] in seen:
+                continue
+            seen.add(split[0])
+            reads = {v for v in split[1] if v in pointers and re.search(rf'\b{re.escape(v)}\b', run)}
+            (strong if reads else weak).append((found, split[0]))
+    out = [(RUN_FAMILY, text) for _, text in strong]
+    # steps that pay off only together are one child: every pair of pointer-splitting labels, and all of them
+    groups = [list(pair) for pair in itertools.combinations(strong, 2)]
+    if len(strong) > 2:
+        groups.append(list(strong))
+    for group in groups:
+        combined = source
+        for found, _ in group:
+            for _, text, _ in _run_label_copies(combined, name, found)[:1]:
+                combined = text
+        split = web_split(combined, name) if combined != source else None
+        if split and split[0] not in seen:
+            seen.add(split[0])
+            out.append((RUN_FAMILY, split[0]))
+    out += [(RUN_FAMILY, text) for _, text in weak]
+    return out[:LIMIT]
 
 
 def variants(source, name):
@@ -678,4 +902,4 @@ def variants(source, name):
     unions = union_variants(source, name)
     combined = [(UNION_FAMILY, renamed) for _, split in unions for _, renamed in rename_variants(split, name)]
     return (combined + unions + rename_variants(source, name) + tail_variants(source, name)
-            + copy_variants(source, name) + chain_variants(source, name))
+            + copy_variants(source, name) + chain_variants(source, name) + run_variants(source, name))
