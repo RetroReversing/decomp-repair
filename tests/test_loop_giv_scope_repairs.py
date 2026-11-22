@@ -323,3 +323,24 @@ def test_reused_temporary_split_chooses_an_unused_name():
     assert family == 'reused_temp_split'
     assert candidate == (source.replace('  s32 t;', '  s32 t;\n  s32 t_b1__;')
                          .replace('  t = h() - 1;\n  g(t);', '  t_b1__ = h() - 1;\n  g(t_b1__);'))
+
+
+def test_reused_temporary_split_keeps_assignments_feeding_switch_join():
+    source = '''void f(s32 which)
+{
+  s32 value;
+  switch (which) {
+  case 0:
+    value = 0;
+    break;
+  case 1:
+    value = h();
+    break;
+  default:
+    value = 2;
+    break;
+  }
+  g(value);
+}
+'''
+    assert not any('value_b1 = h();' in text for _, text in reused_temp_split_repairs.variants(source, 'f'))
