@@ -547,6 +547,46 @@ def _scaled_field_store(source, name, header, rows):
     return edit(source, [(*hit.span(), fixed)])
 
 
+_LINK_FIELDS = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<old>{IDENT}) = (?P<load>M2C_FIELD\((?P<anchor>{IDENT}), void \*\*, 0\));\s*'
+    rf'if \((?P=old) != NULL\) \{{\s*M2C_FIELD\((?P=old), void \*\*, 4\) = (?P<node>{IDENT});\s*\}}\s*'
+    rf'(?P<before>M2C_FIELD\((?P=node), void \*\*, 4\) = (?P=anchor);)\s*'
+    rf'M2C_FIELD\((?P=node), void \*\*, 0\) = (?P<reload>\(void \*\) (?P=load));\s*'
+    rf'M2C_FIELD\((?P=anchor), void \*\*, 0\) = (?P=node);'
+)
+
+
+def _link_pointer_reload(source, name, rows):
+    """Move the next-pointer reload before the previous-pointer store as in the target."""
+    changed = [(i, row) for i, row in enumerate(rows) if row[0] != ' ']
+    if len(changed) != 2:
+        return None
+    (first, earlier), (last, later) = changed
+    if first < 3 or last != first + 2 or earlier != ('o', '', 'sw $a1, 4($v1)'):
+        return None
+    if later != ('o', earlier[2], '') or rows[first + 1] != (' ', 'lw $v0, ($a1)', 'lw $v0, ($a1)'):
+        return None
+    if rows[first - 1] != (' ', 'sw $v1, 4($v0)', 'sw $v1, 4($v0)'):
+        return None
+    part = view(source, name)
+    if not part:
+        return None
+    hits = list(_LINK_FIELDS.finditer(part.clean, part.opening + 1, part.end))
+    if len(hits) != 1:
+        return None
+    hit = hits[0]
+    old, anchor, node = (hit[key] for key in ('old', 'anchor', 'node'))
+    if (len({old, anchor, node}) != 3 or len(re.findall(rf'\b{old}\b', part.body)) != 4
+            or not re.search(rf'\bvoid\s*\*\s*{old}\s*;', part.body)
+            or re.search(r'/[*/]', source[hit.start():hit.end()])):
+        return None
+    start = hit.start('before')
+    return edit(source, [
+        (start, start, f'{old} = {hit["load"]};\n{hit["indent"]}'),
+        (*hit.span('reload'), old),
+    ])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -570,6 +610,8 @@ def variants(source, name, header, rows):
         return [('measured_packed_color_channels', candidate)]
     if candidate := _scaled_field_store(source, name, header, rows):
         return [('measured_scaled_field_store', candidate)]
+    if candidate := _link_pointer_reload(source, name, rows):
+        return [('measured_link_pointer_reload', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']
