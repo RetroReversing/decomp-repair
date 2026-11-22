@@ -45,6 +45,7 @@ parse = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pycparser" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -59,6 +60,7 @@ provides-extras = ["parse"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pycparser", specifier = ">=2.22" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = "==0.14.0" },
 ]
