@@ -38,3 +38,16 @@ def test_a_parameter_used_once_or_addressed_is_left_alone():
 def test_a_function_without_parameters_or_with_asm_gives_nothing():
     assert not variants('void f(void) { g(); }\n', 'f')
     assert not variants(SOURCE.replace('scale = arg0->zoom;', 'asm("nop");'), 'render')
+
+
+def test_the_clobber_child_overwrites_the_parameter_after_the_copy():
+    found = [c for family, c in variants(SOURCE, 'render') if family == 'entry_parameter_clobber' and 'arg1_in)' in c]
+    assert found and all('arg1 = arg1_in;\n  arg1_in = 0;' in c and 's32 arg1_in)' in c for c in found)
+    assert len({c.index('arg1_in = 0;') for c in found}) == 3  # the same three places as the plain copy
+
+
+def test_the_clobber_child_runs_a_pointer_parameter_before_the_first_call():
+    source = 'void *spawn(s32 a, void *b) {\n  void *o;\n  o = make(0x50);\n  use(o, b);\n  use2(o, b);\n  return o;\n}\n'
+    found = [c for family, c in variants(source, 'spawn') if family == 'entry_parameter_clobber']
+    assert any(c.index('b = b_in;') < c.index('make(0x50)') and 'b_in = 0;' in c for c in found)
+    assert 'entry_parameter_clobber' in __import__('decomprepair.entry_parameter_copy_repairs', fromlist=['x']).FAMILIES
