@@ -61,8 +61,11 @@ DEFAULT = '''void f(int c)
 
 
 def test_default_moves_into_an_else_arm():
-    [(family, out)] = default_else_repairs.variants(DEFAULT, 'f')
-    assert family == 'default_into_else'
+    # default_into_then (0.5.605) also offers the inverted-test form of the same move, so the
+    # input has two variants; this test is about the else-arm one.
+    found = dict(default_else_repairs.variants(DEFAULT, 'f'))
+    assert set(found) == {'default_into_else', 'default_into_then'}
+    out = found['default_into_else']
     assert '  if (c != 0)\n  {\n    a = g();\n  }\n  else\n  {\n    a = 0;\n  }\n  h(a);' in out
     assert 'a = 0;\n  if' not in out
 
@@ -73,8 +76,9 @@ def test_default_stays_when_the_body_reads_it_first():
 
 def test_else_default_moves_back_in_front_of_its_if():
     one = default_else_repairs.variants(DEFAULT, 'f')[0][1]
-    [(family, out)] = default_else_repairs.variants(one, 'f')
-    assert family == 'else_into_default'
+    found = dict(default_else_repairs.variants(one, 'f'))
+    assert 'else_into_default' in found
+    out = found['else_into_default']
     assert out == DEFAULT
 
 
