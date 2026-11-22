@@ -189,3 +189,27 @@ void func(f32 *sp10)
     assert any('temp = 0.0f;' in t and t.count('= temp;') == 3 for t in out)
     # a literal that is used once is not worth a name
     assert texts("void func(f32 *p) { p[0] = 0.0f; }") == []
+
+
+def test_the_assignment_may_move_up_to_the_first_statement_it_can_cross():
+    # a real near-match's hand edit (`__m = i * 0xC;` at the head of the block, the call two statements later)
+    source = """\
+void func(s32 i, void *p)
+{
+  s32 x;
+  if (p) {
+    x = 1;
+    gFlag = 2;
+    use(x, gBase + (i * 12));
+  }
+}
+"""
+    out = texts("extern s32 gFlag;\nextern s32 gBase;\n" + source, 'temporary_hoist')
+    head = [t for t in out if 'temp = i * 12;\n    x = 1;' in t]
+    assert head and any('use(x, gBase + temp);' in t for t in head)
+    # it stops at a statement that changes what it reads, and never goes above a declaration
+    blocked = source.replace('    gFlag = 2;', '    i = 2;')
+    out = texts("extern s32 gBase;\n" + blocked, 'temporary_hoist')
+    assert not any('temp = i * 12;\n    x = 1;' in t for t in out)
+    assert any('i = 2;\n    temp = i * 12;\n    use(' in t for t in out)
+    assert not any('temp = i * 12;\n  s32 x;' in t for t in out)

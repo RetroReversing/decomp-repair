@@ -16,6 +16,10 @@ a load through a pointer, an index or a member), repeated or not:
   in every place the expression occurs in that statement; and, when it occurs more than once there, only in the
   first. A run that continues into the following statements of the same block, for as long as none of them changes
   anything the expression reads, is one more child;
+- and the same with the assignment moved up to the first statement of the block it can cross (a near-match's hand edit
+  put `__m = i * 0xC;` at the head of the block, two statements before the call that used it): it stops at a
+  declaration, a label, a nested block, a statement that changes something the expression reads or that has side
+  effects, and (for an expression that reads memory) one that calls;
 - `temporary_hoist_block`: the same, with the temporary declared at the head of the block the statement is in (gcc
   numbers a block's declarations when the block is entered, so the pseudo is numbered later);
 - `temporary_hoist_pair`: two operands of an associative chain held in a temporary and the chain written with it
@@ -213,7 +217,7 @@ def variants(source, name, header='', int_bits=None):
             root = parse(source, site.start, site.end, types.typedefs)
             if root is not None:
                 statements[site.index] = _Statement(site, root)
-    tmp = _fresh(source)
+    tmp, private = _fresh(source), _private(source, types)
     result, seen = [], {source}
 
     def add(label, text):
@@ -237,9 +241,16 @@ def variants(source, name, header='', int_bits=None):
             hold = _assignment(source, site, tmp, expression)
             uses = [(o.start, o.end, tmp) for o in (statement.outer(n) for n in nodes)]
             decl = _declaration_edit(source, types, all_sites, function_block, tmp, ty)
-            run = _run(source, types, all_sites, statements, site, statement, first, register_pure, tmp)
+            run = _run(source, types, private, all_sites, statements, site, statement, first, register_pure, tmp)
             if first.kind != 'num' or len(nodes) > 1:
                 add('temporary_hoist', _apply(source, [decl, hold] + uses))
+                early = _earliest(all_sites, statements, site, first, register_pure, types, private)
+                if early is not None:
+                    up = _assignment(source, early, tmp, expression)
+                    add('temporary_hoist', _apply(source, [decl, up] + uses))
+                    if site.block != function_block:
+                        add('temporary_hoist_block', _apply(source, [_declaration_edit(
+                            source, types, all_sites, site.block, tmp, ty), up] + uses))
                 if site.block != function_block:
                     block_decl = _declaration_edit(source, types, all_sites, site.block, tmp, ty)
                     add('temporary_hoist_block', _apply(source, [block_decl, hold] + uses))
@@ -265,9 +276,25 @@ def _private(source, types):
             and not re.search(r'(?<![\w.>])' + name + r'\b', body.split('{', 1)[0])}
 
 
-def _run(source, types, all_sites, statements, site, statement, node, register_pure, tmp):
+def _earliest(all_sites, statements, site, node, register_pure, types, private):
+    """The first statement of the block that the temporary's assignment may be moved up to, or None when it can't
+    move past the one before. It stops at a declaration (C89 puts none after a statement), a label, a nested block,
+    a statement with side effects, one that changes something the expression reads, and (for an expression that reads
+    memory) one that calls."""
+    dependencies, position = names(node), None
+    for earlier in reversed([s for s in all_sites if s.index < site.index]):
+        other = statements.get(earlier.index)
+        if (earlier.block != site.block or earlier.kind not in ('expr', 'if') or earlier.statement is None
+                or earlier.labeled or other is None or other.effects or (other.has_call and not register_pure)
+                or other.clobbers(dependencies, register_pure, types, private)):
+            break
+        position = earlier
+    return position
+
+
+def _run(source, types, private, all_sites, statements, site, statement, node, register_pure, tmp):
     """Edits that use the temporary in the following statements of the block too, or [] when none has the expression."""
-    dependencies, private = names(node), _private(source, types)
+    dependencies = names(node)
     if statement.clobbers(dependencies, register_pure, types, private):
         return []
     wanted = key(node)
