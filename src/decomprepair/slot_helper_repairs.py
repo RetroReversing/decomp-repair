@@ -38,8 +38,7 @@ def variants(source, name):
         return []
     kinds = {m[2]: re.sub(r'\s*(\*+)$', r' \1', re.sub(r'\s+', ' ', m[1].strip())) for m in re.finditer(r'^[ \t]*([A-Za-z_]\w*(?:\s*\*)+)\s*(\w+);', clean[opening:end], re.M)}
     locals_ = set(re.findall(r'^[ \t]*[A-Za-z_][\w \t\*]*?\b(\w+)\s*(?:\[[^\]]*\])?\s*;', clean[opening:end], re.M))
-    scale = r'(?:(\d+)|\(?\s*(\w+)\s*<<\s*(\d+)\s*\)?)'
-    forms = [rf'\(\s*(\w+)\s*\*\s*(\d+)\s*\)\s*\+\s*(\w+)', rf'(\w+)\s*\+\s*\(?\s*(\w+)\s*\*\s*(\d+)\s*\)?']
+    forms = [r'\(\s*(\w+)\s*\*\s*(\d+)\s*\)\s*\+\s*(\w+)', r'(\w+)\s*\+\s*\(?\s*(\w+)\s*\*\s*(\d+)\s*\)?']
     results = []
     for assign in re.finditer(r'^([ \t]*)(\w+) = ([^;\n]+);', clean[opening:end], re.M):
         target = assign[2]
