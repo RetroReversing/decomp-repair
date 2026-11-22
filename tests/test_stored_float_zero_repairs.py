@@ -111,3 +111,48 @@ def test_stack_word_requires_positive_zero_on_all_incoming_paths():
         source = STACK_SOURCE.replace('zero.bits = (unsigned int)context & ~(unsigned int)context;', changed)
         assert not repair.stack_word_variants(source, 'update', STACK_ROWS)
     assert repair.stack_word_variants(STACK_SOURCE.replace('zero.number;', '0.0f;'), 'update', STACK_ROWS)
+
+
+TAIL_SOURCE = '''\
+void update(void *state, int arm) {
+    if (arm == 2) {
+        *((f32 *) (((char *) state) + 0x14)) = 0.0f;
+        return;
+    }
+    if (arm == 3) goto clear_again;
+    if (arm == 4) goto clear_again;
+    return;
+clear_again:
+    *((f32 *) (((char *) state) + 0x14)) = 0.0f;
+}
+'''
+TAIL_ROWS = [
+    ('i', 'j update+0x20', 'j update+0x18'), (' ', 'nop', 'nop'),
+    ('i', 'bc1f .L20', 'bc1f .L18'), *([(' ', 'nop', 'nop')] * 3),
+    (' ', 'j update+0x2c', 'j update+0x2c'),
+    (' ', 'sw $zero, 0x14($s0)', 'sw $zero, 0x14($s0)'),
+    (' ', 'j update+0x2c', 'j update+0x2c'),
+    (' ', 'sw $zero, 0x14($s0)', 'sw $zero, 0x14($s0)'),
+    (' ', 'nop', 'nop'), (' ', 'jr $ra', 'jr $ra'), (' ', 'nop', 'nop'),
+]
+
+
+def test_distinguishes_the_two_identical_linked_zero_store_tails():
+    [(label, text)] = repair.distinct_tail_variants(TAIL_SOURCE, 'update', TAIL_ROWS)
+    assert label == repair.DISTINCT_TAIL
+    assert 'repair_zero_padding[0x14]' in text
+    assert 'clear_again:\n    ((RepairZeroRecord *) state)->repair_zero_field.repair_zero_bits = 0;' in text
+    assert text.count('= 0.0f;') == 1
+    assert not repair.distinct_tail_variants(text, 'update', TAIL_ROWS)
+
+
+def test_distinct_tails_require_both_edges_the_same_store_and_literal_positive_zero():
+    for rows in (
+        [TAIL_ROWS[0], *([(' ', 'nop', 'nop')] * 5), *TAIL_ROWS[6:]],
+        [*TAIL_ROWS[:9], (' ', 'sw $zero, 0x18($s0)', 'sw $zero, 0x18($s0)'), *TAIL_ROWS[10:]],
+        [('i', 'j other+0x20', 'j other+0x18'), *TAIL_ROWS[1:]],
+    ):
+        assert not repair.distinct_tail_variants(TAIL_SOURCE, 'update', rows)
+    assert not repair.distinct_tail_variants(TAIL_SOURCE.replace('goto clear_again;', 'return;', 1), 'update', TAIL_ROWS)
+    assert not repair.distinct_tail_variants(TAIL_SOURCE.replace('= 0.0f;', '= -0.0f;'), 'update', TAIL_ROWS)
+    assert not repair.distinct_tail_variants(TAIL_SOURCE, 'update', TAIL_ROWS, max_bytes=len(TAIL_SOURCE))
