@@ -23,7 +23,9 @@ FRAMED_RETURN = re.compile(
 )
 VARARGS_SPILL = re.compile(
     r'sw \$a0, (?:0x0|0)?\(\$sp\)\nsw \$a1, (?:0x4|4)\(\$sp\)\n'
-    r'sw \$a2, (?:0x8|8)\(\$sp\)\njr \$ra\nsw \$a3, (?:0x[cC]|12)\(\$sp\)'
+    r'sw \$a2, (?:0x8|8)\(\$sp\)\n'
+    r'(?:jr \$ra\nsw \$a3, (?:0x[cC]|12)\(\$sp\)|'
+    r'sw \$a3, (?:0x[cC]|12)\(\$sp\)\njr \$ra\nnop)'
 )
 INDEXED_STACK_HALFWORD = re.compile(
     rf'lw \$v0, (?P<base>{NUMBER})\(\$a0\)\nandi \$a1, \$a1, (?:0x[fF]{{4}}|65535)\n'
