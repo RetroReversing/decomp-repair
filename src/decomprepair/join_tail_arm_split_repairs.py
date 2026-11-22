@@ -25,6 +25,15 @@ Three families, all offered on the whole function and all proposals the judge de
 - `goto_body_copy`: `if (c) { goto L; }` followed by siblings whose arm holds `L:` gets that arm's body copied in place
   of the `goto` (the game wrote the shared body twice, e.g. `case 1: case 4:` as two macros), so each copy has its own
   constants' uses: a constant held in a saved register across a loop is ranked by how many uses it has.
+- `goto_chain_tail_split`: `if (a) { P...; goto L; } if (b) { Q...; do { R...; L: T... } while (0); } else { E... }`
+  (the only `goto L`, the two `if`s neighbours, the label in the then arm's last statement, bare or in a one-shot
+  wrapper) is `if (a) { P...; T... } else if (b) { Q...; R...; T... } else { E... }`: the jump skipped the rest of the
+  chain, so it is an `else if` chain whose arms each hold the tail, exactly what the game's two command macros were.
+  The rewrite is offered bare and with the arm-private renames of `arm_private_rename` restricted to the chain, as one
+  child each, plus every "all but one name" subset: a name the chain shares with code before it (a pointer the first
+  half of the function also sets) may have to stay shared while the others split (a KMC-compiled N64 function, 80 -> 0:
+  the child pointer stayed shared, the saved-state pointer and the value split per arm, and the last arm took every
+  name of its own).
 """
 import re
 
@@ -39,7 +48,8 @@ RENAME_FAMILY = 'arm_private_rename'
 TAIL_FAMILY = 'join_tail_arm_split'
 COPY_FAMILY = 'goto_body_copy'
 UNION_FAMILY = 'phase_union_unshare'
-FAMILIES = (RENAME_FAMILY, TAIL_FAMILY, COPY_FAMILY, UNION_FAMILY)
+CHAIN_FAMILY = 'goto_chain_tail_split'
+FAMILIES = (RENAME_FAMILY, TAIL_FAMILY, COPY_FAMILY, UNION_FAMILY, CHAIN_FAMILY)
 
 LIMIT = 10
 _KEYWORDS = {'if', 'else', 'while', 'for', 'do', 'switch', 'return', 'goto', 'break', 'continue', 'case', 'default',
@@ -555,6 +565,111 @@ def copy_variants(source, name):
     return out
 
 
+# --- goto_chain_tail_split -------------------------------------------------------------------------------------------
+
+_GOTO = re.compile(rf'goto\s+({IDENT})\s*;')
+_WRAP = re.compile(r'do\b')
+
+
+def _copyable(clean, start, end):
+    """A statement that may be written twice: one plain line, no label, jump, declaration or block of its own."""
+    text = clean[start:end]
+    return (text.endswith(';') and '{' not in text and not _label(clean, start, end)
+            and not re.match(r'(?:goto|return|break|continue|case|default|typedef|struct|union)\b', text)
+            and not re.match(rf'(?:[su]\d+|int|void|f32|f64|char|short|long|unsigned|{IDENT})\s+\**\s*{IDENT}\s*(?:=|;)', text))
+
+
+def _chain_parts(clean, part, first, second):
+    """(goto span, label, A items, T items, wrapper span or None, label span) for the two neighbouring ifs, or None."""
+    if not (re.match(r'if\b', clean[first[0]:first[1]]) and re.match(r'if\b', clean[second[0]:second[1]])):
+        return None
+    opening = clean.find('(', first[0])
+    then = _skip(clean, close(clean, opening), first[1])
+    then_end = _end(clean, then, first[1])
+    if clean[then] != '{' or then_end != first[1]:
+        return None
+    arm = _items(clean, then + 1, then_end - 1)
+    jump = _GOTO.fullmatch(clean[arm[-1][0]:arm[-1][1]]) if arm else None
+    if not jump or len(_gotos(clean, part, jump[1])) != 1:
+        return None
+    label = jump[1]
+    opening = clean.find('(', second[0])
+    then2 = _skip(clean, close(clean, opening), second[1])
+    then2_end = _end(clean, then2, second[1])
+    if clean[then2] != '{':
+        return None
+    body = _items(clean, then2 + 1, then2_end - 1)
+    if not body:
+        return None
+    for k, item in enumerate(body):
+        if _label(clean, *item) == label:
+            return arm[-1], label, body[:k], body[k + 1:], None, item
+    last = body[-1]
+    text = clean[last[0]:last[1]]
+    wrapper = re.fullmatch(r'do\s*({.*})\s*while\s*\(\s*0\s*\)\s*;', text, re.S) or re.fullmatch(r'({.*})', text, re.S)
+    if not wrapper:
+        return None
+    inner_open = last[0] + wrapper.start(1)
+    inner = _items(clean, inner_open + 1, last[0] + wrapper.end(1) - 1)
+    for k, item in enumerate(inner or []):
+        if _label(clean, *item) == label:
+            return arm[-1], label, inner[:k], inner[k + 1:], last, item
+    return None
+
+
+def chain_variants(source, name):
+    part, end, clean = _body(source, name)
+    if not part:
+        return []
+    blocks = _blocks(clean, part.opening + 1, end - 1)
+    if not blocks:
+        return []
+    out = []
+    for lo, hi, items in blocks:
+        for k in range(len(items) - 1):
+            first, second = items[k], items[k + 1]
+            found = _chain_parts(clean, part, first, second)
+            if not found or clean[first[1]:second[0]].strip():
+                continue
+            jump, label, before, tail, wrapper, mark = found
+            if not tail or not all(_copyable(clean, *t) for t in tail):
+                continue
+            if wrapper and not all(_copyable(clean, *i) for i in before):
+                unwrapped = False
+            else:
+                unwrapped = bool(wrapper)
+            line = source.rfind('\n', 0, jump[0]) + 1
+            indent = re.match(r'[ \t]*', source[line:])[0]
+            copy = f'\n{indent}'.join(source[a:b] for a, b in tail)
+            base = [(jump[0], jump[1], copy), (first[1], second[0], ' else ')]
+            shapes = [base + [_cut(source, *mark)]]
+            if unwrapped:
+                inner = [source[a:b] for a, b in before + tail]
+                shapes.append(base + [(wrapper[0], wrapper[1], ('\n' + indent).join(inner))])
+            for edits in shapes:
+                text = source
+                for start, stop, replacement in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
+                    text = text[:start] + replacement + text[stop:]
+                if text == source:
+                    continue
+                span = (first[0], second[1] + len(text) - len(source))
+                out.append((CHAIN_FAMILY, text))
+                found = _private_regions(text, name) or {}
+                inside = {}
+                for variable, (decl, regions, _) in found.items():
+                    kept = [r for r in regions if span[0] <= r[0] and r[1] <= span[1]]
+                    if kept:
+                        inside[variable] = (decl, kept, False)
+                if not inside:
+                    continue
+                picks = [inside] + ([{v: inside[v] for v in inside if v != skip} for skip in inside] if len(inside) > 1 else [])
+                for pick in picks:
+                    renamed = _apply_rename(text, name, pick)
+                    if renamed != text:
+                        out.append((CHAIN_FAMILY, renamed))
+    return out[:LIMIT * 2]
+
+
 def variants(source, name):
     """Every family of this module on one function.
 
@@ -563,4 +678,4 @@ def variants(source, name):
     unions = union_variants(source, name)
     combined = [(UNION_FAMILY, renamed) for _, split in unions for _, renamed in rename_variants(split, name)]
     return (combined + unions + rename_variants(source, name) + tail_variants(source, name)
-            + copy_variants(source, name))
+            + copy_variants(source, name) + chain_variants(source, name))
