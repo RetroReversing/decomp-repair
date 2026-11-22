@@ -1,6 +1,7 @@
 from decomprepair.measured_carried_loop_test import variants
 
-SOURCE = '''void f(void *obj) {
+SOURCE = '''#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))
+void f(void *obj) {
     s32 flag;
     s32 mode;
     s32 carry;
@@ -49,4 +50,5 @@ def test_requires_complete_source_and_target_evidence():
     assert not variants(SOURCE.replace('carry = 1U < 2U;', 'carry = 0;'),'f','',ROWS)
     assert not variants(SOURCE.replace('index += 1;', 'index += 2;'),'f','',ROWS)
     assert not variants(SOURCE,'f','#define mode value',ROWS)
+    assert not variants(SOURCE.replace('(*(type_ptr)((s8 *)(expr) + (offset)))', '(mode++)'),'f','',ROWS)
     assert not variants(SOURCE.replace('goto body;', 'goto body; extra();'),'f','',ROWS)
