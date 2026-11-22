@@ -8,6 +8,10 @@ identical N64 function needed exactly that order for each of its four command wo
 3160 instead of 0). `|` is associative and commutative, so every order means the same; this offers the chain flattened
 and rewritten with the literal operand first and the others in each order, one chain at a time, for chains of three
 or four side-effect-free operands. The judge picks the order.
+
+A narrowly recognized unsigned pack can also stage the first OR and weight
+the two shift definitions independently with one-shot scopes. This reproduces
+a KMC GCC 2.7.2 allocation that closed a two-register mismatch (10 -> 0).
 """
 import itertools
 import re
@@ -15,13 +19,78 @@ import re
 from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'or_chain_order'
-FAMILIES = (FAMILY,)
+WEIGHTED_FAMILY = 'weighted_or_pack'
+FAMILIES = (FAMILY, WEIGHTED_FAMILY)
 LIMIT = 10
 PER_CHAIN = 6
 LITERAL = re.compile(r'\s*(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*\s*\Z')
 PLAIN = re.compile(rf'{IDENT}\Z')
 # anything that is not a plain arithmetic operand: calls, assignments, comparisons, logic, the conditional
 UNSAFE = re.compile(rf'{IDENT}\s*\(|[^=!<>]=[^=]|\+\+|--|==|!=|<=|>=|&&|\|\||\?|[^<]<[^<]|[^>]>[^>]|\bvolatile\b|[,;{{}}]')
+
+
+def weighted_pack(source, part, header):
+    """Stage a single unsigned pack and change the two shifts' loop weights.
+
+    Each one-shot loop runs exactly once. The shifts, OR and store retain
+    their order, and the temporary locals must be dead after the store.
+    """
+    if '__repair_or_part' in source or re.search(r'\bvolatile\b', part.body):
+        return []
+    pattern = (rf'\bu32\s+(?P<high>{IDENT})\s*=\s*(?P<value>{IDENT})\s*<<\s*16\s*;\s*'
+               rf'u32\s+(?P<low>{IDENT})\s*=\s*(?P=value)\s*<<\s*8\s*;\s*'
+               rf'do\s*{{\s*(?P<dest>{IDENT}(?:(?:->|\.){IDENT})*)\s*=\s*(?P<expr>[^;{{}}]+);'
+               rf'\s*}}\s*while\s*\(\s*0\s*\)\s*;')
+    macros = set(re.findall(rf'^\s*#\s*define\s+({IDENT})\b', header + '\n' + source, re.M))
+    if 'u32' in macros:
+        return []
+    for hit in re.finditer(pattern, part.clean, re.M):
+        if not part.opening < hit.start() < hit.end() < part.end:
+            continue
+        high, low, value = hit['high'], hit['low'], hit['value']
+        if len({high, low, value}) != 3 or {high, low, value} & macros:
+            continue
+        if re.search(r'\b(?:volatile|const|static|register)\s*$', part.clean[:hit.start()]):
+            continue
+        # The source value must itself be an unsigned local, not a volatile
+        # read or a wider integer on which ~ has different promotions.
+        if len(re.findall(rf'\bu32\s+{re.escape(value)}\b', part.clean)) != 1:
+            continue
+        if any(len(re.findall(rf'\b{IDENT}\s+(?:\*\s*)*{re.escape(n)}\b', part.clean)) != 1
+               for n in (high, low, value)):
+            continue
+        if re.search(rf'\bvolatile\s+u32\s+{re.escape(value)}\b', part.clean):
+            continue
+        if re.search(r'\btypedef\b[^;]*\bvolatile\b[^;]*\bu32\s*;', header + '\n' + source):
+            continue
+        if any(re.search(rf'\b{re.escape(n)}\b', part.clean[hit.end():part.end]) for n in (high, low)):
+            continue
+        pieces = _split(hit['expr'])
+        if not pieces:
+            continue
+        operands = [re.sub(r'\s+', '', item) for piece in pieces for item in _flatten(piece)]
+        # The second form is the semantics-preserving OR identity offered by
+        # this module; the original literal-first chain is its saved parent.
+        literal = r'(0[xX][0-9a-fA-F]{1,8}[uU]?)'
+        match = None
+        if len(operands) == 4 and operands[1:] == [high, low, value]:
+            match = re.fullmatch(literal, operands[0])
+        elif len(operands) == 4 and operands[0] == high and operands[2:] == [low, value]:
+            match = re.fullmatch(rf'~{low}&{literal}', operands[1])
+        if not match:
+            continue
+        constant = match[1]
+        shift_high = f'{high} = {value} << 16;'
+        shift_low = f'{low} = {value} << 8;'
+        def wrap(statement, depth):
+            return 'do { ' * depth + statement + ' } while (0);' * depth
+        staged = (f'u32 {high}, {low}, __repair_or_part; '
+                  f'{wrap(shift_high, 3)} {wrap(shift_low, 3)} '
+                  f'do {{ __repair_or_part = {low} | {constant}; '
+                  f'do {{ {high} |= __repair_or_part; }} while (0); '
+                  f'{hit["dest"]} = {high} | {value}; }} while (0);')
+        return [(WEIGHTED_FAMILY, edit(source, [(hit.start(), hit.end(), staged)]))]
+    return []
 
 
 def _split(text):
@@ -106,7 +175,7 @@ def variants(source, name, header=''):
     # keep the outermost chains: a span inside another one belongs to the larger chain
     spans = [s for s in spans if len(_split(clean[s[0]:s[1]]) or []) > 1]
     spans = [s for s in spans if not any(o != s and o[0] <= s[0] and s[1] <= o[1] for o in spans)]
-    result = []
+    result = weighted_pack(source, part, header)
     for first, last in sorted(spans):
         text = clean[first:last]
         if UNSAFE.search(text):
