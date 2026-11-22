@@ -85,8 +85,55 @@ def _zero_orders(source, part, rows):
     return result[:4]
 
 
+_WORD_STORE = re.compile(rf'sw (?P<value>{REG}), (?P<offset>{IMM})?\((?P<base>{REG})\)')
+
+def _raw_word(suffix):
+    return (
+        rf'\(\s*\*\s*\(\s*s32\s*\*\s*\)\s*\(\s*\(\s*char\s*\*\s*\)\s*'
+        rf'\(\s*(?P<base{suffix}>{IDENT})\s*\)\s*\+\s*(?P<offset{suffix}>{IMM})'
+        rf'\s*\)\s*\)\s*=\s*(?P<value{suffix}>{IMM})\s*;'
+    )
+
+
+def _word_store_orders(source, part, rows):
+    """Two nonvolatile, disjoint word stores with literal right-hand sides."""
+    reversed_offsets = set()
+    for left, right in zip(rows, rows[1:]):
+        if left[1] != right[2] or right[1] != left[2]:
+            continue
+        first, second = (_WORD_STORE.fullmatch(row[1]) for row in (left, right))
+        if (first and second and first['base'] == second['base']
+                and first['value'] != '$zero' and second['value'] == '$zero'):
+            reversed_offsets.add((int(first['offset'] or '0', 0), int(second['offset'] or '0', 0)))
+    if not reversed_offsets:
+        return []
+    first, second = _raw_word(0), _raw_word(1)
+    choices = []
+    for match in re.finditer(rf'(?<=[;{{}}])\s*(?P<first>{first})\s*(?P<second>{second})',
+                             part.clean, re.M):
+        if not part.opening < match.start() < match.end() <= part.end:
+            continue
+        if (match['base0'] != match['base1'] or int(match['value0'], 0) != 0 or int(match['value1'], 0) == 0):
+            continue
+        base = match['base0']
+        if (len(declarators(part.clean, base)) != 1 or not re.search(
+                rf'\bvoid\s*\*\s*{base}\s*;', part.clean[part.opening:match.start()])):
+            continue
+        offsets = int(match['offset1'], 0), int(match['offset0'], 0)
+        if offsets not in reversed_offsets or abs(offsets[0] - offsets[1]) < 4 or any(offset % 4 for offset in offsets):
+            continue
+        start, end = match.span('first')
+        other_start, other_end = match.span('second')
+        gap = source[end:other_start]
+        if not gap.isspace():
+            continue
+        choices.append(('measured_adjacent_word_store_order',
+                        edit(source, [(start, other_end, source[other_start:other_end] + gap + source[start:end])])))
+    return choices if len(choices) == 1 else []
+
+
 def variants(source, name, rows):
     """Try the independently evidenced cursor and initialization repairs."""
     if not rows or not (part := view(source, name)):
         return []
-    return _publish(source, part, rows) + _zero_orders(source, part, rows)
+    return _publish(source, part, rows) + _zero_orders(source, part, rows) + _word_store_orders(source, part, rows)
