@@ -164,7 +164,9 @@ def _fold(text, name, tail, names):
             arms.setdefault(region, []).append(variable)
     folded = []
     for (lo, hi), variables in sorted(arms.items(), reverse=True):
-        for variable in sorted(variables, key=names.index):
+        # (a variable the arms name that the tail's own list lacks goes last: it must not raise, which stopped
+        # every family's proposals for the source)
+        for variable in sorted(variables, key=lambda v: names.index(v) if v in names else len(names)):
             step = _fold_in(text, name, lo, hi, tail, variable)
             if step:
                 text, hi = step
