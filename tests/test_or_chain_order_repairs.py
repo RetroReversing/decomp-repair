@@ -96,6 +96,8 @@ def test_weighted_pack_refuses_unproved_scope_and_expression_shapes():
     assert not _weighted(PACK.replace('u32 shade', 'volatile u32 shade'))
     assert not _weighted(PACK, '#define low read()')
     assert not _weighted(PACK, '#define u32 unsigned int')
+    assert not _weighted(PACK, '#define __repair_or_part value')
+    assert not _weighted(PACK, '#define do something')
     assert not _weighted(PACK, 'typedef volatile unsigned int u32;')
     assert not _weighted(PACK.replace('u32 low =', 'volatile u32 low ='))
     assert not _weighted(PACK.replace('u32 low =', 'u32 *low; u32 low ='))
