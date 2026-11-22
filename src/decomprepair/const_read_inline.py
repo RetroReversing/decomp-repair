@@ -70,7 +70,7 @@ def _top_level(clean_body):
 def _substitute(expr, values):
     for name, value in values.items():
         wrapped = value if ATOM.match(value) else '(' + value + ')'
-        expr = re.sub(rf'(?<![\w.>]){name}\b', lambda _: wrapped, expr)
+        expr = re.sub(rf'(?<![\w.>]){name}\b', lambda _, w=wrapped: w, expr)
     return expr
 
 
@@ -124,7 +124,7 @@ def variants(source, name, asm=''):
             text = text[:start] + replacement + text[stop:]
         for local, value in values.items():
             wrapped = value if ATOM.match(value) else '(' + value + ')'
-            text = re.sub(rf'(?<![\w.>]){local}\b', lambda _: wrapped, text)
+            text = re.sub(rf'(?<![\w.>]){local}\b', lambda _, w=wrapped: w, text)
         candidate = source[:paren + 1] + new_params + source[shut:opening] + text + source[end:]
         if candidate != source and (FAMILY, candidate) not in found:
             found.append((FAMILY, candidate))
