@@ -31,7 +31,7 @@ wheels = [
 
 [[package]]
 name = "decomprepair"
-version = "0.5.458"
+version = "0.5.459"
 source = { editable = "." }
 dependencies = [
     { name = "capstone" },
