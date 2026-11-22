@@ -193,19 +193,24 @@ def staged_address_order(source, name, header):
         if (not load or re.search(r'[{}]', body[load.end():hit.start()])
                 or re.search(rf'\b{re.escape(index)}\s*(?:=(?!=)|[+\-*/%&|^]=|\+\+|--)|(?:\+\+|--)\s*{re.escape(index)}\b',
                              body[load.end():hit.start()])
-                or re.search(rf'&\s*{re.escape(index)}\b', body)):
+                or re.search(rf'&\s*\(*\s*{re.escape(index)}\b', body)):
             continue
         for decl in re.finditer(rf'\bs32\s+({IDENT})\s*;', body[:hit.start()]):
             temp = decl[1]
             if (temp in {p, base, index} | macros or decl.start() > body.find('{')
-                    or re.search(rf'&\s*{re.escape(temp)}\b', body)):
+                    or re.search(rf'&\s*\(*\s*{re.escape(temp)}\b', body)):
                 continue
             word = rf'(?<![\w.>]){re.escape(temp)}\b'
             if re.search(word, body[:decl.start()] + body[decl.end():hit.start()]):
                 continue
+            # A carried value or a conditional overwrite would make the old
+            # value observable on another control-flow path.
+            if re.search(r'\b(?:for|while|do)\b', body[:hit.start()] + body[hit.end():]):
+                continue
             after = body[hit.end():]
             use = re.search(word, after)
-            if not use or not re.match(r'\s*=(?!=)', after[use.end():]):
+            if (not use or not re.match(r'\s*=(?!=)', after[use.end():])
+                    or re.search(r'[{}]|\b(?:if|switch|return|break|continue)\b', after[:use.start()])):
                 continue
             statement = after[use.end():].split(';', 1)[0]
             if re.search(word, statement):
