@@ -144,3 +144,28 @@ def test_every_callee_loses_the_stray_argument_together_and_nested_calls_pair_in
     texts = [text for _, text in t.variants(MERGED, 'f', MERGED_ASM)]
     both = [x for x in texts if 'put(3);' in x and 'other(3);' in x and 'wrap(get(a))' in x]
     assert both
+
+
+def test_drops_only_extra_global_pointer_when_other_call_already_has_the_target_arity():
+    source = """extern void *state;
+int g();
+void f(int value) {
+    int saved = g(1);
+    g(saved, state);
+}
+"""
+    asm = """addiu $a0, $zero, 1
+jal g
+nop
+move $a0, $s0
+jal g
+nop
+"""
+    candidates = [text for _, text in t.variants(source, 'f', asm)]
+    assert any('saved = g(1);' in text and 'g(saved);' in text for text in candidates)
+    assert not any('g(saved);' in text for _, text in t.variants(
+        source.replace('g(saved, state)', 'g(saved, get())'), 'f', asm))
+    assert not any('g(saved);' in text for _, text in t.variants(
+        source.replace('extern void *state;', 'extern volatile void *state;'), 'f', asm))
+    assert not any('g(saved);' in text for _, text in t.variants(
+        '#define state get()\n' + source, 'f', asm))
