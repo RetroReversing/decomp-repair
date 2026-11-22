@@ -142,6 +142,71 @@ def parameter_split_variants(source, name, header=''):
     return result[:4]
 
 
+
+def masked_phase_reuse(source, name):
+    """Reuse a disjoint unsigned local for a signed phase read only through a small mask."""
+    # Imported here because phase_lifetime_repairs also uses this module.
+    from .allocator_call_guards import dominators
+    from .phase_lifetime_repairs import reaching
+
+    flow = local_flow.analyze(source, name)
+    if not flow:
+        return []
+    part = flow.part
+    reachable = set(dominators(flow))
+    level = depth(part.clean, part.opening) + 1
+    unsigned = [d for d in flow.locals if d['type'] in ('u32', 'unsigned int') and depth(part.clean, d.start()) == level]
+    signed = [d for d in flow.locals if d['type'] in ('s32', 'int', 'signed int') and depth(part.clean, d.start()) == level]
+    out = []
+    for later in signed:
+        variable = later['name']
+        incoming = reaching(flow, variable, reachable)
+        for index in reachable:
+            node = flow.nodes[index]
+            assignment = re.fullmatch(rf'\s*{re.escape(variable)}\s*=(?!=)\s*{IDENT}\s*;\s*',
+                                      part.clean[node.start:node.end])
+            if not assignment or variable not in node.defines or variable in node.uses:
+                continue
+            uses = [i for i in reachable if variable in flow.nodes[i].uses and index in incoming[i]]
+            if not uses or any(incoming[i] != {index} for i in uses):
+                continue
+            edits = [(node.start + match.start(), node.start + match.end(), None)
+                     for match in re.finditer(rf'\b{re.escape(variable)}\b', part.clean[node.start:node.end])]
+            valid = True
+            for i in uses:
+                use = flow.nodes[i]
+                text = part.clean[use.start:use.end]
+                hits = list(re.finditer(rf'(?<![\w.>]){re.escape(variable)}\b', text))
+                for hit in hits:
+                    mask = re.match(r'\s*&\s*(0[xX][fF][fF]|255)\b', text[hit.end():])
+                    # Require the entire masked operation to be parenthesized;
+                    # otherwise a neighbouring operator can bind inside it.
+                    if not mask or not text[:hit.start()].rstrip().endswith('(') or not re.match(
+                            r'\s*\)', text[hit.end() + mask.end():]):
+                        valid = False
+                        break
+                    edits.append((use.start + hit.start(), use.start + hit.end() + mask.end(), mask[1]))
+                if not hits:
+                    valid = False
+            if not valid:
+                continue
+            for earlier in unsigned:
+                hits = refs(part, earlier)
+                if (not hits or hits[-1].end() >= node.start or not local_flow.disjoint(flow, earlier, later)):
+                    continue
+                replacement = earlier['name']
+                changes = [(start, end, replacement if mask is None else f'(int)({replacement} & {mask})')
+                           for start, end, mask in edits]
+                out.append(('merge_integer_lifetimes', edit(source, changes)))
+    # The phase merge may score worse alone: also offer its guarded sink as
+    # one child, so a strictly improving search can reach the combination.
+    from .guard_temp_sink_repairs import variants as sink_variants
+
+    combined = [('merge_integer_lifetimes', candidate) for _, parent in out
+                for _, candidate in sink_variants(parent, name)]
+    return list(dict.fromkeys(combined + out))[:16]
+
+
 def variants(source, name, header=''):
     part = view(source, name)
     if not part:
@@ -150,7 +215,7 @@ def variants(source, name, header=''):
     declarations = [decl for decl in locals_for(part) if depth(part.clean, decl.start()) == depth(part.clean, part.opening)+1]
     active = [(decl, refs(part, decl)) for decl in declarations]
     active = [(decl, hits) for decl, hits in active if hits]
-    result = parameter_split_variants(source, name, header)
+    result = parameter_split_variants(source, name, header) + masked_phase_reuse(source, name)
     # Splitting an independent top-level definition preserves every evaluation and update in its segment.
     for decl, hits in active:
         variable = decl['name']
