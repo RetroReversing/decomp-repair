@@ -13,6 +13,7 @@ from .operand_lifetime_repairs import _escaped, _in_scope, _typed_locals, _visib
 
 FAMILY = 'balanced_predicate_projection'
 SUBTRACT = 'carried_zero_global_subtract'
+SECOND = 'carried_zero_second_projection'
 _FPR = r'\$f(?:[12]?[0-9]|3[01])'
 _FIELD = re.compile(rf'lwc1 ({_FPR}), ({NUMBER})\((\$\w+)\)')
 _CALL = re.compile(rf'jal ({IDENT})')
@@ -23,6 +24,13 @@ _PROJECTION = re.compile(
     rf'(?m)^[ \t]*(?P<acc>{IDENT})\s*(?P<initial>=\s*0\.0[fF]\s*\+)\s*'
     rf'\(\s*(?P<axis>{IDENT})\s*\*\s*(?P<call>{IDENT})\([^;{{}}\n]+\)\s*\)\s*;'
 )
+_MATCHED_PROJECTION = re.compile(
+    rf'(?m)^[ \t]*(?P<acc>{IDENT})\s*\+=\s*\(\s*(?P<axis>{IDENT})\s*\*\s*'
+    rf'(?P<call>{IDENT})\([^;{{}}\n]+\)\s*\)\s*;'
+)
+_PRODUCT = re.compile(rf'mul\.s \$f0, ({_FPR}), \$f0')
+_IMMEDIATE_ZERO = re.compile(rf'mtc1 \$zero, ({_FPR})')
+
 _ZERO_UNION = re.compile(
     rf'\bunion\s*\{{\s*(?:u32|unsigned\s+int)\s+(?P<bits>{IDENT})\s*;\s*'
     rf'(?:f32|float)\s+(?P<number>{IDENT})\s*;\s*\}}\s*(?P<name>{IDENT})\s*;'
@@ -96,6 +104,53 @@ def _evidence(rows):
     return result
 
 
+
+def _projection_transfers(rows):
+    for at, (_, op, other) in enumerate(rows):
+        call = _CALL.fullmatch(op)
+        if not call or op != other:
+            continue
+        for offset, (_, left, right) in enumerate(rows[at + 1:at + 4], at + 1):
+            product = _PRODUCT.fullmatch(left)
+            if not product or left != right:
+                continue
+            after = rows[offset + 1:offset + 6]
+            tail = after[:4]
+            if (len(after) == 5 and after[3][1] == after[3][2]
+                    and (load := _FIELD.fullmatch(after[3][1])) and load[1] == '$f12'):
+                tail = [*after[:3], after[4]]
+            if len(tail) != 4 or not (carry := _CARRY.fullmatch(tail[0][1])):
+                break
+            gpr, register = carry.groups()
+            expected = [carry[0], 'nop', f'add.s {register}, {register}, $f0', f'mfc1 {gpr}, {register}']
+            if [line for _, line, _ in tail] != expected:
+                break
+            actual = [line for _, _, line in tail]
+            if actual == expected:
+                yield at, call[1], product[1], gpr, False
+            elif (zero := _IMMEDIATE_ZERO.fullmatch(actual[0])) and actual[1:] == [
+                    'nop', f'add.s $f0, $f0, {zero[1]}', f'mfc1 {gpr}, $f0']:
+                yield at, call[1], product[1], gpr, True
+            break
+
+
+def _adjacent_evidence(rows):
+    transfers = list(_projection_transfers(rows))
+    return {(first[1], second[1]) for first, second in zip(transfers, transfers[1:])
+            if second[4] and not first[4] and first[1] != second[1] and first[2] == second[2]
+            and first[3] != second[3] and second[0] - first[0] <= 12}
+
+
+def _second_projections(part, witness):
+    prior = list(_MATCHED_PROJECTION.finditer(part.clean, part.opening + 1, part.end))
+    for projection in _PROJECTION.finditer(part.clean, part.opening + 1, part.end):
+        before = next((m for m in reversed(prior) if m.end() <= projection.start()), None)
+        if (before is not None and (before['call'], projection['call']) in witness
+                and before['axis'] == projection['axis'] and before['acc'] != projection['acc']
+                and not part.clean[before.end():projection.start()].strip()):
+            yield before, projection
+
+
 def _prior_references(flow, parents, index, name, ignore=None):
     """Find the first other reference on each incoming path, including back edges."""
     if index == flow.entry:
@@ -161,7 +216,8 @@ def _positive_zero(flow, parents, projection, acc, unions, pointer_parameters):
 def variants(source, name, rows, *, header=''):
     witness = _evidence(rows)
     subtract_globals = _subtraction_evidence(rows)
-    visible = _visible(source, name, header) if witness or subtract_globals else None
+    adjacent = _adjacent_evidence(rows)
+    visible = _visible(source, name, header) if witness or subtract_globals or adjacent else None
     if not visible:
         return []
     part, context = visible
@@ -233,6 +289,18 @@ def variants(source, name, rows, *, header=''):
             ])))
             if len(proposals) == 4:
                 return proposals
+    for first, projection in _second_projections(part, adjacent):
+        acc, axis = projection['acc'], projection['axis']
+        node = flow.at(projection.start('acc'))
+        if (acc not in flow.names or axis == acc or axis not in floats or not node
+                or not _in_scope(part, floats[acc][1], projection.start('acc'))
+                or re.search(rf'\b{acc}\b', part.clean[projection.end('initial'):projection.end()])
+                or not macros_safe(source, header, part.body, {acc, axis, first['call'], projection['call'], *unions})
+                or not _positive_zero(flow, parents, indices[node.start], acc, unions, pointer_parameters)):
+            continue
+        proposals.append((SECOND, edit(source, [(*projection.span('initial'), '+=')])))
+        if len(proposals) == 4:
+            return proposals
     for subtraction in _SUBTRACTION.finditer(part.clean, part.opening + 1, part.end):
         acc, symbol = subtraction['acc'], subtraction['symbol']
         node = flow.at(subtraction.start('acc'))
