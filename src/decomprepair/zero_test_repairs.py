@@ -2,11 +2,35 @@
 import re
 
 from . import local_flow
+from .csource import _blank, find
 from .integer_repair_support import edit, refs
 from .pointer_pair_repairs import context, initialized
 
-FAMILIES=('word_zero_test_reuse',)
+FAMILIES=('word_zero_test_reuse', 'kmc_pointer_zero_identity')
 WORD={'s32','u32','int','unsigned int','signed int'}
+
+
+def pointer_zero_identity(source, name, arch, header=''):
+    """Keep an initialized pointer live through a zero initializer for GCC scheduling.
+
+    On KMC GCC the combiner folds x & ~x to zero after CSE, allowing a zero
+    register copy to survive. Limit it to an adjacent initialized pointer and
+    word local on 32-bit MIPS, where the u32 pointer conversion is supported.
+    """
+    if arch != 'mips' or not re.search(r'\bu32\b', source + header):return []
+    span=find(source,name)
+    if not span:return []
+    clean=_blank(source)
+    part=clean[span[0]:span[1]]
+    pattern=(r'\b(?:char|s8|u8|void)\s*\*\s*(?P<pointer>[A-Za-z_]\w*)\s*=\s*'
+             r'[A-Za-z_]\w*\s*;\s*(?:s32|u32|int|unsigned int)\s+[A-Za-z_]\w*\s*=\s*(?P<zero>0)\s*;')
+    result=[]
+    for hit in re.finditer(pattern,part):
+        pointer=hit['pointer']
+        expression=f'(u32){pointer} & ~(u32){pointer}'
+        result.append((FAMILIES[1],edit(source,[(span[0]+hit.start('zero'),span[0]+hit.end('zero'),expression)])))
+        if len(result)==4:break
+    return result
 
 
 def variants(source,name,arch,header=''):
@@ -15,7 +39,7 @@ def variants(source,name,arch,header=''):
     if part is None:return []
     flow=local_flow.analyze(source,name)
     if not flow:return []
-    out=[]
+    out=pointer_zero_identity(source,name,arch,header)
     # Reaching a use through a different predecessor would need a separate assignment.
     predecessors={i:set() for i in range(len(flow.nodes))}
     for i,node in enumerate(flow.nodes):
