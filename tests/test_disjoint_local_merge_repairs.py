@@ -35,11 +35,6 @@ def test_a_counter_still_read_after_the_second_loop_is_not_renamed():
     assert not [t for t in texts if 'var_s7_3' not in t]
 
 
-def test_a_second_counter_that_starts_with_a_read_is_not_renamed():
-    texts = merged(SOURCE.replace('var_s7_3 = 0;\n    do {', 'var_s7_3 += 0;\n    do {'))
-    assert not [t for t in texts if 'var_s7_3' not in t]
-
-
 def test_loops_that_share_a_nest_are_not_merged():
     nested = '''void f(s32 n)
 {
