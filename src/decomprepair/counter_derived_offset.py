@@ -20,6 +20,12 @@ the shift form comes first. A candidate rewrite; the exact judge decides.
 removed in the same child (the edit `one_shot_unwrap` makes alone): in that function the unwrap alone was 190, worse
 than the 115 it started from, and only after the offset edit did it give 0. One child holds both so a search that
 judges one step at a time doesn't have to pass through the 20 first.
+
+m2c's own draft spells the same walk as a `do { ... } while` loop with both steps at its end, `var_s0 += 1;
+var_s1 += 4;`, the two set to 0 beforehand (draft-cleanup measurement: no m2c draft of 90 had the agent's `for`, so
+the family never fired on one). The m2c form is rewritten the same way when the offset's every read is inside the
+loop and before both steps (so it always equals counter * K), both start at 0 on every path into the loop, and
+both are 32-bit integers; the read is cast to the offset's own type when the counter's differs, value for value.
 """
 import re
 
@@ -68,12 +74,106 @@ def _unwrapped(source, name):
     return edit(source, edits) if edits else None
 
 
+_INT32 = {'s32': 's32', 'int': 's32', 'signed int': 's32', 'M2C_UNK': 's32', 'M2C_UNK32': 's32',
+          'u32': 'u32', 'unsigned int': 'u32', 'unsigned': 'u32'}
+_M2C_STEPS = (re.compile(rf'(?P<i>{_ID})\s*\+=\s*1\s*;\s*(?P<off>{_ID})\s*\+=\s*(?P<k>{NUMBER})\s*;\s*}}\s*while\s*\('),
+              re.compile(rf'(?P<off>{_ID})\s*\+=\s*(?P<k>{NUMBER})\s*;\s*(?P<i>{_ID})\s*\+=\s*1\s*;\s*}}\s*while\s*\('))
+
+
+def _type(clean, ident):
+    m = re.search(rf'^[ \t]*((?:unsigned|signed)\s+int|unsigned|\w+)[ \t]+{re.escape(ident)}[ \t]*;', clean, re.M)
+    return _INT32.get(m[1]) if m else None
+
+
+def _assigned(text, ident):
+    v = re.escape(ident)
+    return re.search(rf'(?<![\w.>]){v}\s*(?:=(?!=)|[-+*/|&^%]=|<<=|>>=|\+\+|--)|(?:\+\+|--)\s*{v}\b|&\s*{v}\b', text)
+
+
+def _m2c_loops(source, name, part):
+    """The m2c `do { ... counter += 1; offset += K; } while (...)` walks, each read of offset as the counter."""
+    clean, out = part.clean, []
+    for steps in (hit for pattern in _M2C_STEPS for hit in pattern.finditer(clean, part.opening, part.end)):
+        counter, offset, k = steps['i'], steps['off'], int(steps['k'].rstrip('uUlL'), 0)
+        if counter == offset or not 0 < k <= 0x10000:
+            continue
+        # the `do {` this end closes: walk back to its opening brace
+        depth, at = 0, steps.end() - len(steps.group(0)) + steps.group(0).rindex('}')
+        while at > part.opening:
+            depth += {'}': 1, '{': -1}.get(clean[at], 0)
+            if depth == 0:
+                break
+            at -= 1
+        do = re.search(r'\bdo\s*$', clean[part.opening:at])
+        if depth or not do:
+            continue
+        loop_start, body_start, body_end = part.opening + do.start(), at + 1, steps.start()
+        types = _type(clean[part.opening:part.end], counter), _type(clean[part.opening:part.end], offset)
+        if None in types:
+            continue
+        inner = clean[body_start:body_end]
+        mention = rf'(?<![\w.>]){re.escape(offset)}\b'
+        reads = [body_start + m.start() for m in re.finditer(mention, inner)]
+        if not reads or _assigned(inner, offset) or _assigned(inner, counter) \
+                or re.search(r'\b(?:continue|goto|case|default)\b|^\s*\w+\s*:(?!:)', inner, re.M):
+            continue
+        cond_end = close(clean, steps.end() - 1)
+        if not cond_end or re.search(mention, clean[steps.end():part.end]):
+            continue
+        # both set to 0 before the loop, in blocks still open at the `do`, with nothing between that jumps or sets them
+        before = clean[part.opening + 1:loop_start]
+        inits = {}
+        for ident in (counter, offset):
+            found = list(re.finditer(rf'(?<![\w.>]){re.escape(ident)}\s*=\s*0\s*;', before))
+            if not found:
+                break
+            inits[ident] = found[-1]
+        if len(inits) != 2:
+            continue
+        first = min(m.start() for m in inits.values())
+        between = before[first:]
+        if re.search(r'\b(?:goto|while|for|return|break|continue)\b|^\s*\w+\s*:(?!:)', between, re.M):
+            continue
+        if any(_assigned(before[m.end():], ident) for ident, m in inits.items()):
+            continue
+        declaration = rf'(?m)^[ \t]*(?:(?:un)?signed\s+)?\w+[ \t]+{re.escape(offset)}[ \t]*;'
+        if re.search(mention, re.sub(declaration, '', before[:inits[offset].start()])):
+            continue
+        depth, low = 0, 0
+        for ch in between:
+            depth += {'{': 1, '}': -1}.get(ch, 0)
+            low = min(low, depth)
+        if low < 0:
+            continue
+        init = _line(source, part.opening + 1 + inits[offset].start(), part.opening + 1 + inits[offset].end())
+        step_at = steps.start('off')
+        step = _line(source, step_at, clean.index(';', step_at) + 1)
+        spellings = [f'({counter} << {k.bit_length() - 1})'] if k & (k - 1) == 0 else []
+        spellings.append(f'({counter} * {k})')
+        for spelling in spellings:
+            if types[0] != types[1]:
+                spelling = f'(({types[1]}) {spelling})'
+            edits = [(*init, ''), (*step, '')] + [(at, at + len(offset), spelling) for at in reads]
+            out.append((FAMILY, edit(source, edits)))
+    return out
+
+
+def _line(source, start, end):
+    """The span of a statement to remove: its whole line when nothing else is on it."""
+    head = source.rfind('\n', 0, start) + 1
+    tail = source.find('\n', end)
+    tail = len(source) if tail < 0 else tail + 1
+    if not source[head:start].strip() and not source[end:tail].strip():
+        return head, tail
+    return start, end
+
+
 def variants(source, name):
     part = view(source, name)
     if not part:
         return []
     body = lines(part, source)
-    out = []
+    out = _m2c_loops(source, name, part)
     for index in range(1, len(body)):
         loop = _FOR.fullmatch(body[index].stripped)
         decl = _DECL.fullmatch(body[index - 1].stripped)
