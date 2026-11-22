@@ -91,3 +91,9 @@ def test_masked_copy_requires_all_uses_to_be_narrow_and_helper_pure():
     assert not c.variants(MASKED.replace('(key & 0xFF)', 'key'), 'f')
     assert not c.variants(MASKED.replace('value = flat', 'if (a) value = flat'), 'f')
     assert not c.variants(MASKED.replace('copy = id;', 'copy = id; copy = id;'), 'f')
+
+
+def test_masked_split_offers_reversed_byte_operands_in_second_arm():
+    candidates = [text for _, text in c.variants(MASKED, 'f')]
+    assert any('!equal_byte(copy, value)' in text and '!equal_byte(value, copy)' in text for text in candidates)
+    assert not c.variants(MASKED.replace('u8 value;', 's32 value;'), 'f')
