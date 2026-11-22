@@ -1,6 +1,7 @@
 """Alternative call/leaf and switch layouts, with bounded work and explicit control-flow guards."""
 import re
 
+from .call_lifetime_repairs import block_path
 from .integer_repair_support import IDENT, INTEGER, NUMBER, edit, integer, view
 from .pattern_repairs import close
 
@@ -265,13 +266,64 @@ def store_tails(source, name, header=''):
 
 
 
+
+def selected_byte_stores(source, name, header=''):
+    """Try writing a selected byte directly from its branches instead of a scratch spill."""
+    part = view(source, name)
+    if not part or not re.search(r'\bvolatile\s+(?:short|s16|u16)\b', part.body):
+        return []
+    context = header + '\n' + part.clean
+    byte_globals = set(re.findall(rf'\bextern\s+(?:u8|unsigned\s+char)\s+({IDENT})\s*;', context))
+    pattern = re.compile(
+        rf'\bif\s*\(\s*(?P<outer>{IDENT}(?:\s*!=\s*0)?)\s*\)\s*{{'
+        rf'\s*(?:if\s*\(\s*1\s*\)\s*{{\s*)?if\s*\(\s*(?P<inner>{IDENT})\s*\)'
+        rf'\s*{{\s*(?P<temp>{IDENT})\s*=\s*(?P<literal>{NUMBER})\s*;\s*}}'
+        rf'\s*else\s*{{\s*(?P=temp)\s*=\s*(?P=literal)\s*;\s*}}'
+        rf'\s*(?:}}\s*(?P<empty>if\s*\(\s*{IDENT}\s*==\s*0\s*\)\s*{{\s*}})\s*)?}}'
+        rf'\s*else(?:\s+if\s*\(\s*1\s*\))?\s*{{\s*(?P=temp)\s*=\s*(?P<read>{IDENT})\s*;\s*}}'
+        rf'\s*(?P<dest>{IDENT})\s*=\s*(?P=temp)\s*;')
+    result = []
+    for hit in pattern.finditer(part.clean, part.opening + 1, part.end - 1):
+        temp, dest = hit['temp'], hit['dest']
+        if not {dest, hit['read']} <= byte_globals or integer(hit['literal']) > 255:
+            continue
+        if part.clean[part.opening:hit.start()].rstrip()[-1:] not in {';', '{', '}'}:
+            continue
+        # The scratch object is local, and its only uses are the four shown
+        # above. Do not externalize an address or remove any other access.
+        declaration = re.compile(rf'(?<=[;{{}}])\s*volatile\s+(?:short|s16|u16)\s+{temp}\s*;').search(
+            part.clean, part.opening + 1, hit.start())
+        if (not declaration or block_path(part, declaration.start()) != [part.opening]
+                or len(re.findall(rf'\b{temp}\b', part.body)) != 5
+                or re.search(rf'(?m)^\s*#\s*define[^\n]*\b{temp}\b', context)):
+            continue
+        involved = {dest, hit['read'], temp} | set(re.findall(IDENT, hit['outer'] + ' ' + hit['inner']))
+        if involved & set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})', context)):
+            continue
+        if any(re.search(rf'\b{IDENT}\s+\**\s*{obj}\s*(?=[;=,\[])', part.body)
+               for obj in (dest, hit['read'])):
+            continue
+        store = f'{dest} = {hit["literal"]};'
+        empty = hit['empty'] or ''
+        # Preserve even an observational read in the empty condition before
+        # the external store. Only one of the duplicated arms executes.
+        replacement = (f'if ({hit["outer"]}) {{ if ({hit["inner"]}) {{ {empty} {store} }} '
+                       f'else {{ {empty} {store} }} }} else {{ {dest} = {hit["read"]}; }}')
+        start, stop = declaration.span()
+        if stop > hit.start():
+            continue
+        result.append(('branch_store_tail', edit(source, [(start, stop, ''),
+                                                          (hit.start(), hit.end(), replacement)])))
+    return result[:4]
+
+
 def scalar_tails(source, name, header=''):
     """Sink shared scalar products or resets that can move past an independent local assignment."""
     from . import pointer_pair_repairs
     from .integer_repair_support import locals_for
     part, _, macros = pointer_pair_repairs.context(source, name, header)
     if not part:
-        return []
+        return selected_byte_stores(source, name, header)
     locals_ = {decl['name'] for decl in locals_for(part)
                if part.clean[part.opening+1:decl.start()].count('{')
                == part.clean[part.opening+1:decl.start()].count('}')}
