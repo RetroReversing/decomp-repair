@@ -43,7 +43,37 @@ SHAPE = re.compile(
     r'[ \t]*return (?P=result);[ \t]*\n')
 
 
-def variants(source, name):
+
+def _standalone_copy(source, clean, header, span, hit):
+    """A result copy immediately before a plain field comparison is dead on failure."""
+    node, result = hit['node'], hit['result']
+    before = clean[hit.start('before'):hit.end('before')]
+    if (node == result or not re.fullmatch(rf'\s*{re.escape(result)}\s*=\s*{re.escape(node)}\s*;\s*', before)
+            or re.search(r'/[*/]|#', source[hit.start():hit.end()])):
+        return False
+    number = r'(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*'
+    condition = re.fullmatch(rf'\s*M2C_FIELD\(\s*{re.escape(node)}\s*,\s*s32\s*\*\s*,\s*{number}\s*\)'
+                             rf'\s*!=\s*(?P<key>[A-Za-z_]\w*)\s*', hit['condition'])
+    next_node = re.fullmatch(rf'\s*M2C_FIELD\(\s*{re.escape(node)}\s*,\s*void\s*\*\*\s*,\s*{number}\s*\)\s*', hit['next'])
+    if not condition or not next_node:
+        return False
+    key = condition['key']
+    if (key in (node, result) or re.search(rf'&\s*(?:{re.escape(node)}|{re.escape(result)}|{re.escape(key)})\b', clean[span[0]:span[1]])
+            or any(len(re.findall(rf'\bvoid\s*\*\s*{re.escape(v)}\b', clean[span[0]:span[1]])) != 1 for v in (node, result))
+            or not re.search(rf'\bs32\s+{re.escape(key)}\s*(?:,|\))', clean[span[0]:clean.find('{', span[0], span[1])])):
+        return False
+    context = source + '\n' + header
+    if re.search(r'\bvolatile\b', clean[span[0]:span[1]]):
+        return False
+    macros = re.findall(r'(?m)^\s*#\s*define[^\n]*', context)
+    if any(re.search(rf'\b{re.escape(n)}\b', line) for n in (node, result, key) for line in macros):
+        return False
+    definitions = re.findall(r'(?m)^\s*#\s*(?:define|undef)\s+M2C_FIELD\b[^\n]*', context)
+    return len(definitions) == 1 and bool(re.fullmatch(
+        r'\s*#\s*define\s+M2C_FIELD\(expr,\s*type_ptr,\s*offset\)\s*'
+        r'\(\*\(type_ptr\)\(\(s8\s*\*\)\(expr\)\s*\+\s*\(offset\)\)\)\s*', definitions[0]))
+
+def variants(source, name, header=''):
     span = find(source, name)
     if not span:
         return []
@@ -57,12 +87,18 @@ def variants(source, name):
         node, found = hit['node'], hit['result']
         condition = source[hit.start('condition'):hit.end('condition')]
         copy = list(re.finditer(r'(?<![\w.>])' + found + r'\s*=\s*' + node + r'\s*,\s*', condition))
-        if len(copy) != 1 or len(re.findall(r'\bgoto\s+' + hit['loop'] + r'\b', clean[opening:end])) != 1:
+        if len(re.findall(r'\bgoto\s+' + hit['loop'] + r'\b', clean[opening:end])) != 1:
             continue
-        condition = condition[:copy[0].start()] + condition[copy[0].end():]
+        before_text = source[hit.start('before'):hit.end('before')]
+        if len(copy) == 1:
+            condition = condition[:copy[0].start()] + condition[copy[0].end():]
+        elif not copy and _standalone_copy(source, clean, header, span, hit):
+            before_text = ''
+        else:
+            continue
         rest = clean[opening:hit.start()] + clean[hit.end():end]
         indent, inner = hit['indent'], hit['indent'] + '    '
-        before = ''.join(inner + line.strip() + '\n' for line in source[hit.start('before'):hit.end('before')].splitlines()
+        before = ''.join(inner + line.strip() + '\n' for line in before_text.splitlines()
                          if line.strip())
         loop = (f'{indent}while ({node} != NULL) {{\n' + before
                 + f'{inner}if (!({condition})) {{\n{inner}    return {node};\n{inner}}}\n'
