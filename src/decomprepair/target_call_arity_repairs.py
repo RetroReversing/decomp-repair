@@ -118,7 +118,9 @@ def variants(source, name, asm):
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
         return []
-    result = _variants(source, name, asm, clean, opening, end, calls(asm))
+    prepared = calls(asm)
+    result = _leading_pointer(source, name, clean, opening, end, prepared)
+    result += _variants(source, name, asm, clean, opening, end, prepared)
     for text in _variants(source, name, asm, clean, opening, end, calls(asm, consumed=True)):
         if text not in result:
             result.append(text)
@@ -130,6 +132,49 @@ def variants(source, name, asm):
         if merged and merged not in [t for _, t in result]:
             result.append((FAMILY, merged))
     return result[:10]
+
+
+def _leading_pointer(source, name, clean, opening, end, prepared):
+    """Try dropping a forwarded pointer before three same-width scalar arguments."""
+    span = find(source, name)
+    signature = re.search(rf'\b{re.escape(name)}\s*\(([^()]*)\)', clean[span[0]:opening])
+    if not signature:
+        return []
+    pointers = set(re.findall(rf'\bvoid\s*\*\s*({IDENT})\s*(?=,|$)', signature[1]))
+    if not pointers:
+        return []
+    result = []
+    body = clean[opening:end]
+    for callee, registers in prepared:
+        if set(registers) != set(ARGREG[:3]) or sum(other == callee for other, _ in prepared) != 1:
+            continue
+        pattern = rf'\b{re.escape(callee)}\s*\('
+        sites = list(re.finditer(pattern, body))
+        declarations = list(re.finditer(pattern+r'([^()]*)\)\s*;', clean[:span[0]]))
+        if len(sites) != 1 or len(declarations) != 1 or len(re.findall(pattern, clean)) != 2:
+            continue
+        proto = declarations[0]
+        params = [param.strip() for param in proto[1].split(',')]
+        if len(params) != 4 or not re.fullmatch(rf'void\s*\*\s*(?:{IDENT})?', params[0]):
+            continue
+        widths = [re.fullmatch(rf'([su](?:8|16|32))(?:\s+{IDENT})?', param) for param in params[1:]]
+        if not all(widths) or len({width[1] for width in widths}) != 1:
+            continue
+        start = opening + sites[0].end()
+        closing = close(clean, start - 1)
+        if not closing:
+            continue
+        inner = clean[start:closing - 1]
+        args = m2cfix._split_top_level(inner)
+        if (len(args) != 4 or args[0].strip() not in pointers
+                or not all(re.fullmatch(IDENT, arg.strip()) for arg in args[1:])):
+            continue
+        call_start = start + _offset(inner, 1) + 1
+        proto_start = proto.start(1) + proto[1].index(',') + 1
+        repaired = source[:start] + source[call_start:].lstrip(' \t')
+        repaired = repaired[:proto.start(1)] + repaired[proto_start:].lstrip(' \t')
+        result.append((FAMILY, repaired))
+    return result
 
 
 def _merged(source, name, asm, reading):
