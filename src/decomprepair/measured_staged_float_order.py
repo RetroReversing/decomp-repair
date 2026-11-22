@@ -8,19 +8,108 @@ from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'measured_staged_float_order'
 _FLOAT = r'(?:f32|float)'
-_ADDRESS = rf'\({_FLOAT}\s*\*\)\s*\(\(\(char\s*\*\)\s*(?P<base>{IDENT})\)\s*\+\s*(?P<offset>0x[\da-fA-F]+)\)'
+_ADDRESS = rf'\((?P<field_type>{_FLOAT})\s*\*\)\s*\(\(\(char\s*\*\)\s*(?P<base>{IDENT})\)\s*\+\s*(?P<offset>0x[\da-fA-F]+)\)'
 _HELPER = re.compile(
-    rf'\b(?:inline\s+static|static\s+inline)\s+{_FLOAT}\s+({IDENT})\s*'
-    rf'\(\s*{_FLOAT}\s*\*\s*({IDENT})\s*,\s*{_FLOAT}\s+({IDENT})\s*\)\s*'
-    r'\{\s*return\s+\*\s*\2\s*\+\s*\3\s*;\s*\}'
+    rf'\b(?:inline\s+static|static\s+inline)\s+(?P<type>{_FLOAT})\s+(?P<name>{IDENT})\s*'
+    rf'\(\s*(?P=type)\s*\*\s*(?P<field>{IDENT})\s*,\s*(?P=type)\s+(?P<delta>{IDENT})\s*\)\s*'
+    r'\{\s*return\s+\*\s*(?P=field)\s*\+\s*(?P=delta)\s*;\s*\}'
 )
 _CAPTURE = re.compile(
-    rf'(?m)^[ \t]*(?P<local>{IDENT})\s*=\s*(?P<helper>{IDENT})\s*\({_ADDRESS},'
+    rf'(?m)^[ \t]*(?P<local>{IDENT})\s*=\s*(?P<helper>{IDENT})\s*\((?P<address>{_ADDRESS}),'
     rf'\s*(?P<delta>{IDENT}(?:\.{IDENT})?)\s*\)\s*;[ \t]*\n'
 )
 _STORE = re.compile(rf'(?m)^[ \t]*\*\({_ADDRESS}\)\s*=\s*(?P<local>{IDENT})\s*;[ \t]*\n')
 _DECL = re.compile(rf'(?m)^[ \t]*(?:(?:extern|register)\s+)?{_FLOAT}\s+({IDENT})\s*;')
 _ASM_STORE = re.compile(r'swc1 \$f\d+, (0x[\da-f]+)\((\$\w+)\)')
+_ASM_LOAD = re.compile(r'lwc1 \$f\d+, (0x[\da-f]+)\((\$\w+)\)')
+_GLOBAL_LOAD = re.compile(rf'lwc1 \$f\d+, %lo\(({IDENT})\)\(\$\w+\)')
+_EXTERN_FLOAT = re.compile(rf'(?m)^[ \t]*extern\s+(?P<type>{_FLOAT})\s+(?P<name>{IDENT})\s*;')
+_WORD_UNION = re.compile(
+    rf'(?m)^[ \t]*union\s*\{{\s*(?:s32|u32|int|unsigned\s+int)\s+{IDENT}\s*;'
+    rf'\s*(?P<type>{_FLOAT})\s+(?P<member>{IDENT})\s*;\s*}}\s*(?P<name>{IDENT})\s*;'
+)
+
+
+def _swapped_global_loads(rows):
+    for index, (kind, target, candidate) in enumerate(rows):
+        if kind == ' ':
+            continue
+        field, global_load = _ASM_LOAD.fullmatch(target), _GLOBAL_LOAD.fullmatch(candidate)
+        if not field or not global_load:
+            continue
+        for _, later_target, later_candidate in rows[index + 1:index + 9]:
+            later_global = _GLOBAL_LOAD.fullmatch(later_target)
+            later_field = _ASM_LOAD.fullmatch(later_candidate)
+            if later_global and later_field and later_global[1] == global_load[1] and later_field.groups() == field.groups():
+                yield global_load[1], int(field[1], 16), field[2], index
+
+
+def _direct_capture(source, hit, kind):
+    indent = source[hit.start():hit.start('local')]
+    address = source[hit.start('address'):hit.end('address')]
+    direct = f"{indent}{hit['local']} = ({kind}) ((*{address}) + {hit['delta']});\n"
+    return hit.start(), hit.end(), direct
+
+
+def _store_edit(source, stores, order):
+    reordered = ''.join(source[stores[i].start():stores[i].end()] for i in order)
+    return stores[0].start(), stores[-1].end(), reordered
+
+
+def _target_store_order(rows, index, base, stores):
+    positions = {int(hit['offset'], 16): i for i, hit in enumerate(stores)}
+    order = []
+    for _, target, _ in rows[index:index + 40]:
+        if match := _ASM_STORE.fullmatch(target):
+            offset = int(match[1], 16)
+            if match[2] == base and offset in positions:
+                order.append(positions[offset])
+                if len(order) == len(stores):
+                    break
+    if len(set(order)) == len(stores):
+        return order
+    return []
+
+
+def _inline_global_candidates(source, captures, stores, rows, helpers, externs, unions, mismatched, macros):
+    if len(stores) < 4 or not mismatched.intersection(int(hit['offset'], 16) for hit in stores[:4]):
+        return []
+    result = []
+    by_field = {(hit['delta'], int(hit['offset'], 16)): hit for hit in captures}
+    by_local = {hit['local']: hit for hit in captures}
+    for delta, offset, base, index in _swapped_global_loads(rows):
+        hit = by_field.get((delta, offset))
+        if (hit is None or delta in macros or externs.get(delta) != hit['field_type']
+                or helpers[hit['helper']] != hit['field_type']):
+            continue
+        inline = _direct_capture(source, hit, externs[delta])
+        result.append((FAMILY, edit(source, [inline])))
+        # Keep every capture ahead of the stores. Try bringing the first
+        # store after the reordered group forward to fill a transfer delay.
+        for prefix in permutations(range(3)):
+            order = (3, *prefix, *range(4, len(stores)))
+            result.append((FAMILY, edit(source, [inline, _store_edit(source, stores, order)])))
+        order = _target_store_order(rows, index, base, stores)
+        if not order:
+            continue
+        terminal = by_local[stores[order[-1]]['local']]
+        delta = terminal['delta']
+        if (unions.get(delta) != terminal['field_type'] or helpers[terminal['helper']] != terminal['field_type']
+                or macros.intersection(delta.split('.'))):
+            continue
+        terminal_inline = _direct_capture(source, terminal, unions[delta])
+        # Leave the terminal store in place. Its word-backed input uses a
+        # floating-register transfer, so try the target order and one swap
+        # among its earlier stores to give the scheduler room for that transfer.
+        orders = [order]
+        for first in range(len(order) - 2):
+            for second in range(first + 1, len(order) - 1):
+                changed = order.copy()
+                changed[first], changed[second] = changed[second], changed[first]
+                orders.append(changed)
+        result.extend((FAMILY, edit(source, [inline, terminal_inline, _store_edit(source, stores, choice)]))
+                      for choice in orders)
+    return result
 
 
 def _staged_block(part, start, helpers):
@@ -47,6 +136,7 @@ def _staged_block(part, start, helpers):
 
 
 def variants(source, name, rows, header=''):
+    rows = list(rows)
     mismatched = set()
     for kind, target, candidate in rows:
         if kind == ' ':
@@ -57,11 +147,15 @@ def variants(source, name, rows, header=''):
     part = view(source, name) if mismatched else None
     if not part:
         return []
-    helpers = {match[1] for match in _HELPER.finditer(part.clean, 0, part.opening)}
+    helpers = {match['name']: match['type'] for match in _HELPER.finditer(part.clean, 0, part.opening)}
     if not helpers:
         return []
     combined = _blank(header) + '\n' + part.clean
     declarations = [match[1] for match in _DECL.finditer(combined)]
+    externs = {hit['name']: hit['type'] for hit in _EXTERN_FLOAT.finditer(combined)
+               if len(re.findall(rf'\b{_FLOAT}\s+{re.escape(hit["name"])}\b', combined)) == 1}
+    unions = {f"{hit['name']}.{hit['member']}": hit['type']
+              for hit in _WORD_UNION.finditer(part.clean, part.opening, part.end)}
     macros = set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})', combined))
     if macros & {'f32', 'float', 'char'} or re.search(r'\btypedef\s+[^;]*\bvolatile\b[^;]*\bf32\s*;', combined):
         return []
@@ -76,15 +170,21 @@ def variants(source, name, rows, header=''):
         capture_prefix, store_prefix = captures[:3], stores[:3]
         local_names = {m['local'] for m in captures}
         deltas = {m['delta'] for m in capture_prefix}
+        if (any(declarations.count(var) != 1 for var in local_names)
+                or macros & (local_names | helpers.keys() | {first['base']})):
+            continue
+        result = []
+        if externs and not any(re.search(rf'&\s*\(*\s*{re.escape(local)}\b', part.body) for local in local_names):
+            result = _inline_global_candidates(source, captures, stores, rows, helpers, externs, unions, mismatched, macros)
         if (not mismatched.intersection(int(m['offset'], 16) for m in store_prefix)
-                or any(declarations.count(var) != 1 for var in local_names | deltas)
-                or local_names & deltas
-                or macros & (local_names | deltas | helpers | {first['base']})):
+                or any(declarations.count(var) != 1 for var in deltas)
+                or local_names & deltas or macros & deltas):
+            if result:
+                return result
             continue
         # Only the first three captures and stores are permuted. Their fields
         # are disjoint and their deltas are ordinary scalars, so no load crosses
         # a store and none of the captures reads a result of another capture.
-        result = []
         for capture_order in ((0, 1, 2), (0, 2, 1)):
             for store_order in permutations(range(3)):
                 if (capture_order, store_order) == ((0, 1, 2), (0, 1, 2)):

@@ -43,3 +43,74 @@ def test_rejects_aliasing_destinations_volatile_inputs_and_impure_helpers():
     ):
         assert not variants(SOURCE.replace(before, after), 'f', ROWS)
     assert not variants(SOURCE, 'f', [])
+
+
+GLOBAL_SOURCE = """
+extern float bias;
+static inline float sum_field(float *address, float delta) { return *address + delta; }
+void f(void *base, float x, float y, float z) {
+    union { unsigned int bits; float number; } delta;
+    float a;
+    float b;
+    float c;
+    float d;
+    float e;
+    float f;
+    delta.bits = 0;
+    a = sum_field((float *) (((char *) base) + 0x4), x);
+    b = sum_field((float *) (((char *) base) + 0x8), y);
+    c = sum_field((float *) (((char *) base) + 0xC), bias);
+    d = sum_field((float *) (((char *) base) + 0x10), z);
+    e = sum_field((float *) (((char *) base) + 0x14), y);
+    f = sum_field((float *) (((char *) base) + 0x18), delta.number);
+    *((float *) (((char *) base) + 0xC)) = c;
+    *((float *) (((char *) base) + 0x8)) = b;
+    *((float *) (((char *) base) + 0x4)) = a;
+    *((float *) (((char *) base) + 0x10)) = d;
+    *((float *) (((char *) base) + 0x14)) = e;
+    *((float *) (((char *) base) + 0x18)) = f;
+}
+"""
+GLOBAL_ROWS = [
+    ('i', 'lwc1 $f6, 0xc($s2)', 'lwc1 $f2, %lo(bias)($at)'),
+    ('i', 'lwc1 $f2, %lo(bias)($at)', 'lwc1 $f6, 0xc($s2)'),
+    ('i', 'swc1 $f4, 0x4($s2)', 'swc1 $f4, 0xc($s2)'),
+    (' ', 'swc1 $f8, 0x8($s2)', 'swc1 $f8, 0x8($s2)'),
+    ('i', 'swc1 $f6, 0xc($s2)', 'swc1 $f6, 0x4($s2)'),
+    (' ', 'swc1 $f4, 0x10($s2)', 'swc1 $f4, 0x10($s2)'),
+    (' ', 'swc1 $f4, 0x14($s2)', 'swc1 $f4, 0x14($s2)'),
+    (' ', 'swc1 $f4, 0x18($s2)', 'swc1 $f4, 0x18($s2)'),
+]
+
+
+def test_global_capture_can_inline_word_backed_terminal_from_store_evidence():
+    choices = variants(GLOBAL_SOURCE, 'f', GLOBAL_ROWS)
+    assert len(choices) == 18
+    assert all(family == FAMILY for family, _ in choices)
+    assert all(text.index('f = ') < min(text.index(f' = {local};') for local in 'abcdef') for _, text in choices)
+    assert any('c = (float)' in text and 'f = (float)' in text
+               and [text.index(f' = {local};') for local in 'aecdbf']
+               == sorted(text.index(f' = {local};') for local in 'aecdbf')
+               for _, text in choices)
+
+
+def test_global_capture_rejects_escaped_results_and_volatile_global():
+    for source in (
+        GLOBAL_SOURCE.replace('extern float bias;', 'extern volatile float bias;'),
+        GLOBAL_SOURCE.replace('delta.bits = 0;', 'use(&a);\n    delta.bits = 0;'),
+    ):
+        assert not variants(source, 'f', GLOBAL_ROWS)
+    assert not variants(GLOBAL_SOURCE, 'f', GLOBAL_ROWS[1:])
+    assert not variants(GLOBAL_SOURCE, 'f', [*GLOBAL_ROWS[:1],
+                        ('i', GLOBAL_ROWS[1][1], 'lwc1 $f6, 0xc($s3)'), *GLOBAL_ROWS[2:]])
+
+
+def test_global_capture_leaves_volatile_terminal_and_requires_all_target_stores():
+    cases = (
+        (GLOBAL_SOURCE.replace('float number;', 'volatile float number;'), GLOBAL_ROWS),
+        (GLOBAL_SOURCE, GLOBAL_ROWS[:-1]),
+    )
+    for source, rows in cases:
+        choices = variants(source, 'f', rows)
+        assert len(choices) == 7
+        assert all('c = (float)' in text and 'f = sum_field' in text for _, text in choices)
