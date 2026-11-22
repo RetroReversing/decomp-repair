@@ -18,7 +18,8 @@ FAMILIES = (FAMILY, ACCUMULATOR_FAMILY)
 _DECLARATION = re.compile(
     r'(?m)^[ \t]*(?P<type>f32|float)[ \t]+'
     r'(?P<name>(?:temp|var)_(?:fs(?P<reg>[0-5])|s[0-7])(?:_\d+)?)[ \t]*;[ \t]*\n')
-_LABEL = re.compile(r'(?m)^[ \t]*[A-Za-z_]\w*\s*:(?!:)|\b(?:case\s+[^:{}\n]+|default\s*):')
+_LABEL = re.compile(r'(?m)(?:^|(?<=[;{}:]))\s*(?P<name>[A-Za-z_]\w*)\s*:(?!:)|\b(?:case\s+[^:{}]+|default\s*):')
+_GOTO = re.compile(r'\bgoto\s+([A-Za-z_]\w*)\s*;')
 _BRACE = re.compile(r'[{}]')
 
 
@@ -33,7 +34,15 @@ def _scopes(clean, start, end):
     return scopes
 
 
-def _lifetime(clean, decl, opening, end, scopes):
+def _labels_enter_after_initializer(clean, start, stop, gotos):
+    labels = list(_LABEL.finditer(clean, start, stop))
+    return all(label['name'] not in (None, 'default')
+               and gotos.get(label['name'])
+               and all(start <= origin < stop for origin in gotos[label['name']])
+               for label in labels)
+
+
+def _lifetime(clean, decl, opening, end, scopes, gotos=None):
     name = decl['name']
     word = re.compile(rf'\b{name}\b')
     references = [hit for hit in word.finditer(clean, opening, end) if hit.start() != decl.start('name')]
@@ -46,10 +55,13 @@ def _lifetime(clean, decl, opening, end, scopes):
     if not initializer or word.search(initializer[1]):
         return None
     # The assignment must run before other references, including on subsequent
-    # loop iterations. Reject an intervening label or use outside this block.
+    # loop iterations. Reject uses outside this block and entries bypassing it.
     block = next(((start, stop) for start, stop in scopes if start < first.start() < stop), None)
-    if not block or last.start() >= block[1] or _LABEL.search(clean, first.end(), last.start()):
+    if not block or last.start() >= block[1]:
         return None
+    if _LABEL.search(clean, first.end(), last.start()):
+        if gotos is None or not _labels_enter_after_initializer(clean, first.end(), last.start(), gotos):
+            return None
     if any(clean[opening:hit.start()].rstrip().endswith(('.', '->')) for hit in references):
         return None
     return (decl, references)
@@ -128,6 +140,10 @@ def variants(source, name):
     names = [decl['name'] for decl in declared]
     declarations = {}
     lifetimes = {}
+    labelled_lifetimes = {}
+    gotos = {}
+    for jump in _GOTO.finditer(clean, opening, end):
+        gotos.setdefault(jump[1], []).append(jump.start())
     for decl in declared:
         scope = next((start for start, stop in scopes if start < decl.start() < stop), None)
         if scope != opening or names.count(decl['name']) != 1:
@@ -136,8 +152,21 @@ def variants(source, name):
         if decl['reg'] is None:
             continue
         life = _lifetime(clean, decl, opening, end, scopes)
+        bank = (decl['reg'], decl['type'])
         if life:
-            lifetimes.setdefault((decl['reg'], decl['type']), []).append(life)
+            lifetimes.setdefault(bank, []).append(life)
+        elif life := _lifetime(clean, decl, opening, end, scopes, gotos):
+            labelled_lifetimes.setdefault(bank, []).append(life)
+    label_choices = []
+    for bank, labelled in labelled_lifetimes.items():
+        pool = lifetimes.get(bank, []) + labelled
+        for life in labelled:
+            # Try the nearest earlier value first. Grouping the entire bank
+            # would also change unrelated register lifetimes.
+            earlier = [other for other in pool if other[1][-1].end() < life[1][0].start()]
+            if earlier:
+                previous = max(earlier, key=lambda item: item[1][-1].end())
+                label_choices.append(_rewrite(source, [[previous, life]]))
     groups = sorted((_groups(items) for items in lifetimes.values()), key=lambda bank: -sum(map(len, bank)))
     choices = []
     for bank in groups:
@@ -150,4 +179,4 @@ def variants(source, name):
         if len(longest) >= 3:
             choices.append(_rewrite(source, [longest[:1] + longest[2:] if group is longest else group for group in bank]))
     accumulators = _accumulator_reuses(source, clean, opening, end, scopes, declarations)
-    return accumulators + [(FAMILY, text) for text in dict.fromkeys(choices) if text != source][:12]
+    return accumulators + [(FAMILY, text) for text in dict.fromkeys(label_choices + choices) if text != source][:12]

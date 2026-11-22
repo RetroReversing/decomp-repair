@@ -97,3 +97,45 @@ def test_leaves_control_flow_bypasses_unchanged():
                                    .replace('    emit(', 'done: emit('))
     [candidate] = accumulator_choices(ACCUMULATORS.replace('var_s5 = temp_s5_2', 'if (test()) var_s5 = temp_s5_2'))
     assert 'temp_s5_2 = first();' in candidate
+
+
+GUARDED_LIFETIMES = """\
+void f(int control) {
+    f32 var_fs3;
+    f32 temp_fs3;
+    var_fs3 = first();
+    if (control) goto send_first;
+    task();
+send_first:
+    send(var_fs3);
+    temp_fs3 = second();
+    if (control) goto send_second;
+    task();
+send_second:
+    send(temp_fs3);
+}
+"""
+
+
+def test_reuses_float_when_every_jump_to_a_use_follows_its_initializer():
+    [(family, candidate)] = repair.variants(GUARDED_LIFETIMES, 'f')
+    assert family == repair.FAMILY
+    assert 'temp_fs3' not in candidate
+    assert 'var_fs3 = second();' in candidate
+    assert candidate.count('send(var_fs3);') == 2
+
+
+def test_goto_from_before_initializer_prevents_reuse():
+    outer_entry = GUARDED_LIFETIMES.replace('    temp_fs3 = second();',
+                                            '    if (skip()) goto send_second;\n    temp_fs3 = second();')
+    inline_label = outer_entry.replace('    task();\nsend_second:', '    task(); send_second:')
+    assert not repair.variants(outer_entry, 'f')
+    assert not repair.variants(inline_label, 'f')
+
+
+def test_switch_dispatch_inside_lifetime_prevents_reuse():
+    switch_entry = GUARDED_LIFETIMES.replace('    temp_fs3 = second();',
+                                             '    switch (control) {\n    temp_fs3 = second();')
+    switch_entry = switch_entry.replace('send_second:', 'case 0: send_second:').replace(
+        '    send(temp_fs3);', '    send(temp_fs3);\n    }')
+    assert not repair.variants(switch_entry, 'f')
