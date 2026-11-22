@@ -19,7 +19,7 @@ is replaced by the first and its declaration dropped. The judge decides.
 """
 import re
 
-from .integer_repair_support import IDENT, edit, locals_for, view
+from .integer_repair_support import edit, locals_for, view
 from .pattern_repairs import close
 
 FAMILY = 'arm_variable_share'

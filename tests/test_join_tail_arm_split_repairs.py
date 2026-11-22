@@ -74,6 +74,70 @@ emit:
 '''
 
 
+CHAIN = '''void f(s32 mode) {
+  s32 *node;
+  s32 *state;
+  s32 idle;
+  node = g_first;
+  if (mode == 0x80) {
+    node = g_second;
+    state = g_state;
+    idle = g_idle;
+    goto emit;
+  }
+  if (mode == 0x81) {
+    node = g_second;
+    state = g_state;
+    do {
+      idle = g_other;
+emit:
+      node[4] = ((idle & -256) | state[12]) & -256 | state[7];
+    } while (0);
+  } else {
+    node = g_second;
+    state = g_state;
+    node[4] = (g_idle & -256) | state[12];
+  }
+  g_done = 1;
+}
+'''
+
+
+def test_a_goto_into_the_next_ifs_tail_becomes_an_else_if_chain_that_carries_the_tail():
+    out = [text for _, text in repair.chain_variants(CHAIN, 'f')]
+    assert out and all(family == 'goto_chain_tail_split' for family, _ in repair.chain_variants(CHAIN, 'f'))
+    text = out[0]
+    assert 'goto emit' not in text and 'emit:' not in text and '} else if (mode == 0x81)' in text
+    assert text.count('node[4] = ((idle & -256) | state[12]) & -256 | state[7];') == 2  # the tail is in both arms
+
+
+def test_the_chain_is_offered_with_each_name_split_and_with_each_name_left_shared():
+    texts = [text for _, text in repair.chain_variants(CHAIN, 'f')]
+    assert any('state_a1' in text and 'node_a1' in text for text in texts), 'every private name split'
+    assert any('state_a1' in text and 'node_a1' not in text for text in texts), 'the node left shared'
+    assert any('node_a1' in text and 'state_a1' not in text for text in texts), 'the state left shared'
+
+
+def test_the_chain_does_not_reach_names_outside_it():
+    for _, text in repair.chain_variants(CHAIN, 'f'):
+        assert text.startswith('void f(s32 mode) {') and 'node = g_first;' in text
+
+
+def test_a_goto_that_is_not_the_last_thing_its_arm_does_is_not_a_chain():
+    later = CHAIN.replace('    goto emit;\n', '    goto emit;\n    g_never = 1;\n')
+    assert repair.chain_variants(later, 'f') == []
+
+
+def test_a_label_with_a_second_goto_is_not_a_chain():
+    twice = CHAIN.replace('  g_done = 1;', '  if (g_done) { goto emit; }\n  g_done = 1;')
+    assert repair.chain_variants(twice, 'f') == []
+
+
+def test_a_chain_whose_label_is_not_the_end_of_its_arm_is_not_split():
+    later = CHAIN.replace('    } while (0);\n', '    } while (0);\n    g_after = 1;\n')
+    assert repair.chain_variants(later, 'f') == []
+
+
 def test_a_union_of_phases_becomes_one_local_per_member():
     (family, out), = repair.union_variants(UNION, 'f')
     assert family == 'phase_union_unshare'
@@ -146,5 +210,5 @@ def test_a_label_with_two_gotos_is_not_copied():
 
 def test_every_family_is_named_and_offered_through_variants():
     families = {family for family, _ in repair.variants(UNION, 'f') + repair.variants(ARMS, 'f')
-                + repair.variants(LABEL, 'f') + repair.variants(COPY, 'f')}
-    assert families <= set(repair.FAMILIES) and {'phase_union_unshare', 'join_tail_arm_split', 'goto_body_copy'} <= families
+                + repair.variants(LABEL, 'f') + repair.variants(COPY, 'f') + repair.variants(CHAIN, 'f')}
+    assert families <= set(repair.FAMILIES) and {'phase_union_unshare', 'join_tail_arm_split', 'goto_body_copy', 'goto_chain_tail_split'} <= families
