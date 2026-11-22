@@ -99,3 +99,28 @@ def test_a_symbol_based_field_with_a_variable_offset_becomes_the_member_form():
     assert '(((Field_Entry *) (((u8 *) (&D_800C02D4)) + offset))->v)' in everything
     # each symbol's accesses alone are offered too
     assert any(c.count('->v') == 1 and 'Field_u16 *)' in c for c in found)
+
+
+COMPACT_SOURCE = """extern void *sRenderState;
+extern unsigned int sUsed;
+void emit(int n) {
+    int base;
+    sUsed = n + 1;
+    base = (*(s32 *)((char *)(sRenderState) + 0x74C)) + (n << 6);
+    use(base, *(u16 *)((char *)sRenderState + 0x360), *(s32 *)((char *)(sRenderState) + 0x74C));
+}
+"""
+
+
+def test_the_compact_spelling_of_a_global_pointer_field_becomes_the_member_form():
+    # An N64 matrix-emit function (KMC gcc 2.7.2, 95 instructions) read `*(s32 *)((char *)(sRenderState) + 0x74C)` after
+    # a store to the scalar global `sUsed`. As a pointer dereference the first scheduler kept the load below the store,
+    # one slot after the target's (60); as a member of a one-member record (a MEM_IN_STRUCT reference, which sched.c's
+    # true_dependence does not tie to a scalar global's store) it moved above it: exact. The printed pattern wanted
+    # m2c's `(((char *) base) + off)` spacing and missed this spelling, so the member form was never offered.
+    found = dict.fromkeys(c for _, c in repairs.printed_variants(COMPACT_SOURCE, 'emit'))
+    everything = max(found, key=lambda c: c.count('->v'))
+    assert everything.count('->v') == 3 and 'typedef struct { s32 v; } Field_s32;' in everything
+    assert '(((Field_s32 *) ((char *)(sRenderState) + 0x74C))->v)' in everything
+    assert '(((Field_u16 *) ((char *)sRenderState + 0x360))->v)' in everything
+    assert not repairs.printed_variants(everything, 'emit')
