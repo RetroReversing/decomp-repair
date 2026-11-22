@@ -425,3 +425,25 @@ def test_scaled_field_store_reuses_only_a_dead_unsigned_local():
     assert not variants(source.replace('consume(out->length)', 'consume(length)'), 'probe', '', rows)
     assert not variants(source, 'probe', '#define length count', rows)
     assert not variants(source, 'probe', '', rows[:-1])
+
+
+def test_link_pointer_reload_preserves_a_fresh_read():
+    source = """void probe(void *node, void *anchor) {
+    void *old;
+    old = M2C_FIELD(anchor, void **, 0);
+    if (old != NULL) {
+        M2C_FIELD(old, void **, 4) = node;
+    }
+    M2C_FIELD(node, void **, 4) = anchor;
+    M2C_FIELD(node, void **, 0) = (void *) M2C_FIELD(anchor, void **, 0);
+    M2C_FIELD(anchor, void **, 0) = node;
+}"""
+    rows = measured(('lw $v0, ($a1)', 'bnel $v0, $zero, 0x1c', 'sw $v1, 4($v0)'))
+    rows += [('o', '', 'sw $a1, 4($v1)'), (' ', 'lw $v0, ($a1)', 'lw $v0, ($a1)'),
+             ('o', 'sw $a1, 4($v1)', '')]
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_link_pointer_reload'
+    assert candidate.count('old = M2C_FIELD(anchor, void **, 0);') == 2
+    assert 'M2C_FIELD(node, void **, 0) = old;' in candidate
+    assert not variants(source.replace('M2C_FIELD(old,', 'M2C_FIELD(anchor,'), 'probe', '', rows)
+    assert not variants(source, 'probe', '', rows[:-1])
