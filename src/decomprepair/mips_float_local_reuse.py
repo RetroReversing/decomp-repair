@@ -196,8 +196,10 @@ def variants(source, name, asm=''):
         elif life := _lifetime(clean, decl, opening, end, scopes, gotos):
             labelled_lifetimes.setdefault(bank, []).append(life)
     label_choices = []
+    following_choices = []
     for bank, labelled in labelled_lifetimes.items():
-        pool = lifetimes.get(bank, []) + labelled
+        ordinary = lifetimes.get(bank, [])
+        pool = ordinary + labelled
         for life in labelled:
             # Try the nearest earlier value first. Grouping the entire bank
             # would also change unrelated register lifetimes.
@@ -205,6 +207,12 @@ def variants(source, name, asm=''):
             if earlier:
                 previous = max(earlier, key=lambda item: item[1][-1].end())
                 label_choices.append(_rewrite(source, [[previous, life]]))
+            # The later straight-line lifetime can provide its existing
+            # declaration without changing any of the earlier jump targets.
+            following = [other for other in ordinary if life[1][-1].end() < other[1][0].start()]
+            if following:
+                next_life = min(following, key=lambda item: item[1][0].start())
+                following_choices.append(_rewrite(source, [[next_life, life]]))
     groups = sorted((_groups(items) for items in lifetimes.values()), key=lambda bank: -sum(map(len, bank)))
     choices = []
     for bank in groups:
@@ -218,4 +226,5 @@ def variants(source, name, asm=''):
             choices.append(_rewrite(source, [longest[:1] + longest[2:] if group is longest else group for group in bank]))
     accumulators = _accumulator_reuses(source, clean, opening, end, scopes, declarations)
     across_calls = _across_call_reuse(source, clean, lifetimes, asm)
-    return across_calls + accumulators + [(FAMILY, text) for text in dict.fromkeys(label_choices + choices) if text != source][:12]
+    options = dict.fromkeys(label_choices + choices + following_choices)
+    return across_calls + accumulators + [(FAMILY, text) for text in options if text != source][:12]
