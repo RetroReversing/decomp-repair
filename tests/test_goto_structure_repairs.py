@@ -180,3 +180,47 @@ def test_a_goto_into_a_later_if_is_an_else():
         }
     }
     E = B - 1;''' in out
+
+
+NESTED_ENTRY = '''void f(s32 *arg0) {
+    s32 *held;
+    s32 *buf;
+    s32 *tmp;
+
+    held = arg0->x;
+    if (held != NULL) {
+        goto block_3;
+    }
+    buf = alloc(8, 1);
+    if (buf != NULL) {
+        held = buf;
+        fill(buf);
+block_3:
+        use(held);
+        goto block_9;
+    } else {
+block_9:
+        done();
+    }
+    end();
+}
+'''
+
+
+def test_nested_entry_becomes_else_arm():
+    out = dict((f, t) for f, t in g.variants(NESTED_ENTRY, 'f'))
+    text = out[g.NESTED_ENTRY_FAMILY]
+    assert 'entry_tmp = arg0->x;' in text
+    assert 'if (entry_tmp == NULL) {' in text
+    assert 'held = entry_tmp;' in text
+    assert 'goto block_3' not in text and 'block_3:' not in text
+    assert text.index('if (buf == NULL)') < text.index('fill(buf);') < text.index('use(held);') < text.index('block_9:')
+    assert 'goto block_9;\n        goto' not in text
+    assert 'goto block_9;' in text
+
+
+def test_nested_entry_needs_a_single_goto_and_a_declared_variable():
+    two = NESTED_ENTRY.replace('    buf = alloc', '    if (arg0) { goto block_3; }\n    buf = alloc')
+    assert g.NESTED_ENTRY_FAMILY not in [f for f, _ in g.variants(two, 'f')]
+    undeclared = NESTED_ENTRY.replace('    s32 *held;\n', '')
+    assert g.NESTED_ENTRY_FAMILY not in [f for f, _ in g.variants(undeclared, 'f')]
