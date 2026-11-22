@@ -15,7 +15,8 @@ from .integer_repair_support import edit, view
 FAMILY = 'unused_frame_padding'
 DROP_FAMILY = 'unused_frame_padding_drop'
 POSITIONED_FAMILY = 'inferred_frame_reservation'
-FAMILIES = (FAMILY, DROP_FAMILY)
+SHRINK_FAMILY = 'unused_frame_padding_shrink'
+FAMILIES = (FAMILY, DROP_FAMILY, SHRINK_FAMILY)
 _SAVE = re.compile(r'\b(?:sw|sd|swc1|sdc1)\s+\$(?:s[0-8]|ra|fp|f2[0-9]|f3[01]|fs\d)\s*,\s*(0x[0-9a-fA-F]+|\d+)\(\$sp\)')
 _ARGUMENT = re.compile(r'\b(?:sw|sd|swc1|sdc1|sh|sb)\s+\$\w+\s*,\s*(0x[0-9a-fA-F]+|\d+)\(\$sp\)')
 _FRAME = re.compile(r'\baddiu\s+\$sp\s*,\s*\$sp\s*,\s*-(0x[0-9a-fA-F]+|\d+)')
@@ -71,6 +72,30 @@ def drop_variants(source, name):
             start = part.opening+decl.start()
             out.append((DROP_FAMILY, edit(source, [(start, start+len(decl.group(0)), '')])))
     return out[:2]
+
+
+def shrink_variants(source, name):
+    """A `volatile` scratch array nothing reads, declared with fewer elements: padding the draft's other locals half cover.
+
+    Dropping the scratch (above) and growing it are the other two moves; when the frame is a few words too big, the
+    scratch that reserved it is the part to shorten. A KMC 2.7.2 text-measuring function whose search loop had become
+    the plain counted form kept a four-word scratch from the days it reserved the whole gap: the frame came out 0x50
+    against the target's 0x48 (score 53), and with the array two words or one long it was the target's (30; three words
+    and none were 53). Each smaller size is a proposal, one word at a time down to one; the judge picks. Only a
+    declaration the rest of the function never names.
+    """
+    part = view(source, name)
+    if not part:
+        return []
+    text = part.clean[part.opening:part.end]
+    out = []
+    for decl in re.finditer(r'(?m)^(?P<head>[ \t]*volatile[ \t]+(?:unsigned[ \t]+|signed[ \t]+)?(?:char|short|int|long|[su](?:8|16|32|64))[ \t]+(?P<n>[A-Za-z_]\w*)\[)(?P<size>\d+)(?P<tail>\][ \t]*;)', text):
+        if len(re.findall(r'\b' + re.escape(decl['n']) + r'\b', text)) != 1 or int(decl['size']) < 2:
+            continue
+        start = part.opening + decl.start('size')
+        for size in range(int(decl['size']) - 1, 0, -1):
+            out.append((SHRINK_FAMILY, edit(source, [(start, start + len(decl['size']), str(size))])))
+    return out[:4]
 
 
 def forwarded_variants(source, name, header, rows, asm, frame_delta):
