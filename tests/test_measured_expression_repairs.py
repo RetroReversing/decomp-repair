@@ -288,3 +288,40 @@ void f(const void *a, const void *b) {
     assert not variants(source.replace('use((x * x)', 'use((x * y)'), 'f', '', diff)
     assert not variants(source.replace('y = M2C_FIELD', 'touch();\n    y = M2C_FIELD'), 'f', '', diff)
     assert not variants(source.replace('f32 x;', 'f64 x;'), 'f', '', diff)
+
+
+def test_lookup_zero_count_follows_shared_exit():
+    source = """int f(int slot, int key) {
+    volatile s32 pad[2];
+    int count, start, i;
+    count = buckets[slot].count;
+    if (count != 0) {
+        start = buckets[slot].start;
+        for (i = 0; i < count; i++) {
+            if (entries[start + i].key == key) {
+                break;
+            }
+        }
+        use(i);
+    }
+    unlock();
+    return 0;
+}
+"""
+    diff = [
+        [' ', 'lhu $v1, 0($a0)', 'lhu $v1, 0($a0)'],
+        [' ', 'beqz $v1, 0x60', 'beqz $v1, 0x60'],
+        [' ', 'nop', 'nop'],
+        ['i', 'beqz $v1, 0x60', 'beqz $v1, 0x38'],
+        [' ', 'beq $v0, $a2, 0x38', 'beq $v0, $a2, 0x38'],
+    ]
+    plain, aligned = variants(source, 'f', '', diff)
+    assert plain[0] == 'measured_lookup_loop_exit'
+    assert 'if (!(unsigned short)count) goto repair_lookup_exit;' in plain[1]
+    assert 'repair_lookup_exit: unlock();' in plain[1]
+    assert aligned == ('measured_lookup_loop_exit_aligned', plain[1].replace('volatile s32 pad[2]', 'f64 pad[2]'))
+    assert variants(source.replace('use(i);', 'use(pad);'), 'f', '', diff) == [(
+        plain[0], plain[1].replace('use(i);', 'use(pad);'),
+    )]
+    assert not variants(source.replace('if (count != 0)', 'if (count >= 0)'), 'f', '', diff)
+    assert not variants(source, 'f', '', diff[:-1])
