@@ -91,3 +91,17 @@ def test_an_unlisted_prototype_keeps_its_other_arguments_integer():
     assert 'f32 g(s32, f32);' in out and 'g(2, 0.02f)' in out
     # calls that disagree on how many arguments there are leave it alone
     assert fb.variants(source.replace('g(2, 0x3CA3D70A)', 'g(0x3CA3D70A)'), 'f', flags=['-mgp32']) == []
+
+
+def test_target_prioritizes_float_register_call():
+    source = 's32 scale(M2C_UNK);\nvoid f(void) { scale(0x3F800000); }\n'
+    target = ['lui $at, 0x3f80', 'mtc1 $at, $f12', 'jal scale', 'nop']
+    candidate = ['jal scale', 'lui $a0, 0x3f80']
+    rows = [('o', x, '') for x in target] + [('o', '', x) for x in candidate]
+    (family, result), = fba.target_variants(source, 'f', '', 'mips', O32, rows)
+    assert family == 'float_argument_bits'
+    assert 'scale(f32)' in result and 'scale(1.0f)' in result
+    assert not fba.target_variants(source, 'f', '', 'mips', O32 + ['-msoft-float'], rows)
+    assert not fba.target_variants(source, 'f', '', 'mips', O32, [('o', x, x) for x in target])
+    assert not fba.target_variants(source, 'f', '', 'mips', O32, rows[:-1])
+    assert not fba.target_variants(source, 'f', 's32 scale(s32);', 'mips', O32, rows)
