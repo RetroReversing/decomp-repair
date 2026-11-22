@@ -34,8 +34,13 @@ def variants(source, name, arch='mips'):
         if value == zero:
             continue
         for var in (value, zero):
-            if not re.search(rf'(?:^|[;{{}}])\s*(?:s32|u32|int|long|unsigned\s+int)\s+{re.escape(var)}\s*;', body):
+            declarations = list(re.finditer(
+                rf'(?:^|[;{{}}])\s*(?:s32|u32|int|long|unsigned\s+int)\s+{re.escape(var)}\s*;', body))
+            if len(declarations) != 1 or declarations[0].end() > hit.start():
                 break
+            prefix = body[:declarations[0].start()]
+            if prefix.count('{') != prefix.count('}'):
+                break  # only unshadowed function-scope locals
             if re.search(rf'&\s*{re.escape(var)}\b', body):
                 break
         else:
