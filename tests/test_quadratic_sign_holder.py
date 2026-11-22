@@ -65,3 +65,14 @@ def test_rejects_live_or_escaping_values():
     escaped = SOURCE.replace('    if (mode)', '    preserve(&held);\n    if (mode)')
     assert not variants(escaped, 'track', ROWS)
     assert not variants(SOURCE, 'track', ROWS, header='#define held some_other_value')
+
+
+def test_groups_both_measured_sites_and_rejects_an_ambiguous_extra_site():
+    start = SOURCE.index('        axis = sample')
+    end = SOURCE.index('        record(axis);')
+    block = SOURCE[start:end]
+    linked_twice = ROWS[:len(DEMAND)] + ROWS
+    [(family, changed)] = variants(SOURCE[:end] + block + SOURCE[end:], 'track', linked_twice)
+    assert family == FAMILY
+    assert changed.count('if (held < 0.0f)') == 2
+    assert not variants(SOURCE[:end] + block * 2 + SOURCE[end:], 'track', linked_twice)
