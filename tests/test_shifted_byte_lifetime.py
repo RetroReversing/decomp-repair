@@ -28,3 +28,8 @@ def test_refuses_unsafe_or_nonlocal_shapes():
     assert not variants(SOURCE.replace('u32 w;', 'volatile u32 w;'), 'f')
     assert not variants(SOURCE.replace('use(pitch, w);', 'use(&w, pitch);'), 'f')
     assert not variants(SOURCE.replace('w = n->word;', 'w = read_word();'), 'f')
+
+
+def test_unrelated_volatile_context_does_not_disable_the_family():
+    assert variants(SOURCE, 'f', 'typedef volatile u32 vu32;')
+    assert not variants(SOURCE, 'f', 'typedef volatile u32 Voice;')
