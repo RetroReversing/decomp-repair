@@ -64,3 +64,32 @@ def test_each_lever_is_offered_alone():
 def test_left_alone_without_a_body():
     assert a.variants('int f(void);\n', 'f') == []
     assert r.variants('void f(void) {\n    g();\n}\n', 'f') == []
+
+
+def test_exposes_row_and_column_byte_strides_in_element_address():
+    source = """
+extern s32 grid[][7];
+void f(int row, int column) {
+    s32 *cell;
+    cell = &grid[(row + 1)][lookup(column)];
+    ++*cell;
+}
+"""
+    [(family, candidate)] = r.variants(source, 'f')
+    assert family == 'linear_row_address'
+    assert '(char *)&grid' in candidate
+    assert '((row + 1)) * sizeof(grid[0])' in candidate
+    assert '(lookup(column)) * sizeof(grid[0][0])' in candidate
+
+
+def test_leaves_shadowed_or_untyped_array_addresses_alone():
+    source = """
+extern s32 grid[][7];
+void f(int row, int column) {
+    s32 *cell;
+    cell = &grid[row][column];
+}
+"""
+    assert not r.variants(source.replace('    s32 *cell;', '    s32 grid[4][7];\n    s32 *cell;'), 'f')
+    assert not r.variants(source.replace('    s32 *cell;', '    u32 *cell;'), 'f')
+    assert not r.variants(source.replace('&grid[row][column]', '&grid[row]'), 'f')

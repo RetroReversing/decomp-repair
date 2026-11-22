@@ -10,10 +10,12 @@ temporary go when nothing else reads them.
 import re
 
 from .csource import _blank, find
+from .integer_repair_support import edit, view
 from .pattern_repairs import close
 
 FAMILY = 'row_subscript'
-FAMILIES = (FAMILY,)
+ADDRESS_FAMILY = 'linear_row_address'
+FAMILIES = (FAMILY, ADDRESS_FAMILY)
 
 IDENT = r'[A-Za-z_]\w*'
 NUMBER = r'0[xX][0-9a-fA-F]+|\d+'
@@ -91,4 +93,52 @@ def variants(source, name):
         candidate = source[:opening] + text + source[end:]
         if candidate != source and candidate not in [t for _, t in result]:
             result.append((FAMILY, candidate))
-    return result
+    return result + address_variants(source, name)
+
+def address_variants(source, name):
+    """Express an element address as a byte offset from a declared two-dimensional array."""
+    part = view(source, name)
+    if not part:
+        return []
+    arrays = {}
+    for decl in re.finditer(
+            rf'\bextern\s+(?P<type>s32|u32|int)\s+(?P<base>{IDENT})'
+            rf'\s*\[\s*(?:{NUMBER})?\s*\]\s*\[\s*(?:{NUMBER})\s*\]\s*;',
+            part.clean[:part.opening]):
+        arrays[decl['base']] = decl['type']
+    if not arrays:
+        return []
+    assignments = re.compile(rf'(?m)^[ \t]*(?P<dest>{IDENT})\s*=\s*(?P<addr>&\s*(?P<base>{IDENT}))\s*\[')
+    out = []
+    for match in assignments.finditer(part.clean, part.opening + 1, part.end - 1):
+        base, dest = match['base'], match['dest']
+        kind = arrays.get(base)
+        if not kind or len(re.findall(rf'\b{base}\b', part.clean[:part.opening])) != 1:
+            continue
+        # The array name must still denote the externally declared object.
+        if re.search(rf'\b{IDENT}\s+\**\s*{base}\s*(?=[;=,\[])', part.body):
+            continue
+        if not re.search(rf'\b{kind}\s*\*\s*{dest}\s*;', part.body):
+            continue
+        row_end = close(part.clean, match.end() - 1, '[', ']')
+        if not row_end:
+            continue
+        column = re.match(r'\s*\[', part.clean[row_end:])
+        if not column:
+            continue
+        col_start = row_end + column.end()
+        col_end = close(part.clean, col_start - 1, '[', ']')
+        if not col_end or not re.match(r'\s*;', part.clean[col_end:]):
+            continue
+        row = source[match.end():row_end - 1].strip()
+        col = source[col_start:col_end - 1].strip()
+        if not row or not col:
+            continue
+        # Each index remains one evaluation. Derive strides from the actual
+        # array object and keep the byte pointer based on the whole array.
+        address = (f'({kind} *)((char *)&{base} + '
+                   f'(({row}) * sizeof({base}[0]) + ({col}) * sizeof({base}[0][0])))')
+        out.append((ADDRESS_FAMILY, edit(source, [(match.start('addr'), col_end, address)])))
+        if len(out) == 4:
+            break
+    return out
