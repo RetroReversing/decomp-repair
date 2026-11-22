@@ -18,8 +18,11 @@ SOURCE = """int f(int i) {
 def test_full_byte_mask_uses_linked_load_and_comparison():
     assert residual(ROWS) == tuple(ROWS)
     proposals = variants(SOURCE, 'f', ROWS)
-    assert len(proposals) == 5
+    assert len(proposals) == 4
     assert all(family == FAMILY and '& 0x7f' not in text for family, text in proposals)
+    assert all('__asm__' not in text for _, text in proposals)
+    assert all(text.index('repair_byte_flag;') < text.index('if (')
+               for _, text in proposals[2:])
     assert all(text.count('&flags') == 1 for _, text in proposals)
 
 

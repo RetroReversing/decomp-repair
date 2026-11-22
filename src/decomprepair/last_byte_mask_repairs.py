@@ -68,23 +68,18 @@ def variants(source, name, rows, header=''):
     local = 'repair_byte_flag'
     if re.search(rf'\b{local}\b', source + '\n' + header):
         return []
-    # The unsigned-byte load can make the full mask disappear. Try separate
-    # C lifetimes and an opaque, instruction-free GCC register constraint.
+    # Keep declarations at the start of the function for C89 compilers. The
+    # judge rejects inline assembly, even an empty register barrier.
     expressions = [f'({load} & 0xffU)', f'(unsigned char)({load})']
-    replacements = [f'if ({expression} {pred}) {{' for expression in expressions]
-    declarations = [
-        ('unsigned int', '', f'({local} & 0xffU)'),
-        ('volatile unsigned int', '', f'({local} & 0xffU)'),
-        ('unsigned int', f'__asm__ volatile ("" : "=r" ({local}) : "0" ({local}));',
-         f'({local} & 0xffU)'),
-    ]
-    for kind, barrier, expression in declarations:
-        lines = [f'{kind} {local} = {load};']
-        if barrier:
-            lines.append(barrier)
-        lines.append(f'if ({expression} {pred}) {{')
-        replacements.append(('\n' + indent).join(lines))
-    return [(FAMILY, edit(source, [(*hit.span(), replacement)])) for replacement in replacements]
+    result = [(FAMILY, edit(source, [(*hit.span(), f'if ({expression} {pred}) {{')]))
+              for expression in expressions]
+    for kind in ('unsigned int', 'volatile unsigned int'):
+        replacement = f'{local} = {load};\n{indent}if (({local} & 0xffU) {pred}) {{'
+        declaration = f'\n    {kind} {local};'
+        result.append((FAMILY, edit(source, [(part.opening + 1, part.opening + 1, declaration),
+                                              (*hit.span(), replacement)])))
+    return result
+
 
 
 def legacy_candidate(source, name, assembly):
