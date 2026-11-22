@@ -791,5 +791,6 @@ void f(int count) {
     assert variants(source, 'f', '', rows) == [('measured_capture_loop_float', expected)]
     assert not variants(source.replace('extern f32 bias;', 'extern volatile f32 bias;'), 'f', '', rows)
     assert not variants(source.replace('out++;', 'touch(out); out++;'), 'f', '', rows)
+    assert not variants(source.replace('out++;', 'out = elsewhere; out++;'), 'f', '', rows)
     assert not variants(source.replace('out++;', '*elsewhere = 0; out++;'), 'f', '', rows)
     assert not variants(source, 'f', '', rows[:-1])

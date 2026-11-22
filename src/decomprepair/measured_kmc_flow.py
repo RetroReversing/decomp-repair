@@ -1226,8 +1226,12 @@ def _capture_loop_float_before_setup(source, name, header, rows):
             continue
         if re.search(rf'\b{IDENT}\s*\(|&\s*{symbol}\b|\b{symbol}\s*[-+*/|&^]?=(?!=)', body):
             continue
-        if not all(re.fullmatch(rf'{IDENT}|{out}->{IDENT}', item.strip())
-                   for item in re.findall(r'(?m)^[ \t]*(.+?)\s*[-+*/|&^]?=(?!=)', body)):
+        writes = (stmt.strip() for stmt in body.split(';') if stmt.strip())
+        if not all(re.fullmatch(rf'(?:\+\+{IDENT}|{IDENT}\+\+)', stmt)
+                   or (assignment := re.match(rf'({IDENT}(?:->{IDENT})?)\s*[-+*/|&^]?=(?!=)', stmt))
+                   and assignment[1] != out
+                   and ('->' not in assignment[1] or assignment[1].startswith(out + '->'))
+                   for stmt in writes):
             continue
         # Only a simple local comparison, or its source-owned inline equivalent,
         # can repeat the loop without writing the captured scalar.
