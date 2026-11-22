@@ -147,3 +147,19 @@ def test_overlapping_or_computed_stores_are_not_swapped():
     assert all(t.index('+ 0x28') < t.index('+ 0x2A') for t in out)
     assert all(t.index('obj->a = n;') < t.index('obj->a = 4;') for t in out)
     assert all(t.index('obj->b = load') < t.index('obj->c = 4;') for t in out)
+
+
+def test_field_store_swaps_alone_skip_the_other_levers():
+    source = """int f(int *p, int a, int b)
+{
+  int x;
+  x = a + b;
+  ((Field_s32 *) (((char *) p) + 0x3C))->v = 0;
+  ((Field_s32 *) (((char *) p) + 0x28))->v = 0;
+  return x;
+}
+"""
+    swaps = [text for _, text in a.field_store_swaps(source, 'f')]
+    assert len(swaps) == 1 and swaps[0].index('+ 0x28') < swaps[0].index('+ 0x3C')
+    assert 'b + a' not in swaps[0]
+    assert not a.field_store_swaps('int f(int a, int b)\n{\n  return 1 + a;\n}\n', 'f')
