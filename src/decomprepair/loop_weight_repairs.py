@@ -12,7 +12,8 @@ from .integer_repair_support import IDENT, INTEGER, NUMBER, edit, locals_for, vi
 from .pattern_repairs import close
 
 COUNTER_HOIST = 'loop_counter_init_hoist'
-FAMILIES = ('loop_weight_scope', 'equal_value_increment', COUNTER_HOIST)
+COUNTER_SINK = 'loop_counter_init_sink'
+FAMILIES = ('loop_weight_scope', 'equal_value_increment', COUNTER_HOIST, COUNTER_SINK)
 UPDATE_LIMIT = 12
 LIMIT = 18
 QUOTIENT_LIMIT = 6
@@ -165,7 +166,7 @@ def counter_init_scopes(source, name, part, declarations):
     Only `name = <literal>;` of a declared integer local that is stepped later (`++`, `+= <literal>`, `= name + <literal>`) is wrapped
     (a byte offset that advances by a structure's size is a counter as much as an index that advances by one).
     """
-    groups, bare = [], []
+    groups, bare, sunk = [], [], []
     flow = None
     checked_flow = False
     pattern = rf'(?<=[;{{}}])(?P<lead>\s*)(?P<var>{IDENT})\s*=\s*(?P<value>{NUMBER})\s*;'
@@ -181,6 +182,7 @@ def counter_init_scopes(source, name, part, declarations):
         if prefix.count('(') != prefix.count(')') or prefix.count('[') != prefix.count(']'):
             continue
         statement = source[hit.start('var'):hit.end()]
+        sunk.extend(_sunk_starts(source, part, hit))
         spans = [(hit.start('var'), hit.end(), None)]
         guard = _enclosing_guard(part, hit.start())
         if guard:
@@ -218,7 +220,70 @@ def counter_init_scopes(source, name, part, declarations):
     out = []
     for rank in range(max((len(g) for g in groups), default=0)):
         out.extend(g[rank] for g in groups if rank < len(g))
-    return list(dict.fromkeys(out))[:COUNTER_INIT_LIMIT] + list(dict.fromkeys(bare))
+    return list(dict.fromkeys(out))[:COUNTER_INIT_LIMIT] + list(dict.fromkeys(bare)) + list(dict.fromkeys(sunk))[:6]
+
+
+SINK_STATEMENTS = 12
+
+
+def _sunk_starts(source, part, hit):
+    """A counter's constant start written ahead of unrelated statements, moved down to the one that first needs it.
+
+    m2c places `i = 0;` where the decompiler saw the register set, often before several calls and stores the loop
+    never touches. GCC 2.x ranks temporaries by floor_log2(refs) * refs / live length, so those statements are live
+    length the counter does not have in the original: a counter that should outrank the loop's other temporary (and so
+    take the earlier saved register) ranks below it. Sinking the start to just before the statement that first mentions
+    the counter (the `if` that guards the loop, or the loop) shortens the range and raises the priority, at no runtime
+    cost. Only plain statements are crossed, none mentioning the counter, and never when its address is taken. Both
+    the full sink and one statement short of it are offered (the scheduler may want the start one call earlier).
+    """
+    variable = hit['var']
+    text = part.clean[part.opening:part.end]
+    if re.search(rf'&\s*{re.escape(variable)}\b', text):
+        return []
+    prefix = part.clean[part.opening:hit.start()]
+    if prefix.count('(') != prefix.count(')') or prefix.count('[') != prefix.count(']'):
+        return []
+    crossed, before = [], hit.end()
+    for stop in _plain_statement_ends(part.clean, hit.end(), part.end - 1, SINK_STATEMENTS):
+        if re.search(rf'\b{re.escape(variable)}\b', part.clean[before:stop]):
+            break
+        crossed.append(stop)
+        before = stop
+    if not crossed:
+        return []
+    # what follows the last crossed statement must be what needs the counter (the loop or its guard, or a plain
+    # statement that reads it); otherwise nothing is gained
+    if not re.search(rf'\b{re.escape(variable)}\b', part.clean[crossed[-1]:part.end - 1]):
+        return []
+    statement = source[hit.start('var'):hit.end()]
+    indent = source[hit.start():hit.start('var')].rsplit('\n', 1)[-1]
+    out = []
+    for stop in dict.fromkeys([crossed[-1], crossed[-2] if len(crossed) > 1 else crossed[-1]]):
+        out.append((COUNTER_SINK, edit(source, [(hit.start(), hit.end(), ''), (stop, stop, '\n' + indent + statement)])))
+    return out
+
+
+_CONTROL = re.compile(r'\s*(?:if|else|do|while|for|switch|case|default|goto|return|break|continue)\b|\s*\w+\s*:(?!:)')
+
+
+def _plain_statement_ends(clean, position, end, limit):
+    """Ends of the plain (no braces, no control, no label) statements that follow `position`."""
+    stops = []
+    while len(stops) < limit:
+        if not clean[position:end].strip() or clean[position:end].lstrip().startswith(('{', '}')) or _CONTROL.match(clean, position):
+            break
+        depth, stop = 0, position
+        while stop < end:
+            depth += (clean[stop] in '([{') - (clean[stop] in ')]}')
+            stop += 1
+            if depth == 0 and clean[stop-1] == ';':
+                break
+        else:
+            break
+        stops.append(stop)
+        position = stop
+    return stops
 
 
 def _can_hoist(part, flow, guard, variable):

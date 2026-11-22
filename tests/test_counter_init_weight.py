@@ -52,3 +52,46 @@ def test_an_unreferenced_volatile_scratch_does_not_disable_the_family_but_a_used
     assert w.variants(SOURCE, 'f')
     used = SOURCE.replace('  s32 j;', '  s32 j;\n  pad = 1;')
     assert w.variants(used, 'f') == []
+
+
+SINK_SOURCE = '''void f(u8 n)
+{
+  s32 i;
+  s32 r;
+  i = 0;
+  setup(1);
+  g_flag = 2;
+  r = count(n);
+  if (r & 0xFF)
+  {
+    do
+    {
+      step(i & 0xFFFF);
+      i += 1;
+    }
+    while ((i & 0xFFFF) < r);
+  }
+}
+'''
+
+
+def test_a_counter_start_written_ahead_of_unrelated_statements_is_sunk_to_its_guard():
+    """A counter set before several calls it never meets has their length as live range: its priority drops below
+    the loop's other temporary and the two saved registers swap (a KMC 2.7.2 save-slot menu loop, 120 -> 0)."""
+    out = [text for family, text in w.variants(SINK_SOURCE, 'f') if family == w.COUNTER_SINK]
+    assert out
+    full, one_short = out[0], out[1]
+    assert full.count('i = 0;') == 1 and full.index('i = 0;') > full.index('r = count(n);')
+    assert full.index('i = 0;') < full.index('if (r & 0xFF)')
+    # one statement short: the start sits between the last two crossed statements
+    assert one_short.index('g_flag = 2;') < one_short.index('i = 0;') < one_short.index('r = count(n);')
+
+
+def test_a_counter_start_is_not_sunk_past_a_statement_that_reads_it_or_when_its_address_is_taken():
+    read = SINK_SOURCE.replace('g_flag = 2;', 'g_flag = i;')
+    moved = [text for family, text in w.variants(read, 'f') if family == w.COUNTER_SINK]
+    assert all(text.index('i = 0;') < text.index('g_flag = i;') for text in moved)
+    escaped = SINK_SOURCE.replace('setup(1);', 'setup(&i);')
+    assert not [1 for family, _ in w.variants(escaped, 'f') if family == w.COUNTER_SINK]
+    adjacent = SINK_SOURCE.replace('  setup(1);\n  g_flag = 2;\n  r = count(n);\n', '').replace('  i = 0;\n', '  r = count(n);\n  i = 0;\n')
+    assert not [1 for family, _ in w.variants(adjacent, 'f') if family == w.COUNTER_SINK]
