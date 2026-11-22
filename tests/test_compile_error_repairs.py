@@ -61,3 +61,26 @@ def test_a_comment_and_other_lines_are_left_alone():
     assert out == 'int f(void) {\n    x = (s32)a + (s32)b; /* a + b */\n}\n'
     assert repair(source, 9, 'invalid operands to binary +') is None
     assert repair(source, 2, 'something else') is None
+
+
+def test_a_read_of_untyped_memory_takes_the_type_of_its_destination():
+    source = '    f32 x;\n    s16 y;\n    x = *(a + b);\n    y = *(a + b);\n    z = *(a + b) << 8;\n'
+    assert repair(source, 3, 'void value not ignored as it ought to be').split('\n')[2] == '    x = *(f32 *)(a + b);'
+    assert repair(source, 4, 'void value not ignored as it ought to be').split('\n')[3] == '    y = *(s16 *)(a + b);'
+    assert repair(source, 5, 'invalid use of void expression').split('\n')[4] == '    z = *(u8 *)(a + b) << 8;'
+
+
+def test_arithmetic_on_an_incomplete_pointer_is_integer_arithmetic():
+    assert one('    t = *(p + i);', 'arithmetic on pointer to an incomplete type') == '    t = *((s32)p + (s32)i);'
+
+
+def test_a_float_conversion_of_a_pointer_converts_what_it_holds():
+    assert one('    x = (f32) p - y;', 'pointer value used where a floating point value was expected') == \
+        '    x = (f32) (s32)p - y;'
+
+
+def test_a_callee_with_conflicting_argument_types_loses_its_parameter_list():
+    source = 'void g(void *, void *);\nvoid f(void) {\n    g(x, 1.0f);\n}\n'
+    out = repair(source, 3, "incompatible type for argument 1 of `g'")
+    assert out == 'void g();\nvoid f(void) {\n    g(x, 1.0f);\n}\n'
+    assert repair(out, 3, "incompatible type for argument 1 of `g'") is None
