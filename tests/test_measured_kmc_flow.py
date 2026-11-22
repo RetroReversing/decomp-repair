@@ -447,3 +447,28 @@ def test_link_pointer_reload_preserves_a_fresh_read():
     assert 'M2C_FIELD(node, void **, 0) = old;' in candidate
     assert not variants(source.replace('M2C_FIELD(old,', 'M2C_FIELD(anchor,'), 'probe', '', rows)
     assert not variants(source, 'probe', '', rows[:-1])
+
+
+def test_record_float_reset_requires_the_disjoint_reset_sequence():
+    source = """void probe(void *p) {
+    s32 saved;
+    saved = M2C_FIELD(p, s32 *, 0);
+    M2C_FIELD(p, s8 *, 0x18) = 0;
+    M2C_FIELD(p, u8 *, 0x19) = 0U;
+    M2C_FIELD(p, s8 *, 0x1c) = 0;
+    M2C_FIELD(p, s8 *, 0x1d) = 0;
+    M2C_FIELD(p, s16 *, 0x14) = 0;
+    M2C_FIELD(p, s32 *, 0x10) = 0;
+    M2C_FIELD(p, f32 *, 0xc) = 1.0f;
+}"""
+    load = 'lw $a0, ($s0)'
+    rows = [('o', '', load)] + measured(('lui $at, 0x3f80', 'mtc1 $at, $f0'))
+    rows += [('o', load, '')] + measured((
+        'sb $zero, 0x18($s0)', 'sb $zero, 0x19($s0)', 'sb $zero, 0x1c($s0)',
+        'sb $zero, 0x1d($s0)', 'sh $zero, 0x14($s0)', 'sw $zero, 0x10($s0)',
+    ))
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_record_float_reset'
+    assert candidate.index('= 1.0f;') < candidate.index('saved =')
+    assert not variants(source.replace('f32 *, 0xc', 'f32 *, 0'), 'probe', '', rows)
+    assert not variants(source, 'probe', '', rows[:-1])
