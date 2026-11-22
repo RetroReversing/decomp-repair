@@ -112,3 +112,18 @@ def test_the_module_declares_itself_for_the_apps_registry():
     repair = registry.get('join_tail_arm_inline')
     assert repair is not None and repair.families == ('join_tail_arm_inline',)
     assert registry.problems(repair) == []
+
+
+def test_a_variable_the_tail_does_not_list_is_folded_last_not_a_crash(monkeypatch):
+    """The arms can name a private variable the tail's own list lacks; sorting by the list's index raised
+    ValueError, which stopped every family's proposals for that source."""
+    real = arm_inline._private_regions
+
+    def with_extra(text, name, only=None):
+        found = real(text, name, only=only)
+        if found:
+            region = next(iter(next(iter(found.values()))[1]))
+            found = {**found, 'not_in_names': (None, [region], None)}
+        return found
+    monkeypatch.setattr(arm_inline, '_private_regions', with_extra)
+    arm_inline.variants(ONE_SITE, 'f')
