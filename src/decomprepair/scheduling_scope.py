@@ -87,11 +87,18 @@ def variants(source, name, arch='mips', asm='', header=''):
     clean = _blank(source)
     opening = clean.find('{', *span)
     closing = clean.rfind('}', 0, span[1])
-    if opening < 0 or closing < opening or re.search(r'\bvolatile\b|^\s*#', clean[span[0]:span[1]], re.M):
+    if opening < 0 or closing < opening or re.search(r'^\s*#', clean[span[0]:span[1]], re.M):
         return []
+    # An isolated comparison can need a boundary even inside an existing scope.
+    # Only wrap assignments to a scalar local; the expression is evaluated once.
+    comparison = re.compile(rf'(?:^|[;{{}}])\s*(?P<assignment>{_ID}\s*=\s*(?:\({_ID}\)\s*)?\(\s*{_ID}\s*(?:<=|>=|<|>|==|!=)\s*{_ID}\s*\)\s*;)', re.M)
+    out = [(FAMILY, source[:m.start('assignment')] + 'do { ' + source[m.start('assignment'):m.end('assignment')] + ' } while (0);' + source[m.end('assignment'):])
+           for m in comparison.finditer(clean, opening + 1, closing)][:LIMIT]
+    if re.search(r'\bvolatile\b', clean[span[0]:span[1]]):
+        return out
     statements = _statements(clean, opening, closing)
     if len(statements) < MIN_WRAPPED + 1:
-        return []
+        return out
     text = [clean[a:b] for a, b in statements]
     last = len(statements)
     if _CALL.search(text[-1]) and not _COMPOUND.match(text[-1]) and not _DECLARATION.match(text[-1]):
@@ -102,7 +109,6 @@ def variants(source, name, arch='mips', asm='', header=''):
         first -= 1
     end = len(statements)
     run = range(first, end)
-    out = []
     call = text[-1] if last < end else ''
     symbols = []
     if call:
