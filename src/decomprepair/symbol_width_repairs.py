@@ -232,3 +232,38 @@ def signed_byte_base_variants(source, name, rows, header=''):
         if source[a:b] == 'u16':
             out.append((SIGNED_BYTE_LOAD, edit(source, [(a, b, 's8')])))
     return out[:3]
+
+
+def measured_halfword_update_variants(source, name, header, asm, rows):
+    """Prioritize a symbol-width correction when both sides of an update are too narrow."""
+    read, write = set(), set()
+    pattern = re.compile(r'\s*(lhu|lbu|sh|sb)\s+(\$\w+\s*,\s*%lo\((' + IDENT + r')\)\(\$\w+\))\s*')
+    for _, target, candidate in rows:
+        a, b = pattern.fullmatch(target), pattern.fullmatch(candidate)
+        if not a or not b or a[2] != b[2]:
+            continue
+        if (a[1], b[1]) == ('lhu', 'lbu'):
+            read.add(a[3])
+        if (a[1], b[1]) == ('sh', 'sb'):
+            write.add(a[3])
+    symbols = read & write
+    if not symbols:
+        return []
+    context = _blank(header + '\n' + source)
+    span = find(source, name)
+    if not span:
+        return []
+    body = _blank(source)[span[0]:span[1]]
+    out = []
+    generated = variants(source, name, asm)
+    for symbol in sorted(symbols):
+        if (re.search(r'(?m)^\s*#\s*(?:define|undef)\s+' + re.escape(symbol) + r'\b', context)
+                or re.search(r'\b' + IDENT + r'\s+\**\s*' + re.escape(symbol) + r'\s*(?:[;,=)\[])', body)):
+            continue
+        for family, proposed in reversed(generated):
+            changed = re.search(r'\*\s*\(\s*u16\s*\*\s*\)\s*\(\s*' + re.escape(symbol) + r'\s*\+',
+                                _blank(proposed))
+            if changed:
+                out.append((family, proposed))
+                break
+    return out
