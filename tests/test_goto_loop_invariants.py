@@ -70,3 +70,9 @@ def test_a_loop_that_rewrites_the_parameter_is_left_alone():
 
 def test_no_backward_goto_no_children():
     assert repairs.variants('s32 f(s32 a) { s32 b; b = a & 1; return b; }', 'f') == []
+
+
+def test_a_comma_declaration_of_the_looped_copy_is_read_too():
+    source = SOURCE.replace('s32 index, result = -1;', 's32 result = -1, index;').replace(
+        '    s32 value = word;\n', '').replace('u32 high; u32 low = word;', 'u32 high; u32 low = word, value = word;')
+    assert repairs.variants(source, 'walk')
