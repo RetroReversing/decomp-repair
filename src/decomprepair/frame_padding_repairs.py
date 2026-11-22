@@ -13,7 +13,8 @@ from . import mips_stack, passthrough_argument_repairs
 from .integer_repair_support import edit, view
 
 FAMILY = 'unused_frame_padding'
-FAMILIES = (FAMILY,)
+DROP_FAMILY = 'unused_frame_padding_drop'
+FAMILIES = (FAMILY, DROP_FAMILY)
 _SAVE = re.compile(r'\b(?:sw|sd|swc1|sdc1)\s+\$(?:s[0-8]|ra|fp|f2[0-9]|f3[01]|fs\d)\s*,\s*(0x[0-9a-fA-F]+|\d+)\(\$sp\)')
 _ARGUMENT = re.compile(r'\b(?:sw|sd|swc1|sdc1|sh|sb)\s+\$\w+\s*,\s*(0x[0-9a-fA-F]+|\d+)\(\$sp\)')
 _FRAME = re.compile(r'\baddiu\s+\$sp\s*,\s*\$sp\s*,\s*-(0x[0-9a-fA-F]+|\d+)')
@@ -49,6 +50,26 @@ def variants(source, name, asm):
         return []
     lines = ''.join('\n    ' + declaration for declaration in _declarations(size))
     return [(FAMILY, edit(source, [(part.opening + 1, part.opening + 1, lines)]))]
+
+
+def drop_variants(source, name):
+    """Remove a `volatile` scratch nothing reads or writes: padding the draft's own locals have since made redundant.
+
+    A scratch added to reserve frame stays in the best source after other locals (a header read into the stack, a
+    byte buffer) grew to cover the same bytes, and while it is there every family that refuses `volatile` (the
+    loop-weight scopes among them) is off. A KMC 2.7.2 function: the same source scored 49 with the scratch and 35
+    without, with the frame word for word the target's. Only a declaration the rest of the function never names.
+    """
+    part = view(source, name)
+    if not part:
+        return []
+    text = part.clean[part.opening:part.end]
+    out = []
+    for decl in re.finditer(r'(?m)^[ \t]*volatile[ \t]+(?:unsigned[ \t]+|signed[ \t]+)?(?:char|short|int|long|[su](?:8|16|32|64))[ \t]+(?P<n>[A-Za-z_]\w*)(?:\[[^\];]*\])?[ \t]*;[ \t]*\n', text):
+        if len(re.findall(r'\b'+re.escape(decl['n'])+r'\b', text)) == 1:
+            start = part.opening+decl.start()
+            out.append((DROP_FAMILY, edit(source, [(start, start+len(decl.group(0)), '')])))
+    return out[:2]
 
 
 def forwarded_variants(source, name, header, rows, asm, frame_delta):
