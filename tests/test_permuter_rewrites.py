@@ -187,3 +187,18 @@ def test_candidate_clone_preserves_mutable_tree_isolation_and_aliases():
     clone.children.pop()
     assert original.coord.line == sibling.coord.line == 12
     assert original.children[1] is original and sibling.children[1] is sibling
+
+
+def test_local_orderings_swap_disjoint_zero_stores_through_cast_field_views():
+    source = """typedef struct { int v; } Word;
+void f(void *base) {
+    ((Word *) (((char *) base) + 0x3C))->v = 0;
+    ((Word *) (((char *) base) + 0x28))->v = 0;
+}
+"""
+    [(family, candidate)] = variants(source, 'f')
+    assert family == 'adjacent_constant_stores'
+    assert candidate.index('0x28') < candidate.index('0x3C')
+    assert not variants(source.replace('0x28', '0x3D'), 'f')
+    assert not variants(source.replace('0x28', '0x3C'), 'f')
+    assert not variants(source.replace('int v', 'volatile int v'), 'f')
