@@ -206,3 +206,81 @@ def _sample_edits(source, part, flow, declarations, holder, callee, register, wi
         if not set(spans[1:]) <= reads.keys() or not groups[0] <= {reads[span] for span in spans[1:]}:
             continue
         yield edit(source, [(start, end, holder) for start, end in spans])
+
+
+ARMS = 'signed_quadratic_arm_squares'
+_ARM_SOURCE = re.compile(
+    rf'(?m)^(?P<binding>[ \t]*(?P<temporary>{IDENT})\s*=\s*(?P<axis>{IDENT})\s*\*\s*(?P=axis)\s*;[ \t]*\n)'
+    rf'[ \t]*if\s*\(\s*(?P=axis)\s*>\s*0\.0[fF]\s*\)\s*\{{\s*'
+    rf'(?P=axis)\s*=\s*\(\s*(?P<positive_square>(?P=temporary))\s*\*\s*(?P<positive>{_LITERAL})\s*\)'
+    rf'\s*\+\s*(?P<bias>{_LITERAL})\s*;\s*\}}\s*else\s*\{{\s*'
+    rf'(?P=axis)\s*=\s*\(\s*(?P<negative_square>(?P=temporary))\s*\*\s*\(\s*-(?P<negative>{_LITERAL})'
+    rf'\s*\)\s*\)\s*-\s*(?P=bias)\s*;\s*\}}'
+)
+_ARM_COMPARE = re.compile(rf'c\.lt\.s \$f0, ({_SAVED})')
+
+
+def _arm_witnesses(rows):
+    for index, (_, left, right) in enumerate(rows):
+        test = _ARM_COMPARE.fullmatch(left)
+        if not test or left != right or index + 26 > len(rows):
+            continue
+        window = rows[index:index + 26]
+        target = [op for _, op, _ in window]
+        axis = test[1]
+        if (not target[3].startswith('bc1f ') or not target[14].startswith('j ')
+                or target[4] != f'mul.s $f0, {axis}, {axis}' or target[15] != f'add.s {axis}, $f0, $f2'
+                or target[25] != f'sub.s {axis}, $f0, $f2' or target[1:3] != ['nop', 'nop']):
+            continue
+        if any(target[i:i + 3] != ['mtc1 $at, $f2', 'nop', 'mul.s $f0, $f0, $f2'] for i in (7, 18)):
+            continue
+        if any(target[i:i + 2] != ['mtc1 $at, $f2', 'nop'] for i in (12, 23)):
+            continue
+        altered = target.copy()
+        altered[4] = f'mul.s $f2, {axis}, {axis}'
+        for i in (7, 18):
+            altered[i] = 'mtc1 $at, $f0'
+            altered[i + 2] = 'mul.s $f0, $f2, $f0'
+        if altered != [op for _, _, op in window]:
+            continue
+        words = [(_LUI.fullmatch(target[i]), _ORI.fullmatch(target[i + 1])) for i in (5, 10, 16, 21)]
+        if all(hi and lo for hi, lo in words):
+            positive, bias, negative, other_bias = (integer(hi[1]) << 16 | integer(lo[1]) for hi, lo in words)
+            if bias == other_bias:
+                yield positive, negative, bias
+
+
+def arm_variants(source, name, rows, *, header=''):
+    witnessed = set(_arm_witnesses(rows))
+    visible = _visible(source, name, header) if witnessed else None
+    if not visible:
+        return []
+    part, context = visible
+    typedefs = re.findall(r'\btypedef\s+([^;{}]+?)\s+f32\s*;', context)
+    if any(alias.strip() != 'float' for alias in typedefs):
+        return []
+    floats = _typed_locals(part, r'(?:f32|float)')
+    macros = set(re.findall(rf'(?m)^[ \t]*#\s*(?:define|undef)\s+({IDENT})', context))
+    alternatives = []
+    for hit in _ARM_SOURCE.finditer(part.clean, part.opening + 1, part.end):
+        axis, temporary = hit['axis'], hit['temporary']
+        before = part.clean[part.opening + 1:hit.start()].rstrip()
+        key = _bits(hit['positive']), _bits('-' + hit['negative']), _bits(hit['bias'])
+        if (key not in witnessed or axis == temporary or (before and before[-1] not in ';{}:')
+                or macros & set(re.findall(IDENT, hit[0]))
+                or len(re.findall(rf'\b{temporary}\b', part.body)) != 4
+                or any(local not in floats or floats[local][0] in macros
+                       or not _in_scope(part, floats[local][1], hit.start()) for local in (axis, temporary))):
+            continue
+        # The squared temporary has exactly two reads under the mutually exclusive arms.
+        inline = f'({axis} * {axis})'
+        changes = [(*hit.span('binding'), ''), (*hit.span('positive_square'), inline), (*hit.span('negative_square'), inline)]
+        alternatives.append((key, changes))
+        if len(alternatives) == 4:
+            break
+    proposals = [(ARMS, edit(source, changes)) for _, changes in alternatives]
+    # Each selected branch pair has independent instruction witnesses.
+    if len(alternatives) > 1 and len({key for key, _ in alternatives}) == len(alternatives):
+        combined = edit(source, [change for _, changes in alternatives for change in changes])
+        return [(ARMS, combined), *proposals[:3]]
+    return proposals
