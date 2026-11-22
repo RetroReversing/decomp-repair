@@ -28,6 +28,8 @@ from .integer_repair_support import IDENT, edit, view
 FAMILY = 'argument_weight_scope'
 FAMILIES = (FAMILY,)
 LIMIT = 6
+LADDER_DEPTHS = (2, 3, 1)
+LADDER_LIMIT = 24
 _CALL = re.compile(rf'(?<=[;{{}}])(?P<lead>[ \t\r\n]*)(?P<call>{IDENT}\s*\([^;{{}}]*\))\s*;')
 _SET = re.compile(rf'(?:\bdo\s*\{{\s*)?(?<![\w.>])(?P<p>{IDENT})\s*=\s*(?P<sym>{IDENT})\s*;(?:\s*\}}\s*while\s*\(\s*0\s*\)\s*;)?')
 _KEYWORD = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'do', 'else'}
@@ -81,4 +83,23 @@ def variants(source, name):
         if inline:
             result.append((FAMILY, edit(source, [wrap] + inline)))
         result.append((FAMILY, edit(source, [wrap])))
-    return result[:LIMIT]
+    return result[:LIMIT] + _ladders(source, wraps)
+
+
+def _ladders(source, wraps):
+    """The wrappers as a group: the last k parameter calls, each wrapped `depth` times, for every k and depth.
+
+    One wrapper is one reference more for the parameter, so a parameter that has to climb past a pointer local or two
+    (a 27-reference parameter against 22 and 26 for the pointers, `$s1` against `$s2`/`$s3` in a render-list walk,
+    KMC GCC 2.7.2) needs several at once, and not too many: wrapping every call raises the pointers that share those
+    calls just as far (105), while the last four calls three deep, or the last seven two deep, reach 0 with the flag
+    local's `|| x == x` kept. No single wrapper is visible to a one-edit-at-a-time search (110 for every one), so the
+    group is one child. The depths and the suffix are a measured guess (hypothesis: flow.c counts a reference once
+    per loop it sits in, global.c ranks by `floor_log2(refs) * refs / live length`); the judge decides."""
+    result = []
+    for depth in LADDER_DEPTHS:
+        for count in range(1, len(wraps) + 1):
+            edits = [(start, end, 'do { ' * depth + text[len('do { '):-len(' } while (0);')] + ' } while (0);' * depth)
+                     for start, end, text in wraps[-count:]]
+            result.append((FAMILY, edit(source, edits)))
+    return result[:LADDER_LIMIT]
