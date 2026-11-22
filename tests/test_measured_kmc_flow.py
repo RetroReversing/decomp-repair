@@ -698,3 +698,17 @@ void probe(s32 i) {
     assert 'pitch = __repair_loaded_float;' in fixed
     assert not variants(source.replace('volatile f32 values', 'f32 values'), 'probe', '', rows)
     assert not variants(source.replace('0x38', '0x3C'), 'probe', '', rows)
+
+
+def test_swap_byte_store_parameter_widths_from_prologue():
+    source = 'void f(void *obj, int k, u8 x, s32 y) { obj->x = x; obj->y = y; }'
+    ops = ['sw $s4, 0x28($sp)', 'move $s4, $a2', 'sw $s7, 0x34($sp)', 'move $s7, $a3']
+    rows = measured(['addiu $sp, $sp, -0x40'])
+    rows += [(mark, left, right) for mark, left, right in zip('irir', ops, ops[2:] + ops[:2])]
+    rows += measured(['jal prep', 'nop', 'sb $s4, 4($s1)', 'sb $s7, 1($s1)'])
+    assert variants(source, 'f', '', rows) == [
+        ('measured_parameter_store_widths', source.replace('u8 x, s32 y', 's32 x, u8 y')),
+    ]
+    assert variants(source.replace('obj->y = y;', 'obj->y = y; use(y);'), 'f', '', rows) == []
+    assert variants(source, 'f', 'void f(void *, int, u8, s32);', rows) == []
+    assert variants(source, 'f', '', rows[:-1]) == []
