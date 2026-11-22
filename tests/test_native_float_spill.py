@@ -1,4 +1,4 @@
-from decomprepair.native_float_spill import FAMILY, variants
+from decomprepair.native_float_spill import FAMILY, SETUP_COPY, setup_copy_variants, variants
 
 FIELDS = (
     ('x', 'x_value', 0x4), ('y', 'y_value', 0x8), ('heading', 'heading_value', 0x10),
@@ -101,3 +101,45 @@ def test_native_slot_rejects_observed_frame_and_mismatched_destinations():
         SOURCE.replace('float y;', 'volatile float y;'),
     ):
         assert not variants(candidate, 'f', ROWS)
+
+
+SETUP_ROWS = [
+    (' ', 'move $s7, $zero', 'move $s7, $zero'),
+    ('r', 'move $a0, $s2', 'move $s5, $zero'),
+    (' ', 'sw $s7, 0x50($sp)', 'sw $s7, 0x50($sp)'),
+    (' ', 'lui $at, %hi(heading)', 'lui $at, %hi(heading)'),
+    ('r', 'sw $s7, %lo(heading)($at)', 'sw $s5, %lo(heading)($at)'),
+    (' ', 'jal prepare', 'jal prepare'),
+    ('r', 'move $s6, $s7', 'move $a0, $s2'),
+    (' ', 'lui $v0, %hi(first)', 'lui $v0, %hi(first)'),
+    (' ', 'lbu $v0, %lo(first)($v0)', 'lbu $v0, %lo(first)($v0)'),
+    ('r', 'move $fp, $s7', 'move $s6, $s5'),
+    (' ', 'lwc1 $f16, 0x50($sp)', 'lwc1 $f16, 0x50($sp)'),
+    (' ', 'lwc1 $f16, 0x50($sp)', 'lwc1 $f16, 0x50($sp)'),
+]
+
+
+def test_native_setup_copy_uses_the_cleared_word_after_the_call():
+    candidate = variants(SOURCE, 'f', ROWS)[1][1]
+    [(family, trial)] = setup_copy_variants(candidate, 'f', SETUP_ROWS)
+    assert family == SETUP_COPY
+    assert 'y = 0.0f;' not in trial
+    lines = [line.strip() for line in trial.splitlines()]
+    start = lines.index('prepare(p);')
+    assert lines[start:start + 4] == [
+        'prepare(p);', 'cleared.bits = (cleared.bits >> 16) << 16;', 'y = cleared.number;', 'if (first) {',
+    ]
+    assert not setup_copy_variants(trial, 'f', SETUP_ROWS)
+
+
+def test_native_setup_copy_needs_both_reloads_and_a_private_zero_word():
+    candidate = variants(SOURCE, 'f', ROWS)[1][1]
+    assert not setup_copy_variants(candidate, 'f', SETUP_ROWS[:-1])
+    assert not setup_copy_variants(candidate, 'f', SETUP_ROWS, max_bytes=20)
+    for broken in (
+        candidate.replace('prepare(p);', 'prepare(p, &cleared);'),
+        candidate.replace('float y;', 'volatile float y;'),
+        candidate.replace('if (first)', 'cleared.bits = 1;\n        if (first)', 1),
+        candidate.replace('refresh(p);', 'refresh(p, &y);'),
+    ):
+        assert not setup_copy_variants(broken, 'f', SETUP_ROWS)
