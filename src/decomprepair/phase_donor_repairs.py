@@ -174,3 +174,6 @@ def variants(source, name):
                 seen.add(text)
                 results.append((FAMILY if len(labels) > 1 else labels[0], text))
     return results[:LIMIT]
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 110}  # the registry: no caller wiring (registry.py)

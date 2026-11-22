@@ -171,3 +171,6 @@ def variants(source, name):
     for split in splits:
         out.append((SPLIT_FAMILY, edit(source, split)))
     return list(dict.fromkeys(out))
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 50}  # the registry: no caller wiring (registry.py)

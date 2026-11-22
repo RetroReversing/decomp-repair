@@ -145,3 +145,6 @@ def variants(source, name):
             if text != source and all(text != t for _, t in result):
                 result.append((FAMILY, text))
     return result[:LIMIT]
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 40}  # the registry: no caller wiring (registry.py)

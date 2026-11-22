@@ -95,3 +95,6 @@ def variants(source, name, header=''):
     for text in result:
         combined += [child for _, child in merges(text, name) if child != text]
     return [(FAMILY, text) for text in result + combined if text != source]
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 100}  # the registry: no caller wiring (registry.py)

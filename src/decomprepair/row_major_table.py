@@ -190,3 +190,6 @@ def variants(source, name):
             if single and single != whole:
                 out.append((FAMILY, single))
     return out
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}  # the registry: no caller wiring (registry.py)

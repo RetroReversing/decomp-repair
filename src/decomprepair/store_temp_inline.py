@@ -63,3 +63,6 @@ def variants(source, name):
             edits.append((start + use.start(), start + use.end(), f'(({kind.strip()})({expr.strip()}))'))
         found.append((FAMILY, edit(source, edits)))
     return found[:LIMIT]
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 20}  # the registry: no caller wiring (registry.py)

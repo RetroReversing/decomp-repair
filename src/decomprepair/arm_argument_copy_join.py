@@ -161,3 +161,6 @@ def variants(source, name):
         edits.append((at, at, f'    {kind}{COPY};\n    u16 {MASK};\n'))
         found.append((FAMILY, edit(source, sorted(edits))))
     return found
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 70}  # the registry: no caller wiring (registry.py)

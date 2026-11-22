@@ -96,6 +96,21 @@ for this lane; source size, record counts and component choices remain bounded. 
 layouts, effectful indices, qualified byte stores, ambiguous roots, observable line macros
 and unsupported conversion macros decline. The library never compiles or accepts a result.
 
+## Adding a repair module (no caller wiring)
+
+A module with a `variants(...)` declares itself at its end and the caller (decompdecomp's drafts, the Deep Permuter's
+beam and local lane) runs it with no change of its own:
+
+```python
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header')}
+```
+
+`needs` are the `variants` parameters the caller supplies by keyword (`source`, `name`, `header`, `arch`, `asm`,
+`flags`); optional `order` (lower first, default 1000), `lanes` (`draft`, `beam`, `local`; default all) and `archs`.
+`variants` returns `[(family, source)]` or `[source]`. See `registry.py`; `tests/test_registry.py` fails for a new module
+with `variants` and no `REPAIR`. The modules from before the registry are listed in `tests/registry_legacy.txt` and are
+still wired by hand in the caller.
+
 ## Develop
 
 ```bash

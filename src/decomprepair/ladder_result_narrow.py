@@ -176,3 +176,6 @@ def variants(source, name):
                 out.append((FAMILY, text))
         break
     return out
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 90}  # the registry: no caller wiring (registry.py)

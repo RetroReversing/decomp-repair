@@ -199,3 +199,6 @@ def variants(source, name, header=''):
             if text and text != source:
                 out.append((FAMILY, text))
     return list(dict.fromkeys(out))[:3]
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 80}  # the registry: no caller wiring (registry.py)
