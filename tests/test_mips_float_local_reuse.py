@@ -139,3 +139,59 @@ def test_switch_dispatch_inside_lifetime_prevents_reuse():
     switch_entry = switch_entry.replace('send_second:', 'case 0: send_second:').replace(
         '    send(temp_fs3);', '    send(temp_fs3);\n    }')
     assert not repair.variants(switch_entry, 'f')
+
+
+ACROSS_CALL = '''
+void match(char *obj, char *output, int mode) {
+    f32 temp_fs1;
+    f32 temp_fs4;
+    f32 result;
+    if (mode) {
+        temp_fs1 = read();
+        send(temp_fs1);
+    } else {
+        temp_fs4 = *((f32 *) (obj + 0x3C)) - (*((f32 *) (output + 0x34)) * 1024.0f);
+        result = read_again(mode);
+        send(temp_fs4 + result);
+        send(temp_fs4);
+    }
+}
+'''
+
+
+def _across_call_assembly(rows):
+    return '\n'.join(f'/* {index*4:06X} {0x80000000+index*4:08X} 00000000 */ {op}'
+                     for index, op in enumerate(rows))
+
+
+CALL_ROWS = [
+    'lwc1 $f2, 0x34($s1)',
+    'mul.s $f2, $f2, $f0',
+    'lwc1 $f0, 0x3c($s2)',
+    'jal read_again',
+    'sub.s $f28, $f0, $f2',
+]
+
+
+def across_call_choices(source, rows=CALL_ROWS):
+    return [text for family, text in repair.variants(source, 'match', _across_call_assembly(rows))
+            if family == repair.ACROSS_CALL_FAMILY]
+
+
+def test_reuses_disjoint_float_names_to_recover_target_saved_register():
+    [candidate] = across_call_choices(ACROSS_CALL)
+    assert 'f32 temp_fs4;' not in candidate
+    assert 'temp_fs1 = *((f32 *) (obj + 0x3C))' in candidate
+    assert 'send(temp_fs1 + result);' in candidate
+
+
+def test_requires_target_loads_and_saved_difference_in_the_call_delay_slot():
+    for index, replacement in ((0, 'lwc1 $f2, 0x38($s1)'),
+                               (4, 'sub.s $f0, $f0, $f2'), (3, 'jal other')):
+        rows = CALL_ROWS[:index] + [replacement] + CALL_ROWS[index+1:]
+        assert not across_call_choices(ACROSS_CALL, rows)
+
+
+def test_skips_an_escaped_or_overlapping_source_float():
+    assert not across_call_choices(ACROSS_CALL.replace('send(temp_fs4);', 'send(temp_fs4 + temp_fs1);'))
+    assert not across_call_choices(ACROSS_CALL.replace('send(temp_fs1);', 'hold(&temp_fs1);'))
