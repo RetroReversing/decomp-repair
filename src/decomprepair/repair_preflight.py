@@ -73,11 +73,15 @@ def invalid_call(source, name, header=''):
     prototypes = dict(declared) if complete else {}
     for callee, counts in _prototypes(text).items():
         prototypes[callee] = prototypes.get(callee, frozenset()) | counts
+    shadows = {}
     for call in re.finditer(rf'(?<![\w.>])({_IDENT})\s*\(', body):
         if call[1] not in prototypes or len(prototypes[call[1]]) != 1 or None in prototypes[call[1]]:
             continue
         # A local object/parameter with this name can shadow the declaration; leave it to the compiler.
-        if re.search(rf'\b{re.escape(call[1])}\b(?!\s*\()', clean(source)):
+        callee = call[1]
+        if callee not in shadows:
+            shadows[callee] = bool(re.search(rf'\b{re.escape(callee)}\b(?!\s*\()', body_text))
+        if shadows[callee]:
             continue
         start = call.end()
         depth, end = 1, start
