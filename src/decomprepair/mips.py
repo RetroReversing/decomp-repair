@@ -426,7 +426,22 @@ def prepared_call_arguments(assembly: str, callee: str) -> int:
     for index, line in enumerate(lines):
         if not re.search(r'\bjal\s+(?:' + names + r')\b', line):
             continue
-        window = lines[max(0, index-12):index+2]
+        before = lines[max(0, index-12):index]
+        # Do not borrow a register from an earlier call, a switch dispatch, or
+        # a branch arm. An ordinary conditional branch's delay slot also
+        # executes on fallthrough, so it can still prepare this call.
+        for previous in range(len(before) - 1, -1, -1):
+            opcode = re.sub(r'^\s*/\*.*?\*/', '', before[previous]).strip().split(None, 1)
+            if not opcode:
+                continue
+            mnemonic = opcode[0]
+            if mnemonic.startswith(('b', 'j')) and mnemonic != 'break':
+                falls_through = mnemonic in {'beq', 'beqz', 'bne', 'bnez', 'bgez', 'bgtz', 'blez', 'bltz',
+                                             'bc1f', 'bc1t'}
+                delay = 1 if falls_through else 2
+                before = before[previous + delay:]
+                break
+        window = before + lines[index+1:index+2]
         registers = [int(m[1]) for text in window for m in
                      re.finditer(r'\b[a-z][a-z0-9.]*\s+\$a([0-3])\s*,', text)]
         return max(registers, default=-1) + 1
