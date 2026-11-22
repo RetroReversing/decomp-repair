@@ -1,4 +1,4 @@
-"""`size *= 8;` written back into its variable, versus the scale left at each use (an N64 heap setup, KMC GCC 2.7.2).
+"""`size *= 8;` written back into its variable, versus the scale left at each use, and repeated unsigned offset expressions written as one inline helper.
 
 m2c writes a scaled value into the variable it scaled (`size *= 8;`), and every later read sees the product. When that
 product is the argument of a call and is read again in an expression loop.c hoists (`buf + size`), the read that kills
@@ -14,10 +14,13 @@ rewrite, not a proof: the exact judge decides.
 """
 import re
 
+from .compiler_phase_repairs import fresh
+from .csource import find
 from .integer_repair_support import edit, view
 
 FAMILY = 'scaled_size_inline'
-FAMILIES = (FAMILY,)
+SCALED_OFFSET = 'repeated_scaled_offset_helper'
+FAMILIES = (FAMILY, SCALED_OFFSET)
 NUMBER = r'(?:0[xX][0-9a-fA-F]+|[0-9]+)'
 
 
@@ -25,6 +28,56 @@ def _statement(name):
     return re.compile(
         rf'(?m)^[ \t]*{name}\s*(?:\*=\s*(?P<mul>{NUMBER})|<<=\s*(?P<shift>{NUMBER})'
         rf'|=\s*{name}\s*\*\s*(?P<mul2>{NUMBER})|=\s*{name}\s*<<\s*(?P<shift2>{NUMBER}))\s*;[ \t]*\n')
+
+
+_OFFSET = re.compile(
+    rf'\(\s*\(\s*\(\s*(?P<array>[A-Za-z_]\w*)\s*\[\s*(?P<index>{NUMBER})\s*\]'
+    rf'\s*>>\s*(?P<shift>{NUMBER})\s*\)\s*\*\s*(?P<stride>{NUMBER})\s*\)'
+    rf'\s*\+\s*(?P<bias>{NUMBER})\s*\)'
+)
+
+
+def _scaled_offset_helpers(source, name, part, limit):
+    """Outline repeated unsigned array-element offsets into one inline helper."""
+    body = part.clean[part.opening + 1:part.end - 1]
+    matches = {}
+    for match in _OFFSET.finditer(body):
+        key = tuple(int(match[name], 0) for name in ('shift', 'stride', 'bias')
+                    if not re.fullmatch(r'0[0-9]+', match[name]))
+        if len(key) != 3 or not 0 < key[0] < 32 or not 1 < key[1] <= 0xffffffff or key[2] > 0xffffffff:
+            continue
+        array = match['array']
+        declaration_pattern = rf'(?m)^[ \t]*(?:u32|unsigned(?:\s+int)?)\s+{array}\s*\[\s*{NUMBER}\s*\]\s*;'
+        declarations = list(re.finditer(declaration_pattern, body))
+        if len(declarations) != 1 or declarations[0].start() >= match.start():
+            continue
+        # Require the only declaration of the array to be at function scope.
+        declaration = declarations[0]
+        prefix = body[:declaration.start()]
+        if prefix.count('{') != prefix.count('}'):
+            continue
+        shadow = (rf'(?:^|[;{{}}(])\s*(?!(?:if|while|switch|return|for)\b)'
+                  rf'(?:[A-Za-z_]\w*\s+)+[*\s(]*{array}\b\s*(?:[\[;,=)]|$)')
+        other_declarator = (rf'(?:^|[;{{}}(])\s*(?!(?:if|while|switch|return|for)\b)'
+                            rf'(?:[A-Za-z_]\w*\s+)+[^;{{}}\n]+,\s*[*\s(]*{array}\b')
+        rest = body[declaration.end():]
+        if (re.search(shadow, rest) or re.search(other_declarator, rest)
+                or re.search(rf'(?m)^\s*#\s*(?:define|undef)\s+(?:{array}|u32)\b', source)):
+            continue
+        matches.setdefault(key, []).append(match)
+    result = []
+    for (shift, stride, bias), sites in matches.items():
+        if len(sites) < 2:
+            continue
+        helper = fresh(source, '', 'repair_scaled_offset')
+        text = (f'static inline unsigned int {helper}(unsigned int value)\n'
+                f'{{\n  return ((value >> {shift}) * {stride}U) + {bias}U;\n}}\n\n')
+        base = part.opening + 1
+        edits = [(base + m.start(), base + m.end(), f'{helper}({m["array"]}[{m["index"]}])') for m in sites]
+        start, _ = find(source, name)
+        edits.append((start, start, text))
+        result.append((SCALED_OFFSET, edit(source, edits)))
+    return result[:limit]
 
 
 def variants(source, name, limit=4):
@@ -67,4 +120,4 @@ def variants(source, name, limit=4):
             kept.append((start, base + hit.end() + cast.end(), '(' + re.sub(
                 rf'(?<![\w.>]){local}\b', f'({text})', cast[1]) + ')'))
             result.append((FAMILY, edit(source, kept)))
-    return result[:limit]
+    return (_scaled_offset_helpers(source, name, part, limit) + result)[:limit]
