@@ -10,7 +10,8 @@ from decomprepair.pointer_pair_repairs import initialized
 
 
 class Flow:
-    reachability = local_flow.Flow.reachability
+    memo, shape, remembered = local_flow.Flow.memo, local_flow.Flow.shape, local_flow.Flow.remembered
+    reachability, _reachability = local_flow.Flow.reachability, local_flow.Flow._reachability
 
     def __init__(self, nodes, entry, clean=''):
         self.nodes, self.entry, self.part = nodes, entry, SimpleNamespace(clean=clean)
@@ -105,3 +106,59 @@ def test_the_caller_may_change_its_answer_without_changing_the_next_one():
                  SimpleNamespace(start=0, end=0, successors=set(), uses=set(), defines=set())], 0)
     dominators(flow)[1].add(99)
     assert dominators(flow)[1] == {0, 1}
+
+
+SOURCE = '''int sample(int input) {
+    int value;
+    int other;
+    value = input;
+    if (input) { other = value + 1; } else { other = 2; }
+    while (other < 10) { other = other + value; }
+    return other;
+}'''
+
+
+def _same(a, b):
+    assert [(n.start, n.end, n.uses, n.defines, n.successors, n.live) for n in a.nodes] == \
+           [(n.start, n.end, n.uses, n.defines, n.successors, n.live) for n in b.nodes]
+    assert (a.entry, a.labels, a.gotos, a.names) == (b.entry, b.labels, b.gotos, b.names)
+    assert [d['name'] for d in a.locals] == [d['name'] for d in b.locals]
+
+
+def test_analyze_gives_each_caller_an_equal_flow_of_its_own():
+    """About 40 families analyse one function in turn; the flow is built once but never shared, because they edit it."""
+    local_flow._cache.clear()
+    fresh = local_flow._analyze(SOURCE, 'sample', None, False)
+    first = local_flow.analyze(SOURCE, 'sample')
+    second = local_flow.analyze(SOURCE, 'sample')
+    _same(first, fresh)
+    _same(second, fresh)
+    assert first is not second and first.nodes[0] is not second.nodes[0]
+    first.nodes[1].successors.clear()
+    first.nodes[1].uses.add('zzz')
+    first.names.add('zzz')
+    third = local_flow.analyze(SOURCE, 'sample')
+    _same(third, fresh)
+
+
+def test_analyze_remembers_a_refusal_and_distinguishes_declarations():
+    local_flow._cache.clear()
+    assert local_flow.analyze('int sample(int input) { int value = input;', 'sample') is None
+    assert local_flow.analyze('int sample(int input) { int value = input;', 'sample') is None
+    from decomprepair.integer_repair_support import locals_for, view
+    declarations = locals_for(view(SOURCE, 'sample'))
+    both = local_flow.analyze(SOURCE, 'sample', declarations=declarations)
+    only_value = local_flow.analyze(SOURCE, 'sample', declarations=[d for d in declarations if d['name'] == 'value'])
+    assert both.names == {'value', 'other'} and only_value.names == {'value'}
+
+
+def test_graph_answers_are_shared_between_copies_but_follow_edge_cuts():
+    local_flow._cache.clear()
+    first, second = local_flow.analyze(SOURCE, 'sample'), local_flow.analyze(SOURCE, 'sample')
+    assert dominators(first) == dominators(second)
+    assert first.memo() is second.memo()
+    assert second.reachability() is first.reachability()  # computed once for both
+    for node in first.nodes:
+        node.successors = set()  # a repair cutting every edge in place
+    assert dominators(first) == {first.entry: {first.entry}}
+    assert len(dominators(second)) > 1  # the other copy's graph is untouched
