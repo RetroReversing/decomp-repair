@@ -169,3 +169,24 @@ nop
         source.replace('extern void *state;', 'extern volatile void *state;'), 'f', asm))
     assert not any('g(saved);' in text for _, text in t.variants(
         '#define state get()\n' + source, 'f', asm))
+
+
+def test_measured_three_argument_call_offers_dropping_forwarded_pointer():
+    source = """s32 check(void *owner, u16, u16, u16);
+s32 run(void *owner, u16 x, u16 y, u16 z) {
+    return check(owner, x, y, z);
+}
+"""
+    assembly = """jal prepare
+nop
+move $a0, $s0
+move $a1, $s1
+jal check
+move $a2, $s2
+"""
+    expected = source.replace('check(void *owner, ', 'check(').replace('check(owner, ', 'check(')
+    alternatives = t.variants(source, 'run', assembly)
+    assert alternatives[0] == (t.FAMILY, expected)
+    assert 'check(owner, x, y)' in alternatives[1][1]
+    assert (t.FAMILY, expected) not in t.variants(source, 'run', assembly.replace('nop', 'nop\nmove $a3, $s4'))
+    assert (t.FAMILY, expected) not in t.variants(source.replace('check(owner,', 'check(next(),'), 'run', assembly)
