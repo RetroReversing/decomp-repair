@@ -8,6 +8,7 @@ the polarity its own control-flow recovery found, and decomp-repair's `branch_or
 
 - `polarity_swapped_arms`: a braced `if (c) { A } else { B }` whose condition `negate` can't invert becomes
   `if (!c) { B } else { A }` (a `!(...)` is dropped instead of doubled).
+- Identical negated bit tests are also flipped together, including branches with an else-if arm.
 - `polarity_goto_tail`: m2c's `if (c) { T...; goto L; } R...` where R is the rest of the enclosing block and the
   `goto` leaves it becomes `if (!c) { R... } else { T...; goto L; }`: the layout of an N64 actor-update function's
   colour block, where the target puts the shared tail's arm second.
@@ -16,6 +17,7 @@ Only conditions with no side effects (no call, `++`, `--` or assignment), no lab
 import re
 
 from .csource import _blank, find
+from .goto_structure_repairs import parse, walk
 from .pattern_repairs import close, negate
 
 FAMILY = 'branch_polarity'
@@ -54,6 +56,47 @@ def _block_end(clean, at):
     return None
 
 
+def _repeated_flag_variants(source, clean, opening, end):
+    """Try identical negated bit tests together, including braceless else-if arms."""
+    try:
+        function = parse(clean, opening + 1, end - 1)
+    except ValueError:
+        return []
+    groups = {}
+    for stmt, _ in walk(function):
+        if stmt.kind != 'if':
+            continue
+        then, other = stmt.parts['then'], stmt.parts['other']
+        if not then['block'] or not other:
+            continue
+        start, stop = stmt.parts['cond']
+        cond = clean[start:stop].strip()
+        if not cond.startswith('!(') or not re.search(r'(?<!&)&(?!&)\s*(?:0[xX][0-9a-fA-F]+|[0-9]+)\b', cond):
+            continue
+        if source[start:stop] != clean[start:stop]:
+            continue
+        flipped = negate_any(cond)
+        if not flipped or flipped.startswith('!'):
+            continue
+        key = re.sub(r'\s+', '', cond)
+        groups.setdefault(key, []).append((stmt, then, other, start, stop, flipped))
+    proposals = []
+    for sites in groups.values():
+        if len(sites) < 2 or any(a[0].end > b[0].start for a, b in zip(sites, sites[1:])):
+            continue
+        text = source
+        for stmt, then, other, start, stop, flipped in reversed(sites):
+            arm = source[other['open']:other['close']]
+            if not other['block']:
+                pad = ' ' * (stmt.start - source.rfind('\n', 0, stmt.start) - 1)
+                arm = '{\n' + pad + '  ' + arm + '\n' + pad + '}'
+            swap = (flipped + source[stop:then['open']] + arm
+                    + source[then['close']:other['open']] + source[then['open']:then['close']])
+            text = text[:start] + swap + text[stmt.end:]
+        proposals.append((FAMILY, text))
+    return proposals
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -63,7 +106,7 @@ def variants(source, name):
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end or '#' in clean[opening:end]:
         return []
-    result = []
+    result = _repeated_flag_variants(source, clean, opening, end)
 
     def add(text):
         if text != source and (FAMILY, text) not in result:
