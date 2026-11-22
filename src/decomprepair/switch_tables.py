@@ -155,8 +155,80 @@ def variants(source, name, tables=()):
                 if order!=list(range(len(groups))):
                     text=''.join(source[groups[i][0]:groups[i][1]] for i in order)
                     result.append(('target_switch_order',source[:groups[0][0]]+text+source[groups[-1][1]:]))
-    return list(dict.fromkeys(result))[:2]
+    return list(dict.fromkeys(result))[:2] + gap_variants(source, name, tables)
 
+
+
+GAP_FAMILY = 'switch_gap_goto'
+GAP_LIMIT = 12
+
+
+def gap_variants(source, name, tables=()):
+    """A jump-table entry the target points somewhere of its own, for a value the source's switch has no case for.
+
+    The compiled table sends such a value to `default:`, so the table differs in that one entry (the judge's "linked
+    jump-table differences" line) while every instruction reads the same. A function that was one entry short of a
+    match (KMC GCC 2.7.2, a switch of `var - 2` with the call arms and a `default:` that held the real code) needed
+    `case 7: goto L;`, L the label the other arms jump to when they are done: the entry then names that label's own
+    code, and jump threading removes the `goto`, so nothing else moves.
+
+    Two rules, both proposals for the judge: a missing value whose target destination equals the destination of a
+    value the source does have gets its label stacked on that case (`case 7: case 4:`); a missing value with a
+    destination of its own gets `case N: goto L;` for each label the function already jumps to (bounded). The
+    default's destination is the table's most common one (a hypothesis, as in `hints`)."""
+    from collections import Counter
+    span = find(source, name)
+    if not span or not tables:
+        return []
+    clean = _blank(source)
+    body = clean[span[0]:span[1]]
+    defined = {m[1] for m in re.finditer(r'(?:^|[;{}])\s*(?!case\b|default\b)([A-Za-z_]\w*)\s*:(?!:)', body)}
+    targets = [m for m in dict.fromkeys(re.findall(r'\bgoto\s+([A-Za-z_]\w*)\s*;', body)) if m in defined]
+    out = []
+    for switch in re.finditer(r'\bswitch\s*\(', body):
+        cond = close(clean, span[0] + switch.end() - 1)
+        if not cond:
+            continue
+        brace = cond + len(clean[cond:]) - len(clean[cond:].lstrip())
+        if clean[brace:brace + 1] != '{' or not (end := close(clean, brace, '{', '}')):
+            continue
+        inside = clean[brace + 1:end - 1]
+        labels = [m for m in LABEL.finditer(source, brace + 1, end - 1)
+                  if clean[brace + 1:m.start()].count('{') == clean[brace + 1:m.start()].count('}')
+                  and clean[m.start():m.start() + 4] in ('case', 'defa')]
+        every = [m for m in re.finditer(r'\b(?:case|default)\b', inside)
+                 if inside[:m.start()].count('{') == inside[:m.start()].count('}')]
+        if len(labels) != len(every) or not labels or clean[brace + 1:labels[0].start()].strip():
+            continue
+        try:
+            numbers = {value(m[1]): m for m in labels if m[1] is not None}
+        except (ValueError, SyntaxError, TypeError):
+            continue
+        if not numbers:
+            continue
+        for low, destinations in tables:
+            if not 2 <= len(destinations) <= 256:
+                continue
+            for base in dict.fromkeys((low, 0)):  # the switch may be on the value the table's own index is biased from
+                if all(0 <= n - base < len(destinations) for n in numbers):
+                    break
+            else:
+                continue
+            common = Counter(destinations).most_common(1)[0][0]
+            have = {n: destinations[n - base] for n in numbers}
+            for index, destination in enumerate(destinations):
+                number = base + index
+                if number in numbers or destination == common:
+                    continue
+                same = [n for n, where in have.items() if where == destination]
+                if same:
+                    at = numbers[min(same)].start()
+                    out.append((GAP_FAMILY, source[:at] + f'case {number}: ' + source[at:]))
+                    continue
+                first = labels[0].start()
+                for label in targets[:6]:
+                    out.append((GAP_FAMILY, source[:first] + f'case {number}: goto {label};\n' + source[first:]))
+    return list(dict.fromkeys(out))[:GAP_LIMIT]
 
 
 def hints(source, name, tables=(), header=''):

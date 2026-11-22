@@ -58,7 +58,8 @@ COPY_FAMILY = 'goto_body_copy'
 UNION_FAMILY = 'phase_union_unshare'
 CHAIN_FAMILY = 'goto_chain_tail_split'
 RUN_FAMILY = 'goto_run_copy'
-FAMILIES = (RENAME_FAMILY, TAIL_FAMILY, COPY_FAMILY, UNION_FAMILY, CHAIN_FAMILY, RUN_FAMILY)
+NESTED_FAMILY = 'goto_nested_run_copy'
+FAMILIES = (RENAME_FAMILY, TAIL_FAMILY, COPY_FAMILY, UNION_FAMILY, CHAIN_FAMILY, RUN_FAMILY, NESTED_FAMILY)
 
 LIMIT = 10
 _KEYWORDS = {'if', 'else', 'while', 'for', 'do', 'switch', 'return', 'goto', 'break', 'continue', 'case', 'default',
@@ -100,6 +101,14 @@ def _end(clean, pos, hi):
                 follow = _skip(clean, other + 4, hi)
                 end = _end(clean, follow, hi) if follow < hi else None
         return end
+    case = re.match(r'(?:case\b[^:;{}?]*|default)\s*:(?!:)', clean[pos:])
+    if case:  # a `case N:` label of its own, so a body that opens a block right after it (`case 1: do { ..`) still parses
+        return pos + case.end()
+    record = re.match(rf'(?:union|struct)\b(?:\s+{IDENT})?\s*{{', clean[pos:])
+    if record:  # a local `union { ... } name;` (m2c's phase storage): one statement, not a block this outline walks
+        stop = close(clean, pos + record.end() - 1, '{', '}')
+        semi = re.compile(r'[\w\s*,\[\]]*;').match(clean, stop) if stop else None
+        return semi.end() if semi else None
     label = re.match(rf'(?!case\b|default\b)({IDENT})\s*:(?!:)', clean[pos:])
     if label:
         return pos + label.end()
@@ -192,9 +201,18 @@ def _body(source, name):
 
 # --- arm_private_rename ----------------------------------------------------------------------------------------------
 
+_FLOAT_DECL = re.compile(rf'\b(?P<type>f32|f64|float|double)\s+(?P<name>{IDENT})\s*;')
+
+
 def _declarations(part):
     found = list(locals_for(part))
     found += [d for d in POINTER.finditer(part.clean, part.opening + 1, part.end)
+              if part.clean[part.opening + 1:d.start()].rstrip()[-1:] in ('', ';', '{', '}')
+              and not re.search(rf'(?<!&)&(?!&)\s*\(*\s*{d["name"]}\b', part.body)
+              and len(re.findall(rf'\b{d["name"]}\b', part.clean[:part.opening])) == 0]
+    # float locals too: a pair of arms that each load the operands of one subtraction is the case a register
+    # allocator's preferences (global) and its priorities (local) treat differently, as integers' are
+    found += [d for d in _FLOAT_DECL.finditer(part.clean, part.opening + 1, part.end)
               if part.clean[part.opening + 1:d.start()].rstrip()[-1:] in ('', ';', '{', '}')
               and not re.search(rf'(?<!&)&(?!&)\s*\(*\s*{d["name"]}\b', part.body)
               and len(re.findall(rf'\b{d["name"]}\b', part.clean[:part.opening])) == 0]
@@ -729,6 +747,9 @@ def web_split(source, name):
             if not incoming[i] or -1 in incoming[i]:
                 unknown = True
                 break
+            if any(d not in parent for d in incoming[i]):  # a write the plain-assignment filter above didn't count
+                unknown = True
+                break
             first = min(incoming[i])
             for d in incoming[i]:
                 parent[root(d)] = root(first)
@@ -894,6 +915,216 @@ def run_variants(source, name):
     return out[:LIMIT]
 
 
+# --- goto_nested_run_copy --------------------------------------------------------------------------------------------
+
+def _if_falls_out(clean, start, end):
+    """Whether control can run off the end of one statement (an `if` whose every arm jumps, a `return`, a `goto` can't)."""
+    text = clean[start:end]
+    if _JUMP.match(text):
+        return False
+    if not re.match(r'if\b', text):
+        return True
+    opening = clean.find('(', start)
+    then = _skip(clean, close(clean, opening), end)
+    then_end = _end(clean, then, end)
+    other = _skip(clean, then_end, end)
+    if not re.match(r'else\b', clean[other:]):
+        return True
+    parts = [(then, then_end), (_skip(clean, other + 4, end), end)]
+    for first, last in parts:
+        if clean[first] == '{':
+            if _falls_out(clean, first + 1, last - 1):
+                return True
+        elif re.match(r'if\b', clean[first:last]):
+            if _if_falls_out(clean, first, last):
+                return True
+        elif not _JUMP.match(clean[first:last]):
+            return True
+    return False
+
+
+def _nested_labels(source, name):
+    """(label, label item, run items, landing, outside gotos) for each label inside a braced block (the function's own
+    top level is `goto_run_copy`'s) whose run to the block's end is the last thing the enclosing top-level statement
+    does before the label that follows it, and that a `goto` from elsewhere and the code above it both reach."""
+    part, end, clean = _body(source, name)
+    if not part:
+        return []
+    blocks = _blocks(clean, part.opening + 1, end - 1)
+    if not blocks or len(blocks) < 2:
+        return []
+    top = blocks[0][2]
+    out = []
+    for lo, hi, items in blocks[1:]:
+        for k, item in enumerate(items):
+            found = _label(clean, *item)
+            if not found or k + 1 >= len(items) or k == 0:
+                continue
+            run = items[k + 1:]
+            run_clean = clean[run[0][0]:run[-1][1]]
+            if (len(run) > RUN_LIMIT_ITEMS or _RUN_LABEL.search(run_clean) or _RUN_BOUND.search(run_clean)
+                    or re.search(r'\b(?:goto|return)\b', run_clean)
+                    or any(_DECLARATION.match(clean[a:b]) for a, b in run)):
+                continue
+            enclosing = [i for i, t in enumerate(top) if t[0] <= item[0] < t[1]]
+            if len(enclosing) != 1 or enclosing[0] + 1 >= len(top):
+                continue
+            span, follower = top[enclosing[0]], top[enclosing[0] + 1]
+            landing = _label(clean, *follower)
+            # nothing but closing braces between the run and the end of the statement that holds it
+            if not landing or clean[run[-1][1]:span[1]].replace('}', '').strip():
+                continue
+            if not _if_falls_out(clean, *items[k - 1]) and not _label(clean, *items[k - 1]):
+                continue
+            jumps = [m for m in _gotos(clean, part, found) if not run[0][0] <= part.opening + m.start() < run[-1][1]]
+            if not jumps:
+                continue
+            out.append((found, item, run, landing, jumps))
+    return out
+
+
+def _nested_copy(source, name, label, item, run, landing, jumps):
+    """The run copied in place of every outside `goto label;`, each copy ending in `goto landing;`; the label and its
+    own run stay for the code that falls into it."""
+    part, end, clean = _body(source, name)
+    run_text = source[run[0][0]:run[-1][1]]
+    first_line = source.rfind('\n', 0, run[0][0]) + 1
+    was = re.match(r'[ \t]*', source[first_line:])[0]
+    edits = []
+    for jump in jumps:
+        at, stop = part.opening + jump.start(), part.opening + jump.end()
+        indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, at) + 1:])[0]
+        rows = run_text.strip().split('\n')
+        body = '\n'.join([rows[0]] + [indent + row[len(was):] if row.startswith(was) and row.strip() else row
+                                      for row in rows[1:]])
+        body += f'\n{indent}goto {landing};'
+        prefix = clean[:at].rstrip()
+        braced = prefix[-1:] == ')' or prefix.endswith('else')
+        edits.append((at, stop, '{\n' + indent + '  ' + body + '\n' + indent + '}' if braced else body))
+    for start, stop, replacement in sorted(edits, reverse=True):
+        source = source[:start] + replacement + source[stop:]
+    return source
+
+
+def _unwrap_defining(source, name, names):
+    """The one-shot `do { X } while (0);` wrappers that hold a write of one of `names`, taken off: once a name is
+    private to its arm the fence only keeps the arm's loads from the scheduler's reach (it is a loop to loop.c too)."""
+    part, end, clean = _body(source, name)
+    blocks = _blocks(clean, part.opening + 1, end - 1) if part else None
+    if not blocks:
+        return source
+    edits = []
+    for lo, hi, items in blocks:
+        for start, stop in items:
+            wrapper = re.fullmatch(r'do\s*({.*})\s*while\s*\(\s*0\s*\)\s*;', clean[start:stop], re.S)
+            if not wrapper:
+                continue
+            opening = start + wrapper.start(1)
+            inner = _items(clean, opening + 1, start + wrapper.end(1) - 1)
+            text = clean[opening:start + wrapper.end(1)]
+            if (inner is None or any(_label(clean, *i) or _DECLARATION.match(clean[i[0]:i[1]]) for i in inner)
+                    or _RUN_BOUND.search(text) or re.search(r'\b(?:goto|return)\b', text)
+                    or not any(re.search(rf'(?<![\w.>]){re.escape(n)}(?:_w\d+)?\s*=(?!=)', text) for n in names)):
+                continue
+            edits.append((start, stop, source[opening + 1:start + wrapper.end(1) - 1].strip()))
+    for start, stop, text in sorted(set(edits), reverse=True):
+        source = source[:start] + text + source[stop:]
+    return source
+
+
+def _sink_guarded_inits(source, name):
+    """`v = K; if (c) { A } else { return; }` as `if (c) { v = K; A } else { return; }`: the constant is dead on the arm
+    that returns, so the write belongs to the arm that uses it (its births then sit in the arm, where the priority
+    sees them: a length one longer than a neighbouring pseudo's decided which of two floats took `$f4`)."""
+    part, end, clean = _body(source, name)
+    blocks = _blocks(clean, part.opening + 1, end - 1) if part else None
+    if not blocks:
+        return source
+    edits = []
+    for lo, hi, items in blocks:
+        for k in range(len(items) - 1):
+            write = re.fullmatch(rf'({IDENT})\s*=\s*(-?(?:0[xX][0-9a-fA-F]+|\d+))U?\s*;', clean[items[k][0]:items[k][1]])
+            guard = items[k + 1]
+            if not write or not re.match(r'if\b', clean[guard[0]:guard[1]]):
+                continue
+            opening = clean.find('(', guard[0])
+            then = _skip(clean, close(clean, opening), guard[1])
+            then_end = _end(clean, then, guard[1])
+            other = _skip(clean, then_end, guard[1])
+            if clean[then] != '{' or not re.match(r'else\b', clean[other:]):
+                continue
+            follow = _skip(clean, other + 4, guard[1])
+            if re.fullmatch(r'(?:\{\s*)?return\s*;\s*(?:\})?', clean[follow:guard[1]]) is None:
+                continue
+            statement = source[items[k][0]:items[k][1]]
+            edits.append((items[k][0], items[k][1], ''))
+            edits.append((then + 1, then + 1, f' {statement}'))
+    if not edits:
+        return source
+    for start, stop, text in sorted(edits, reverse=True):
+        source = source[:start] + text + source[stop:]
+    return source
+
+
+def _adjacent_swaps(source, name, run):
+    """The run's neighbouring plain assignments that do not read each other's target, each pair swapped once."""
+    part, end, clean = _body(source, name)
+    out = []
+    for (a, b), (c, d) in zip(run, run[1:]):
+        one = re.fullmatch(rf'({IDENT})\s*=(?!=)[^;]*;', clean[a:b])
+        two = re.fullmatch(rf'({IDENT})\s*=(?!=)[^;]*;', clean[c:d])
+        if not (one and two) or one[1] == two[1]:
+            continue
+        if re.search(rf'\b{one[1]}\b', clean[c:d].split('=', 1)[1]) or re.search(rf'\b{two[1]}\b', clean[a:b].split('=', 1)[1]):
+            continue
+        out.append(source[:a] + source[c:d] + source[b:c] + source[a:b] + source[d:])
+    return out
+
+
+def nested_run_variants(source, name):
+    """A label inside an else arm, reached by a `goto` from a sibling arm and by the arm above it falling in, whose run
+    is the end of the whole chain: the run copied in place of the `goto` (ending in the jump to the join the chain
+    falls into), each local the arms write separately split into one per arm, and the steps that only pay off with
+    the copy offered with it as one child each. The function that taught it (KMC GCC 2.7.2, `-O2 -G0`, a state
+    update with a chain `if (s == 1) {..} else if (s == 2) {..; goto L;} else { if (s == 3) {..} else return; L: dx = a
+    - x; dz = b - z; ... }`, 40 -> 0) needed all of it at once:
+
+    - the copy with arm-private names: four floats each arm loaded became local to their blocks, so the local
+      allocator (not the global one, whose preferences merge a value that dies into a result copied to `$f12`/`$f14`)
+      gave them `$f0`.. in priority order and cross-jumping merged the identical tails again;
+    - the arms' `do { } while (0)` wrappers off, and a `phase.pointer`/`phase.value` union split into two locals;
+    - the constant `s3 = 0` moved into the arm that needs it (a length one longer decided the order of two floats);
+    - the two subtractions in the target's order.
+    Hypotheses about the compiler (local-alloc.c and global.c's `expand_preferences` read, not run under a debugger)
+    stay in docs/learnings; every child is for the exact judge."""
+    out = []
+    seen = {source}
+
+    def keep(text):
+        if text not in seen:
+            seen.add(text)
+            out.append((NESTED_FAMILY, text))
+
+    for label, item, run, landing, jumps in _nested_labels(source, name):
+        orders = [source] + _adjacent_swaps(source, name, run)
+        for base in orders:
+            found = [x for x in _nested_labels(base, name) if x[0] == label]
+            if not found:
+                continue
+            copied = _nested_copy(base, name, *found[0])
+            split = web_split(copied, name)
+            if not split:
+                continue
+            text, names = split
+            unwrapped = _unwrap_defining(text, name, names)
+            unions = union_variants(unwrapped, name)
+            unioned = unions[0][1] if unions else unwrapped
+            sunk = _sink_guarded_inits(unioned, name)
+            for step in (sunk, unioned, unwrapped, text):  # the whole combination first: a cap drops the weakest
+                keep(step)
+    return out[:LIMIT * 2]
+
+
 def variants(source, name):
     """Every family of this module on one function.
 
@@ -902,4 +1133,5 @@ def variants(source, name):
     unions = union_variants(source, name)
     combined = [(UNION_FAMILY, renamed) for _, split in unions for _, renamed in rename_variants(split, name)]
     return (combined + unions + rename_variants(source, name) + tail_variants(source, name)
-            + copy_variants(source, name) + chain_variants(source, name) + run_variants(source, name))
+            + copy_variants(source, name) + chain_variants(source, name) + run_variants(source, name)
+            + nested_run_variants(source, name))
