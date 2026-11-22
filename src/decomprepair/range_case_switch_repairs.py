@@ -20,13 +20,15 @@ import re
 
 from .csource import _blank, find
 from .integer_repair_support import locals_for, view
+from .mips_returns import instructions
 from .pattern_repairs import close
 from .switch_default_tail_repairs import _has_outer_break
 
 FAMILY = 'range_case_switch'
 JOINED_FAMILY = 'joined_range_case_switch'
 BOUNDED_FAMILY = 'bounded_mode_switch'
-FAMILIES = (FAMILY, JOINED_FAMILY, BOUNDED_FAMILY)
+DISCRETE_FAMILY = 'discrete_mode_switch'
+FAMILIES = (FAMILY, JOINED_FAMILY, BOUNDED_FAMILY, DISCRETE_FAMILY)
 
 IDENT = r'[A-Za-z_]\w*'
 SHAPE = re.compile(
@@ -139,12 +141,56 @@ def _bounded_variants(source, name, clean, opening, end):
         yield BOUNDED_FAMILY, source[:hit.start()] + region + source[body_end:]
 
 
+_DISCRETE = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<selector>{IDENT})\s*=\s*(?P<load>[^;{{}}]+);\s*'
+    r'(?P<guard>if\s*\(\s*\(\s*(?P=selector)\s*==\s*0\s*\)\s*\|\|\s*'
+    rf'\(\s*(?P=selector)\s*==\s*(?P<case>{DECIMAL})\s*\)\s*\)\s*{{)')
+_HALFWORD_FIELD = re.compile(rf'\*(?:s16|u16)\*char\*{IDENT}\+(0[xX][0-9a-fA-F]+|\d+)')
+
+
+def _discrete_targets(rows):
+    for load, beqz, literal, bne in zip(rows, rows[1:], rows[2:], rows[3:]):
+        access = re.fullmatch(r'(lh|lhu)\s+(\$\w+),\s*(0[xX][0-9a-fA-F]+|\d+)\(\$\w+\)', load)
+        other = re.fullmatch(r'addiu\s+(\$\w+),\s*\$zero,\s*(0[xX][0-9a-fA-F]+|\d+)', literal)
+        if not access or not other or not re.match(rf'beqz\s+{re.escape(access[2])}\s*,', beqz):
+            continue
+        if re.match(rf'bne\s+{re.escape(access[2])}\s*,\s*{re.escape(other[1])}\s*,', bne):
+            yield int(access[3], 0), int(other[2], 0)
+
+
+def _discrete_variants(source, name, clean, opening, end, asm):
+    targets = set(_discrete_targets(instructions(asm))) if asm else set()
+    if not targets:
+        return
+    part = view(source, name)
+    declared = {entry['name']: entry.start() for entry in locals_for(part)} if part else {}
+    for hit in _DISCRETE.finditer(clean, opening, end):
+        value = int(hit['case'])
+        if not value or declared.get(hit['selector'], end) >= hit.start():
+            continue
+        load = _HALFWORD_FIELD.fullmatch(re.sub(r'[()\s]', '', hit['load']))
+        if not load or (int(load[1], 0), value) not in targets:
+            continue
+        body_at = hit.end() - 1
+        body_end = close(clean, body_at, '{', '}')
+        if not body_end or re.match(r'\s*else\b', clean[body_end:end]):
+            continue
+        body = clean[body_at+1:body_end-1]
+        if not body.strip() or _has_outer_break(body) or re.search(r'\b(?:case|default)\b', body):
+            continue
+        indent = hit['indent']
+        candidate = (f'switch ({hit["selector"]}) {{\n'
+                     f'{indent}    case 0: case {value}: {{{source[body_at+1:body_end-1]}}} break;\n'
+                     f'{indent}}}')
+        yield DISCRETE_FAMILY, source[:hit.start('guard')] + candidate + source[body_end:]
+
+
 def _body(text, indent):
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
     return ''.join(f'{indent}    {line}\n' for line in lines) + f'{indent}    break;\n'
 
 
-def variants(source, name):
+def variants(source, name, asm=''):
     span = find(source, name)
     if not span:
         return []
@@ -165,5 +211,6 @@ def variants(source, name):
         text = (f'{indent}switch ({hit["x"]}) {{\n{indent}{low}\n{_body(a, indent)}'
                 f'{indent}case {k}:\n{_body(b, indent)}{indent}}}\n')
         result.append((FAMILY, source[:hit.start()] + text + source[hit.end():]))
-    return (list(_bounded_variants(source, name, clean, opening, end))[:4]
+    return (list(_discrete_variants(source, name, clean, opening, end, asm))[:4]
+            + list(_bounded_variants(source, name, clean, opening, end))[:4]
             + result + list(_joined_variants(source, name, clean, opening, end))[:4])
