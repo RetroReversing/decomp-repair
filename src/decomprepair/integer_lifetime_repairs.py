@@ -141,7 +141,13 @@ def masked_phase_reuse(source, name):
                 changes = [(start, end, replacement if mask is None else f'(int)({replacement} & {mask})')
                            for start, end, mask in edits]
                 out.append(('merge_integer_lifetimes', edit(source, changes)))
-    return list(dict.fromkeys(out))[:16]
+    # The phase merge may score worse alone: also offer its guarded sink as
+    # one child, so a strictly improving search can reach the combination.
+    from .guard_temp_sink_repairs import variants as sink_variants
+
+    combined = [('merge_integer_lifetimes', candidate) for _, parent in out
+                for _, candidate in sink_variants(parent, name)]
+    return list(dict.fromkeys(combined + out))[:16]
 
 
 def variants(source, name):

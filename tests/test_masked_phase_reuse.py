@@ -52,3 +52,16 @@ def test_does_not_change_the_precedence_of_an_unparenthesized_operand():
 def test_does_not_capture_arithmetic_after_the_mask():
     source = SOURCE.replace('(phase & 0xff)', '(phase & 0xff + 1)')
     assert not masked_phase_reuse(source, 'f')
+
+
+def test_offers_phase_merge_and_guard_sink_as_one_child():
+    source = SOURCE.replace('''    phase = input;
+    if (phase < 0) sink(0);''', '''    phase = input;
+    if (color != 255) {
+        int copy = input;
+        if (phase < 0) sink(copy);
+    }''')
+    proposals = masked_phase_reuse(source, 'f')
+    assert any('earlier = color;' in candidate
+               and 'int copy = input;\n        phase = input;' in candidate
+               for _, candidate in proposals)
