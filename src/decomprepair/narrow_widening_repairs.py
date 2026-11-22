@@ -74,6 +74,15 @@ def variants(source, name):
     for start, stop in found[:8]:
         if (start, stop) in modes:
             continue
+        # An unsigned parameter shifted beyond its declared width may have been inferred from one byte store.
+        # Keep logical right shifts logical when trying the word-sized parameter as well.
+        kind = ' '.join(clean[start:stop].split())
+        param = re.match(r'\s+(' + IDENT + r')\b', clean[stop:opening]) if start < opening else None
+        width = 8 if kind in ('u8', 'unsigned char') else 16 if kind in ('u16', 'unsigned short') else None
+        if param and width:
+            shifts = re.findall(r'\b' + re.escape(param[1]) + r'\s*>>\s*(0[xX][0-9a-fA-F]+|\d+)', clean[opening:end])
+            if any(int(value, 16 if value.lower().startswith('0x') else 10) >= width for value in shifts):
+                result.append((FAMILY, source[:start] + 'u32' + source[stop:]))
         text = source[:start] + 's32' + source[stop:]
         if text != source:
             result.append((FAMILY, text))
