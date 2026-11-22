@@ -36,7 +36,8 @@ def variants(source, name, arch='mips'):
         for var in (value, zero):
             declarations = list(re.finditer(
                 rf'(?:^|[;{{}}])\s*(?:s32|u32|int|long|unsigned\s+int)\s+{re.escape(var)}\s*;', body))
-            if len(declarations) != 1 or declarations[0].end() > hit.start():
+            shadows = re.findall(rf'(?:^|[;{{}}])\s*(?:(?:const|volatile|unsigned|signed|struct)\s+)*{_ID}\s+{re.escape(var)}\s*(?:[;=\[])', body)
+            if len(shadows) != 1 or len(declarations) != 1 or declarations[0].end() > hit.start():
                 break
             prefix = body[:declarations[0].start()]
             if prefix.count('{') != prefix.count('}'):
