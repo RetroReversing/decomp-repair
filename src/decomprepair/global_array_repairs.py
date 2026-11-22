@@ -147,6 +147,48 @@ def _first_element(source, clean, span):
     return result
 
 
+_READ_BEFORE = re.compile(r'(?:[(,!]|&&|\|\||[=!<>]=|[<>?:+\-*/%|^]|\breturn|\bif)\s*$|[^&=+\-*/%|^<>!]=\s*$')
+_READ_AFTER = re.compile(r'\s*(?:[,);?:]|&&|\|\||[=!<>]=|[<>|^&+\-*/%](?![=+\-])|$)')
+_VOLATILE_READ = r'\*\s*\(\s*volatile\s+(?:s8|u8|s16|u16|s32|u32|f32|char)\s*\*\s*\)\s*&\s*'
+
+
+def _first_element_reads(source, clean, span):
+    """Every read of a scalar extern, spelled as element zero of an extern array.
+
+    Reading a one-byte flag through an array declaration gives the load the structure-reference
+    flag in the compiler's RTL, and sched1's `true_dependence` then keeps it behind earlier stores
+    through struct pointers (a plain global is "not in a struct" and may move above them).
+    Measured on one KMC GCC 2.7.2 function: the flag test was hoisted above the sprite stores, which
+    changed a register and the schedule; `extern u8 g[]; if (g[0])` kept the stores first and matched where
+    `volatile`, `register` and a `do { } while (0)` fence had only got to 650 (hypothesis: the structure
+    flag, read from sched.c; the measured change is the evidence). Applies when every use of the name is
+    a plain read inside this function (a condition, operand or argument, or a volatile cast read, which
+    becomes the plain element), so no address, write or other function changes.
+    """
+    result = []
+    for decl in re.finditer(r'^[ \t]*extern\s+(?:s32|u32|s16|u16|s8|u8|f32|char)\s+([A-Za-z_]\w*)\s*;', clean[:span[0]], re.M):
+        name = decl[1]
+        uses = list(re.finditer(r'\b' + re.escape(name) + r'\b', clean))[1:]
+        if not uses or any(not span[0] <= use.start() < span[1] for use in uses):
+            continue
+        edits = [(decl.end(1), decl.end(1), '[]')]
+        for use in uses:
+            start, end = use.start(), use.end()
+            volatile = list(re.finditer(_VOLATILE_READ + '$', clean[span[0]:start]))
+            if volatile:
+                start = span[0] + volatile[-1].start()
+            elif not _READ_BEFORE.search(clean[span[0]:start]) or re.search(r'(?:\+\+|--)\s*$', clean[span[0]:start]):
+                edits = None
+                break
+            if not _READ_AFTER.match(clean[end:span[1]]):
+                edits = None
+                break
+            edits.append((start, end, name + '[0]'))
+        if edits:
+            result.append(('global_first_element', edit(source, edits)))
+    return result
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -156,6 +198,7 @@ def variants(source, name):
     # Agents retyped the table and wrote its pointer temporary out at each use in one rewrite.
     from .local_inline_repairs import variants as inlined
     tables += [('global_address_table', text) for _, table in tables[:2] for _, text in inlined(table, name, limit=4)]
-    return (_first_element(source, clean, span) + _table_index(source, clean, span) + _read_widths(source, clean, span) + _byte_tables(source, clean) + tables
+    single = _first_element(source, clean, span)
+    return (single + [v for v in _first_element_reads(source, clean, span) if v not in single] + _table_index(source, clean, span) + _read_widths(source, clean, span) + _byte_tables(source, clean) + tables
             + _value_addresses(source, clean, span)
             + _scalar_types(source, clean, span))[:20]
