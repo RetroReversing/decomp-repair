@@ -26,7 +26,12 @@ Children (each only when it differs from the source), bounded by the run:
 - the stores in ascending order of offset, the locals no store reads first and each other local just before the first
   store that needs it (`offset_store_order`);
 - the same with every local hoisted to the top of the run in its own order (`offset_store_order_hoisted`);
-- the stores in descending order (`offset_store_order_descending`), for a target that writes a record from its end.
+- the stores in descending order (`offset_store_order_descending`), for a target that writes a record from its end;
+- the stores of a bare name, a literal or a negated name (the zero words, the parameters copied in, `-sy`) first in the
+  order they have, then the computed ones in order of their offsets, every local hoisted (`offset_store_order_values`).
+  This is the layout the rotation-matrix builder matched with: the target's own store order showed the zero words and
+  the copied parameters ahead of the products, which sorting everything by offset moves apart (35 against 0 after the
+  other steps).
 """
 import re
 
@@ -36,7 +41,8 @@ from .pattern_repairs import close
 FAMILY = 'offset_store_order'
 FAMILY_HOISTED = 'offset_store_order_hoisted'
 FAMILY_DESCENDING = 'offset_store_order_descending'
-FAMILIES = (FAMILY, FAMILY_HOISTED, FAMILY_DESCENDING)
+FAMILY_VALUES = 'offset_store_order_values'
+FAMILIES = (FAMILY, FAMILY_HOISTED, FAMILY_DESCENDING, FAMILY_VALUES)
 
 IDENT = r'[A-Za-z_]\w*'
 NUMBER = r'0[xX][0-9a-fA-F]+|\d+'
@@ -63,10 +69,11 @@ LIMIT = 24
 class Unit:
     """One statement of a run: where it is, what it reads and what it writes."""
 
-    def __init__(self, begin, stop, reads, local=None, base=None, offset=None, size=None):
+    def __init__(self, begin, stop, reads, local=None, base=None, offset=None, size=None, simple=False):
         self.begin, self.stop = begin, stop
         self.reads, self.local = reads, local
         self.base, self.offset, self.size = base, offset, size
+        self.simple = simple
 
     @property
     def is_store(self):
@@ -80,6 +87,14 @@ def _pure(text):
 
 def _names(text):
     return set(re.findall(rf'(?<![\w.>]){IDENT}\b', re.sub(rf'\(\s*{TYPE}\s*\)', ' ', text))) - set(SIZES)
+
+
+def _simple(value):
+    """A bare name, a literal or a negated name: the store needs no arithmetic."""
+    text = re.sub(rf'\(\s*{TYPE}\s*\)', ' ', value).strip()
+    while text.startswith('(') and close(text, 0) == len(text):
+        text = text[1:-1].strip()
+    return bool(re.fullmatch(rf'-?\s*(?:{IDENT}|(?:{NUMBER})[fFuUlL]*|\d+\.\d*[fF]?|\.\d+[fF]?)', text))
 
 
 def _number(text):
@@ -110,13 +125,14 @@ def _unit(source, clean, pos):
         kind, base, offset, value = match.groups()
         if _pure(value):
             return Unit(pos, stop + 1, _names(value) | {base}, base=base, offset=_number(offset),
-                        size=SIZES.get(kind.split()[-1], 4)), stop + 1
+                        size=SIZES.get(kind.split()[-1], 4), simple=_simple(value)), stop + 1
         return None, stop + 1
     match = INDEX_STORE.match(text)
     if match:
         base, index, value = match.groups()
         if _pure(value):
-            return Unit(pos, stop + 1, _names(value) | {base}, base=base, offset=_number(index), size=1), stop + 1
+            return Unit(pos, stop + 1, _names(value) | {base}, base=base, offset=_number(index), size=1,
+                        simple=_simple(value)), stop + 1
         return None, stop + 1
     match = LOCAL.match(text)
     if match and not text.lstrip().startswith(('*', '(')) and _pure(match[3]):
@@ -158,7 +174,12 @@ def _order(units, mode):
     count = len(units)
     before = [[i for i in range(j) if _conflict(units[i], units[j])] for j in range(count)]
     stores = [i for i in range(count) if units[i].is_store]
-    key = (lambda i: -units[i].offset) if mode == 'descending' else (lambda i: units[i].offset)
+    def key(i):
+        if mode == 'descending':
+            return -units[i].offset
+        if mode == 'values':
+            return (0, i) if units[i].simple else (1, units[i].offset)
+        return units[i].offset
     placed, order = set(), []
 
     def emit(i):
@@ -169,7 +190,7 @@ def _order(units, mode):
             placed.add(i)
             order.append(i)
 
-    if mode == 'hoisted':
+    if mode in ('hoisted', 'values'):
         for i in range(count):
             if not units[i].is_store:
                 emit(i)
@@ -232,7 +253,8 @@ def variants(source, name):
         # a store keeps the stores the run holds between it and a barrier: the run is the statements it spans
         line = source.rfind('\n', 0, units[0].begin) + 1
         indent = re.match(r'[ \t]*', source[line:units[0].begin])[0]
-        for mode, family in (('lazy', FAMILY), ('hoisted', FAMILY_HOISTED), ('descending', FAMILY_DESCENDING)):
+        for mode, family in (('lazy', FAMILY), ('hoisted', FAMILY_HOISTED), ('descending', FAMILY_DESCENDING),
+                             ('values', FAMILY_VALUES)):
             order = _order(units, mode)
             if order == list(range(len(units))):
                 continue

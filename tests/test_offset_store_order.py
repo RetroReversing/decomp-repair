@@ -85,7 +85,7 @@ def test_the_union_store_moves_whole():
 def test_nothing_changes_when_the_stores_are_in_order():
     text = children()[p.FAMILY_HOISTED]
     for family, body in p.variants(text, 'build'):
-        if family != p.FAMILY_DESCENDING:
+        if family in (p.FAMILY, p.FAMILY_HOISTED):
             assert offsets(body) == offsets(text)
 
 
@@ -130,6 +130,13 @@ def test_the_constant_index_form_is_sorted_too():
     body = next(iter(kids.values()))
     order = [line.split('[')[1][0] for line in body.splitlines() if line.strip().startswith('m[')]
     assert order == ['0', '1', '2', '3']
+
+
+def test_the_bare_stores_stay_in_front_in_their_own_order():
+    body = children()[p.FAMILY_VALUES]
+    # the zero words, -sy and the parameter come first as written, then the products by offset
+    assert offsets(body) == [0x2C, 0xC, 8, 0x30, 0, 4, 0x10, 0x14, 0x20]
+    assert body.index('u = t * cy;') < body.index('(u + sx)')
 
 
 def test_the_module_declares_itself():
