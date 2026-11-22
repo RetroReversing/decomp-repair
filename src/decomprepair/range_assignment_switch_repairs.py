@@ -208,7 +208,7 @@ def variants(source, name):
             continue
         indent = hit['indent']
 
-        def body(env, indent=indent):
+        def body(env, indent=indent, order=order):
             return ''.join(f'{indent}  {v} = {_spell(env[v])};\n' for v in order if v in env) + f'{indent}  break;\n'
         groups = []
         for k, env in cases.items():
