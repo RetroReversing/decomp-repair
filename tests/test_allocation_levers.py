@@ -116,3 +116,34 @@ int f(void *p) {
     assert candidate.count('column(p)') == 2
     assert not r.staged_variants(source.replace('return ((ByteField', 'mutate(p); return ((ByteField'), 'f')
     assert not r.staged_variants(source.replace('u8 v', 'volatile u8 v'), 'f')
+
+
+def test_two_plain_stores_to_different_offsets_of_one_record_are_swapped():
+    source = """void f(void *obj)
+{
+  ((Field_s32 *) (((char *) obj) + 0x3C))->v = 0;
+  ((Field_s32 *) (((char *) obj) + 0x28))->v = 0;
+  obj->tail = 1;
+  obj->head = 2;
+}
+"""
+    out = [text for _, text in a.variants(source, 'f')]
+    assert any(t.index('+ 0x28') < t.index('+ 0x3C') for t in out)
+    assert any(t.index('obj->head = 2;') < t.index('obj->tail = 1;') for t in out)
+
+
+def test_overlapping_or_computed_stores_are_not_swapped():
+    overlapping = """void f(void *obj, int n)
+{
+  ((Field_s32 *) (((char *) obj) + 0x28))->v = 0;
+  ((Field_s32 *) (((char *) obj) + 0x2A))->v = 0;
+  obj->a = n;
+  obj->a = 4;
+  obj->b = load(n);
+  obj->c = 4;
+}
+"""
+    out = [text for _, text in a.variants(overlapping, 'f')]
+    assert all(t.index('+ 0x28') < t.index('+ 0x2A') for t in out)
+    assert all(t.index('obj->a = n;') < t.index('obj->a = 4;') for t in out)
+    assert all(t.index('obj->b = load') < t.index('obj->c = 4;') for t in out)
