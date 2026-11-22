@@ -18,12 +18,18 @@ SOURCE = """int f(int i) {
 def test_full_byte_mask_uses_linked_load_and_comparison():
     assert residual(ROWS) == tuple(ROWS)
     proposals = variants(SOURCE, 'f', ROWS)
-    assert len(proposals) == 4
+    assert len(proposals) == 5
     assert all(family == FAMILY and '& 0x7f' not in text for family, text in proposals)
     assert all('__asm__' not in text for _, text in proposals)
     assert all(text.index('repair_byte_flag;') < text.index('if (')
-               for _, text in proposals[2:])
+               for _, text in proposals[2:4])
     assert all(text.count('&flags') == 1 for _, text in proposals)
+    indexed = proposals[-1][1]
+    assert 'int repair_byte_offset;' in indexed
+    assert 'repair_byte_offset = (i * 16);' in indexed
+    assert '*(volatile unsigned char *)((u8 *)&flags + repair_byte_offset)' in indexed
+    assert '& 0xffU' in indexed
+    assert len(variants(SOURCE.replace('int i)', 'unsigned int i)'), 'f', ROWS)) == 4
 
 
 def test_reject_wrong_register_wrong_source_or_second_difference():
