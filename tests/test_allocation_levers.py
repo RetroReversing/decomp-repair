@@ -93,3 +93,26 @@ void f(int row, int column) {
     assert not r.variants(source.replace('    s32 *cell;', '    s32 grid[4][7];\n    s32 *cell;'), 'f')
     assert not r.variants(source.replace('    s32 *cell;', '    u32 *cell;'), 'f')
     assert not r.variants(source.replace('&grid[row][column]', '&grid[row]'), 'f')
+
+
+def test_stages_repeated_reads_from_one_row_table():
+    source = """
+typedef struct { u8 v; } ByteField;
+extern s32 grid[][7];
+static inline u8 column(void *p) {
+    return ((ByteField *) (((char *) p) + 1))->v;
+}
+int f(void *p) {
+    s32 *cell;
+    s32 value;
+    value = grid[((ByteField *) (((char *) p) + 0))->v][column(p)];
+    cell = &grid[((ByteField *) (((char *) p) + 0))->v][column(p)];
+    return value + *cell;
+}
+"""
+    [(family, candidate)] = r.staged_variants(source, 'f')
+    assert family == 'staged_row_address'
+    assert candidate.count('sizeof(grid[0])') == 2
+    assert candidate.count('column(p)') == 2
+    assert not r.staged_variants(source.replace('return ((ByteField', 'mutate(p); return ((ByteField'), 'f')
+    assert not r.staged_variants(source.replace('u8 v', 'volatile u8 v'), 'f')

@@ -9,13 +9,15 @@ temporary go when nothing else reads them.
 """
 import re
 
+from .compiler_phase_repairs import fresh
 from .csource import _blank, find
 from .integer_repair_support import edit, view
 from .pattern_repairs import close
 
 FAMILY = 'row_subscript'
 ADDRESS_FAMILY = 'linear_row_address'
-FAMILIES = (FAMILY, ADDRESS_FAMILY)
+STAGED_FAMILY = 'staged_row_address'
+FAMILIES = (FAMILY, ADDRESS_FAMILY, STAGED_FAMILY)
 
 IDENT = r'[A-Za-z_]\w*'
 NUMBER = r'0[xX][0-9a-fA-F]+|\d+'
@@ -93,7 +95,7 @@ def variants(source, name):
         candidate = source[:opening] + text + source[end:]
         if candidate != source and candidate not in [t for _, t in result]:
             result.append((FAMILY, candidate))
-    return result + address_variants(source, name)
+    return result + address_variants(source, name) + staged_variants(source, name)
 
 def address_variants(source, name):
     """Express an element address as a byte offset from a declared two-dimensional array."""
@@ -139,6 +141,62 @@ def address_variants(source, name):
         address = (f'({kind} *)((char *)&{base} + '
                    f'(({row}) * sizeof({base}[0]) + ({col}) * sizeof({base}[0][0])))')
         out.append((ADDRESS_FAMILY, edit(source, [(match.start('addr'), col_end, address)])))
+        if len(out) == 4:
+            break
+    return out
+
+# The generated field view has a single byte member. A helper must be a
+# static inline function with only one such read from its own parameter.
+_BYTE_FIELD = (rf'\(\((?P<view>{IDENT})\s*\*\)\s*\(\(\(char\s*\*\)\s*(?P<base>{IDENT})\)'
+               rf'\s*\+\s*(?:{NUMBER})\)\)\s*->\s*v')
+
+
+def staged_variants(source, name):
+    part = view(source, name)
+    if not part or re.search(r'\bvolatile\b|(?m:^\s*#\s*define)', part.clean):
+        return []
+    prefix = part.clean[:part.opening]
+    byte_views = set(re.findall(rf'\btypedef\s+struct\s*{{\s*u8\s+v\s*;\s*}}\s*({IDENT})\s*;', prefix))
+    tables = re.finditer(rf'\bextern\s+(?P<kind>s32|u32|int)\s+(?P<table>{IDENT})'
+                         rf'\s*\[\s*(?:{NUMBER})?\s*\]\s*\[\s*(?:{NUMBER})\s*\]\s*;', prefix)
+    helpers = set()
+    for helper in re.finditer(rf'\b(?:inline\s+static|static\s+inline)\s+u8\s+(?P<fn>{IDENT})'
+                              rf'\s*\(\s*void\s*\*\s*(?P<arg>{IDENT})\s*\)\s*{{\s*return\s+'
+                              rf'{_BYTE_FIELD}\s*;\s*}}', prefix):
+        if helper['view'] in byte_views and helper['arg'] == helper['base']:
+            helpers.add(helper['fn'])
+    if not helpers:
+        return []
+    row, col, stride, address = (fresh(source, '', '__repair_' + label)
+                                 for label in ('row', 'column', 'row_stride', 'row_base'))
+    out = []
+    for table in tables:
+        kind, base = table['kind'], table['table']
+        if len(re.findall(rf'\b{base}\b', prefix)) != 1:
+            continue
+        if re.search(rf'\b{IDENT}\s+\**\s*{base}\s*(?=[;=,\[])', part.body):
+            continue
+        pattern = re.compile(
+            rf'(?m)^[ \t]*(?P<lhs>[^;{{}}=\n]+?)\s*=\s*(?P<addr>&\s*)?{base}'
+            rf'\s*\[\s*(?P<row>{_BYTE_FIELD})\s*\]\s*'
+            rf'\[\s*(?P<col>(?P<helper>{IDENT})\(\s*(?P=base)\s*\))\s*\]\s*;')
+        changes = []
+        for hit in pattern.finditer(part.clean, part.opening + 1, part.end - 1):
+            if hit['view'] not in byte_views or hit['helper'] not in helpers:
+                continue
+            lhs = hit['lhs'].strip()
+            if not re.fullmatch(IDENT, lhs) and not re.fullmatch(_BYTE_FIELD, lhs):
+                continue
+            row_expr, col_expr = (source[hit.start(key):hit.end(key)].strip() for key in ('row', 'col'))
+            deref = '' if hit['addr'] else '*'
+            replacement = (
+                f'{{ unsigned int {row}, {col}, {stride}; char *{address};\n'
+                f'{row} = {row_expr}; {stride} = {row} * sizeof({base}[0]); {col} = {col_expr};\n'
+                f'{address} = (char *)&{base} + {stride};\n'
+                f'{lhs} = {deref}({kind} *)({address} + {col} * sizeof({base}[0][0])); }}')
+            changes.append((hit.start(), hit.end(), replacement))
+        if 1 <= len(changes) <= 4:
+            out.append((STAGED_FAMILY, edit(source, changes)))
         if len(out) == 4:
             break
     return out
