@@ -9,6 +9,12 @@ the constant second: a KMC N64 function (`-G0 -mips3 -mgp32 -mfp32 -O2`, 731 ins
 Offered for two consecutive statements `ARR[i] = E;` and `ARR[j] = F;` with literal different indices, one local
 array, and no call in either value or mention of the array in it. The rewrite swaps them. A candidate: the judge's
 byte comparison decides whether the order matters.
+
+Also offered for two consecutive stores to different fields of one array's elements, on one line or two
+(`D[i].prev = &D[i - 1]; D[i - 1].next = &D[i];`), whose values only compute addresses or name locals and constants
+(no call, no load): different members never share bytes, so either order is the same program. The whole-path audit
+of a KMC N64 game's matched functions (docs/learnings in decompdecomp) found a list-building loop stuck at 20 with
+only this swap left (20 -> 0).
 """
 import re
 
@@ -20,7 +26,45 @@ LIMIT = 40
 STORE = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<array>{IDENT})\[\s*(?P<index>{NUMBER})\s*\]\s*=(?!=)\s*(?P<value>[^;{{}}]*);[ \t]*\n')
 
 
+ELEMENT = re.compile(rf'(?P<array>{IDENT})\[(?P<index>[^\[\];{{}}]+)\]\s*\.\s*(?P<field>{IDENT})\s*=(?!=)\s*'
+                     rf'(?P<value>[^;{{}}]*);')
+GAP = re.compile(r'[ \t]*\n?[ \t]*')
+# a value with no load: an address (`&D[i - 1]`), a name, a number, and arithmetic of them
+ADDRESS = re.compile(rf'&\s*{IDENT}(?:\s*\[[^\[\];]*\])?(?:\s*\.\s*{IDENT})*')
+PLAIN = re.compile(rf'^(?:{IDENT}|{NUMBER}|[\s+\-*()]|0x[0-9a-fA-F]+)*$')
+
+
+def _no_load(value):
+    rest = ADDRESS.sub('0', value)
+    return bool(PLAIN.match(rest)) and '*' not in rest.replace(' * ', '+')
+
+
+def element_field_variants(source, name):
+    """Two adjacent stores to different fields of one array's elements, swapped (module docstring)."""
+    part = view(source, name)
+    if not part:
+        return []
+    result = []
+    for first in ELEMENT.finditer(part.clean, part.opening, part.end):
+        gap = GAP.match(part.clean, first.end())
+        second = ELEMENT.match(part.clean, gap.end())
+        if (not second or second.end() > part.end or second['array'] != first['array']
+                or second['field'] == first['field'] or not _no_load(first['value'])
+                or not _no_load(second['value']) or re.search(rf'\b{IDENT}\s*\(', first['value'] + second['value'])):
+            continue
+        a, b = source[first.start():first.end()], source[second.start():second.end()]
+        text = b + source[first.end():second.start()] + a
+        result.append((FAMILY, edit(source, [(first.start(), second.end(), text)])))
+        if len(result) >= LIMIT:
+            break
+    return result
+
+
 def variants(source, name):
+    return _array_variants(source, name) + element_field_variants(source, name)
+
+
+def _array_variants(source, name):
     part = view(source, name)
     if not part:
         return []
