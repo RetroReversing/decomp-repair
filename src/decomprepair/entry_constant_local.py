@@ -76,3 +76,6 @@ def variants(source, name):
             if len(found) >= LIMIT:
                 return found
     return found
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 10}  # the registry: no caller wiring (registry.py)

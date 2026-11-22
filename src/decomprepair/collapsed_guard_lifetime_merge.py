@@ -26,3 +26,6 @@ def variants(source, name, header=''):
                   if family == 'merge_integer_lifetimes' and text != collapsed]
         out.extend((FAMILY, text) for text in merges[:MERGES] if text != source)
     return list(dict.fromkeys(out))
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 60}  # the registry: no caller wiring (registry.py)

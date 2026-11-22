@@ -88,3 +88,6 @@ def variants(source, name):
             seen.add(text)
             out.append((family, text))
     return out
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 30}  # the registry: no caller wiring (registry.py)
