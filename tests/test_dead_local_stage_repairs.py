@@ -99,3 +99,11 @@ def test_initialized_load_reuse_rejects_out_of_scope_or_shadowed_local():
     shadowed = LOAD_REUSE.replace('        sink(first, one);', '        { s32 result; result = 1; }\n        sink(first, one);')
     for source in (out_of_scope, shadowed):
         assert not [out for _, out in r.variants(source, 'f') if 'result = *(u16 *)(p + 2);' in out]
+
+
+def test_large_staging_search_spreads_early_choices():
+    candidates = list(range(65))
+    ordered = r._spread(candidates)
+    assert ordered[:8] == [0, 32, 16, 48, 8, 24, 40, 56]
+    assert sorted(ordered) == candidates
+    assert r._spread(candidates[:8]) == candidates[:8]

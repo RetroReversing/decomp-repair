@@ -123,6 +123,23 @@ def _spans(clean, hit):
     return spans
 
 
+def _spread(candidates):
+    """Visit the middle of progressively smaller intervals before nearby alternatives."""
+    if len(candidates) <= 8:
+        return candidates
+    ordered = [candidates[0]]
+    seen = {0}
+    divisions = 2
+    while len(ordered) < len(candidates):
+        for boundary in range(1, divisions, 2):
+            index = boundary * len(candidates) // divisions
+            if index not in seen:
+                seen.add(index)
+                ordered.append(candidates[index])
+        divisions *= 2
+    return ordered
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -137,7 +154,9 @@ def variants(source, name):
     pointers = POINTER.findall(body)
     blocks = list(_blocks(clean, opening, end))
     loops = _loops(clean, opening, end)
-    result = _reuse_initialized_load(source, clean, opening, end, blocks, integers)
+    priority = _reuse_initialized_load(source, clean, opening, end, blocks, integers)
+    result = []
+    seen = {text for _, text in priority}
     for first, last in blocks:
         for start, stop in _statements(clean, first, last):
             hit = ASSIGN.fullmatch(clean, start, stop)
@@ -156,9 +175,10 @@ def variants(source, name):
                     stage = f'{local} = (void *) {operand};' if pointer else f'{local} = {operand};'
                     read = f'(u32) {local}' if pointer else local
                     text = f'{source[:start]}{stage} {source[start:a]}{read}{source[b:stop]}{source[stop:]}'
-                    if (FAMILY, text) not in result:
+                    if text not in seen:
+                        seen.add(text)
                         result.append((FAMILY, text))
-    return result
+    return priority + _spread(result)
 
 
 def _reuse_initialized_load(source, clean, opening, end, blocks, integers):
