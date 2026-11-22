@@ -186,3 +186,49 @@ def signed_halfword_load_variants(source, name, rows):
         result.append((SIGNED_HALFWORD_LOAD, edit(source, [stage])))
         result.append((SIGNED_HALFWORD_LOAD, edit(source, [(a, b, 'volatile s16')])))
     return result[:6]
+
+
+_BYTE_LOAD = re.compile(r'lb \$\w+, %lo\((D_[0-9A-Fa-f]+)\)\(\$\w+\)')
+SIGNED_BYTE_LOAD = 'relocated_signed_byte_load'
+
+
+def signed_byte_base_variants(source, name, rows, header=''):
+    """Use the target's byte at the symbol base when a big-endian halfword narrows at base + 1."""
+    from .integer_repair_support import edit, view
+
+    symbols = set()
+    loads = []
+    for _, target, candidate in rows:
+        left, right = _BYTE_LOAD.fullmatch(target), _BYTE_LOAD.fullmatch(candidate)
+        if not left:
+            continue
+        loads.append(left[1])
+        if right and int(right[1][2:], 16) == int(left[1][2:], 16) + 1:
+            symbols.add(left[1])
+    symbols = {symbol for symbol in symbols if loads.count(symbol) == 1}
+    if not symbols or not (part := view(source, name)):
+        return []
+    context = _blank(header) + '\n' + part.clean[:part.opening]
+    macros = set(re.findall(rf'(?m)^[ \t]*#\s*(?:define|undef)\s+({IDENT})', context))
+    if macros & {'s8', 'u16'}:
+        return []
+    assignment = re.compile(
+        rf'\b{IDENT}\s*=\s*(?P<helper>{IDENT})\s*\(\s*\*\s*\(\s*\(\s*'
+        rf'(?P<width>u16)\s*\*\s*\)\s*\(\s*(?P<symbol>{IDENT})\s*\+\s*{IDENT}\s*\)\s*\)\s*\)\s*;'
+    )
+    out = []
+    for hit in assignment.finditer(part.clean, part.opening + 1, part.end):
+        helper, symbol = hit['helper'], hit['symbol']
+        if symbol not in symbols or macros & {helper, symbol}:
+            continue
+        if not re.search(rf'\bextern\s+char\s+{symbol}\s*\[\s*\]\s*;', context):
+            continue
+        if not re.search(rf'\bs8\s+{helper}\s*\(\s*s8\s+({IDENT})\s*\)\s*\{{\s*return\s+\1\s*;\s*\}}',
+                         context):
+            continue
+        if len(re.findall(rf'\b{symbol}\b', part.body)) != 1:
+            continue
+        a, b = hit.span('width')
+        if source[a:b] == 'u16':
+            out.append((SIGNED_BYTE_LOAD, edit(source, [(a, b, 's8')])))
+    return out[:3]
