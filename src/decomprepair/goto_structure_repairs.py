@@ -18,6 +18,11 @@ Each rewrite keeps the meaning: only labels every `goto` of which lies in the re
 - `goto_shared_tail`: a `goto` into the tail of another arm or case (m2c merged two copies of the same statements)
   gets its own copy of the tail, when the tail ends in `return` or the `goto` is the last thing its path does before
   the `if` holding the label ends.
+- `goto_nested_entry_else`: `v = e; if (c) { goto L; } M... if (d) { A... L: B... } else { N: E... }` (the only `goto L`,
+  the label a top-level statement of the next `if`'s then arm) becomes `t = e; if (!c) { M... if (!d) { goto N; }
+  A... } else { v = t; } B... N: E...`, a late-entry arm written as the `else` it was. The store moves into the else arm
+  because (hypothesis) the second scheduler's branch-likely slot filling copies the first instruction of an out-of-line
+  arm into the delay slot (`bnel` plus `sw`), where the plain store before the test gives `bnez` and the store above it.
 - `goto_relocated_case_tail`: a nested tail follows its earlier guarded jump, with its late entry
   jumping back to it and both paths retaining the switch's terminal continuation.
 """
@@ -27,7 +32,8 @@ from .csource import _blank, find
 from .pattern_repairs import close, negate
 
 RELOCATE_FAMILY = 'goto_relocated_case_tail'
-FAMILIES = ('goto_backward_loop', 'goto_forward_else', 'goto_shared_tail', RELOCATE_FAMILY)
+NESTED_ENTRY_FAMILY = 'goto_nested_entry_else'
+FAMILIES = ('goto_backward_loop', 'goto_forward_else', 'goto_shared_tail', NESTED_ENTRY_FAMILY, RELOCATE_FAMILY)
 IDENT = r'[A-Za-z_]\w*'
 LOOPS = ('do', 'while', 'for', 'switch')
 
@@ -325,6 +331,95 @@ def _else_variants(source, function, label_list, i):
     return [('goto_forward_else', head + out + tail)]
 
 
+def _fresh(function_text, base):
+    name, n = base, 2
+    while re.search(r'\b' + name + r'\b', function_text):
+        name, n = f'{base}{n}', n + 1
+    return name
+
+
+def _nested_entry_else(source, clean, function, opening, stmts, i):
+    """`v = e; if (c) { goto L; } M... if (d) { A... L: B... } [else { E... }]` written with the entry as an else arm."""
+    if i + 2 >= len(stmts):
+        return []
+    assign, test = stmts[i], stmts[i + 1]
+    if assign.kind != 'simple' or test.kind != 'if' or test.parts.get('other') is not None:
+        return []
+    m = re.match(r'(' + IDENT + r')\s*=\s*([^=].*);\s*$', source[assign.start:assign.end].strip(), re.S)
+    if not m or m[2].lstrip().startswith('='):
+        return []
+    var, expr = m[1], m[2].strip()
+    then = test.parts['then']
+    if len(then['stmts']) != 1 or then['stmts'][0].kind != 'goto':
+        return []
+    name = then['stmts'][0].parts['target']
+    cond1 = source[test.parts['cond'][0]:test.parts['cond'][1]].strip()
+    if not re.search(r'\b' + var + r'\b', cond1) or len(_gotos(function, name)) != 1:
+        return []
+    k = next((k for k in range(i + 2, len(stmts)) if stmts[k].kind == 'if'), None)
+    if k is None:
+        return []
+    middle, nest = stmts[i + 2:k], stmts[k]
+    if any(st.kind != 'simple' for st in middle):
+        return []
+    arm = nest.parts['then']
+    pos = next((p for p, st in enumerate(arm['stmts']) if st.kind == 'label' and st.parts['name'] == name), None)
+    if pos is None or not arm['block']:
+        return []
+    before, after = arm['stmts'][:pos], arm['stmts'][pos + 1:]
+    other = nest.parts.get('other')
+    inner_e = other['stmts'] if other else []
+    if not after or any(st.kind in ('case', 'jump') for st, _ in walk(before + after + inner_e)):
+        return []
+    for part in (before, inner_e):  # a label in A or E that something outside the rewritten region jumps to stays reachable only in E
+        for lab in _labels(part):
+            if len(_gotos(part, lab.parts['name'])) != len(_gotos(function, lab.parts['name'])) and part is before:
+                return []
+    decl = re.search(r'^[ \t]*((?:[A-Za-z_]\w*[ \t]+)+\**)[ \t]*' + var + r'\s*;', clean[opening:], re.M)
+    if not decl:
+        return []
+    ctype = decl[1].strip()
+    indent = _indent_of(source, test.start)
+    tmp = _fresh(clean[opening:], 'entry_tmp')
+    cond1_t = re.sub(r'\b' + var + r'\b', tmp, cond1)
+    cond2 = source[nest.parts['cond'][0]:nest.parts['cond'][1]].strip()
+    text = lambda seq: _span(source, seq[0].start, seq[-1].end) if seq else ''
+    done = _fresh(clean[opening:], 'nested_done')
+    entry = inner_e[0].parts['name'] if inner_e and inner_e[0].kind == 'label' else None
+    if inner_e and entry is None:
+        entry = _fresh(clean[opening:], 'nested_else')
+    last = after[-1]
+    terminal = last.kind in ('goto', 'jump') or (last.kind == 'simple' and re.match(r'return\b', source[last.start:last.end]))
+    body = _lines(text(middle), indent)
+    skip = entry or done
+    body += f'{indent}    if ({_not(cond2)}) {{\n{indent}        goto {skip};\n{indent}    }}\n'
+    body += _lines(text(before), indent)
+    out = f'{indent}{tmp} = {expr};\n{indent}if ({_not(cond1_t)}) {{\n{body}{indent}}} else {{\n{indent}    {var} = {tmp};\n{indent}}}\n'
+    out += _lines(text(after), indent).replace(indent + '    ', indent, 1) if False else ''.join(
+        r[4:] if r.startswith(indent + '    ') else r for r in _lines(text(after), indent).splitlines(True))
+    need_done = not terminal
+    if inner_e:
+        if need_done:
+            out += f'{indent}goto {done};\n'
+        if inner_e[0].kind != 'label':
+            out += f'{entry}:\n'
+        out += ''.join(r[4:] if r.startswith(indent + '    ') else r for r in _lines(text(inner_e), indent).splitlines(True))
+        if need_done:
+            out += f'{done}: ;\n'
+    else:
+        out += f'{done}: ;\n'
+    head = source[:assign.start]
+    line = source.rfind('\n', 0, assign.start) + 1
+    if not source[line:assign.start].strip():
+        head = source[:line]
+    tail = source[nest.end:]
+    tail = tail[1:] if tail.startswith('\n') else tail
+    result = head + out + tail
+    brace = opening + 1
+    result = result[:brace] + f'\n{indent[:max(0, len(indent) - 4)] or "  "}{ctype} {tmp};' + result[brace:]
+    return [(NESTED_ENTRY_FAMILY, result)]
+
+
 def _paths(stmts, trail=()):
     """Each statement with its trail of (statement list, index, owner) from the function's body down."""
     for k, st in enumerate(stmts):
@@ -565,6 +660,8 @@ def variants(source, name):
                 result += _loop_variants(source, clean, function, stmts, i, s.parts['name'])
             elif s.kind == 'if':
                 result += _else_variants(source, function, stmts, i)
+            elif s.kind == 'simple':
+                result += _nested_entry_else(source, clean, function, opening, stmts, i)
     result += _tail_variants(source, function)
     seen, out = set(), []
     for family, text in result:
