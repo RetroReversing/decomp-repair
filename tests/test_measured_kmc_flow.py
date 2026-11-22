@@ -762,3 +762,34 @@ def test_split_flag_word_when_target_uses_both_saved_registers():
     assert not variants(source, 'f', '', rows[:-1])
     assert not variants(source.replace('result = make();', 'result = use(&flags);'), 'f', '', rows)
     assert not variants(source.replace('return result;', 'goto exit;'), 'f', '', rows)
+
+
+def test_capture_invariant_float_before_loop_cursor_setup():
+    source = """extern f32 bias;
+void f(int count) {
+    Point points[8];
+    Point *out;
+    int i;
+    if (count) {
+        out = points;
+        i = 0;
+        do {
+            out->x = bias + i;
+            out->y = bias - i;
+            out++;
+            i++;
+        } while (i < count);
+    }
+}
+"""
+    cursor, zero = 'addiu $a0, $sp, 0x18', 'move $a1, $zero'
+    rows = [('o', '', cursor), ('o', '', zero)]
+    rows += measured(('lui $at, %hi(bias)', 'lwc1 $f4, %lo(bias)($at)'))
+    rows += [('o', cursor, ''), ('o', zero, '')]
+    expected = source.replace('out = points;', 'f32 __repair_loop_float = bias;\n        out = points;')
+    expected = expected.replace('= bias +', '= __repair_loop_float +').replace('= bias -', '= __repair_loop_float -')
+    assert variants(source, 'f', '', rows) == [('measured_capture_loop_float', expected)]
+    assert not variants(source.replace('extern f32 bias;', 'extern volatile f32 bias;'), 'f', '', rows)
+    assert not variants(source.replace('out++;', 'touch(out); out++;'), 'f', '', rows)
+    assert not variants(source.replace('out++;', '*elsewhere = 0; out++;'), 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:-1])
