@@ -1,8 +1,11 @@
 """Recover a saved zero word reinterpreted as a float for a late update."""
 
 import re
+from collections import defaultdict
 
 from .balanced_predicate_projection import _ZERO_UNION, _known_zero
+from .clamp_return_local import _field
+from .compiler_phase_repairs import fresh
 from .goto_structure_repairs import _children, _indent_of, _paths, parse
 from .integer_repair_support import IDENT, edit, view
 from .local_flow import Flow
@@ -241,3 +244,87 @@ def stack_word_variants(source, name, rows, *, header='', max_bytes=65536):
                  for use in reference.finditer(part.clean, end, part.end) if use.start() != reset.start('lhs'))
     candidate = edit(source, edits)
     return [(STACK_WORD, candidate)] if len(candidate.encode()) <= max_bytes else []
+
+
+DISTINCT_TAIL = 'distinct_zero_store_tail'
+_BRANCH_TO = re.compile(
+    rf'(?P<prefix>(?:j\s+|bc1[ft]\s+|b(?:eq|ne)z\s+\$\w+,\s+))'
+    rf'(?:(?:(?P<symbol>{IDENT})\+)?0x|\.L)(?P<offset>[0-9a-fA-F]+)'
+)
+_ZERO_SLOT = re.compile(rf'sw \$zero, ({_NUMBER})\(\$\w+\)')
+_LABEL_ZERO = re.compile(
+    rf'(?m)^[ \t]*(?P<label>{IDENT}):\s*(?P<clear>\*(?P<field>[^;={{}}\n]+)\s*=\s*0\.0[fF]\s*;)'
+)
+
+
+def _merged_zero_offsets(rows, name):
+    target = [left for _, left, _ in rows if left]
+    actual = [right for _, _, right in rows if right]
+    if len(target) != len(actual):
+        return set()
+    edges = defaultdict(set)
+    for _, left, right in rows:
+        desired, existing = map(_BRANCH_TO.fullmatch, (left, right))
+        if (not desired or not existing or desired['prefix'] != existing['prefix']
+                or desired['symbol'] != existing['symbol']
+                or (desired['symbol'] and desired['symbol'] != name)):
+            continue
+        new, old = int(desired['offset'], 16), int(existing['offset'], 16)
+        if old < new and new % 4 == old % 4 == 0:
+            edges[new // 4, old // 4].add(desired['prefix'])
+    offsets = set()
+    for (new, old), prefixes in edges.items():
+        if (new >= len(target) - 1 or not any(p.startswith('j ') for p in prefixes)
+                or not any(p.startswith('bc1') for p in prefixes)):
+            continue
+        block = target[new:new + 2]
+        if block != target[old:old + 2] or block != actual[new:new + 2] or block != actual[old:old + 2]:
+            continue
+        store = _ZERO_SLOT.fullmatch(block[1])
+        if block[0].startswith('j ') and store:
+            offset = int(store[1], 0)
+            if 0 < offset <= 0x7fff and offset % 4 == 0:
+                offsets.add(offset)
+    return offsets
+
+
+def distinct_tail_variants(source, name, rows, *, header='', max_bytes=65536):
+    """Try a word view for the labeled positive-zero store shared by the target edges."""
+    offsets = _merged_zero_offsets(rows, name)
+    visible = _visible(source, name, header) if offsets else None
+    if not visible:
+        return []
+    part, context = visible
+    macros = set(re.findall(rf'(?m)^[ \t]*#\s*(?:define|undef)\s+({IDENT})', context))
+    typedefs = re.findall(r'\btypedef\s+([^;{}]+?)\s+f32\s*;', context)
+    if any(alias.strip() != 'float' for alias in typedefs):
+        return []
+    prefix = part.clean[:part.opening]
+    choices = []
+    for site in _LABEL_ZERO.finditer(part.clean, part.opening + 1, part.end):
+        field = _field('*' + site['field'], prefix)
+        if not field or field[1] not in offsets or {field[0], 'f32', site['label']} & macros:
+            continue
+        jumps = re.findall(rf'\bgoto\s+{site["label"]}\s*;', part.body)
+        if len(jumps) < 2:
+            continue
+        earlier = part.clean[part.opening + 1:site.start()]
+        same_slot = re.compile(r'(?m)^[ \t]*(\*[^;={}\n]+)\s*=\s*0\.0[fF]\s*;')
+        if any(_field(match[1], prefix) == field for match in same_slot.finditer(earlier)):
+            choices.append((site, field))
+    if len(choices) != 1:
+        return []
+    site, (base, offset) = choices[0]
+    record = fresh(context, '', 'RepairZeroRecord')
+    data = fresh(context, '', 'repair_zero_field')
+    bits = fresh(context, '', 'repair_zero_bits')
+    padding = fresh(context, '', 'repair_zero_padding')
+    number = fresh(context, '', 'repair_zero_number')
+    decl = (f'\n    typedef struct {{ unsigned char {padding}[0x{offset:x}]; '
+            f'union {{ float {number}; unsigned int {bits}; }} {data}; }} {record};')
+    insertion = part.opening + 1
+    result = edit(source, [
+        (insertion, insertion, decl),
+        (*site.span('clear'), f'(({record} *) {base})->{data}.{bits} = 0;'),
+    ])
+    return [(DISTINCT_TAIL, result)] if len(result.encode()) <= max_bytes else []
