@@ -1,5 +1,6 @@
 """Split independent scalar accumulators at existing lexical block boundaries."""
 import re
+from functools import cache
 
 from . import local_flow
 from .integer_lifetime_repairs import depth, jump_crosses
@@ -20,6 +21,14 @@ def variants(source, name):
     declarations = [d for d in DECL.finditer(part.clean,part.opening+1,part.end)
                     if depth(part.clean,d.start()) == depth(part.clean,part.opening)+1
                     and not re.search(r'&\s*(?:\(\s*)*'+re.escape(d['name'])+r'\b',part.body)]
+    @cache
+    def references(decl):
+        return refs(part, decl)
+
+    @cache
+    def analyzed_flow():
+        return local_flow.analyze(source, name)
+
     result = []
     for opening in (m.start() for m in re.finditer('{',part.clean[part.opening+1:part.end-1])):
         opening += part.opening+1
@@ -32,26 +41,26 @@ def variants(source, name):
             # containing its own declaration; its binding belongs to that declaration instead.
             if re.search(r'\b(?:[su](?:8|16|32)|int|char|short|long|float|double|volatile|const)\s+[^;{}]*\b'+re.escape(decl['name'])+r'\s*[;=,]',part.clean[opening+1:end-1]):
                 continue
-            hits = refs(part,decl)
+            hits = references(decl)
             inner = [h for h in hits if opening<h.start()<end]
-            later = [h for h in hits if h.start()>=end]
+            later = hits[-1].start() >= end if hits else False
             if (not inner or depth(part.clean,inner[0].start()) != depth(part.clean,opening)+1
                     or re.search(r'\b(?:if|for|while|switch|goto|return)\b',part.clean[opening+1:inner[0].start()])
                     or not independent(part.clean,decl['name'],inner[0].end())):
+                continue
+            if not any(re.match(r'\s*(?:\+=|-=|\*=|/=)',part.clean[h.end():]) for h in inner[1:]):
                 continue
             # The old value must be dead both at entry and exit. Never change a loop-carried update.
             if later:
                 # Textual assignment order cannot prove death across a jump or loop edge.
                 # The CFG deliberately excludes shadowed locals, so demand a tracked binding.
-                flow = local_flow.analyze(source,name)
+                flow = analyzed_flow()
                 if not flow or decl['name'] not in flow.names:
                     continue
                 edges = [flow.nodes[n] for node in flow.nodes if opening<node.start<end
                          for n in node.successors if not opening<flow.nodes[n].start<end]
                 if not edges or any(decl['name'] in node.live for node in edges):
                     continue
-            if not any(re.match(r'\s*(?:\+=|-=|\*=|/=)',part.clean[h.end():]) for h in inner[1:]):
-                continue
             fresh = '__block_'+decl['name']
             if re.search(r'\b'+fresh+r'\b',part.clean):
                 continue
