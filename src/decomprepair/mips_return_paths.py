@@ -156,3 +156,88 @@ def caller_use(asm,name):
             elif op not in flow.STORES|{'nop','mtc1'}:break
         out.append(dict(call=i,use=status))
     return out[:8]
+
+
+def _reads(row):
+    """Registers an instruction reads (its operands after the first for ALU/loads, every one for stores and
+    branches), as the bounded readers here count them."""
+    op = row.split()[0]
+    regs = re.findall(r'\$(\w+)', row)
+    if op in flow.ALU | flow.LOADS | {'mfc1', 'cfc1', 'dmfc1'}:
+        return set(regs[1:])
+    if op in flow.CALLS:
+        return set(regs) if op == 'jalr' else set()
+    if op == 'jr':
+        return set(regs) - {'ra'}
+    return set(regs)
+
+
+def contract(asm):
+    """What the target's own code says about the function's integer result, for drafting (an N64 game's
+    func_8005C24C: m2c drafted `void`, the matched C returns the callee's result).
+
+    'value': no exit can return the entry's `$v0` (every path sets it) and a value reaching an exit is a write of
+    `$v0` that nothing reads (made for nothing but the return).
+    'tested': every path sets `$v0`, and each value reaching an exit is a callee's result or one only branches read.
+    That is a returned value one way and a void function's leftover the other: KMC GCC copies a flag into `$v0` to
+    test it in void functions too (on one N64 game, 4 of 142 such functions returned a value). A hint, not evidence.
+    'void': no path writes `$v0` before an exit (no write and no call).
+    None: anything else (a scratch `$v0` read on the way out, the entry's `$v0` on some path), or a body the bounded
+    graph can't read. Hypotheses for a draft, judged like any other."""
+    decoded = graph(asm)
+    if not decoded:
+        return None
+    rows, destinations = decoded
+    ENTRY, UNKNOWN = 'entry', 'unknown'
+    queue = deque([(0, ENTRY)]); seen = set(); exits = set(); readers = {}
+
+    def step(origin, row, index):
+        op = row.split()[0]
+        if 'v0' in _reads(row) and isinstance(origin, int):
+            readers.setdefault(origin, set()).add(op)
+        if op in flow.CALLS:
+            return ('call', index)
+        changed = transfer(origin, row, index)
+        return UNKNOWN if changed == -1 else changed
+
+    while queue:
+        position, origin = queue.popleft()
+        if (position, origin) in seen:
+            continue
+        seen.add((position, origin))
+        if len(seen) > LIMIT or position >= len(rows):
+            return None
+        row = rows[position]; op = row.split()[0]
+        if op == 'break':
+            continue
+        if op in flow.CONDITIONAL | flow.CALLS | flow.JUMPS:
+            if 'v0' in _reads(row) and isinstance(origin, int):
+                readers.setdefault(origin, set()).add(op)
+            delayed = step(origin, rows[position + 1], position + 1)
+            if op == 'jr':
+                exits.add(delayed)
+            elif op in flow.CALLS:
+                queue.append((position + 2, ('call', position)))
+            elif op in {'b', 'j'}:
+                queue.append((destinations[position], delayed))
+            else:
+                queue.append((destinations[position], delayed))
+                queue.append((position + 2, origin if op.endswith('l') else delayed))
+        else:
+            queue.append((position + 1, step(origin, row, position)))
+    if not exits or UNKNOWN in exits:
+        return None
+    if exits == {ENTRY}:
+        return 'void'
+    if ENTRY in exits:
+        return None
+    for origin in exits:
+        if not isinstance(origin, int):
+            continue
+        uses = readers.get(origin, set())
+        if not uses:
+            return 'value'
+    tested = [o for o in exits if isinstance(o, int)]
+    if tested and all(isinstance(o, tuple) or readers.get(o, set()) <= flow.CONDITIONAL for o in exits):
+        return 'tested'
+    return None
