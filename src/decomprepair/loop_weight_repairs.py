@@ -6,11 +6,13 @@ so control transfers cannot change target.
 """
 import re
 
+from . import local_flow
 from .equal_value_flow import macros_safe
 from .integer_repair_support import IDENT, INTEGER, NUMBER, edit, locals_for, view
 from .pattern_repairs import close
 
-FAMILIES = ('loop_weight_scope', 'equal_value_increment')
+COUNTER_HOIST = 'loop_counter_init_hoist'
+FAMILIES = ('loop_weight_scope', 'equal_value_increment', COUNTER_HOIST)
 UPDATE_LIMIT = 12
 LIMIT = 18
 QUOTIENT_LIMIT = 6
@@ -84,7 +86,7 @@ def variants(source, name, header='', *, focus_lines=(), depths=(1,2,3)):
         if len(loads) >= 6:
             break
     divisions = quotient_scopes(source,part,load_declarations,focus_lines=focus_lines,depths=depths)
-    inits = counter_init_scopes(source,part,declarations)
+    inits = counter_init_scopes(source, name, part, declarations)
     if inits:
         # A counter's constant start is the cheapest weight lever and the only one that needs no loop edit.
         out = inits+out
@@ -148,7 +150,7 @@ def quotient_scopes(source, part, declarations, *, focus_lines=(), depths=(1,2,3
 COUNTER_INIT_LIMIT = 6
 
 
-def counter_init_scopes(source, part, declarations):
+def counter_init_scopes(source, name, part, declarations):
     """Weight a loop counter's constant start, in place or ahead of the guard that holds it.
 
     GCC 2.x hands temporaries registers in order of floor_log2(refs) * refs / live length, a reference inside a loop
@@ -160,7 +162,9 @@ def counter_init_scopes(source, part, declarations):
     longer range to land between the loaded halfword (it kept the first temporary) and the induction pointer.
     Only `name = <literal>;` of a declared integer local that is stepped later (`++`, `+= 1`, `= name + 1`) is wrapped.
     """
-    groups = []
+    groups, bare = [], []
+    flow = None
+    checked_flow = False
     pattern = rf'(?<=[;{{}}])(?P<lead>\s*)(?P<var>{IDENT})\s*=\s*(?P<value>{NUMBER})\s*;'
     for hit in re.compile(pattern).finditer(part.clean, part.opening, part.end-1):
         variable = hit['var']
@@ -185,6 +189,16 @@ def counter_init_scopes(source, part, declarations):
                     and not re.search(rf'\b{re.escape(variable)}\b', between) \
                     and not re.search(r'\b(?:goto|return|break|continue)\b|\bwhile\b|\bdo\b|\bfor\b', between):
                 spans.append((hit.start('var'), hit.end(), guard[0]))
+                if not checked_flow:
+                    flow = local_flow.analyze(source, name, declarations=locals_for(part),
+                                              allow_unrelated_volatile=True)
+                    checked_flow = True
+                if len(bare) < 3 and _can_hoist(part, flow, guard, variable):
+                    moved = guard[0]
+                    indent = source[source.rfind('\n', 0, moved)+1:moved]
+                    indent = indent[:len(indent)-len(indent.lstrip())]
+                    bare.append((COUNTER_HOIST, edit(source, [(moved, moved, statement+'\n'+indent),
+                                                             (hit.start('var'), hit.end(), '')])))
         per_hit = []
         # the start moved ahead of the guard first: it is the variant that also lengthens the counter's range
         for start, end, moved in reversed(spans):
@@ -201,7 +215,23 @@ def counter_init_scopes(source, part, declarations):
     out = []
     for rank in range(max((len(g) for g in groups), default=0)):
         out.extend(g[rank] for g in groups if rank < len(g))
-    return list(dict.fromkeys(out))[:COUNTER_INIT_LIMIT]
+    return list(dict.fromkeys(out))[:COUNTER_INIT_LIMIT] + list(dict.fromkeys(bare))
+
+
+def _can_hoist(part, flow, guard, variable):
+    if flow is None or variable not in flow.names:
+        return False
+    start, brace = guard
+    if not part.clean[part.opening:start].rstrip().endswith((';', '{', '}')):
+        return False
+    condition = next((node for node in flow.nodes if start < node.start < brace), None)
+    if condition is None or variable in condition.live:
+        return False
+    end = close(part.clean, brace, '{', '}')
+    return end is not None and not any(
+        brace < flow.nodes[flow.labels[label]].start < end
+        and not start <= flow.nodes[index].start < end
+        for index, label in flow.gotos)
 
 
 def _enclosing_guard(part, position):
