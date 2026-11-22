@@ -263,6 +263,12 @@ def overlay_call_aliases(source: str, asm: str) -> str:
     return source
 
 
+def _float_scalar_parameter(parameters: str) -> bool:
+    """Whether a prototype's parameter list passes a `float`/`f32` (or a double) by value: a pointer to one doesn't."""
+    return any(re.fullmatch(r"(?:const\s+)?(?:f32|f64|float|double)(?:\s+\w+)?", part.strip())
+               for part in parameters.split(","))
+
+
 def refine_draft(draft: str, name: str, asm: str) -> str | None:
     """`draft` (m2c's C for `name`, from `asm`, without the macro block) with the usual mistakes undone, for MIPS
     GCC games. Still uses m2c's macros for what it can't write plainly: the caller puts seeds.M2C_MACROS before it.
@@ -290,11 +296,15 @@ def refine_draft(draft: str, name: str, asm: str) -> str | None:
     body = re.sub(r"M2C_FIELD\(&(D_\w+), ([^,]+?) ?\*, (%s)\)" % _NUMBER, r"*(\2 *)(\1 + \3)", body)
     body = re.sub(r"&(D_\w+) \+ ", r"\1 + ", body)
     # (calls to functions of the game take whatever the code passes: unprototyped, as the game's headers were)
-    body = re.sub(r"^((?:\w+ ?\*?) ?(?!%s\b)func_\w+)\([^)]*\);.*$" % re.escape(name), r"\1();", body, flags=re.M)
+    # A prototype with a scalar float parameter stays: unprototyped, the caller promotes the `f32` to a double and
+    # passes it in other registers (`cvt.d.s; mfc1 $a3`), which is a different call, not a spelling of the same one
+    # (a KMC gcc 2.7.2 collision sweep: the refinement's `func_800487F0();` added a cvt.d.s and two mfc1 rows).
+    unprototype = lambda m: m.group(0) if _float_scalar_parameter(m.group(2)) else m.group(1) + "();"
+    body = re.sub(r"^((?:\w+ ?\*?) ?(?!%s\b)func_\w+)\(([^)]*)\);.*$" % re.escape(name), unprototype, body, flags=re.M)
     # (m2c also guesses a prototype for a library function from its first call, `osVirtualToPhysical(u32, u32, s32)`
     # when another call passes one argument: the header's own declarations are never marked `/* extern */`)
-    body = re.sub(r"^((?:\w+ ?\*?) ?(?!%s\b)\w+)\((?!void\))[^)]*\);[ \t]*/\* extern \*/[ \t]*$" % re.escape(name),
-                  r"\1();", body, flags=re.M)
+    body = re.sub(r"^((?:\w+ ?\*?) ?(?!%s\b)\w+)\((?!void\))([^)]*)\);[ \t]*/\* extern \*/[ \t]*$" % re.escape(name),
+                  unprototype, body, flags=re.M)
     body = re.sub(r"(M2C_FIELD\([^;]*?, )s8( \*, %s\) = (?:0x[89A-Fa-f][0-9A-Fa-f]|1[3-9]\d|2\d\d)U?;)" % _NUMBER,
                   r"\1u8\2", body)
     body = re.sub(r"(M2C_FIELD\([^;]*?\)) = (?:\(\w+\) )?\(\1 ([&|^+-]) ([^;]+?)\);", r"\1 \2= \3;", body)
