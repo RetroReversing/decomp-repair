@@ -11,12 +11,45 @@ assignment gets one variant. A candidate rewrite; the exact judge decides.
 """
 import re
 
-from .integer_repair_support import view
+from .integer_repair_support import IDENT, edit, view
 from .line_scan import apply, lines, with_local
+from .loaded_byte_repairs import declarators
 
 FAMILY = 'product_shift_stage'
-FAMILIES = (FAMILY,)
+MASKED_PRODUCT = 'masked_product_stage'
+FAMILIES = (FAMILY, MASKED_PRODUCT)
 _SHIFT = re.compile(r'\((?P<v>[A-Za-z_]\w*) >> (?P<n>\d+)\)')
+
+
+_MASKED = re.compile(
+    rf'(?m)^[ \t]*(?P<dst>{IDENT})\s*=\s*\((?P<src>{IDENT})\s*&\s*(?P<mask>0[xX][0-9a-fA-F]{{1,8}})\)'
+    rf'\s*\*\s*(?P<scale>[1-9][0-9]{{0,9}})\s*;'
+)
+
+
+def _masked_products(source, part):
+    """Keep the mask and the multiply in the existing unsigned destination."""
+    if re.search(r'(?m)^\s*#', part.body) or re.search(r'\b(?:asm|__asm__)\b', part.body):
+        return []
+    result = []
+    for m in _MASKED.finditer(part.clean, part.opening + 1, part.end):
+        name = m['dst']
+        mask, scale = int(m['mask'], 16), int(m['scale'])
+        if not 0 < mask * scale <= 0x7fffffff or scale == 1:
+            continue
+        # The extra write must be local, nonvolatile, and invisible through aliases.
+        declarations = [d for d in declarators(part.body, name) if not d[0].startswith('return ')]
+        decl = re.search(rf'(?m)^[ \t]*(?:u32|unsigned(?:\s+int)?)\s+{name}\s*;', part.body)
+        complex_declaration = rf'(?m)^\s*(?:{IDENT}\s+)+[^;\n=()]*[, (]\s*\**\s*{name}\s*[;=,)\[]'
+        if (not decl or len(declarations) != 1 or re.search(complex_declaration, part.body)
+                or re.search(rf'(?<!&)\&\s*\(?\s*{name}\b', part.body)):
+            continue
+        if source[m.start():m.end()] != m[0]:
+            continue
+        indent = m[0][:len(m[0]) - len(m[0].lstrip())]
+        replacement = f'{indent}{{ {name} = ({m["src"]} & {m["mask"]}); {name} *= {m["scale"]}; }}'
+        result.append((MASKED_PRODUCT, edit(source, [(m.start(), m.end(), replacement)])))
+    return result
 
 
 def variants(source, name):
@@ -24,7 +57,7 @@ def variants(source, name):
     if not part:
         return []
     body = lines(part, source)
-    out = []
+    out = _masked_products(source, part)
     for line in body:
         text = line.stripped
         if not re.match(r'[A-Za-z_]\w* = ', text) or not text.endswith(';'):
