@@ -172,3 +172,47 @@ u8 f(s32 wanted) {
     assert 'entry = *(void **)' in fixed
     assert not variants(source, 'f', '', rows, resolve={'owner': 100, 'table': 120}.get)
     assert not variants(source.replace('0xFFFF) * 4', '0xFFFF) * 8'), 'f', '', rows, resolve=symbols.get)
+
+
+def test_masked_pointer_search_restores_bounded_loop_for_both_byte_updates():
+    from decomprepair.measured_kmc_scalar_shapes import variants
+
+    source = '''u8 f(s32 wanted) {
+        s32 test;
+        s32 index;
+        s32 found;
+        void *entry;
+        index = 0;
+        found = 0;
+        do {
+            entry = *(((index & 0xFFFF) * 4) + ((char *)&owner + 16));
+            if ((entry != NULL) && (M2C_FIELD(entry, s32 *, 4) == wanted)) { found = 1; }
+            index += 1;
+            test = found & 0xFF;
+        } while ((test == 0) & ((u32) (index & 0xFFFF) < 0x800U));
+        if (test != 0) {
+            M2C_FIELD(entry, u8 *, 2) = (u8) (M2C_FIELD(entry, u8 *, 2) + 1);
+        }
+        return M2C_FIELD(entry, u8 *, 2);
+    }'''
+    ops = ['move $t0, $zero', 'move $a2, $zero', 'lui $t1, %hi(table)',
+           'addiu $t1, $t1, %lo(table)', 'andi $v0, $a2, 65535', 'sll $v0, $v0, 2',
+           'addu $v0, $v0, $t1', 'lw $a1, ($v0)', 'beql $a1, $zero, 56', 'addiu $a2, $a2, 1',
+           'lw $v0, 4($a1)', 'beql $v0, $a0, 52', 'addiu $t0, $zero, 1',
+           'sltiu $v0, $v0, 2048', 'addiu $v0, $v0, 1']
+    rows = [(' ', op, op) for op in ops] + [(' ', 'nop', 'nop')] * 14
+    rows[0] = ('r', ops[0], ops[1])
+    rows[1] = ('r', ops[1], ops[0])
+    rows[7] = ('|', ops[7], 'lb $a1, ($v0)')
+    symbols = {'owner': 100, 'table': 116}
+    for op, immediate in [('+', '1'), ('-', '-1')]:
+        text = source.replace('2) + 1)', f'2) {op} 1)')
+        diff = [(tag, left.replace('addiu $v0, $v0, 1', f'addiu $v0, $v0, {immediate}'), right)
+                for tag, left, right in rows]
+        candidates = dict(variants(text, 'f', '', diff, resolve=symbols.get))
+        fixed = candidates['measured_masked_pointer_loop']
+        assert 'u16 index;' in fixed
+        assert fixed.index('found = 0;') < fixed.index('index = 0;')
+        assert f'2) {op} 1)' in fixed
+    assert 'measured_masked_pointer_loop' not in dict(variants(source.replace('0x800U', '0x10000U'), 'f', '', rows, resolve=symbols.get))
+    assert 'measured_masked_pointer_loop' not in dict(variants(source, 'f', '#define found other', rows, resolve=symbols.get))
