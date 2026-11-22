@@ -229,3 +229,6 @@ def variants(source, name, asm='', header=''):
             if text != source and (FAMILY, text) not in out:
                 out.append((FAMILY, text))
     return out
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'asm', 'header')}
