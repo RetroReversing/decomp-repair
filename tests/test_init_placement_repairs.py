@@ -39,7 +39,9 @@ VALUE = '''s32 f(s32 a) {
 def test_value_returning_guard_is_flipped_to_the_front():
     (_, out), = [v for v in shape.variants(VALUE, 'f') if 'return 0;\n    }' in v[1]]
     assert out.index('return 0;') < out.index('g(buf);') and out.rstrip().endswith('return h(a);\n}')
-    assert not [v for v in shape.variants(VALUE.replace('return 0;', 'return g();'), 'f') if 'return g();\n    }' in v[1]]
+    call = VALUE.replace('return 0;', 'return g(/* argument */ a);')
+    (_, out), = [v for v in shape.variants(call, 'f') if 'return g(/* argument */ a);\n    }' in v[1]]
+    assert out.index('return g(/* argument */ a);') < out.index('g(buf);')
 
 
 def test_word_global_stored_where_its_address_was_meant():
