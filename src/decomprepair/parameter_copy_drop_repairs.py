@@ -16,6 +16,10 @@ put the stores of `$a3` and of the zero start index, and with them whether reloa
 Offered when the first statement that touches the local is `var = param;`, the parameter is not mentioned anywhere
 else, the two have the same type, and the local is never addressed. The local's declaration goes and every use becomes
 the parameter.
+
+With two copies (`start = arg1; size = arg2;`, a block-cache lookup of 364 instructions) each drop alone scored the same
+or worse (30 and 60 from 30) and both together were exact (0): the second scheduler places the prologue's saves with
+the copies' moves, and both parameters' own moves had to come first. A child drops every droppable copy at once.
 """
 import re
 
@@ -42,7 +46,7 @@ def _parameters(part):
     return found
 
 
-def variants(source, name, header=''):
+def _singles(source, name):
     part = view(source, name)
     if not part or re.search(r'\b(?:asm|__asm__|goto|setjmp|longjmp)\b|^\s*#', part.body, re.M):
         return []
@@ -85,3 +89,18 @@ def variants(source, name, header=''):
             edits.append((base + use.start(), base + use.end(), param))
         result.append((FAMILY, edit(source, edits)))
     return result[:3]
+
+
+def variants(source, name, header=''):
+    result = _singles(source, name)
+    if len(result) > 1:
+        # each drop alone changes the entry block's order only part of the way; the match needed them all
+        text = source
+        for _ in range(len(result)):
+            offered = _singles(text, name)
+            if not offered:
+                break
+            text = offered[0][1]
+        if all(text != item[1] for item in result):
+            result.insert(0, (FAMILY, text))
+    return result
