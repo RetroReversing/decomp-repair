@@ -104,3 +104,23 @@ void f(void *rec, s32 base) {
     assert 's32 __repair_address_forward)' in fixed
     assert 'patch(addr, base, __repair_address_forward)' in fixed
     assert not repair.variants(source, 'f', 'void f(void *, s32);', rows)
+
+
+def test_repeated_member_byte_adds_follow_the_measured_operand_order():
+    source = """typedef struct { float *points; } Points;
+void f(Points *model) {
+    s32 offset;
+    offset = 0;
+    use(offset + ((char *) model->points));
+    use(offset + ((char *) model->points));
+}
+"""
+    swapped = ('r', 'addu $v0, $a1, $v0', 'addu $v0, $v0, $a1')
+    rows = [swapped, (' ', 'lwc1 $f0, ($v0)', 'lwc1 $f0, ($v0)'), swapped]
+    assert repair.variants(source, 'f', '', rows, ['-mgp32']) == [
+        ('measured_member_byte_add_order',
+         source.replace('offset + ((char *) model->points)', '(u32)offset + (u32)model->points')),
+    ]
+    assert not repair.variants(source, 'f', '', rows, ['-mgp64'])
+    assert not repair.variants(source, 'f', '', rows[:-1], ['-mgp32'])
+    assert not repair.variants(source.replace('s32 offset;', 'volatile s32 offset;'), 'f', '', rows, ['-mgp32'])
