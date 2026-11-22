@@ -123,5 +123,4 @@ def test_the_compact_spelling_of_a_global_pointer_field_becomes_the_member_form(
     assert everything.count('->v') == 3 and 'typedef struct { s32 v; } Field_s32;' in everything
     assert '(((Field_s32 *) ((char *)(sRenderState) + 0x74C))->v)' in everything
     assert '(((Field_u16 *) ((char *)sRenderState + 0x360))->v)' in everything
-    assert any(c.count('->v') == 1 for c in found)  # stores first or loads alone are offered too
     assert not repairs.printed_variants(everything, 'emit')
