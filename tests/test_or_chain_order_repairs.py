@@ -68,3 +68,38 @@ def test_or_identity_keeps_the_unsigned_int_width():
     for value in (0, 1, 0xff, 0x80000000, 0xffffffff):
         for mask in (0, 0xff, 0xff000000, 0xffffffff):
             assert value | ((~value & 0xffffffff) & mask) == value | mask
+
+
+PACK = '''void f(u32 shade) {
+    u32 high = shade << 16; u32 low = shade << 8;
+    do { out->word = (((0xff000000 | high) | low) | shade); } while (0);
+}'''
+
+
+def _weighted(source=PACK, header=''):
+    return [text for family, text in r.variants(source, 'f', header) if family == 'weighted_or_pack']
+
+
+def test_weighted_pack_stages_the_unsigned_or_after_both_shifts():
+    [result] = _weighted()
+    assert 'high = shade << 16;' in result and 'low = shade << 8;' in result
+    assert '__repair_or_part = low | 0xff000000;' in result
+    assert 'high |= __repair_or_part;' in result
+    assert 'out->word = high | shade;' in result
+    identity = PACK.replace('(((0xff000000 | high) | low) | shade)',
+                            '(((high | ((~low & 0xff000000) | low)) | shade))')
+    assert len(_weighted(identity)) == 1
+
+
+def test_weighted_pack_refuses_unproved_scope_and_expression_shapes():
+    assert not _weighted(PACK.replace('} while (0);', '} while (0); sink(high);'))
+    assert not _weighted(PACK.replace('u32 shade', 'volatile u32 shade'))
+    assert not _weighted(PACK, '#define low read()')
+    assert not _weighted(PACK, '#define u32 unsigned int')
+    assert not _weighted(PACK, 'typedef volatile unsigned int u32;')
+    assert not _weighted(PACK.replace('u32 low =', 'volatile u32 low ='))
+    assert not _weighted(PACK.replace('u32 low =', 'u32 *low; u32 low ='))
+    # These flattened tokens are similar, but the parenthesization changes their meaning.
+    changed = PACK.replace('(((0xff000000 | high) | low) | shade)',
+                           '(high | (~low & (0xff000000 | low)) | shade)')
+    assert not _weighted(changed)
