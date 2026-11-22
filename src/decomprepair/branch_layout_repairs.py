@@ -213,6 +213,9 @@ def store_tails(source, name, header=''):
     out = []
     lhs = rf'{IDENT}(?:\s*->\s*{IDENT}|\s*\[\s*{NUMBER}\s*\])+'
     store = re.compile(rf'\s*(?P<store>(?:{lhs}\s*=(?!=)\s*)+{IDENT}\s*;)')
+    field_store = re.compile(rf'\s*(?P<store>M2C_FIELD\(\s*{IDENT}\s*,\s*'
+                             rf'(?:u8|s8|u16|s16|u32|s32)\s*\*\s*,\s*{NUMBER}\s*\)'
+                             rf'\s*=\s*{NUMBER}\s*;)')
     for hit in re.finditer(r'\bif\s*\(', part.body):
         cond = close(part.clean, part.opening+hit.end())
         left = re.match(r'\s*{', part.clean[cond:]) if cond else None
@@ -226,12 +229,27 @@ def store_tails(source, name, header=''):
         c = b+other.end()-1
         d = close(part.clean, c, '{', '}')
         tail = store.match(part.clean, d) if d else None
-        if not tail:
+        field = False
+        if not tail and d:
+            tail = field_store.match(part.clean, d)
+            field = bool(tail)
+        if not tail or re.search(r'/[*/]|#', source[d:tail.end()]):
             continue
         arms = part.clean[a+1:b-1]+'\n'+part.clean[c+1:d-1]
         if re.search(r'\b(?:goto|return|break|continue|case|default|asm|setjmp|longjmp)\b|'+IDENT+r'\s*:(?!:)', arms):
             continue
         names = set(re.findall(IDENT, tail['store']))
+        if field:
+            if (re.search(r'\b(?:for|while|do|switch)\b', arms)
+                    or re.search(rf'(?:^|[;{{}}])\s*(?:(?:const|volatile|signed|unsigned|struct)\s+)*'
+                                 rf'{IDENT}\s*\*+\s*{IDENT}\s*(?=[=;,\[])', arms)):
+                continue
+            definitions = re.findall(r'(?m)^\s*#\s*(?:define|undef)\s+M2C_FIELD\b[^\n]*', source + '\n' + header)
+            if len(definitions) != 1 or not re.fullmatch(
+                    r'\s*#\s*define\s+M2C_FIELD\(expr,\s*type_ptr,\s*offset\)\s*'
+                    r'\(\*\(type_ptr\)\(\(s8\s*\*\)\(expr\)\s*\+\s*\(offset\)\)\)\s*', definitions[0]):
+                continue
+            names.discard('M2C_FIELD')
         if names & macros.keys():
             continue
         # A name declared inside an arm would acquire a different meaning when
