@@ -83,3 +83,15 @@ def test_proposals_are_capped_and_distinct():
         '    func_80034928(arg0, D_8010A4D8);\n}\n'
     srcs = _all(many)
     assert len(srcs) == len(set(srcs)) <= 64
+
+
+def test_comparison_in_existing_scope_with_volatile_load():
+    source = '''s32 f(void) {
+    volatile s32 *p;
+    s32 zero, count, present;
+    do { zero = 0; count = *p; present = (s16) (zero < count); } while (0);
+    return present;
+}'''
+    proposals = _all(source)
+    assert any('do { present = (s16) (zero < count); } while (0);' in s for s in proposals)
+    assert all(s.count('count = *p;') == 1 for s in proposals)
