@@ -26,6 +26,7 @@ _DIRECT = re.compile(
     rf'\(\(\*(?P<address>{_ADDRESS})\)\s*\+\s*(?P<delta>{IDENT}(?:\.{IDENT})?)\)\s*;[ \t]*\n'
 )
 _STORE = re.compile(rf'(?m)^[ \t]*\*\({_ADDRESS}\)\s*=\s*(?P<local>{IDENT})\s*;[ \t]*\n')
+_READ = re.compile(rf'(?m)^[ \t]*(?P<local>{IDENT})\s*=\s*\*(?P<address>{_ADDRESS})\s*;[ \t]*\n')
 _DECL = re.compile(rf'(?m)^[ \t]*(?:(?:extern|register)\s+)?{_FLOAT}\s+({IDENT})\s*;')
 _ASM_STORE = re.compile(r'swc1 \$f\d+, (0x[\da-f]+)\((\$\w+)\)')
 _ASM_LOAD = re.compile(r'lwc1 \$f\d+, (0x[\da-f]+)\((\$\w+)\)')
@@ -222,6 +223,44 @@ def _split_staged_capture(source, part, first, helpers, macros, swapped):
     return options
 
 
+def _split_store_order(source, part, mismatched, macros):
+    """Keep split reads and adds in place while reordering disjoint stores."""
+    for first in _READ.finditer(part.clean, part.opening + 1, part.end):
+        pos = first.start()
+        reads, stores = [], []
+        while len(reads) < 8 and (read := _READ.match(part.clean, pos, part.end)):
+            addition = re.compile(rf'(?m)^[ \t]*{read["local"]}\s*=\s*\({read["field_type"]}\)\s*\(\s*'
+                                  rf'{read["local"]}\s*\+\s*{IDENT}(?:\.{IDENT})?\s*\)\s*;[ \t]*\n')
+            found = addition.match(part.clean, read.end(), part.end)
+            if not found:
+                break
+            reads.append(read)
+            pos = found.end()
+        while len(stores) < 8 and (store := _STORE.match(part.clean, pos, part.end)):
+            stores.append(store)
+            pos = store.end()
+        if not 4 <= len(reads) == len(stores) <= 8 or _STORE.match(part.clean, pos, part.end):
+            continue
+        offsets = {int(hit['offset'], 16) for hit in stores}
+        read_fields, store_fields = [
+            {(hit['base'], int(hit['offset'], 16), hit['local'], hit['field_type']) for hit in group}
+            for group in (reads, stores)
+        ]
+        if (len(offsets) != len(stores) or any(offset % 4 for offset in offsets) or read_fields != store_fields
+                or len({hit['base'] for hit in stores}) != 1
+                or not mismatched.intersection(offsets)
+                or macros & ({first['base']} | {hit['local'] for hit in reads})
+                or any(not _plain_scalar(part, hit['local'], hit['field_type'], hit.start()) for hit in reads)):
+            continue
+        options = []
+        for moved in range(1, len(stores) - 1):
+            order = list(range(len(stores)))
+            order[0], order[moved] = order[moved], order[0]
+            options.append((FAMILY, edit(source, [_store_edit(source, stores, order)])))
+        return options
+    return []
+
+
 def variants(source, name, rows, header=''):
     rows = list(rows)
     mismatched = set()
@@ -235,8 +274,6 @@ def variants(source, name, rows, header=''):
     if not part:
         return []
     helpers = {match['name']: match['type'] for match in _HELPER.finditer(part.clean, 0, part.opening)}
-    if not helpers:
-        return []
     combined = _blank(header) + '\n' + part.clean
     declarations = [match[1] for match in _DECL.finditer(combined)]
     externs = {hit['name']: hit['type'] for hit in _EXTERN_FLOAT.finditer(combined)
@@ -290,4 +327,4 @@ def variants(source, name, rows, header=''):
                 ]
                 result.append((FAMILY, edit(source, changes)))
         return result
-    return []
+    return _split_store_order(source, part, mismatched, macros)

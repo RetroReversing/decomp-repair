@@ -152,3 +152,22 @@ def test_staged_capture_split_requires_a_crossed_stack_load_and_independent_scal
     ):
         assert not variants(changed, 'f', rows)
     assert not variants(source, 'f', rows[1:])
+
+
+def test_split_stores_try_the_first_store_against_other_nonterminal_stores():
+    source = _mixed_stack_source()
+    for local, offset, delta in zip('abcdef', ('4', '8', 'C', '10', '14', '18'),
+                                    ('x', 'y', 'bias', 'z', 'frame.speed', 'delta.number')):
+        start = source.index(f'    {local} = ')
+        end = source.index(';\n', start) + 2
+        source = source[:start] + (
+            f'    {local} = *(float *) (((char *) base) + 0x{offset});\n'
+            f'    {local} = (float) ({local} + {delta});\n'
+        ) + source[end:]
+    choices = variants(source, 'f', GLOBAL_ROWS[2:])
+    assert len(choices) == 4
+    assert all(candidate.index('f = (float)') < candidate.index(' = a;')
+               and candidate.index(' = f;') > candidate.index(' = a;')
+               for _, candidate in choices)
+    assert choices[2][1].index(' = d;') < choices[2][1].index(' = b;')
+    assert not variants(source.replace('float d;', 'volatile float d;'), 'f', GLOBAL_ROWS[2:])
