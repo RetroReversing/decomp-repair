@@ -27,6 +27,11 @@ a bit length) that went 525 -> 245 (the step in the body) -> 110 (the wrapper) a
 (`arm_private_rename`). Alone the wrapper scored 230 and the step 245, so both are offered together as one child, and
 each alone.
 
+A loop block that closes on an identical-arm guard (`if (k || a) { A goto L; } else { A goto L; }`, a search's leftover
+that only keeps a value live) is collapsed in the same child when the guard has no side effect, so the family also
+fires on a saved best that carries one: that one went 150 -> 125 here, and with `normalized_phase_chain` and
+`dead_local_stage` after it 150 -> 40, where nothing reached it before.
+
 Proposed per loop (a label alone on its line, an `if` whose block ends in `goto label;`), only when the label is
 jumped to from nowhere else, and for the step only when the pointer is not read after the loop before it is set again.
 """
@@ -49,8 +54,49 @@ class _Loop:
         self.label, self.start, self.cond, self.block, self.end, self.indent = label, start, cond, block, end, indent
 
 
-def _loops(source, name):
-    """(clean, opening, end, [loops]) of the function: each `label: if (cond) { ...; goto label; }` on its own."""
+_GUARD = re.compile(r'(?m)^([ \t]*)if\s*\(')
+
+
+def _collapse_guards(source, name):
+    """`if (c) { A goto L; } else { A goto L; }` closing a loop block (a search's leftover: the guard only keeps a value
+    live) as `A goto L;`, when `c` has no side effect. Returns the source, changed or not."""
+    part = _loops(source, name, strict=False)
+    if not part:
+        return source
+    clean, opening, end, loops = part
+    edits = []
+    for loop in loops:
+        inner = clean[loop.block[0] + 1:loop.block[1] - 1]
+        hit = None
+        for found in _GUARD.finditer(inner):
+            hit = found
+        while hit:
+            paren = loop.block[0] + 1 + hit.end() - 1
+            cond_end = close(clean, paren, '(', ')')
+            then_open = re.compile(r'\s*\{').match(clean, cond_end) if cond_end else None
+            if not then_open:
+                break
+            then_end = close(clean, then_open.end() - 1, '{', '}')
+            else_open = re.compile(r'\s*else\s*\{').match(clean, then_end) if then_end else None
+            if not else_open:
+                break
+            else_end = close(clean, else_open.end() - 1, '{', '}')
+            if not else_end or else_end != loop.block[1] - 1 and clean[else_end:loop.block[1] - 1].strip():
+                break
+            condition = clean[paren + 1:cond_end - 1]
+            then_text = source[then_open.end():then_end - 1]
+            else_text = source[else_open.end():else_end - 1]
+            if (then_text.split() != else_text.split() or re.search(r'[^=!<>]=[^=]|\+\+|--|\w\s*\(', condition)
+                    or 'goto' not in then_text):
+                break
+            edits.append((loop.block[0] + 1 + hit.start(), else_end, then_text.strip('\n').rstrip()))
+            break
+    return _apply(source, edits) if edits else source
+
+
+def _loops(source, name, strict=True):
+    """(clean, opening, end, [loops]) of the function: each `label: if (cond) { ...; goto label; }` on its own.
+    Not strict: any block that jumps back to its label (the guard collapse finds its own shape inside)."""
     span = find(source, name)
     if not span:
         return None
@@ -73,12 +119,13 @@ def _loops(source, name):
         if not block_end:
             continue
         label = hit[2]
-        if not re.search(rf'goto\s+{label}\s*;\s*\}}$', clean[open_at:block_end]):
+        if not re.search(rf'goto\s+{label}\s*;\s*\}}{"$" if strict else ""}', clean[open_at:block_end]):
             continue
         if re.match(r'\s*else\b', clean[block_end:end]):
             continue
         # the label is jumped to from this loop only
-        if len(re.findall(rf'(?<![\w.>]){label}\b', clean[opening:end])) != 2:
+        mentions = re.finditer(rf'(?<![\w.>]){label}\b', clean[opening:end])
+        if any(not hit.start() <= opening + m.start() < block_end for m in mentions):
             continue
         found.append(_Loop(label, hit.start(), (paren, cond_end), (open_at, block_end), block_end, hit[1]))
     return clean, opening, end, found
@@ -134,6 +181,7 @@ def _wrap_edit(loop):
 def variants(source, name):
     """[(FAMILY, source)]: the step in the body and the wrapper together for every loop first (the step and the wrapper
     each score worse than that alone), then each loop with both, with the step, with the wrapper, then all of either."""
+    source = _collapse_guards(source, name)
     part = _loops(source, name)
     if not part:
         return []

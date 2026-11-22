@@ -86,3 +86,29 @@ def test_no_variant_without_a_goto_loop():
 
 def test_the_module_declares_itself_for_mips_only():
     assert repair.REPAIR['archs'] == ('mips',) and repair.REPAIR['families'] == (FAMILY,)
+
+
+# A search's leftover: the loop block closes on an identical-arm guard that only keeps a value live (KMC gcc 2.7.2, 150).
+GUARDED = TWO_SCANS.replace("""      i = i - 1;
+      goto loop_1;
+""", """      if (k || a) {
+        i = i - 1;
+        goto loop_1;
+      } else {
+        i = i - 1;
+        goto loop_1;
+      }
+""").replace("  s32 j;\n", "  s32 j;\n  s32 k;\n")
+
+
+def test_an_identical_arm_guard_closing_the_loop_is_collapsed_in_the_child():
+    first = _squash(variants(GUARDED, 'f')[0][1])
+    assert 'k || a' not in first
+    assert 'do { loop_1: if (((u16) (*p)) >= q) { p--; i = i - 1; goto loop_1; } } while (0);' in first
+
+
+def test_a_guard_with_a_side_effect_or_different_arms_is_kept():
+    effect = GUARDED.replace('k || a', 'k++')
+    assert all('k++' in _squash(text) for _, text in variants(effect, 'f') if 'loop_1' in text)
+    different = GUARDED.replace('        i = i - 1;\n        goto loop_1;\n      } else {\n        i = i - 1;', '        i = i - 2;\n        goto loop_1;\n      } else {\n        i = i - 1;')
+    assert all('k || a' in _squash(text) for _, text in variants(different, 'f') if 'loop_1' in text)
