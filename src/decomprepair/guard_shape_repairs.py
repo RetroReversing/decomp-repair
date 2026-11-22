@@ -104,14 +104,17 @@ def _value_returns(source, part):
     result = []
     for start, condition, opening, after in _guards(part):
         inverse = opposite(condition)
-        tail = re.fullmatch(r'\s*return\s+([\w.\->\s]+?)\s*;\s*', clean[after:stop])
+        tail = re.fullmatch(r'\s*return\s+([^;{}]+?)\s*;\s*', clean[after:stop])
         arm = clean[opening+1:after-1]
         if not inverse or not tail or not re.search(r'\breturn\b[^;{}]*;\s*$', arm) or re.search(r'\bgoto\b', arm):
             continue
         # (the arm's own text, one level out)
         lines = source[opening+1:after-1].strip('\n').splitlines()
         body = '\n'.join(l[4:] if l.startswith('    ') else l for l in lines).rstrip()
-        result.append((start, stop, f'if ({inverse}) {{\n        return {tail[1]};\n    }}\n{body}\n'))
+        value = source[after + tail.start(1):after + tail.end(1)]
+        if re.search(r'(?m)^\s*#', value):
+            continue
+        result.append((start, stop, f'if ({inverse}) {{\n        return {value};\n    }}\n{body}\n'))
     return result
 
 
