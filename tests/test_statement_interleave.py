@@ -84,3 +84,20 @@ def test_counter_reset_can_move_past_independent_setup_calls():
     escaped = source.replace('counter = 0;', 'keep(&counter);\n    counter = 0;')
     assert not any('configure(7);\n    counter = 0;' in text for _, text in variants(escaped, 'f'))
     assert not any('counter = 0;' in text for _, text in variants(source, 'f', header='#define setup() setup_impl(counter)'))
+
+
+def test_counter_reset_does_not_move_a_shadowed_global():
+    source = """extern s32 counter;
+void f(void) {
+    {
+        s32 counter;
+        counter = 0;
+    }
+    counter = 0;
+    setup();
+    do {
+        observe(counter);
+        counter += 1;
+    } while (counter < 4);
+}"""
+    assert not variants(source, 'f')

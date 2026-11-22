@@ -18,6 +18,7 @@ and a pointer read can still reorder a load; the normal judge and a later review
 """
 import re
 
+from .call_lifetime_repairs import block_path
 from .csource import _blank, find
 from .integer_repair_support import locals_for, view
 
@@ -115,6 +116,9 @@ def _defer_counter_reset(source, name, header):
                 or not re.search(rf'\b{counter}\s*(?:\+\+|\+=\s*1\s*;)', part.clean[reset.end():part.end])):
             continue
         if part.clean[part.opening:reset.start()].rstrip()[-1] not in ';{}:':
+            continue
+        declared_in = block_path(part, decl.start())
+        if block_path(part, reset.start())[:len(declared_in)] != declared_in:
             continue
         indent = re.escape(reset[1])
         call = re.compile(rf'\n{indent}({_ID})\s*\([^;{{}}\n]*\);[ \t]*')
