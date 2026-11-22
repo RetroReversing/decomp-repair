@@ -1,6 +1,5 @@
 from decomprepair.reused_temp_split_repairs import FAMILY, variants
 
-
 SOURCE = """
 extern void sink(int);
 void f(int mode) {
