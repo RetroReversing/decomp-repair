@@ -15,6 +15,11 @@ stack byte (the fifth argument, loaded at entry) then no longer overlaps the off
 it. A 86-instruction N64 function (`gcc-2.7.2-kmc -G0 -mips3 -mgp32 -mfp32 -O2`) went 115 -> 20 with this edit alone
 and to 0 with `one_shot_unwrap` on top; written `i * 4` it was 790 (cse folds the product into a stepped pointer), so
 the shift form comes first. A candidate rewrite; the exact judge decides.
+
+`counter_derived_offset_unwrapped` is the same edit with every `do { ... } while (0);` wrapper of the function
+removed in the same child (the edit `one_shot_unwrap` makes alone): in that function the unwrap alone was 190, worse
+than the 115 it started from, and only after the offset edit did it give 0. One child holds both so a search that
+judges one step at a time doesn't have to pass through the 20 first.
 """
 import re
 
@@ -23,7 +28,8 @@ from .line_scan import lines
 from .pattern_repairs import close
 
 FAMILY = 'counter_derived_offset'
-FAMILIES = (FAMILY,)
+UNWRAPPED = 'counter_derived_offset_unwrapped'
+FAMILIES = (FAMILY, UNWRAPPED)
 _ID = r'[A-Za-z_]\w*'
 _DECL = re.compile(rf'^[ \t]*(?:s32|u32|int|unsigned int|u16|s16)[ \t]+(?P<off>{_ID})[ \t]*=[ \t]*0[ \t]*;[ \t]*$')
 _FOR = re.compile(
@@ -43,6 +49,23 @@ def _step(text, counter, offset):
         return None
     m = re.fullmatch(rf'{re.escape(offset)}\s*\+=\s*(?P<k>{NUMBER})', other[0])
     return int(m['k'].rstrip('uUlL'), 0) if m else None
+
+
+def _unwrapped(source, name):
+    """`source` with each `do { ... } while (0);` of the function (no break, continue, label or case inside) removed."""
+    part = view(source, name)
+    if not part:
+        return None
+    edits = []
+    for wrapper in re.finditer(r'\bdo\s*\{', part.clean[part.opening + 1:part.end]):
+        start = part.opening + 1 + wrapper.start()
+        end = close(part.clean, part.opening + 1 + wrapper.end() - 1, '{', '}')
+        tail = re.match(r'\s*while\s*\(\s*0\s*\)\s*;', part.clean[end:]) if end else None
+        inner = part.clean[part.opening + 1 + wrapper.end():end - 1] if end else ''
+        if not tail or re.search(r'\b(?:break|continue|goto|case|default|do)\b|\b\w+\s*:(?!:)', inner):
+            continue
+        edits += [(start, part.opening + 1 + wrapper.end(), ''), (end - 1, end + tail.end(), '')]
+    return edit(source, edits) if edits else None
 
 
 def variants(source, name):
@@ -86,5 +109,9 @@ def variants(source, name):
             for m in re.finditer(mention, inner):
                 at = body[index + 1].end + m.start()
                 edits.append((at, at + len(offset), spelling))
-            out.append((FAMILY, edit(source, edits)))
+            child = edit(source, edits)
+            out.append((FAMILY, child))
+            unwrapped = _unwrapped(child, name)
+            if unwrapped:
+                out.append((UNWRAPPED, unwrapped))
     return out

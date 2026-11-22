@@ -27,7 +27,8 @@ hoisting the shift into it. Only the matching result is evidenced. A 154-instruc
 function matched this way, 475 -> 0, `gcc-2.7.2-kmc -G0 -mips3 -mgp32 -mfp32 -O2` (COMPILER_MATCHING_LEARNINGS.md).
 
 Three proposals: the `if` form with the pinned goto (the exact child), the `if` form alone, and the pinned goto alone
-for every backward `goto` that stands in a loop (a label defined earlier in the function). A candidate for the exact
+for every backward `goto` that stands in a loop (a label defined earlier in the function). The step may be any
+constant (`V - 1`, `V + 0x10`) as long as both arms use the same one. A candidate for the exact
 judge, never a verdict. Only MIPS is proposed (the GCC delay-slot filler)."""
 import re
 
@@ -93,12 +94,14 @@ def _skip_joins(part):
         var, current = condition[:split].strip(), condition[split + 2:].strip()
         if not re.fullmatch(IDENT, var):
             continue
-        body = re.compile(rf'\s*\{{\s*(?P<t>{IDENT})\s*=\s*{re.escape(var)}\s*\+\s*1\s*;\s*goto\s+(?P<n>{IDENT})\s*;\s*\}}\s*'
+        body = re.compile(rf'\s*\{{\s*(?P<t>{IDENT})\s*=\s*{re.escape(var)}\s*(?P<s>[-+]\s*(?:0[xX][0-9A-Fa-f]+|\d+))\s*;\s*goto\s+(?P<n>{IDENT})\s*;\s*\}}\s*'
                           ).match(clean, paren_end)
         if not body:
             continue
         temp, label = body['t'], body['n']
-        again = re.compile(rf'{re.escape(temp)}\s*=\s*{re.escape(var)}\s*\+\s*1\s*;\s*if\s*\(').match(clean, body.end())
+        step = re.sub(r'\s+', ' ', body['s'].replace('+', '+ ', 1).replace('-', '- ', 1)).strip()
+        again = re.compile(rf'{re.escape(temp)}\s*=\s*{re.escape(var)}\s*{re.escape(body["s"][0])}\s*'
+                           rf'{re.escape(body["s"][1:].strip())}\s*;\s*if\s*\(').match(clean, body.end())
         if not again:
             continue
         retry_open = again.end() - 1
@@ -112,15 +115,15 @@ def _skip_joins(part):
             continue
         pad = re.match(r'[ \t]*', source[source.rfind('\n', 0, at) + 1:at])[0]
         retry = _positive(source[retry_open + 1:retry_close - 1])
-        found.append((at, tail.end(), tail['l'], retry, current, var, temp, pad))
+        found.append((at, tail.end(), tail['l'], retry, current, var, temp, pad, step))
     return found
 
 
 def _restructured(part):
     out = []
-    for at, end, label, retry, current, var, temp, pad in _skip_joins(part):
+    for at, end, label, retry, current, var, temp, pad, step in _skip_joins(part):
         text = (f'if ({var} != {current})\n{pad}{{\n{pad}  if ({retry}) {{ do {{ goto {label}; }} while (0); }}\n{pad}}}\n'
-                f'{pad}{temp} = {var} + 1;\n{pad}{var} = {temp};')
+                f'{pad}{temp} = {var} {step};\n{pad}{var} = {temp};')
         plain = text.replace(f'{{ do {{ goto {label}; }} while (0); }}', f'goto {label};')
         out.append((edit(part.source, [(at, end, text)]), edit(part.source, [(at, end, plain)])))
     return out
