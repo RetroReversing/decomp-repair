@@ -22,6 +22,14 @@ mix is what orders the tail:
 function, and the raw offset stores `*(T *)((char *)p + K) = v;` through a local or parameter pointer on the lines just
 before that use: the stores written as `((__repair_member_T_K *)p)->value = v;` one at a time and all together, and `G`
 turned into a one-member record `__repair_global_T` with every use in the function (`G` is `G.value`). The judge decides.
+
+When the stores are members already (`gp[0].words.w1 = v;`, `cmd->w0 = v;`: a source written with the SDK's macros or
+a union `Gfx`) there is nothing to rewrite on the store side, and the global alone becomes the one-member record: the
+read of a record global stays behind the member stores before it (both are in struct) where a plain global's read was
+hoisted above them. A 343-instruction display-list function (KMC GCC 2.7.2, `-G0 -mips3 -mgp32 -mfp32 -O2`) went
+1195 -> 390 with the mode word's read as a member and 390 -> 255 with the border flag's; a second child reuses the record
+type the first declared. The hoist is the scheduler's (`sched.c`, `true_dependence` of an in-struct and a plain
+reference), the same rule as above.
 """
 import re
 
@@ -40,6 +48,10 @@ STORE = re.compile(
 STORE_PLAIN = re.compile(
     rf'(?P<lhs>\*\s*\(\s*(?P<type>{TYPE})\s*\*\s*\)\s*\(+\s*\(\s*(?:char|u8|s8)\s*\*\s*\)\s*(?P<var>{IDENT})\s*'
     rf'\+\s*(?P<off>{NUMBER})\s*\)+)\s*=(?!=)')
+# A store that already goes through a structure or union member (`gp[0].words.w1 = v;`, `cmd->w0 = v;`): the source
+# was written with the display-list words as members, so only the global's read still needs to become one.
+MEMBER_STORE = re.compile(
+    rf'^[ \t]*\(?{IDENT}(?:\s*\[[^\]\n]*\])?(?:\s*(?:->|\.)\s*{IDENT}(?:\s*\[[^\]\n]*\])?)+\s*\)?\s*=(?!=)')
 EXTERN = re.compile(rf'(?m)^(?P<indent>[ \t]*)extern\s+(?P<type>{TYPE})\s+(?P<name>{IDENT})\s*;[ \t]*$')
 
 
@@ -74,7 +86,8 @@ def _build(source, start, body, glob, kinds, chosen):
         return None
     typedefs = ''.join(f'typedef struct {{ {f"char pad[{off}]; " if off else ""}{t} value; }} {kinds[(t, off)]};\n'
                        for t, off in sorted({(_norm(h['type']), int(h['off'], 0)) for _, h in chosen}))
-    typedefs += f'typedef struct {{ {gtype} value; }} {record};\n'
+    if f'}} {record};' not in source[:start]:  # an earlier child of this family already declared the record
+        typedefs += f'typedef struct {{ {gtype} value; }} {record};\n'
     head = source[:start]
     head = head[:decl.start()] + typedefs + f'{decl["indent"]}extern {record} {gname};' + head[decl.end():]
     return head + edit(source[start:], [(s - start, e - start, r) for s, e, r in edits])
@@ -102,7 +115,9 @@ def variants(source, name):
         if not hit or hit.start() != len(line.indent) or int(hit['off'], 0) % SIZES[_norm(hit['type'])]:
             continue
         stores.append((index, hit))
-    if not stores:
+    member_stores = [index for index, line in enumerate(body)
+                     if not re.search(r'[{}]', line.text) and MEMBER_STORE.match(line.text)]
+    if not stores and not member_stores:
         return []
     results = []
     for gname, decl in declared.items():
@@ -115,6 +130,16 @@ def variants(source, name):
                 if any(0 < u - i <= NEAR and not any(re.search(r'[{}]|\bgoto\b|\breturn\b', body[k].text) for k in range(i, u))
                        for u in users)]
         if not near:
+            # the words are members already: the global alone becomes the one-member record (a store through a
+            # member does not conflict with a read of a plain global in the scheduler, a read of a member does)
+            if any(0 < u - i <= NEAR and not any(re.search(r'[{}]|\bgoto\b|\breturn\b', body[k].text)
+                                                for k in range(i, u))
+                   for i in member_stores for u in users):
+                text = _build(source, start, body, (gname, decl, _norm(decl['type']), _typedef_name('global', _norm(decl['type']))), {}, [])
+                if text and (FAMILY, text) not in results:
+                    results.append((FAMILY, text))
+                if len(results) >= LIMIT:
+                    return results
             continue
         gtype = _norm(decl['type'])
         record = _typedef_name('global', gtype)
