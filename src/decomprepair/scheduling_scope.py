@@ -21,6 +21,7 @@ them. The last statement is wrapped with them when it is a call. Only MIPS is pr
 import re
 
 from .csource import _blank, find
+from .goto_structure_repairs import blocks, parse
 
 FAMILY = 'scheduling_scope'
 FAMILIES = (FAMILY,)
@@ -77,6 +78,39 @@ def _indent(source, start):
     return line if not line.strip() else ''
 
 
+_NARROW_STORE = re.compile(
+    rf'\*\s*\(+\s*\(\s*(s16|u16|s8|u8)\s*\*\s*\)\s*\(+\s*'
+    rf'\(char\s*\*\s*\)\s*({_ID})\s*\)*\s*\+\s*(0[xX][0-9a-fA-F]+|[0-9]+)'
+    r'\s*\)+\s*=(?!=)'
+)
+
+
+def _narrow_store_scopes(source, clean, opening, closing):
+    """Isolate a halfword store in a run that also writes byte fields."""
+    try:
+        function = parse(clean, opening + 1, closing)
+    except ValueError:
+        return []
+    result = []
+    for statements in blocks(function):
+        for first, middle, last in zip(statements, statements[1:], statements[2:]):
+            if any(stmt.kind != 'simple' for stmt in (first, middle, last)):
+                continue
+            stores = [_NARROW_STORE.match(clean[stmt.start:stmt.end]) for stmt in (first, middle, last)]
+            if not all(stores):
+                continue
+            a, b, c = stores
+            if (b[1] not in ('s16', 'u16') or c[1] not in ('s8', 'u8')
+                    or not a[2] == b[2] == c[2] or len({a[3], b[3], c[3]}) != 3):
+                continue
+            original = source[middle.start:middle.end]
+            result.append((FAMILY, source[:middle.start] + 'do { ' + original + ' } while (0);'
+                           + source[middle.end:]))
+            if len(result) == 8:
+                return result
+    return result
+
+
 def variants(source, name, arch='mips', asm='', header=''):
     """Proposals: the run's second half in `do { } while (0)`, with and without the final call's globals hoisted."""
     if arch != 'mips':
@@ -94,6 +128,7 @@ def variants(source, name, arch='mips', asm='', header=''):
     comparison = re.compile(rf'(?:^|[;{{}}])\s*(?P<assignment>{_ID}\s*=\s*(?:\({_ID}\)\s*)?\(\s*{_ID}\s*(?:<=|>=|<|>|==|!=)\s*{_ID}\s*\)\s*;)', re.M)
     out = [(FAMILY, source[:m.start('assignment')] + 'do { ' + source[m.start('assignment'):m.end('assignment')] + ' } while (0);' + source[m.end('assignment'):])
            for m in comparison.finditer(clean, opening + 1, closing)][:LIMIT]
+    out = (out + _narrow_store_scopes(source, clean, opening, closing))[:LIMIT]
     if re.search(r'\bvolatile\b', clean[span[0]:span[1]]):
         return out
     statements = _statements(clean, opening, closing)
