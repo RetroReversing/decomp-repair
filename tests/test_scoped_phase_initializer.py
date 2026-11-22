@@ -93,3 +93,51 @@ def test_keeps_external_control_edges_and_escaped_locals_unchanged():
 def test_honors_macro_names_and_the_source_limit():
     assert not repair.variants(SOURCE, 'update', ROWS, header='#define accumulated symbol')
     assert not repair.variants(SOURCE, 'update', ROWS, max_bytes=64)
+
+
+SHARED_SOURCE = '''
+extern float heading;
+void update(void *p) {
+    union { unsigned int bits; float number; } reset;
+    struct { volatile float speed; } frame;
+    float depth;
+    float vertical;
+    reset.bits = (unsigned int)p & ~(unsigned int)p;
+    frame.speed = reset.number;
+    heading = 0.0f;
+    {
+        float horizontal = 0.0f;
+        depth = reset.number;
+        prepare(p);
+        vertical = 0.0f;
+        if (active) {
+            record(horizontal, depth, vertical);
+        }
+    }
+}
+'''
+SHARED_ROWS = [
+    *same('move $s7, $zero', 'sw $s7, 0x3c($sp)', 'lui $at, %hi(heading)'),
+    ('r', 'sw $s7, %lo(heading)($at)', 'sw $zero, %lo(heading)($at)'),
+    *same('jal prepare'),
+    ('r', 'move $s6, $s7', 'move $s5, $zero'),
+]
+
+
+def test_shared_setup_zero_keeps_global_store_before_call_and_delays_local_copy():
+    [(family, candidate)] = repair.shared_zero_variants(SHARED_SOURCE, 'update', SHARED_ROWS)
+    assert family == repair.SHARED_ZERO
+    assert candidate.index('heading = reset.number;') < candidate.index('prepare(p);')
+    assert candidate.index('prepare(p);') < candidate.index('depth = reset.number;')
+
+
+def test_shared_setup_zero_requires_known_float_view_and_unescaped_local_copy():
+    for source in (
+        SHARED_SOURCE.replace('reset.bits = (unsigned int)p & ~(unsigned int)p;', 'reset.bits = input;'),
+        SHARED_SOURCE.replace('extern float heading;', 'extern volatile float heading;'),
+        SHARED_SOURCE.replace('    float depth;', '    volatile float depth;'),
+        SHARED_SOURCE.replace('    reset.bits', '    escape(&depth);\n    reset.bits'),
+        SHARED_SOURCE.replace('    reset.bits', '    escape(&reset);\n    reset.bits'),
+    ):
+        assert not repair.shared_zero_variants(source, 'update', SHARED_ROWS)
+    assert not repair.shared_zero_variants(SHARED_SOURCE, 'update', SHARED_ROWS[1:])

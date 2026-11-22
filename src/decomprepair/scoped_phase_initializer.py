@@ -26,6 +26,69 @@ _AFTER_GUARD = re.compile(
     rf'[ \t]*{IDENT}\s*=\s*\*\(\(u8\s*\*\)\s*\(\(\(char\s*\*\)\s*{IDENT}\)'
     rf'\s*\+\s*(?P<offset>{NUMBER})\)\s*\)\s*;'
 )
+SHARED_ZERO = 'shared_setup_reset'
+_EXTERN_STORE = re.compile(rf'sw (\$s[0-7]|\$fp), %lo\(({IDENT})\)\((\$\w+)\)')
+_SHARED_PHASE = re.compile(
+    rf'(?m)^[ \t]*(?P<owner>{IDENT})\s*\.\s*(?P<word>{IDENT})\s*=\s*'
+    rf'\((?P<type>u32|unsigned\s+int)\)\s*(?P<param>{IDENT})\s*&\s*~\((?P=type)\)\s*(?P=param)\s*;[ \t]*\n'
+    rf'[ \t]*{IDENT}\s*\.\s*{IDENT}\s*=\s*(?P<view>(?P=owner)\s*\.\s*(?P<number>{IDENT}))\s*;[ \t]*\n'
+    rf'[ \t]*(?P<external>{IDENT})\s*=\s*(?P<zero>0\.0[fF])\s*;[ \t]*\n'
+    rf'[ \t]*\{{[ \t]*\n[ \t]*(?P<float>f32|float)\s+{IDENT}\s*=\s*0\.0[fF]\s*;[ \t]*\n'
+    rf'(?P<copy>[ \t]*(?P<carry>{IDENT})\s*=\s*(?P=owner)\s*\.\s*(?P=number)\s*;[ \t]*\n)'
+    rf'(?P<call>[ \t]*(?P<setup>{IDENT})\s*\(\s*(?P=param)\s*\)\s*;[ \t]*\n)'
+    rf'[ \t]*{IDENT}\s*=\s*0\.0[fF]\s*;[ \t]*\n[ \t]*if\s*\('
+)
+
+
+def _shared_zero_witnesses(rows):
+    for i, (kind, target, candidate) in enumerate(rows):
+        store = _EXTERN_STORE.fullmatch(target) if kind != ' ' else None
+        if not store or candidate != f'sw $zero, %lo({store[2]})({store[3]})' or i + 2 >= len(rows):
+            continue
+        setup, observed = rows[i + 1][1:]
+        copy, rival = rows[i + 2][1:]
+        move = re.fullmatch(r'move (\$s[0-7]|\$fp), (\$s[0-7]|\$fp)', copy)
+        if (setup == observed and (call := _CALL.fullmatch(setup)) and move and move[2] == store[1]
+                and re.fullmatch(r'move (\$s[0-7]|\$fp), \$zero', rival)
+                and any(a == f'move {store[1]}, $zero' for _, a, _ in rows[max(0, i - 6):i])):
+            yield store[2], call[1]
+
+
+def shared_zero_variants(source, name, rows, header=''):
+    witnesses = set(_shared_zero_witnesses(rows))
+    visible = _visible(source, name, header) if witnesses else None
+    if not visible:
+        return []
+    part, context = visible
+    macros = set(re.findall(rf'(?m)^\s*#\s*(?:define|undef)\s+({IDENT})', context))
+    signature = part.clean[part.clean.rfind('}', 0, part.opening) + 1:part.opening]
+    for hit in _SHARED_PHASE.finditer(part.clean, part.opening + 1, part.end):
+        owner, carry, external, kind = (hit[key] for key in ('owner', 'carry', 'external', 'float'))
+        if ((external, hit['setup']) not in witnesses or macros & set(re.findall(IDENT, hit[0]))
+                or _escaped(part.body, owner) or _escaped(part.body, carry) or _escaped(part.body, hit['param'])
+                or not re.search(rf'[(,]\s*void\s*\*\s*{hit["param"]}\s*[,)]', signature)
+                or re.search(rf'\b{IDENT}\s+\**\s*{hit["param"]}\s*[,;=\[]', part.body)):
+            continue
+        shape = (rf'(?m)^[ \t]*union\s*\{{\s*{hit["type"]}\s+{hit["word"]}\s*;'
+                 rf'\s*{kind}\s+{hit["number"]}\s*;\s*\}}\s*{owner}\s*;')
+        declarations = []
+        for declaration in (shape, rf'(?m)^[ \t]*{kind}\s+{carry}\s*;'):
+            matches = list(re.compile(declaration).finditer(part.clean, part.opening + 1, hit.start()))
+            if len(matches) == 1 and part.clean[part.opening:matches[0].start()].rstrip()[-1:] in ('{', '}', ';'):
+                declarations.append(matches[0])
+        if (len(declarations) != 2 or any(block_path(part, decl.start()) != [part.opening] for decl in declarations)
+                or len(re.findall(rf'\}}\s*{owner}\b', part.body)) != 1
+                or len(re.findall(rf'\b{kind}\s+{carry}\b', part.body)) != 1
+                or len(re.findall(rf'(?m)^[ \t]*extern\s+{kind}\s+{external}\s*;', context)) != 1
+                or len(re.findall(rf'\b{kind}\s+{external}\b', context)) != 1
+                or re.search(rf'\btypedef\s+(?!float\s+f32\b)[^;{{}}]+?\s+{kind}\s*;', context)):
+            continue
+        ordered = source[slice(*hit.span('call'))] + source[slice(*hit.span('copy'))]
+        trial = edit(source, [(*hit.span('zero'), source[slice(*hit.span('view'))]),
+                              (hit.start('copy'), hit.end('call'), ordered)])
+        if len(trial.encode()) <= 65536:
+            return [(SHARED_ZERO, trial)]
+    return []
 
 
 def _witnesses(rows):

@@ -114,3 +114,41 @@ def test_global_capture_leaves_volatile_terminal_and_requires_all_target_stores(
         choices = variants(source, 'f', rows)
         assert len(choices) == 7
         assert all('c = (float)' in text and 'f = sum_field' in text for _, text in choices)
+
+
+def _mixed_stack_source():
+    return GLOBAL_SOURCE.replace('float y, float z)', 'float y)').replace('    float a;', '''    struct {
+        volatile float speed;
+    } frame;
+    float z;
+    float a;''').replace('    delta.bits = 0;', '''    z = 1.0f;
+    frame.speed = 0.0f;
+    delta.bits = 0;''').replace(
+        'c = sum_field((float *) (((char *) base) + 0xC), bias);',
+        'c = (float) ((*(float *) (((char *) base) + 0xC)) + bias);',
+    ).replace('sum_field((float *) (((char *) base) + 0x14), y)',
+              'sum_field((float *) (((char *) base) + 0x14), frame.speed)')
+
+
+def test_staged_capture_split_requires_a_crossed_stack_load_and_independent_scalars():
+    rows = [
+        ('i', 'lwc1 $f6, 0x10($s2)', 'lwc1 $f2, 0x3c($sp)'),
+        (' ', 'add.s $f8, $f8, $f16', 'add.s $f8, $f8, $f16'),
+        ('i', 'lwc1 $f16, 0x3c($sp)', 'lwc1 $f6, 0x10($s2)'),
+        *GLOBAL_ROWS[2:],
+    ]
+    source = _mixed_stack_source()
+    [(family, candidate)] = variants(source, 'f', rows)
+    assert family == FAMILY
+    assert candidate.index('e = *') < candidate.index('d = *')
+    assert candidate.index('d = (float) (d + z);') < candidate.index(' = a;')
+    assert 'c = (float) (c + bias);' in candidate
+    for changed in (
+        source.replace('float z;', 'volatile float z;'),
+        source.replace('float d;', 'volatile float d;'),
+        source.replace('e = sum_field', 'use(&e);\n    e = sum_field'),
+        source.replace('e = sum_field', 'base = changed;\n    e = sum_field'),
+        source.replace('volatile float speed;', 'float speed;'),
+    ):
+        assert not variants(changed, 'f', rows)
+    assert not variants(source, 'f', rows[1:])
