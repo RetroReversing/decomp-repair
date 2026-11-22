@@ -46,7 +46,7 @@ def test_the_generator_is_a_program_beside_its_helpers():
     """Callers run permuter_gen.py by path, with decomp-permuter's Python: its helpers must be next to it, and it
     must not import the package (decomp-permuter's environment doesn't have it)."""
     folder = Path(decomprepair.__file__).parent
-    for helper in ('permuter_gen.py', 'permuter_capture.py', 'permuter_clone.py', 'permuter_dependencies.py', 'permuter_formatting.py'):
+    for helper in ('permuter_gen.py', 'permuter_capture.py', 'permuter_clone.py', 'permuter_dependencies.py', 'permuter_formatting.py', 'permuter_focus_lines.py'):
         assert (folder / helper).is_file()
         assert 'decomprepair' not in (folder / helper).read_text().split('"""', 2)[-1]
     run = subprocess.run([sys.executable, '-I', '-c', 'import ast,sys; ast.parse(open(sys.argv[1]).read())',

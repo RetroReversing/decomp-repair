@@ -64,7 +64,7 @@ casts, `register`), `permuter_local` a few cheap ordering hypotheses, and `permu
 that read a local before it's set. `permuter_gen.py` is a program, not a module: run it by path with
 [decomp-permuter](https://github.com/simonlindholm/decomp-permuter)'s Python and folder, and it writes that
 randomizer's variants, guarded by its helpers beside it (`permuter_capture`, `permuter_dependencies`,
-`permuter_formatting`). Running the candidates, compiling and scoring them is the caller's job.
+`permuter_formatting`, `permuter_focus_lines`: an optional `focus_lines` list keeps most rewrites on those C lines). Running the candidates, compiling and scoring them is the caller's job.
 
 Also: `switch_tables` (case groups in the target's jump-table order), `switch_constant_dispatch`,
 `initializer_clusters`, `loop_storage_shapes`, `callee_contracts` (prototype mismatches), `layout_frontiers`
