@@ -18,10 +18,12 @@ wider type, divided by its size (`&D - 0x20` on an `s16`: the game stepped 0x20 
 import re
 
 from .csource import _blank, find
+from .mips_returns import instructions
 from .pattern_repairs import close
 
 FAMILY = 'symbol_address_local'
-FAMILIES = (FAMILY,)
+BYTE_UPDATE_FAMILY = 'symbol_byte_update_address'
+FAMILIES = (FAMILY, BYTE_UPDATE_FAMILY)
 SIZES = {'char': 1, 's8': 1, 'u8': 1, 's16': 2, 'u16': 2, 'short': 2, 's32': 4, 'u32': 4, 'int': 4, 'f32': 4,
          'float': 4, 'long': 4}
 
@@ -50,7 +52,54 @@ def _reads_through(body, use):
                 or re.search(r'(?<![\w)\]])\*\s*$', before))
 
 
-def variants(source, name):
+_NUMBER = r'(?:0[xX][0-9a-fA-F]+|\d+)'
+_HI = re.compile(rf'lui\s+(\$\w+),\s*%hi\(({IDENT})\)')
+_VALUE = re.compile(r'ori\s+(\$\w+),\s*\1,\s*(' + _NUMBER + r')')
+
+
+def _byte_update_targets(asm):
+    rows = instructions(asm)
+    memory = r'(?:0|0x0)?\({address}\)'
+    for high, low, load, op, store in zip(rows, rows[1:], rows[2:], rows[3:], rows[4:]):
+        address = _HI.fullmatch(high)
+        update = _VALUE.fullmatch(op)
+        if not address or not update:
+            continue
+        reg, symbol = map(re.escape, address.groups())
+        value = re.escape(update[1])
+        access = memory.format(address=reg)
+        if (re.fullmatch(rf'addiu\s+{reg},\s*{reg},\s*%lo\({symbol}\)', low)
+                and re.fullmatch(rf'lbu\s+{value},\s*{access}', load)
+                and re.fullmatch(rf'sb\s+{value},\s*{access}', store)):
+            yield address[2], int(update[2], 0)
+
+
+def _byte_update_variants(source, clean, opening, end, asm, symbols):
+    candidates = []
+    for symbol, mask in dict.fromkeys(_byte_update_targets(asm)):
+        kind = next((kind for name, kind, array in symbols
+                     if name == symbol and not array and kind in ('u8', 'unsigned char')), None)
+        if not kind or not 0 <= mask <= 255:
+            continue
+        expression = re.compile(rf'(?m)^(?P<indent>[ \t]*){symbol}\s*\|=\s*({_NUMBER})\s*;')
+        sites = [match for match in expression.finditer(clean, opening+1, end) if int(match[2], 0) == mask]
+        if len(sites) != 1 or len(re.findall(rf'\b{symbol}\b', clean[opening:end])) != 1:
+            continue
+        hit = sites[0]
+        if clean[opening:hit.start()].rstrip()[-1:] not in (';', '{', '}'):
+            continue
+        local = '__base_' + symbol
+        if re.search(rf'\b{local}\b', clean):
+            continue
+        indent = hit['indent']
+        code = f'{indent}{local} = &{symbol};\n{indent}(*{local}) |= {hit[2]};'
+        body = source[opening+1:hit.start()] + code + source[hit.end():]
+        candidate = source[:opening+1] + f'\n    {kind} *{local};' + body
+        candidates.append((BYTE_UPDATE_FAMILY, candidate))
+    return candidates[:3]
+
+
+def variants(source, name, asm=''):
     span = find(source, name)
     if not span:
         return []
@@ -123,7 +172,8 @@ def variants(source, name):
                 result.append((FAMILY, text))
         if len(result) >= 8:
             break
-    return result + _kept_reads(source, clean, opening, end)
+    updates = _byte_update_variants(source, clean, opening, end, asm, symbols) if asm else []
+    return updates + result + _kept_reads(source, clean, opening, end)
 
 
 def _kept_reads(source, clean, opening, end):
