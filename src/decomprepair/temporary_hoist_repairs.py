@@ -22,6 +22,11 @@ a load through a pointer, an index or a member), repeated or not:
   (`x + D + 0xFFFC` -> `t = D + 0xFFFC; ... x + t`), only where the regrouping is the same value (`expression_terms.
   exact_regrouping`).
 
+A floating literal that occurs again (`0.0f` into three stores) is held too, and so is a load from a constant address
+(`*(f32 *) 0x218680`); a run carries a load across a store only when the store goes into a local array or struct that
+the function never lets out. The reader skips preprocessor lines, so an m2c file's `#define`s don't hide the
+declaration after them (without that, the audit's `D + 0xFFFC` case had no type and no child).
+
 The temporary has the expression's own C type, so the value is the same: its operands are free of calls, assignments
 and `volatile` names, it is not under the right side of `&&`, `||` or a `?:` arm (a load there may be guarded), and
 when the statement calls a function, only an expression of plain locals (not address-taken) is held. Names the
@@ -29,6 +34,7 @@ function or its header don't type, a macro, a plain `char`, a struct by value, a
 """
 import re
 
+from .csource import _blank
 from .expression_terms import Node, Types, bare, chain, exact_regrouping, key, names, parse, pure, render, sites
 
 FAMILY = 'temporary_hoist'
@@ -77,13 +83,21 @@ class _Statement:
             node, parent = parent, self.parents.get(id(parent))
         return node
 
-    def clobbers(self, dependencies, register_pure, local_names):
-        """Does the statement, once evaluated, change something an expression over `dependencies` reads?"""
+    def clobbers(self, dependencies, register_pure, types, private):
+        """Does the statement, once evaluated, change something an expression over `dependencies` reads?
+
+        A store into a local array or struct that is only ever indexed or selected (`private`) can't change a read of
+        anything else."""
         if self.target is None:
             return False
         if self.target.kind == 'id':
-            return self.target.op in dependencies or not register_pure and self.target.op not in local_names
-        return not register_pure
+            return self.target.op in dependencies or not register_pure and self.target.op not in types.locals
+        if register_pure:
+            return False
+        base = self.target
+        while base.kind in ('index', 'member', 'paren') and (base.kind != 'member' or base.op == '.'):
+            base = base.kids[0]
+        return not (base.kind == 'id' and base.op in private and base.op not in dependencies)
 
 
 def _candidates(statement, types, source):
@@ -92,6 +106,10 @@ def _candidates(statement, types, source):
     taken = set(re.findall(r'&\s*([A-Za-z_]\w*)', source[types.body_start:types.body_end]))
 
     def eligible(node):
+        if node.kind == 'num':
+            # a floating literal stored or used again and again (`0.0f` into three fields): held once
+            ty = types.of(node)
+            return True if ty is not None and ty.kind == 'float' else None
         if node.kind not in ('binary', 'cast', 'unary', 'index', 'member'):
             return None
         if node.kind == 'binary' and node.op not in HOISTED:
@@ -99,7 +117,7 @@ def _candidates(statement, types, source):
         if node.kind == 'unary' and node.op not in ('-', '~', '*'):
             return None
         ids = names(node)
-        if not pure(node) or not ids:
+        if not pure(node) or not ids and not _loads(node):
             return None
         if ids & types.volatile or any(n.kind == 'member' and n.info in types.volatile for n in node.walk()):
             return None
@@ -120,7 +138,7 @@ def _candidates(statement, types, source):
                 visit(kid, guarded)
             visit(node.kids[1], guarded)
             return
-        if node.kind in ('sizeof', 'str', 'num', 'id'):
+        if node.kind in ('sizeof', 'str', 'id'):
             return
         if node.kind == 'unary' and node.op == '&':
             return
@@ -219,13 +237,14 @@ def variants(source, name, header='', int_bits=None):
             hold = _assignment(source, site, tmp, expression)
             uses = [(o.start, o.end, tmp) for o in (statement.outer(n) for n in nodes)]
             decl = _declaration_edit(source, types, all_sites, function_block, tmp, ty)
-            add('temporary_hoist', _apply(source, [decl, hold] + uses))
-            if site.block != function_block:
-                block_decl = _declaration_edit(source, types, all_sites, site.block, tmp, ty)
-                add('temporary_hoist_block', _apply(source, [block_decl, hold] + uses))
-            if len(nodes) > 1:
-                add('temporary_hoist', _apply(source, [decl, hold, uses[0]]))
             run = _run(source, types, all_sites, statements, site, statement, first, register_pure, tmp)
+            if first.kind != 'num' or len(nodes) > 1:
+                add('temporary_hoist', _apply(source, [decl, hold] + uses))
+                if site.block != function_block:
+                    block_decl = _declaration_edit(source, types, all_sites, site.block, tmp, ty)
+                    add('temporary_hoist_block', _apply(source, [block_decl, hold] + uses))
+                if len(nodes) > 1:
+                    add('temporary_hoist', _apply(source, [decl, hold, uses[0]]))
             if run:
                 add('temporary_hoist', _apply(source, [decl, hold] + uses + run))
         for sibling in _pairs(source, types, statement, tmp):
@@ -236,10 +255,20 @@ def variants(source, name, header='', int_bits=None):
     return result[:LIMIT]
 
 
+def _private(source, types):
+    """Local arrays and structs the function only indexes or selects from: nothing else can point into them."""
+    body = _blank(source)[types.body_start:types.body_end]
+    return {name for name in types.aggregates & types.locals
+            if all(re.match(r'\s*(?:\[|\.)', body[m.end():])
+                   or re.search(r'\b(?!(?:return|case|else|sizeof)\b)\w+\s+$', body[max(0, m.start() - 40):m.start()])
+                   for m in re.finditer(r'(?<![\w.>])' + name + r'\b', body))
+            and not re.search(r'(?<![\w.>])' + name + r'\b', body.split('{', 1)[0])}
+
+
 def _run(source, types, all_sites, statements, site, statement, node, register_pure, tmp):
     """Edits that use the temporary in the following statements of the block too, or [] when none has the expression."""
-    dependencies = names(node)
-    if statement.clobbers(dependencies, register_pure, types.locals):
+    dependencies, private = names(node), _private(source, types)
+    if statement.clobbers(dependencies, register_pure, types, private):
         return []
     wanted = key(node)
     edits = []
@@ -254,7 +283,7 @@ def _run(source, types, all_sites, statements, site, statement, node, register_p
         for n in other.root.walk():
             if n.kind == node.kind and id(n) not in other.protected and key(n) == wanted:
                 edits.append((other.outer(n).start, other.outer(n).end, tmp))
-        if other.clobbers(dependencies, register_pure, types.locals):
+        if other.clobbers(dependencies, register_pure, types, private):
             break
     return _outermost(edits)
 
