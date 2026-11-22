@@ -1,0 +1,43 @@
+# Releases are made here, not by whoever merged last: agents used to tag and bump the version themselves and raced each
+# other for the next number. Every merge to main (and a half-hourly check, in case a run was missed) looks for changes
+# since the last tag; if there are some, the checks run, the patch version is bumped in pyproject.toml and uv.lock, the
+# commit and tag are pushed together, and the GitHub release is created from the changes' subjects. scripts/release.py
+# has the rules. decompdecomp's library-pin workflow then moves its pin to the new tag.
+# Needs no secret: the workflow's own token pushes (main isn't protected) and creates the release.
+name: release
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: plan
+        run: python3 scripts/release.py plan
+      - if: steps.plan.outputs.version != ''
+        uses: astral-sh/setup-uv@v6
+      - if: steps.plan.outputs.version != ''
+        run: uv sync --locked && uv run ruff check src tests && uv run pytest -q
+      - id: rel
+        if: steps.plan.outputs.version != ''
+        run: |
+          git config user.name "decomp-repair release"
+          git config user.email "actions@users.noreply.github.com"
+          python3 scripts/release.py release
+      - if: steps.rel.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: gh release create "$TAG" --verify-tag --title "decomprepair ${TAG#v}" --notes-file release-notes.md
