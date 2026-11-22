@@ -472,3 +472,23 @@ def test_record_float_reset_requires_the_disjoint_reset_sequence():
     assert candidate.index('= 1.0f;') < candidate.index('saved =')
     assert not variants(source.replace('f32 *, 0xc', 'f32 *, 0'), 'probe', '', rows)
     assert not variants(source, 'probe', '', rows[:-1])
+
+
+def test_volatile_table_base_stages_only_the_matching_load():
+    source = """extern Entry *volatile table;
+void probe(u32 n) {
+    u32 index = n;
+    Entry *entry;
+    entry = (Entry *)((u32)(index * sizeof(Entry)) + (u32)table);
+    consume(entry);
+}"""
+    shift = 'sll $v1, $v0, 1'
+    rows = [('o', '', shift)]
+    rows += measured(('lui $a0, %hi(table)', 'lw $a0, %lo(table)($a0)'))
+    rows += [('o', shift, '')]
+    rows += measured(('addu $v1, $v1, $v0', 'sll $v1, $v1, 2', 'addu $v1, $v1, $a0'))
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_volatile_table_base'
+    assert candidate.index('__repair_table_base = table;') < candidate.index('index * sizeof(Entry)')
+    assert not variants(source.replace('volatile ', ''), 'probe', '', rows)
+    assert not variants(source.replace('(u32)table', '(u32)other'), 'probe', '', rows)
