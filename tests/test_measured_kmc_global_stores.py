@@ -38,3 +38,29 @@ def test_requires_matching_addresses_and_evidence():
     assert not variants(SOURCE.replace('0x30', '0x34'), 'f', '', ROWS, RESOLVE)
     assert not variants(SOURCE.replace('s32 f', 'volatile s32 f').replace('return 1;', 'volatile s32 v; return 1;'),
                         'f', '', ROWS, RESOLVE)
+
+
+def test_word_address_writeback_requires_dead_local_and_relocated_store():
+    source = '''extern s32 slot;
+void f(void) {
+    u32 base;
+    base = *((u32 *) ptr);
+    slot = base + (((used + 1) << 1) << 5);
+    base = *((u32 *) other);
+    use(base);
+}'''
+    rows = [
+        ('|', 'addu $v1, $v1, $v0', 'addu $v0, $v1, $v0'),
+        (' ', 'lui $at, %hi(target_slot)', 'lui $at, %hi(target_slot)'),
+        ('|', 'sw $v1, %lo(target_slot)($at)', 'sw $v0, %lo(target_slot)($at)'),
+    ]
+    resolve = {'slot': 0x1000, 'target_slot': 0x1000}.get
+    assert variants(source, 'f', '', rows, resolve) == [(
+        'measured_word_address_writeback',
+        source.replace('slot = base + (((used + 1) << 1) << 5);',
+                       'base += (((used + 1) << 1) << 5); slot = base;'),
+    )]
+    assert not variants(source, 'f', '', rows)
+    assert not variants(source, 'f', '', rows[:-1], resolve)
+    assert not variants(source.replace('base = *((u32 *) other);', 'base = base + 1;'), 'f', '', rows, resolve)
+    assert not variants(source.replace('base = *((u32 *) other);', 'if (used) base = 0;'), 'f', '', rows, resolve)
