@@ -315,3 +315,11 @@ def test_reused_temporary_is_split():
 def test_every_family_runs_through_propose():
     report = propose(LOOP, 'f', header='')
     assert not [t for t in report.timings if t.error]
+
+
+def test_reused_temporary_split_chooses_an_unused_name():
+    source = SPLIT.replace('  s32 t;', '  s32 t;\n  s32 t_b1;\n  s32 t_b1_;')
+    [(family, candidate)] = reused_temp_split_repairs.variants(source, 'f')
+    assert family == 'reused_temp_split'
+    assert candidate == (source.replace('  s32 t;', '  s32 t;\n  s32 t_b1__;')
+                         .replace('  t = h() - 1;\n  g(t);', '  t_b1__ = h() - 1;\n  g(t_b1__);'))

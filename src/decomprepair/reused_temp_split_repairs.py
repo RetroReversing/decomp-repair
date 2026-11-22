@@ -33,8 +33,8 @@ def variants(source, name):
         for k in range(1, len(sets)):
             end = sets[k + 1] if k + 1 < len(sets) else len(body)
             fresh = f'{local}_b{k}'
-            if re.search(rf'\b{fresh}\b', part.clean):
-                continue
+            while re.search(rf'\b{fresh}\b', part.clean):
+                fresh += '_'
             start, stop = body[sets[k]].start, body[end - 1].end if end > sets[k] else body[sets[k]].end
             span = part.clean[start:stop]
             edits = [(start + m.start(), start + m.end(), fresh) for m in re.finditer(rf'(?<![\w.>]){re.escape(local)}\b', span)]
