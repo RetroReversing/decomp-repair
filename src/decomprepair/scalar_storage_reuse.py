@@ -44,7 +44,8 @@ def variants(source, name, header='', arch=None, locations=None):
     if re.search(r'\b(?:__LINE__|__COUNTER__|__FILE__|typeof|__typeof__|_Generic)\b',context):return []
     declarations = [d for d in flow.locals if block_path(part,d.start()) == [part.opening]]
     dom = dominators(flow)
-    declarations = [d for d in declarations if refs(part,d) and initialized(flow,d,dom)
+    references = {d['name']: refs(part, d) for d in declarations}
+    declarations = [d for d in declarations if references[d['name']] and initialized(flow,d,dom)
                     and not any(re.search(r'\b'+re.escape(d['name'])+r'\b',m) for m in macros)]
     relevant = repair_localisation.lines(source,locations)
     registers=((locations or {}).get('mapping') or {}).get('scalar_registers',{}) if (
@@ -54,18 +55,24 @@ def variants(source, name, header='', arch=None, locations=None):
         values={registers.get(str(source.count('\n',0,n.start)+1)) for n in nodes}
         values.discard(None)
         return next(iter(values)) if len(values)==1 else None
+    widths = {typ: integer_abi.scalar(typ, context, arch) for typ in {d['type'] for d in declarations}}
+    use_lines = {d['name']: {source.count('\n', 0, hit.start()) + 1 for hit in references[d['name']]}
+                 for d in declarations}
+    use_counts = {d['name']: sum(d['name'] in node.uses for node in flow.nodes) for d in declarations}
+    target_registers = {d['name']: target_register(d) for d in declarations} if registers else {}
     choices = []
     for donor in declarations:
-        wide = integer_abi.scalar(donor['type'],context,arch)
+        donor_name = donor['name']
+        wide = widths[donor['type']]
         if not wide or wide[0] != 32:continue
         for old in declarations:
-            narrow = integer_abi.scalar(old['type'],context,arch)
+            narrow = widths[old['type']]
             if (donor is old or not contains(wide,narrow) or (wide != narrow and not wide[1])
                     or not local_flow.disjoint(flow,donor,old)):continue
             variable = old['name']
             # Keeping the declaration avoids an unrelated debug-line/declaration-order
             # mutation. It becomes unused; the compiler remains free to allocate storage.
-            uses = refs(part,old)
+            uses = references[variable]
             definitions=[n for n in flow.nodes if variable in n.defines and not n.start <= old.start() < n.end]
             if len(definitions)!=1:continue
             # Prefer a value phase over changing branch selectors/loop conditions.
@@ -96,11 +103,12 @@ def variants(source, name, header='', arch=None, locations=None):
             changes += [(h.start(),h.end(),donor['name']) for h in uses if h.start() not in covered]
             candidate=edit(source,list(dict.fromkeys(changes)))
             if candidate==source:continue
-            touched={source.count('\n',0,h.start())+1 for h in uses+refs(part,donor)}
+            touched = use_lines[variable] | use_lines[donor_name]
             # Fresh compiler associations guide the shortlist without removing broad
             # exploration when mappings are absent/stale or allocation moved elsewhere.
-            affinity=target_register(donor) is not None and target_register(donor)==target_register(old)
+            register = target_registers.get(donor_name)
+            affinity = register is not None and register == target_registers.get(variable)
             rank=(not affinity,not bool(touched & relevant), wide == narrow,
-                  -sum(donor['name'] in n.uses for n in flow.nodes),donor.start(),old.start())
+                  -use_counts[donor_name],donor.start(),old.start())
             choices.append((rank,candidate))
     return [(FAMILY,s) for s in dict.fromkeys(s for _,s in sorted(choices,key=lambda p:p[0]))][:LIMIT]
