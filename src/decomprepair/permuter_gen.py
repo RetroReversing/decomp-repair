@@ -72,6 +72,51 @@ def private_inline(original):
     return call
 
 
+def _integer_literal(node):
+    if type(node).__name__ != 'Constant' or node.type not in {
+        'int', 'unsigned int', 'long', 'unsigned long', 'long long', 'unsigned long long',
+    }:
+        return 0
+    digits = re.sub(r'[uUlL]+$', '', node.value)
+    try:
+        return int(digits, 8 if re.fullmatch(r'0[0-7]+', digits) else 0)
+    except ValueError:
+        return 0
+
+
+def _fixed_or_bits(node):
+    if type(node).__name__ == 'BinaryOp' and node.op == '|':
+        return _fixed_or_bits(node.left) | _fixed_or_bits(node.right)
+    return _integer_literal(node)
+
+
+def _casts(node):
+    if type(node).__name__ == 'Cast':
+        yield node
+    for _, child in node.children():
+        yield from _casts(child)
+
+
+def protect_narrow_cast(original, failure):
+    """Reject new casts of packed expressions with fixed bits outside the destination."""
+    @wraps(original)
+    def call(fn, ast, indices, region, random):
+        before = list(_casts(fn))
+        identities = {id(node) for node in before}
+        result = original(fn, ast, indices, region, random)
+        for node in _casts(fn):
+            if id(node) in identities:
+                continue
+            kind = node.to_type.type.type
+            names = getattr(kind, 'names', ())
+            width = 8 if 'char' in names else 16 if 'short' in names else 0
+            if width and _fixed_or_bits(node.expr) >> width:
+                # Escape the native retry loop so no child inherits the rejected AST.
+                raise failure()
+        return result
+    return call
+
+
 def supported_methods(methods):
     """Do not manufacture self reads or arithmetic cancellations to shape allocation."""
     # Native perm_add_self_assignment also inserts x++; x--;. Signed overflow,
@@ -659,6 +704,8 @@ def main() -> int:
                 if method.__name__ == "perm_expand_expr":
                     return protect_expand(method, blocked, lambda: [
                         node for node in candidate.ast.ext if isinstance(node, c_ast.Typedef)])
+                if method.__name__ == "perm_cast_simple":
+                    return protect_narrow_cast(method, RejectedRewrite)
                 if method.__name__ == "perm_inline":
                     return private_inline(method)
                 return method
