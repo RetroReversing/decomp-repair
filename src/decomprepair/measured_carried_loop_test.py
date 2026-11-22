@@ -51,7 +51,13 @@ def variants(source,name,header,rows):
     if not draft or not signature or signature[1]!=draft['obj']:
         return []
     names = [draft[k] for k in ('flag','mode','carry','index','count','source','obj','dest','call','next','label')]
-    macros = set(re.findall(r'^\s*#\s*define\s+('+IDENT+r')',_blank(header+'\n'+source),re.M))
+    context = header+'\n'+source
+    definitions = re.findall(r'^\s*#\s*define\s+M2C_FIELD([^\n]*)',context,re.M)
+    if (len(definitions)!=1 or re.sub(r'\s+','',definitions[0]) !=
+            '(expr,type_ptr,offset)(*(type_ptr)((s8*)(expr)+(offset)))' or
+            re.search(r'^\s*#\s*undef\s+M2C_FIELD\b',context,re.M)):
+        return []
+    macros = set(re.findall(r'^\s*#\s*define\s+('+IDENT+r')',_blank(context),re.M))
     if len(set(names))!=len(names) or macros & set(names):
         return []
     window = part.clean[part.opening+1:part.end-1]
