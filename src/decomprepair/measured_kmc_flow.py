@@ -897,6 +897,62 @@ def _unsigned_table_guard(source, name, header, rows):
     return edit(source, [(*decl.span('type'), 'u8'), (part.opening + 1, part.end - 1, fixed)])
 
 
+_BYTE_PAIR_SCAN = re.compile(
+    rf'\s*s32 (?P<cursor>{IDENT});\s*s32 (?P<index>{IDENT});\s*u16 (?P<packed>{IDENT});\s*'
+    rf'(?P=cursor) = 1;\s*(?P=index) = 1 & 0xFF;\s*(?P<loop>{IDENT}):\s*'
+    rf'(?P=packed) = M2C_FIELD\(\(\((?P=index) \* 2\) \+ (?P<base>{IDENT})\), u16 \*, (?P<field>{NUMBER})\);\s*'
+    rf'if \(\((?P=packed) & 0xFF\) != \((?P<low>{IDENT}) & 0xFF\)\) \{{\s*'
+    rf'(?P=cursor) \+= 1;\s*goto (?P<next>{IDENT});\s*\}}\s*'
+    rf'if \(\((?P=packed) >> 8\) != \((?P<high>{IDENT}) & 0xFF\)\) \{{\s*'
+    rf'(?P=cursor) \+= 1;\s*(?P=next):\s*(?P=index) = (?P=cursor) & 0xFF;\s*'
+    rf'if \(\(u32\) \((?P=cursor) & 0xFF\) >= (?P<limit>{NUMBER})\) \{{\s*return 0;\s*\}}\s*'
+    rf'goto (?P=loop);\s*\}}\s*return 1;\s*'
+)
+_BYTE_PAIR_TARGET = re.compile(
+    rf'addiu \$a3, \$zero, 1\nandi \$a1, \$a1, 255\nandi \$a2, \$a2, 255\n'
+    rf'andi \$v0, \$a3, 255\nsll \$v0, \$v0, 1\naddu \$v0, \$v0, \$a0\n'
+    rf'lhu \$v1, (?P<field>{NUMBER})\(\$v0\)\nandi \$v0, \$v1, 255\n'
+    rf'bnel \$v0, \$a1, (?P<next>{NUMBER})\naddiu \$a3, \$a3, 1\n'
+    rf'srl \$v0, \$v1, 8\nbnel \$v0, \$a2, (?P=next)\naddiu \$a3, \$a3, 1\n'
+    rf'j [^\n]+\naddiu \$v0, \$zero, 1\nandi \$v0, \$a3, 255\n'
+    rf'sltiu \$v0, \$v0, (?P<limit>{NUMBER})\nbnez \$v0, {NUMBER}\nandi \$v0, \$a3, 255\n'
+    rf'move \$v0, \$zero\njr \$ra\nnop'
+)
+
+
+def _byte_pair_scan(source, name, header, rows):
+    """Restore byte parameters and the two mismatch continuations of a packed scan."""
+    if not 21 <= len(rows) <= 26 or not any(mark != ' ' for mark, _, _ in rows):
+        return None
+    target = '\n'.join(normalized_integer_lines(left for _, left, _ in rows if left))
+    witness = _BYTE_PAIR_TARGET.fullmatch(target)
+    part = view(source, name)
+    if not witness or not part or not (end := close(part.clean, part.opening, '{', '}')):
+        return None
+    part.end = end
+    draft = _BYTE_PAIR_SCAN.fullmatch(part.body)
+    if not draft or any(integer(draft[k]) != integer(witness[k]) for k in ('field', 'limit')):
+        return None
+    base, low, high, index, packed = (draft[k] for k in ('base', 'low', 'high', 'index', 'packed'))
+    if len({base, low, high, index, packed, draft['cursor']}) != 6:
+        return None
+    prefix = part.clean[:part.opening]
+    signature = re.search(rf'\bs32 {re.escape(name)}\(s32 {base}, s32 {low}, s32 {high}\)\s*$', prefix)
+    if (not signature or len(re.findall(rf'\b{re.escape(name)}\b', part.clean)) != 1
+            or re.search(rf'\b{re.escape(name)}\b', header) or re.search(r'/[*/]', source[part.opening + 1:end - 1])):
+        return None
+    field, limit = draft['field'], draft['limit']
+    fixed = (
+        f's32 {name}(s32 {base}, u8 {low}, u8 {high}) {{\n'
+        f'    u8 {index} = 1;\n    u16 {packed};\n'
+        f'    do {{\n        {packed} = M2C_FIELD(((({index}) * 2) + {base}), u16 *, {field});\n'
+        f'        if (({packed} & 0xff) != {low}) {{ {index}++; continue; }}\n'
+        f'        if (({packed} >> 8) != {high}) {{ {index}++; continue; }}\n'
+        f'        return 1;\n    }} while ({index} < {limit});\n    return 0;\n}}'
+    )
+    return edit(source, [(signature.start(), end, fixed)])
+
+
 def variants(source, name, header, rows):
     if choices := _collapse_identical_assignments(source, name, header, rows):
         return choices
@@ -934,6 +990,8 @@ def variants(source, name, header, rows):
         return [('measured_shade_clamp_storage', candidate)]
     if candidate := _unsigned_table_guard(source, name, header, rows):
         return [('measured_unsigned_table_guard', candidate)]
+    if candidate := _byte_pair_scan(source, name, header, rows):
+        return [('measured_byte_pair_scan', candidate)]
     if not 23 <= len(rows) <= 125:
         return []
     changes = [(i, left, right) for i, (mark, left, right) in enumerate(rows) if mark != ' ']

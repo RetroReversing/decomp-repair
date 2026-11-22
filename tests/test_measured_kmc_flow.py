@@ -627,3 +627,46 @@ s32 probe(s32 base, s16 index) {
     assert 'return *(table + offset) == 0;' in candidate
     assert not variants(source, 'probe', 'extern char table[];', rows)
     assert not variants(source.replace('check(base, index)', 'other(base, index)'), 'probe', '', rows)
+
+
+def test_byte_pair_scan_requires_both_parameter_masks_and_the_packed_load():
+    source = """s32 probe(s32 base, s32 low, s32 high) {
+    s32 cursor;
+    s32 index;
+    u16 packed;
+    cursor = 1;
+    index = 1 & 0xFF;
+again:
+    packed = M2C_FIELD(((index * 2) + base), u16 *, 0x138);
+    if ((packed & 0xFF) != (low & 0xFF)) {
+        cursor += 1;
+        goto next;
+    }
+    if ((packed >> 8) != (high & 0xFF)) {
+        cursor += 1;
+next:
+        index = cursor & 0xFF;
+        if ((u32) (cursor & 0xFF) >= 0x1EU) {
+            return 0;
+        }
+        goto again;
+    }
+    return 1;
+}
+"""
+    rows = measured((
+        'addiu $a3, $zero, 1', 'andi $a1, $a1, 255', 'andi $a2, $a2, 255',
+        'andi $v0, $a3, 255', 'sll $v0, $v0, 1', 'addu $v0, $v0, $a0',
+        'lhu $v1, 312($v0)', 'andi $v0, $v1, 255', 'bnel $v0, $a1, 60',
+        'addiu $a3, $a3, 1', 'srl $v0, $v1, 8', 'bnel $v0, $a2, 60',
+        'addiu $a3, $a3, 1', 'j probe+0x50', 'addiu $v0, $zero, 1',
+        'andi $v0, $a3, 255', 'sltiu $v0, $v0, 30', 'bnez $v0, 16',
+        'andi $v0, $a3, 255', 'move $v0, $zero', 'jr $ra', 'nop',
+    ))
+    rows[1] = ('|', rows[1][1], 'addiu $v1, $zero, 1')
+    [(family, candidate)] = variants(source, 'probe', '', rows)
+    assert family == 'measured_byte_pair_scan'
+    assert 'probe(s32 base, u8 low, u8 high)' in candidate
+    assert candidate.count('index++; continue;') == 2
+    assert not variants(source, 'probe', 's32 probe(s32, s32, s32);', rows)
+    assert not variants(source.replace('0x138', '0x134'), 'probe', '', rows)
