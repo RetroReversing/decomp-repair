@@ -57,3 +57,8 @@ def test_a_struct_without_volatile_members_is_left_alone():
 
 def test_a_volatile_member_assigned_twice_is_left_alone():
     assert not demoted(SOURCE.replace('done(L.result);', 'L.result = 2;\n    done(L.result);'))
+
+
+def test_members_that_are_all_plain_values_give_one_variant():
+    text = SOURCE.replace('        f32 *volatile where;\n', '').replace('        L.where = &L.b;\n', '').replace('use(L.buffer, L.where);', 'use(L.buffer);')
+    assert len(demoted(text)) == 1
