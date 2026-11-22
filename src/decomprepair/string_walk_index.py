@@ -98,7 +98,6 @@ def _unary(text):
     if not text or text[-1] in '(,=!<>+-*/%&|^?:;{}[~' or re.search(r'\breturn$', text):
         return True
     if text.endswith(')'):
-        opening = text.rfind('(', 0, len(text))
         depth = 0
         for at in range(len(text) - 1, -1, -1):
             depth += text[at] == ')' or -(text[at] == '(')
