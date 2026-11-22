@@ -19,6 +19,7 @@ and a pointer read can still reorder a load; the normal judge and a later review
 import re
 
 from .csource import _blank, find
+from .integer_repair_support import locals_for, view
 
 FAMILY = 'statement_interleave'
 FAMILIES = (FAMILY,)
@@ -97,6 +98,43 @@ def _increment_reset(source, clean, opening, end):
     return result
 
 
+def _defer_counter_reset(source, name, header):
+    """Sink a non-escaping counter reset through a short run of setup calls."""
+    part = view(source, name)
+    if not part:
+        return []
+    macros = set(re.findall(r'(?m)^\s*#\s*define[ \t]+(' + _ID + r')', source + '\n' + header))
+    macros.update(('if', 'for', 'while', 'switch', 'return', 'sizeof', 'asm', '__asm__'))
+    locals_by_name = {decl['name']: decl for decl in locals_for(part)}
+    result = []
+    for reset in _LINE.finditer(part.clean, part.opening + 1, part.end):
+        counter = reset[2]
+        decl = locals_by_name.get(counter)
+        if (reset[3] != '0' or not decl or decl.end() > reset.start() or counter in macros
+                or re.search(rf'&\s*\(*\s*{counter}\b', part.body)
+                or not re.search(rf'\b{counter}\s*(?:\+\+|\+=\s*1\s*;)', part.clean[reset.end():part.end])):
+            continue
+        if part.clean[part.opening:reset.start()].rstrip()[-1] not in ';{}:':
+            continue
+        indent = re.escape(reset[1])
+        call = re.compile(rf'\n{indent}({_ID})\s*\([^;{{}}\n]*\);[ \t]*')
+        ends = []
+        end = reset.end()
+        for _ in range(REACH):
+            next_call = call.match(part.clean, end, part.end)
+            if (not next_call or part.clean[next_call.end():next_call.end()+1] != '\n'
+                    or _names(next_call[0]) & (macros | {counter})):
+                break
+            end = next_call.end()
+            ends.append(end)
+        for end in reversed(ends):
+            if re.search(r'/[*/]', source[reset.start():end]):
+                continue
+            text = source[:reset.start()] + source[reset.end()+1:end] + '\n' + source[reset.start():reset.end()] + source[end:]
+            result.append((FAMILY, text))
+    return result
+
+
 def variants(source, name, arch='mips', asm='', header=''):
     """Each proposal moves one assignment of a run up or down across independent neighbours; MIPS only."""
     if arch != 'mips':
@@ -108,7 +146,7 @@ def variants(source, name, arch='mips', asm='', header=''):
     opening = clean.find('{', *span)
     if opening < 0 or re.search(r'^\s*#', clean[span[0]:span[1]], re.M):
         return []
-    targeted = _increment_reset(source, clean, opening, span[1])
+    targeted = _defer_counter_reset(source, name, header) + _increment_reset(source, clean, opening, span[1])
     if re.search(r'\bvolatile\b', clean[span[0]:span[1]]):
         return targeted[:LIMIT]
     per_run = []
