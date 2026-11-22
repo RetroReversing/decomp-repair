@@ -92,13 +92,13 @@ class Flow:
             if stop is None:
                 raise ValueError('unclosed block')
             return stop
-        record = re.match(r'(?:struct|union)(?:\s+'+IDENT+r')?\s*{',text[pos:])
+        record = re.match(r'(?:(typedef)\s+)?(?:struct|union)(?:\s+'+IDENT+r')?\s*{',text[pos:])
         if record:
             closing = close(text,pos+record.end()-1,'{','}')
             # `struct T { ... } v;`, or a tag declared alone (m2c's block-scoped `struct Vec { ... };` beside a
             # struct copy): neither reads nor writes a scalar
             declaration = re.match(r'\s*(?:'+IDENT+r'\s*)?;',text[closing:]) if closing else None
-            if not declaration:
+            if not declaration or (record[1] and not re.search(IDENT, declaration[0])):
                 raise ValueError('unsupported record declaration')
             return closing+declaration.end()
         keyword = re.match(r'(if|while|for|switch|do)\b', text[pos:])
