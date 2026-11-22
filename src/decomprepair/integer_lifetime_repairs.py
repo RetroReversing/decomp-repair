@@ -6,7 +6,7 @@ to guess liveness from textual order. The ordinary judge still decides every gen
 import re
 
 from . import local_flow
-from .integer_repair_support import IDENT, edit, locals_for, refs, view
+from .integer_repair_support import IDENT, INTEGER, edit, locals_for, refs, view
 from .pattern_repairs import close
 
 
@@ -85,7 +85,64 @@ def counter_reuse_variants(source, name):
     return result
 
 
-def variants(source, name):
+def parameter_split_variants(source, name, header=''):
+    """Separate an incoming scalar from a later, unconditional reassignment.
+
+    Old allocators may give both phases one register and copy the incoming argument
+    at entry. A fresh local lets the two phases be allocated independently.
+    """
+    part = view(source, name)
+    if not part or re.search(r'\b(?:goto|for|while|do|asm|__asm__|setjmp|longjmp)\b', part.body):
+        return []
+    signature = re.search(r'\b'+re.escape(name)+r'\s*\(([^()]*)\)\s*$', part.clean[:part.opening])
+    if not signature:
+        return []
+    macros = set(re.findall(r'^\s*#\s*define\s+('+IDENT+r')', header+'\n'+source, re.M))
+    if macros & set(re.findall(IDENT, part.body)):
+        return []
+    result = []
+    for parameter in signature[1].split(','):
+        match = re.fullmatch(rf'\s*({INTEGER})\s+({IDENT})\s*', parameter)
+        if not match:
+            continue
+        kind, variable = match.groups()
+        escaped = re.escape(variable)
+        if (re.search(rf'&\s*\(*\s*{escaped}\b', part.body)
+                or re.search(rf'(?:^|[;{{}}])\s*(?:(?:const|volatile|register|static|struct)\s+)*'
+                             rf'{IDENT}\s+\**(?:{escaped}|{IDENT}\b[^;{{}}]*\b{escaped})\s*(?=[=;,\[])', part.body)):
+            continue
+        hits = [hit for hit in re.compile(rf'\b{escaped}\b').finditer(part.clean, part.opening+1, part.end-1)
+                if not re.search(r'(?:\.|->)\s*$', part.clean[:hit.start()])]
+        definitions = [hit for hit in hits if re.match(r'\s*=(?!=)', part.clean[hit.end():])]
+        if len(definitions) != 1:
+            continue
+        definition = definitions[0]
+        if (not any(hit.start() < definition.start() for hit in hits)
+                or depth(part.clean, definition.start()) != depth(part.clean, part.opening)+1
+                or part.clean[part.opening+1:definition.start()].rstrip()[-1:] not in {';', '}'}):
+            continue
+        assignment = re.match(r'\s*=(?!=)([^;{}]*);', part.clean[definition.end():])
+        if not assignment or re.search(rf'\b{escaped}\b', assignment[1]):
+            continue
+        # An unknown function-like macro could inspect the spelling of its argument.
+        # Without the project's header, do not rename a use inside a call.
+        after = part.clean[definition.start():part.end-1]
+        if re.search(rf'\b{IDENT}\s*\([^;{{}}]*\b{escaped}\b', after):
+            continue
+        # A nested write or compound update before the split may affect the input phase.
+        before = part.clean[part.opening+1:definition.start()]
+        if re.search(rf'(?:\+\+|--)\s*{escaped}\b|\b{escaped}\s*(?:[+*/%&|^\-]=|\+\+|--)', before):
+            continue
+        fresh = '__repair_'+variable+'_local'
+        if re.search(rf'\b{fresh}\b', header+'\n'+part.clean):
+            continue
+        edits = [(part.opening+1, part.opening+1, f'\n    {kind} {fresh};')]
+        edits.extend((hit.start(), hit.end(), fresh) for hit in hits if hit.start() >= definition.start())
+        result.append(('split_integer_lifetime', edit(source, edits)))
+    return result[:4]
+
+
+def variants(source, name, header=''):
     part = view(source, name)
     if not part:
         return []
@@ -93,7 +150,7 @@ def variants(source, name):
     declarations = [decl for decl in locals_for(part) if depth(part.clean, decl.start()) == depth(part.clean, part.opening)+1]
     active = [(decl, refs(part, decl)) for decl in declarations]
     active = [(decl, hits) for decl, hits in active if hits]
-    result = []
+    result = parameter_split_variants(source, name, header)
     # Splitting an independent top-level definition preserves every evaluation and update in its segment.
     for decl, hits in active:
         variable = decl['name']
