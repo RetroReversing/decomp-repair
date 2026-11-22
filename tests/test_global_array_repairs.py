@@ -73,3 +73,29 @@ def test_first_element_leaves_other_uses_alone():
                  source.replace('table, 1', '&table, 1'),
                  source.replace('call(0, table, 1);', 'table = 1;')):
         assert not [text for family, text in arrays.variants(text, 'f') if family == 'global_first_element']
+
+
+FLAG = ('extern u8 flag;\nvoid f(P *p) {\n    p->a->mode = 1;\n    if (flag) { p->b = 2; }\n'
+        '    if (flag) { p->c = 3; }\n}\n')
+
+
+def _reads(source):
+    return [text for family, text in arrays.variants(source, 'f') if family == 'global_first_element']
+
+
+def test_every_scalar_flag_read_becomes_element_zero_together():
+    expected = FLAG.replace('flag;', 'flag[];').replace('(flag)', '(flag[0])')
+    assert expected in _reads(FLAG)
+
+
+def test_volatile_cast_flag_read_becomes_the_plain_element():
+    source = FLAG.replace('if (flag) { p->c', 'if (*(volatile u8 *)&flag) { p->c')
+    expected = FLAG.replace('flag;', 'flag[];').replace('(flag)', '(flag[0])')
+    assert expected in _reads(source)
+
+
+def test_flag_first_element_leaves_written_or_addressed_flags_alone():
+    for text in (FLAG.replace('p->b = 2;', 'flag = 2;'), FLAG.replace('p->b = 2;', 'q(&flag);'),
+                 FLAG.replace('p->b = 2;', 'flag++;'), FLAG.replace('p->b = 2;', '++flag;'),
+                 FLAG + 'int g(void) { return flag; }\n'):
+        assert not _reads(text)
