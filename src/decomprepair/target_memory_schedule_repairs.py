@@ -18,6 +18,30 @@ BYTE = r'(?:u8|char|unsigned\s+char|signed\s+char)'
 S16 = r'(?:s16|(?:signed\s+)?short(?:\s+int)?)'
 
 
+def indexed_load_before_arithmetic(data, witness):
+    """Stage a word read in a return expression with side-effect-free arithmetic."""
+    part, _, _, header = data
+    start = re.compile(rf'\breturn\s+(?P<load>\*\s*\(\s*(?P<type>{WORD})\s*\*\s*\)\s*\()')
+    for hit in start.finditer(part.clean,part.opening+1,part.end-1):
+        end = close(part.clean,hit.end()-1)
+        if not end or not _statement(part,hit.start()):
+            continue
+        address = part.clean[hit.end():end-1]
+        # The address is a global base plus one scalar index; no calls or writes.
+        if not re.fullmatch(rf'\s*\(\s*char\s*\*\s*\)\s*&\s*{IDENT}\s*\+\s*{NUMBER}'
+                            rf'\s*\+\s*\(\s*{IDENT}\s*\*\s*{NUMBER}\s*\)\s*',address):
+            continue
+        tail = re.match(rf'\s*\+\s*\(\s*{IDENT}\s*\*\s*{NUMBER}\s*\)\s*;',part.clean[end:])
+        if not tail:
+            continue
+        local = fresh(part.source,header,'repair_indexed_word')
+        load = part.source[hit.start('load'):end]
+        rest = part.source[end:end+tail.end()]
+        return _result('indexed_load_before_arithmetic',part,[(hit.start(),end+tail.end(),
+            f'{{ {hit["type"]} {local} = {load}; return {local}{rest} }}')])
+    return []
+
+
 def middle_reload(source,name,header,witnesses):
     visible = _visible(source,name,header)
     if not visible:
@@ -305,6 +329,25 @@ def variants(source,name,header,evidence):
     for method,witness in evidence:
         if method in (middle_reload,inline_invariants):
             out.extend(method(source,name,header,witness))
+        elif method is indexed_load_before_arithmetic:
+            # Shared headers often contain unrelated volatile registers. Refuse macros
+            # and volatile declarations that could affect this function's tokens.
+            local = _context(source,name,'')
+            if not local:
+                continue
+            tokens = set(re.findall(IDENT,local[0].body))
+            macros = set(re.findall(r'^\s*#\s*define\s+('+IDENT+r')',header,re.M))
+            volatile = re.findall(r'[^;{}]*\bvolatile\b[^;{}]*;',_blank(header))
+            names = set()
+            for declaration in volatile:
+                names.update(re.findall(r'('+IDENT+r')\s*(?=\[|[,;=])',declaration))
+            if tokens & (macros | names):
+                continue
+            volatile_types = re.findall(r'\btypedef\b[^;{};]*\bvolatile\b[^;{};]*\b('+IDENT+r')\s*;',_blank(header))
+            if tokens & set(volatile_types):
+                continue
+            local = (*local[:3],header)
+            out.extend(method(local,witness))
         elif method is default_scale:
             visible = _visible(source,name,header)
             if visible:
