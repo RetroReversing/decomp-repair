@@ -120,7 +120,6 @@ def state_unwrap_variants(source, name):
     for field in used:
         member = field['name']
         first = re.search(rf'\b{re.escape(var)}\s*\.\s*{re.escape(member)}\s*=\s*(?P<value>{IDENT})\s*;', body)
-        count = len(re.findall(rf'\b{re.escape(var)}\s*\.\s*{re.escape(member)}\b', body))
         writes = len(re.findall(rf'\b{re.escape(var)}\s*\.\s*{re.escape(member)}\s*=(?!=)', body))
         if first and first['value'] in params and writes == 1 and not _written(body, first['value']):
             replaced[member] = first['value']
@@ -155,7 +154,6 @@ def narrow_copy_variants(source, name):
                         part.clean[first.end():part.end])
         if not use:
             continue
-        pos = first.end() + use.start()
         cast = re.search(rf'\(\s*(?:s8|u8|s16|u16|char|short)\s*\)\s*{re.escape(tmp)}', part.clean[first.end() + use.start():])
         a, b = first.end() + use.start() + cast.start(), first.end() + use.start() + cast.end()
         revised = edit(source, [(first.start(), first.end(), ''), (a, b, source[a:b].replace(tmp, src))])
