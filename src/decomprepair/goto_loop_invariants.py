@@ -71,7 +71,8 @@ def _stages(part, label, loop_end):
         name, expr = match[1], match[2]
         for ident in set(re.findall(IDENT, expr)):
             # The loop rewrites `ident`, but it still holds the copy it started as: read the original instead.
-            copy = re.search(rf'\b{TYPE}\s+{ident}\s*=\s*({IDENT})\s*[;,]', part.body[:label.start()])
+            copy = re.search(rf'(?:\b{TYPE}\s+(?:{IDENT}\s*(?:=[^;,]*)?,\s*)*|,\s*){ident}\s*=\s*({IDENT})\s*[;,]',
+                             part.body[:label.start()])
             if (copy and _written(ident, inside) and not _written(copy[1], part.body)
                     and not _written(ident, part.body[copy.end():label.start()])):
                 expr = re.sub(rf'\b{ident}\b', copy[1], expr)
