@@ -133,6 +133,21 @@ def test_goto_from_before_initializer_prevents_reuse():
     assert not repair.variants(inline_label, 'f')
 
 
+def test_reuses_the_next_disjoint_float_after_a_guarded_lifetime():
+    with_following = GUARDED_LIFETIMES.replace('    f32 temp_fs3;', '    f32 temp_fs3;\n    f32 var_fs3_2;')
+    with_following = with_following.replace('    send(temp_fs3);',
+                                            '    send(temp_fs3);\n    var_fs3_2 = third();\n    send(var_fs3_2);')
+    options = repair.variants(with_following, 'f')
+    forward = [text for family, text in options
+               if family == repair.FAMILY and 'var_fs3_2 = second();' in text]
+    assert len(forward) == 1
+    assert 'f32 temp_fs3;' not in forward[0]
+    assert forward[0].count('send(var_fs3_2);') == 2
+    bypass = with_following.replace('    temp_fs3 = second();',
+                                    '    if (skip()) goto send_second;\n    temp_fs3 = second();')
+    assert not any('var_fs3_2 = second();' in text for _, text in repair.variants(bypass, 'f'))
+
+
 def test_switch_dispatch_inside_lifetime_prevents_reuse():
     switch_entry = GUARDED_LIFETIMES.replace('    temp_fs3 = second();',
                                              '    switch (control) {\n    temp_fs3 = second();')
