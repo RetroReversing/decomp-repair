@@ -181,9 +181,14 @@ def masks(source, name):
 
 
 def split_results(source, name):
+    from . import local_flow
+    from .allocator_call_guards import dominators
+    from .phase_lifetime_repairs import reaching
+
     part=_part(source,name)
     if not part:return []
     result=[]
+    flow = None
     for decl in locals_for(part):
         var=decl['name']
         assignments=list(re.finditer(r'\b'+re.escape(var)+r'\s*=\s*'+IDENT+r'\([^;{}]*\)\s*;',part.body))
@@ -195,10 +200,26 @@ def split_results(source, name):
             region=part.body[hit.start():end]
             uses=list(re.finditer(r'\b'+re.escape(var)+r'\b',region))
             region=region[:uses[-1].end()]
-            if re.search(r'\b(?:goto|case|default)\b|\b'+var+r'\s*(?:\+\+|--|\+=|-=)',region):continue
+            if len(uses) < 2 or re.search(r'\b(?:goto|case|default)\b|\b'+var+r'\s*(?:\+\+|--|\+=|-=)',region):continue
             fresh='__repair_result_'+var
             if re.search(r'\b'+fresh+r'\b',part.clean):continue
             offset=part.opening+1+hit.start()
+            if flow is None:
+                flow = local_flow.analyze(source, name)
+                if not flow:
+                    return []
+                reachable = set(dominators(flow))
+            initial = next((i for i in reachable if flow.nodes[i].start <= offset < flow.nodes[i].end
+                            and var in flow.nodes[i].defines and var not in flow.nodes[i].uses), None)
+            if initial is None:
+                continue
+            incoming = reaching(flow, var, reachable)
+            stop = offset + len(region)
+            # Every renamed read must see this value, and the value must never
+            # reach an original read through a path that bypasses a later write.
+            if any((incoming[i] != {initial} if offset <= node.start < stop else initial in incoming[i])
+                   for i in reachable if var in (node := flow.nodes[i]).uses):
+                continue
             changes=[(offset+m.start(),offset+m.end(),fresh) for m in re.finditer(r'\b'+var+r'\b',region)]
             changes.append((decl.end(),decl.end(),f'\n{decl["type"]} {fresh};'))
             result.append(('split_call_result',edit(source,changes)))
