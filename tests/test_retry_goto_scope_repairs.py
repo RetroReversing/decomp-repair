@@ -68,3 +68,13 @@ void f(void)
 def test_an_already_pinned_goto_is_not_wrapped_again():
     pinned = repair.variants(SOURCE, 'f')[0][1]
     assert repair.variants(pinned, 'f') == []
+
+
+def test_other_constant_steps_keep_their_step():
+    for step in ('- 1', '+ 2', '+ 0x10'):
+        text = SOURCE.replace('slot + 1', 'slot ' + step)
+        family, child = repair.variants(text, 'f')[0]
+        assert 'do { goto retry; } while (0);' in child and 'skip' not in child
+        assert f'next = slot {step};\n      slot = next;' in child
+    mixed = SOURCE.replace('next = slot + 1; goto skip;', 'next = slot + 2; goto skip;')
+    assert all('skip:' in child for _, child in repair.variants(mixed, 'f'))  # two different steps: not one join

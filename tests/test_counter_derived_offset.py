@@ -48,3 +48,14 @@ def test_left_alone_when_the_offset_escapes_the_loop():
     assert c.variants(SOURCE.replace('        p = *', '        i++;\n        p = *'), 'f') == []
     assert c.variants(SOURCE.replace('i++, offset += 4', 'i += 2, offset += 4'), 'f') == []
     assert c.variants(SOURCE.replace('s32 offset = 0;', 'h();'), 'f') == []
+
+
+def test_the_one_shot_unwrap_comes_in_the_same_child():
+    # the same function: the unwrap alone was 190 (worse than 115), the offset edit 20, both together 0
+    wrapped = SOURCE.replace('          return g(p, flag);',
+                             '          do { if (flag) { r = g(p, 1); } else { r = g(p, 0); } return r; } while (0);')
+    found = c.variants(wrapped, 'f')
+    joint = [text for family, text in found if family == 'counter_derived_offset_unwrapped']
+    assert joint and 'while (0)' not in joint[0] and '(i << 2)' in joint[0]
+    assert 'if (flag) { r = g(p, 1); } else { r = g(p, 0); } return r;' in joint[0]
+    assert all(family == 'counter_derived_offset' for family, _ in c.variants(SOURCE, 'f'))
