@@ -98,7 +98,7 @@ def masked_copy_variants(source, name):
         return []
     helper = re.search(
         rf'\b(?:inline\s+static|static\s+inline)\s+int\s+({IDENT})\s*\(\s*s32\s+({IDENT})\s*,\s*u8\s+({IDENT})\s*\)\s*'
-        rf'{{\s*return\s*\(\s*\2\s*&\s*0[xX][fF][fF]\s*\)\s*==\s*\3\s*;\s*}}', source)
+        rf'{{\s*return\s*\(\s*\2\s*&\s*0[xX][fF][fF]\s*\)\s*==\s*\3\s*;\s*}}', part.clean)
     if not helper:
         return []
     for copy in re.finditer(rf'\bs32\s+({IDENT})\s*;', part.clean[part.opening + 1:]):
