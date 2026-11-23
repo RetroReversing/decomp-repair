@@ -17,7 +17,10 @@ Children, for a `do { ... v = E; X...; } while (v != 0);` whose body has no `con
 after the same `v = E; X...;` (possibly inside an `if (c) { S } else { S }` of identical arms, which is dropped), and
 whose first test is proved taken: the loop sits in an `if (G != 0)` / `if (G)` block and `p = G;` was written before it
 (E being `*p`), or `v` itself was tested by an `if` that encloses the loop. The statements `X` (assignments of constants)
-stay at the end of the body and are also written once before the `while`. Only MIPS. The candidate is never a verdict:
+stay at the end of the body and are also written once before the `while`; and, when nothing after the loop reads them,
+a second child with them only at the top of the body (reorg then fills the loop-back branch's delay slot with the first
+of them and the preamble's order of the load and the constant follows the target's: 95 -> 35 on the same function).
+Only MIPS. The candidate is never a verdict:
 the judge decides.
 """
 import re
@@ -98,6 +101,42 @@ def _proved(clean, loop_start, lo, v, expr):
     return False
 
 
+_WHILE_HEAD = re.compile(r'\bwhile\s*\(')
+
+
+def _top_of_while(source, clean, opening, end):
+    """`X...; while (c) { ...; X... }` with X constant assignments and nothing after the loop reading them, as
+    `while (c) { X...; ... }`: the form the do-while child above also gives, for a loop already written as a while."""
+    out = []
+    for hit in _WHILE_HEAD.finditer(clean, opening, end):
+        head_close = close(clean, hit.end() - 1, '(', ')')
+        brace = re.compile(r'\s*\{').match(clean, head_close + 1)
+        if head_close < 0 or not brace or re.search(r'\bdo\s*$', clean[:hit.start()]):
+            continue
+        body_open = brace.end() - 1
+        body_close = close(clean, body_open)
+        if body_close < 0 or own_loop_statements(clean, body_open + 1, body_close, 'continue'):
+            continue
+        tail = re.search(rf'((?:\s*{_CONSTANT})+)\s*$', clean[body_open + 1:body_close])
+        pre = re.search(rf'((?:{_CONSTANT}\s*)+)$', clean[:hit.start()])
+        if not tail or not pre:
+            continue
+        wanted = [normal(c) for c in re.findall(_CONSTANT, tail[1])]
+        before = list(re.finditer(_CONSTANT, pre[1]))[-len(wanted):]
+        if [normal(c.group()) for c in before] != wanted:
+            continue
+        names = [c.split('=')[0].strip() for c in wanted]
+        if any(re.search(rf'(?<![\w.>]){re.escape(n)}\b', clean[body_close:end]) for n in names):
+            continue
+        indent = re.search(r'([ \t]*)$', source[:hit.start()])[1]
+        inner = indent + '  '
+        top = ''.join(f'{inner}{c}\n' for c in re.findall(_CONSTANT, source[body_open + 1 + tail.start(1):body_open + 1 + tail.end(1)]))
+        start = pre.start(1) + before[0].start()
+        out.append(source[:start] + source[hit.start():body_open + 1] + '\n' + top
+                   + source[body_open + 1:body_open + 1 + tail.start(1)].strip('\n') + '\n' + indent + source[body_close:])
+    return out
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -145,6 +184,12 @@ def variants(source, name):
         loop = (f'{indent}while ({expr} != 0)\n{indent}{{\n{inner}{v} = {expr};\n{body}\n'
                 + ''.join(f'{inner}{c.strip()}\n' for c in constants) + f'{indent}}}')
         out.append((FAMILY, source[:start] + text + loop + source[tail.end():]))
+        if constants and not any(re.search(rf'(?<![\w.>]){re.escape(c.split("=")[0].strip())}\b', clean[tail.end():span[1]])
+                                 for c in constants):
+            top = ''.join(f'{inner}{c.strip()}\n' for c in constants)
+            loop = f'{indent}while ({expr} != 0)\n{indent}{{\n{top}{inner}{v} = {expr};\n{body}\n{indent}}}'
+            out.append((FAMILY, source[:start] + loop + source[tail.end():]))
+    out += [(FAMILY, text) for text in _top_of_while(source, clean, opening, span[1])]
     return [x for x in out if x[1] != source]
 
 
