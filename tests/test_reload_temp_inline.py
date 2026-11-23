@@ -86,3 +86,29 @@ def test_a_name_the_read_depends_on_changing_in_between_blocks_it():
 
 def test_it_is_declared_for_the_callers():
     assert any(r.module == 'reload_temp_inline' for r in registry.declared())
+
+
+HELPER = '''static inline unsigned int scaled(unsigned int value)
+{
+  return ((value >> 6) * 40U) + 256U;
+}
+
+void build(Voice *v, Cmd *c, u32 *run)
+{
+  s32 base;
+  base = v->m2C;
+  lookup(&c->m30, base + scaled(run[1]), run[5], base + 0x100);
+}
+'''
+
+
+def test_a_call_to_a_pure_inline_helper_is_the_expression_not_a_second_call():
+    # A 616-instruction audio command builder (KMC GCC 2.7.2): two such locals inlined took it from 60 to 0.
+    children = [child for _, child in variants(HELPER, 'build')]
+    assert any('lookup(&c->m30, v->m2C + scaled(run[1]), run[5], v->m2C + 0x100);' in c and 'base' not in c.split('build')[1]
+               for c in children)
+
+
+def test_a_helper_with_a_call_inside_still_counts_as_a_call():
+    source = HELPER.replace('((value >> 6) * 40U) + 256U', 'other(value)')
+    assert variants(source, 'build') == []

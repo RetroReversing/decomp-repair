@@ -26,7 +26,8 @@ the local sees the value its definition read, which is what the checks below pro
   block that may be skipped (a block that does none of that is stepped over whole);
 * a use inside a loop is also reached, through the loop's back edge, by a definition with the same `E` at the end of
   the loop body, and the loop has no `continue`, `goto` or label;
-* a line that uses it and also calls or stores has one call at most and the use is among that call's arguments.
+* a line that uses it and also calls or stores has one call at most and the use is among that call's arguments (a
+  call to an inline helper of the source whose body is one pure `return E;` does not count: it is the expression).
 
 Children (one per local the checks accept, in the order they are found, then all of them together): the local's
 definitions are deleted, its uses become `E` (in parentheses unless it is a plain name or a field read), and its name
@@ -62,6 +63,18 @@ def _header_condition(s):
     return m[1] if m else ''
 
 
+_HELPER = re.compile(r'\b(?:static\s+inline|inline\s+static|inline)\s+[^;{}()]*?\b(?P<name>[A-Za-z_]\w*)\s*\([^;{}()]*\)\s*'
+                     r'\{\s*return\s+(?P<e>[^;{}]*);\s*\}')
+
+
+def _pure_helpers(text):
+    """Inline helpers above the function whose whole body is `return E;` with `E` free of calls and assignments.
+
+    A call to one reads its arguments and nothing else, so it is no more a call than the expression it stands for
+    (`temp + scaled_offset(x)` in an argument list); m2c and the permuter's own families write such helpers."""
+    return tuple(m['name'] for m in _HELPER.finditer(text) if _pure(m['e']))
+
+
 class _Function:
     def __init__(self, source, name):
         part = view(source, name)
@@ -69,6 +82,7 @@ class _Function:
         if not self.ok:
             return
         self.source, self.part = source, part
+        self.helpers = _pure_helpers(part.clean[:part.opening])
         self.body = lines(part, source)
         signature = part.clean[:part.opening]
         params = signature[signature.rfind('(') + 1:].rstrip().rstrip(')')
@@ -212,7 +226,8 @@ class _Function:
     def line_ok(self, k, t):
         """A line that uses `t` and also calls or stores: one call at most, the use among its arguments."""
         text = self.body[k].text
-        calls = [m for m in _CALL.finditer(text) if m[0].split('(')[0].strip() not in ('if', 'while', 'for', 'sizeof', 'return')]
+        calls = [m for m in _CALL.finditer(text) if m[0].split('(')[0].strip() not in
+                 ('if', 'while', 'for', 'sizeof', 'return') + self.helpers]
         if re.search(r'\+\+|--', text) or len(calls) > 1:
             return False
         if calls:
