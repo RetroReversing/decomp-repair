@@ -164,6 +164,41 @@ def test_loop_around_inner_assignment_merges_webs():
         assert f'{one} = 2;' in text
 
 
+POINTER_LOOP = '''void f(void **table, void **other, s32 n, s32 *out) {
+    void *o;
+    s32 i;
+
+    o = table[n];
+    if (o != 0) {
+        out[0] = *(s32 *) o;
+    } else {
+        for (i = 0; i < 4; i++) {
+            o = other[i];
+            if (o == 0) {
+                continue;
+            }
+            out[1] = *(s32 *) o;
+        }
+    }
+}
+'''
+
+
+def test_a_loop_that_writes_before_it_reads_is_a_web_of_its_own():
+    text = children(POINTER_LOOP)[-1]
+    assert 'void * o_1;' in text.replace('void *o_1;', 'void * o_1;') and 'o_2' in text
+    assert 'o_1 = table[n];' in text and 'if (o_1 != 0)' in text and 'out[0] = *(s32 *) o_1;' in text
+    assert 'o_2 = other[i];' in text and 'if (o_2 == 0)' in text and 'out[1] = *(s32 *) o_2;' in text
+
+
+def test_a_loop_that_reads_before_it_writes_keeps_one_web():
+    carried = POINTER_LOOP.replace('            o = other[i];\n            if (o == 0) {\n                continue;\n            }',
+                                   '            if (o == 0) {\n                continue;\n            }\n            o = other[i];')
+    assert not children(carried)
+    after = POINTER_LOOP.replace('    }\n}\n', '    }\n    out[2] = *(s32 *) o;\n}\n')
+    assert not children(after)
+
+
 def test_declared_for_the_registry():
     assert any(r.module == 'local_web_split' for r in declared())
 

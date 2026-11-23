@@ -18,6 +18,11 @@ taken (`&name`), a shadowing declaration, and any `goto`/label inside a web all 
 original name together with everything its reads may see), so the program is the same program. Only a local declared
 once at the top of the function, without initialiser, array or `volatile`, is touched.
 
+A loop body that assigns the local before any other mention of it on each pass (`for (...) { o = table[i]; ... }`)
+is a web of its own even when the code in front of the loop used the same local: nothing flows round the loop's back
+edge into the outer web. (A pointer local tested in front of a loop and taken afresh from a table inside it went 280
+-> 240 on a probe handler once the first web had its own local.)
+
 `variants` gives, labelled `local_web_split`:
   every web of one local renamed (a declaration per web), for each local;
   every web of every such local at once, with the declarations as written and with `register` dropped (a `register`
@@ -161,7 +166,12 @@ def _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels):
                 web.join(i, j)
                 continue
             chain = [blk for blk in blocks if blk[0] >= outer['stmt_end'] and blk[0] <= a and b <= blk[1]]
-            if any(_is_loop(clean, blk) for blk in chain):
+            loops = [blk for blk in chain if _is_loop(clean, blk)]
+            # A loop's body that writes the local before it mentions it at all (the first thing on every pass) carries
+            # nothing in from the outer web: the loop's value is a web of its own, as a pointer taken afresh from a
+            # table on each pass is, however the outer web used the same name before the loop.
+            if loops and not (inner['block'] == loops[0]
+                              and not any(loops[0][0] < at < inner['at'] for at in (m.start() for m in mentions))):
                 web.join(i, j)
     groups = {}
     for k in range(len(assigns)):
