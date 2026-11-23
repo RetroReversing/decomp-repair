@@ -17,7 +17,11 @@ shortest slides first.
 A statement that only works on a plain local no call can reach (declared, never address-taken, not `volatile`) also
 passes a statement with a call that does not name it, and `x += K;` counts as a statement on `x`: the call is a
 barrier to the scheduler, so the order against it is the one thing the source decides (a 1133-instruction effect
-spawner: `phase += 0.21f;` below the statement that calls `__cosf`, 3555 -> 3215).
+spawner: `phase += 0.21f;` below the statement that calls `__cosf`, 3555 -> 3215). It passes a store through a
+member, an array or a pointer that does not name it too: a flag cleared with `kind = 0;` after a call and two stores
+(`rec[id].loaded = 1; mode = 1;`) was the target's when cleared above the call (an 874-instruction N64 object spawner,
+KMC GCC 2.7.2 `-O2`, 15 -> 0). Set before the call, the flag is live across it, so global.c gives it a saved register
+(`$s0`, as the target has) where the later clear left it in `$a1`.
 """
 import re
 
@@ -89,11 +93,12 @@ def commutes(one, two):
 
 
 def commutes_past_call(one, two, locals_):
-    """`one` only works on plain locals (never address-taken, so no call can reach them) and `two`, which has a call
-    in it, names none of them: the order is then the scheduler's tie-break alone, a call being a barrier it cannot move
-    anything across."""
+    """`one` only works on plain locals (never address-taken, so no call or store can reach them) and `two` names none
+    of them: the order is then the scheduler's tie-break alone. `two` may hold a call (a barrier the scheduler cannot
+    move anything across) or any store through a pointer, an array or a member: none of them can touch a local whose
+    address is never taken."""
     first = _effects(one)
-    if not first or not CALL.search(two):
+    if not first or two.lstrip().startswith(('return', 'goto', 'break', 'continue')):
         return False
     names = {key[1] for key in first[0] | first[1]}
     if any(key[0] != 'v' for key in first[0] | first[1]) or not names <= locals_:
