@@ -36,3 +36,22 @@ def test_a_value_read_through_the_same_base_inside_the_other_store_is_kept_in_or
 
 def test_a_gap_between_the_stores_is_not_a_neighbour():
     assert variants(CODE.replace('  *((u16 *) (((char', '  k = 1;\n  *((u16 *) (((char'), 'f') == []
+
+
+def test_two_record_member_stores_of_one_base_swap_too():
+    """`frame_slot_alias_split` writes the pointer stores as members of one-field records; they swap like the casts."""
+    code = """void f(void *rec, s32 *q) {
+    s32 n;
+
+    n = q[0];
+    ((__repair_rec_64_u16 *) rec)->f = (u16) n;
+    ((__repair_rec_66_u16 *) rec)->f = (u16) (*((u16 *) (((char *) q) + 4)));
+}
+"""
+    flat = [re.sub(r'\s+', ' ', text) for _, text in variants(code, 'f')]
+    assert len(flat) == 1
+    assert flat[0].index('__repair_rec_66_u16 *) rec)->f') < flat[0].index('__repair_rec_64_u16 *) rec)->f')
+    overlap = code.replace('__repair_rec_66_u16', '__repair_rec_64_u16')
+    assert variants(overlap, 'f') == []
+    called = code.replace('(u16) n;', '(u16) call(n);')
+    assert variants(called, 'f') == []

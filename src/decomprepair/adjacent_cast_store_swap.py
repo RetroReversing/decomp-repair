@@ -22,6 +22,9 @@ _SIZE = {'s8': 1, 'u8': 1, 'char': 1, 'signed char': 1, 'unsigned char': 1, 's16
          'unsigned short': 2, 's32': 4, 'u32': 4, 'int': 4, 'unsigned int': 4, 'unsigned': 4, 'f32': 4, 'float': 4,
          'void *': 4}
 _STORE = re.compile(r'(?m)^(?P<indent>[ \t]*)\*\s*\(\s*\(\s*(?P<type>[A-Za-z_][\w ]*?(?: \*)?)\s*\*\s*\)\s*')
+# the same store written as a member of a one-field record (`frame_slot_alias_split`'s `((__repair_rec_64_u16 *) p)->f = v;`)
+_MEMBER = re.compile(r'(?m)^(?P<indent>[ \t]*)\(\(__repair_rec_(?P<offset>\d+)_(?P<type>\w+?)\s*\*\)\s*(?P<base>[A-Za-z_]\w*)\)->f\s*=(?!=)')
+_MEMBER_SIZE = {'s16': 2, 'u16': 2, 's32': 4, 'u32': 4, 'f32': 4, 'int': 4, 'unsigned': 4, 'void_p': 4}
 _OFFSET = re.compile(r'\b(0[xX][0-9a-fA-F]+|\d+)\b')
 _BASE = re.compile(r'\(\s*char\s*\*\s*\)\s*([A-Za-z_]\w*)')
 _HELPER = re.compile(r'\b(inline_fn\d*)\s*\(\s*\(\s*char\s*\*\s*\)\s*([A-Za-z_]\w*)\s*,\s*(0[xX][0-9a-fA-F]+|\d+)\s*\)')
@@ -58,7 +61,13 @@ def _statements(part):
             continue
         found.append((hit.start(), semicolon + 1, size, address[0], address[1], part.clean[left.end():semicolon]))
         del stop
-    return found
+    for hit in _MEMBER.finditer(part.clean, part.opening, part.end):
+        size = _MEMBER_SIZE.get(hit['type'])
+        semicolon = part.clean.find(';', hit.end())
+        if size and semicolon >= 0:
+            found.append((hit.start(), semicolon + 1, size, hit['base'], int(hit['offset']),
+                          part.clean[hit.end():semicolon]))
+    return sorted(found)
 
 
 def _unsafe(store, other):
@@ -76,7 +85,7 @@ def variants(source, name):
     part = view(source, name)
     if not part:
         return []
-    stores, out = _statements(part), []
+    stores, out = _statements(part), []  # the casts and the record members in source order
     for first, second in zip(stores, stores[1:]):
         if part.clean[first[1]:second[0]].strip() or first[3] != second[3]:
             continue
