@@ -183,3 +183,40 @@ def test_a_loop_local_flag_is_offered_a_merge_with_a_value_far_after_the_loop():
 """
     out = [text for _, text in variants(src, 'f')]
     assert any('temp = F(k);' not in text and 'flag = F(k);' in text for text in out), names
+
+
+WIDTHS = '''void f(void *p)
+{
+    long flag;
+    char flag2;
+    s32 mask;
+    flag = 0;
+    if (check(p)) {
+        flag = 1;
+    }
+    mask = flag & 3;
+    flag2 = mask;
+    if (flag2 != 0) {
+        flag2 = 0;
+        if (more(p)) {
+            flag2 = 1;
+        }
+    }
+    use(p, flag2);
+}
+'''
+
+
+def test_a_long_flag_and_the_char_that_follows_it_are_one_variable():
+    # m2c typed the flag `long` and the value derived from it `char`; the game had one variable, so the second
+    # name's pseudo joins the first's long one (a saved-register order that two short pseudos cannot give)
+    texts = merged(WIDTHS)
+    assert [t for t in texts if 'flag2' not in t and 'long flag;' in t]
+    kept = [t for t in texts if 'flag2' not in t and 'long flag;' in t][0]
+    assert 'use(p, flag);' in kept and 'mask = flag & 3;' in kept
+    assert 'char flag;' in [t for t in texts if 'flag2' not in t][-1] or len([t for t in texts if 'flag2' not in t]) == 1
+
+
+def test_a_long_flag_read_after_the_second_name_starts_is_not_merged():
+    texts = merged(WIDTHS.replace('use(p, flag2);', 'use(p, flag2);\n    last(flag);'))
+    assert not [t for t in texts if 'flag2' not in t]
