@@ -16,7 +16,12 @@ rmw_user_local_steps
     with `rmw_value` a new local of type T (the operations in the order written). Per statement three children: the steps where the
     expression stood, the load moved up above the one or two plain statements before it, and the load and the steps moved up
     (a statement that mentions the same word stops the move), and each with the new local declared below the last local, above it and first
-    (where a local is declared is its pseudo's number: a match needed it one above the last); at most 72 children (3 places for the local x 3 forms x the statements)."""
+    (where a local is declared is its pseudo's number: a match needed it one above the last); at most 72 children (3 places for the local x 3 forms x the statements).
+    m2c's own spelling of the word, `*((T *) (((char *) EXPR) + off))` read and written with any base expression (an
+    array element such as `((void **) (((char *) s) + 0x418))[i]`), is taken the same way, and the mask may be written
+    `~K`: an effect spawner's `markers[i]->flags = (markers[i]->flags & ~0xFC) | 0x10` (KMC GCC 2.7.2) closed its last
+    ordering rows in that block with it, 200 -> 185, where the expression left the `and`'s operands in swapped
+    registers."""
 import re
 
 from .csource import _blank, find
@@ -30,6 +35,49 @@ _STMT = re.compile(
     rf'(?m)^(?P<indent>[ \t]*)(?P<lhs>\(\(Field_(?P<type>[A-Za-z_]\w*)\s*\*\)\s*\(\(\(char\s*\*\)\s*[A-Za-z_]\w*\)\s*\+\s*(?:0[xX][0-9A-Fa-f]+|\d+)\)\)\s*->\s*v)\s*=\s*(?:\(\s*[A-Za-z_]\w*\s*\)\s*)?\(*\s*'
     rf'(?:\(\s*(?P<a>{_FIELD})\s*(?P<op1>[&|])\s*(?P<n1>{_NUM})\s*\)\s*(?P<op2>[&|])\s*(?P<n2>{_NUM})'
     rf'|(?P<b>{_FIELD})\s*(?P<op3>[&|])\s*(?P<n3>{_NUM}))\s*\)*\s*;[ \t]*$')
+
+
+_CAST = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<lhs>\*\s*\(\(\s*(?P<type>[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*)\s*\*\s*\)'
+                   r'\s*\([^;=]*\))\s*=(?!=)\s*(?P<rhs>[^;]*);[ \t]*$')
+_CNUM = r'(?:~\s*\(?\s*|-\s*)?(?:0[xX][0-9A-Fa-f]+|\d+)[uUlL]*\)?'
+
+
+class _Hit:
+    """A cast-form statement shaped like a `_STMT` match (start, end, the groups `build` and `_steps` read)."""
+
+    def __init__(self, found, groups):
+        self._start, self._end, self.groups = found.start(), found.end(), groups
+
+    def start(self):
+        return self._start
+
+    def end(self):
+        return self._end
+
+    def __getitem__(self, key):
+        return self.groups.get(key)
+
+
+def _cast_hits(clean, source, start, end):
+    """`*((T *) (((char *) EXPR) + off)) = [(T)] ((same & M) | O);` and the one-operation forms, as `_Hit`s."""
+    hits = []
+    for found in _CAST.finditer(clean, start, end):
+        lhs = source[found.start('lhs'):found.end('lhs')]
+        if not re.fullmatch(r'\*\s*\(\(\s*[A-Za-z_][\w ]*\*\s*\)\s*\(\(\(\s*char\s*\*\s*\).*\)\s*\+\s*(?:0[xX][0-9A-Fa-f]+|\d+)\s*\)\s*\)', lhs, re.S):
+            continue
+        rhs, key = _norm(source[found.start('rhs'):found.end('rhs')]), re.escape(_norm(lhs))
+        rhs = re.sub(r'^\(\s*[A-Za-z_]\w*\s*\)(?=\()', '', rhs)
+        two = re.fullmatch(rf'\(*\({key}(?P<op1>[&|])(?P<n1>{_CNUM})\)(?P<op2>[&|])(?P<n2>{_CNUM})\)*', rhs)
+        one = re.fullmatch(rf'\(*{key}(?P<op3>[&|])(?P<n3>{_CNUM})\)*', rhs)
+        if not (two or one) or rhs.count('(') != rhs.count(')'):
+            continue
+        groups = {'indent': found['indent'], 'lhs': lhs, 'type': found['type']}
+        if two:
+            groups.update(a=lhs, op1=two['op1'], n1=two['n1'], op2=two['op2'], n2=two['n2'])
+        else:
+            groups.update(b=lhs, op3=one['op3'], n3=one['n3'])
+        hits.append(_Hit(found, groups))
+    return hits
 
 
 def _norm(text):
@@ -105,6 +153,7 @@ def variants(source, name):
     if opening < 0:
         return []
     hits = [f for f in _STMT.finditer(clean, opening, span[1]) if _norm(_steps(f)[0]) == _norm(f['lhs'])]
+    hits += _cast_hits(clean, source, opening, span[1])
     if not hits or re.search(r'\brmw_value\b', clean):
         return []
 
