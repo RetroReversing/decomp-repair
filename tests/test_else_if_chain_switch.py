@@ -29,8 +29,9 @@ def squash(text):
 
 def test_the_chain_becomes_a_switch_with_the_low_values_in_front_of_default():
     children = variants(CODE, 'pick')
-    assert [family for family, _ in children] == [FAMILY, FAMILY]
-    labelled, plain = (squash(text) for _, text in children)
+    assert [family for family, _ in children] == [FAMILY] * 3
+    first, labelled, plain = (squash(text) for _, text in children)
+    assert 'switch (mode) { case 0: default: v = n + 5; break; case 1: v = n + (n * 4 + 5); break;' in first
     assert 'switch (mode)' in labelled and 'if (mode' not in labelled
     assert 'case 1: v = n + (n * 4 + 5); break;' in labelled
     assert 'case 3: v = n * 3 + (n + 2) + n * 4; break;' in labelled
