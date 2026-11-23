@@ -31,6 +31,11 @@ the loop never assigns is offered as a `for` loop over the counter, with
   * `v == (a * S) + INIT` (the companion against the address of element `a`) as `counter == a`;
   * `volatile` dropped from the pointer casts the body reads through (a hypothesis: the search that wrote it wanted the
     reload that the original's typed accesses give anyway).
+A counter stepped among the calls (`i += 1;` in the middle of the body, a companion `p += 8;` last, and reads of `p` after the
+counter's step) is accepted: the rule is that no stepped variable is read after its *own* step, and the counter's step goes
+to the end of the body in the child, where it still reads the iteration's value (a voice loop of a 384-instruction sound
+function, 2696 -> 2387 from its saved best). A companion that is read between its initialisation and the loop (a NULL test
+above it) keeps its initialisation.
 The counter's own initialisation stays where it was. The `do` form (steps written as the last statements) is a second
 child, since a `for` loop's entry test changes the preheader and the frame. The saved best's fences and scaffolding
 are written out first, as `scaffold_strip` does, when the source has them."""
@@ -122,12 +127,15 @@ def _plan(source, clean, opening, end, loop):
     names = [s[2] for s in steps]
     if counter not in names or len(set(names)) != len(names):
         return None
-    first = min(s[0] for s in steps)
-    after = clean[first:hi]
+    blanked = clean[lo:hi]
     for a, b, *_ in steps:
-        after = after[:a - first] + ' ' * (b - a) + after[b - first:]
-    if any(re.search(r'(?<![\w.>])' + n + r'\b', after) for n in names):
-        return None
+        blanked = blanked[:a - lo] + ' ' * (b - a) + blanked[b - lo:]
+    # a stepped variable must not be read after its own step; a read of a companion between the counter's step and its own
+    # (m2c wrote `i += 1;` among the calls and `p += 8;` last) is fine: the counter's step goes to the end of the body in
+    # the child, where it reads the same iteration's value
+    for a, b, name, *_ in steps:
+        if re.search(r'(?<![\w.>])' + name + r'\b', blanked[b - lo:]):
+            return None
     stride = next(s[3] for s in steps if s[2] == counter)
     if bound % stride or bound // stride < 1:
         return None
@@ -144,6 +152,7 @@ def _plan(source, clean, opening, end, loop):
         return None
     ahead = clean[cond_end:end]
     companions = {}
+    keep_init = set()
     for name in names:
         if name == counter:
             continue
@@ -151,7 +160,7 @@ def _plan(source, clean, opening, end, loop):
         value = inits[name]['value'].strip()
         gap = clean[opening + inits[name].end():start]
         touched = gap + clean[lo:hi]
-        if (re.search(r'(?<![\w.>])' + name + r'\b', ahead + gap)
+        if (re.search(r'(?<![\w.>])' + name + r'\b', ahead)
                 or re.search(r'&\s*' + name + r'\b', clean[opening:end])
                 or re.search(r'(?<![\w.>])' + name + r'\b', clean[cond_open:cond_end])
                 or any(re.search(r'(?<![\w.>])' + re.escape(i) + r'\s*(?:[-+*/&|^%]|<<|>>)?=(?!=)|(?:\+\+|--)\s*'
@@ -159,6 +168,8 @@ def _plan(source, clean, opening, end, loop):
                        for i in set(re.findall(IDENT, value)))):
             return None
         companions[name] = (value, step[3])
+        if re.search(r'(?<![\w.>])' + name + r'\b', gap):
+            keep_init.add(name)  # read between its initialisation and the loop (a NULL test): the initialisation stays
     edits = [(a - lo, b - lo, '') for a, b, *_ in steps]
     for name, (value, step) in companions.items():
         taken = []
@@ -210,7 +221,7 @@ def _plan(source, clean, opening, end, loop):
             last = b
     for a, b, v in sorted(kept, reverse=True):
         text = text[:a] + v + text[b:]
-    drops = [(opening + inits[n].start(), opening + inits[n].end()) for n in companions]
+    drops = [(opening + inits[n].start(), opening + inits[n].end()) for n in companions if n not in keep_init]
     return counter, cast, bound, suffix, _no_volatile(text), drops
 
 
