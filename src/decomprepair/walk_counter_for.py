@@ -42,7 +42,8 @@ from .csource import _blank, find
 from .pattern_repairs import close
 
 FAMILY = 'walk_counter_for'
-FAMILIES = (FAMILY,)
+MERGE = 'walk_counter_merge'
+FAMILIES = (FAMILY, MERGE)
 
 IDENT = r'[A-Za-z_]\w*'
 NUM = r'(?:0[xX][\da-fA-F]+|\d+)'
@@ -341,6 +342,16 @@ def variants(source, name, header=''):
                 if merged and merged not in seen:
                     seen.add(merged)
                     out.append((FAMILY, merged))
+    # the same two steps on a source whose loops are already counted `for` loops (the greedy chain's second step: the
+    # first step's cheapest child keeps one counter per loop, and the merged one is only a better program together)
+    tidy = _inline_scratch(source, name)
+    for text in [tidy] if tidy else []:
+        if text not in seen:
+            seen.add(text)
+            out.append((MERGE, text))
+    merged = _unify(tidy or source, name)
+    if merged and merged not in seen:
+        out.append((MERGE, merged))
     return out
 
 

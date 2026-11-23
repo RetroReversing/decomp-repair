@@ -133,3 +133,11 @@ def test_nothing_when_the_counter_does_not_start_at_zero():
 def test_it_declares_itself():
     assert REPAIR['variants'] is variants
     assert FAMILY in REPAIR['families']
+
+
+def test_counters_are_merged_on_a_source_whose_loops_are_already_for_loops():
+    from decomprepair.walk_counter_for import MERGE
+    first = next(text for family, text in variants(SOURCE, 'walk') if family == FAMILY)
+    assert 'u32 off;' in first and 'u32 k;' in first  # the first step's child keeps a counter per loop
+    again = [_flat(text) for family, text in variants(first, 'walk') if family == MERGE]
+    assert again and 'u32 off;' not in again[-1] and 'u32 k;' not in again[-1]
