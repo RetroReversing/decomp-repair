@@ -84,12 +84,27 @@ def _wrapped(e):
     return False
 
 
+def _primary(e):
+    """True when e has no top-level binary operator: a cast on it applies to all of it, so dropping the cast drops nothing
+    but the conversion (`(s32) (a + 8)` yes, `(s32) (a + 8) >> 3` no: there the cast is the shifted operand's, and
+    dropping it turns an arithmetic shift into a logical one on an unsigned operand)."""
+    depth = 0
+    for i, ch in enumerate(e):
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            depth -= 1
+        elif depth == 0 and ch in '+-*/%&|^<>=?:,' and i > 0 and e[:i].strip() not in ('-', '~', '!', '*', '&'):
+            return False
+    return True
+
+
 def _strip(e):
     e = e.strip()
     while True:
         if _wrapped(e):
             e = e[1:-1].strip()
-        elif (m := CAST.match(e)) and e[m.end():]:
+        elif (m := CAST.match(e)) and e[m.end():] and _primary(e[m.end():]):
             e = e[m.end():].strip()
         else:
             return e
