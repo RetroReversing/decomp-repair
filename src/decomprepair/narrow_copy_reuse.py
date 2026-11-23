@@ -31,6 +31,18 @@ def _reassign(v, x):
     return re.compile(rf'(?m)^[ \t]*{re.escape(v)}[ \t]*=[ \t]*\(?[ \t]*(?:{cast})?{re.escape(x)}[ \t]*\)?[ \t]*&[ \t]*0[xX][fF][fF][ \t]*;[ \t]*\n')
 
 
+def _is_group(before):
+    """Whether a `(` after `before` opens a parenthesised expression: not a call's, an `if`'s or a `while`'s parenthesis
+    (after a cast, an operator, `return` or another `(` it does)."""
+    before = before.rstrip()
+    if not before:
+        return True
+    if before[-1] == ']':
+        return False
+    word = re.search(r'[A-Za-z_]\w*$', before)
+    return not word or word[0] == 'return'
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -47,7 +59,7 @@ def variants(source, name):
         guard = re.compile(rf'\bif\s*\(\s*(?P<not>!?)\s*{re.escape(v)}\s*\)')
         guards = list(guard.finditer(text))
         use = re.compile(rf'(?<!\bif)(?<!\bif )\(\s*{re.escape(x)}\s*&\s*0[xX][fF][fF]\s*\)')
-        uses = [hit for hit in use.finditer(text) if not re.search(r'\b(?:if|while)\s*$', text[:hit.start()])]
+        uses = [hit for hit in use.finditer(text) if _is_group(text[:hit.start()])]
         kinds = [kind for kind, hits in (('drop', again), ('guard', guards), ('use', uses)) if hits]
         for size in range(1, len(kinds) + 1):
             for chosen in itertools.combinations(kinds, size):
