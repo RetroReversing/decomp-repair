@@ -10,9 +10,9 @@ condition (a leading `!` is removed instead of doubled). Nothing is offered when
 """
 import re
 
+from .call_carrier_pointer_split import UNORDERED
 from .call_result_join_copy import ELSE, IF, _blocks, _skip, _statement_end
 from .integer_repair_support import edit, view
-from .call_carrier_pointer_split import UNORDERED
 from .pattern_repairs import close
 
 FAMILY = 'chained_identical_arm_flip'
