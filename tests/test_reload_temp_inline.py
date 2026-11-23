@@ -112,3 +112,29 @@ def test_a_call_to_a_pure_inline_helper_is_the_expression_not_a_second_call():
 def test_a_helper_with_a_call_inside_still_counts_as_a_call():
     source = HELPER.replace('((value >> 6) * 40U) + 256U', 'other(value)')
     assert variants(source, 'build') == []
+
+
+PACKED = '''typedef struct { int base; } Mesh;
+int touch(int, int, int);
+
+void walk(Mesh *m, unsigned char *idx, int n)
+{
+  int t;
+  int i;
+  i = 0;
+  do
+  {
+    do { if (idx[0] != 0) { t = m->base; touch(t + idx[0] * 12, t + idx[1] * 12, t + idx[2] * 12); } idx += 3; } while (0);
+    i += 1;
+  }
+  while (i < n);
+}
+'''
+
+
+def test_a_temporary_on_a_packed_line_is_found_after_laying_the_function_out():
+    from decomprepair.line_scan import layout
+    laid = layout(PACKED, 'walk')
+    assert '\n        t = m->base;\n' in laid and laid.count('{') == PACKED.count('{')
+    children = [text for _, text in variants(PACKED, 'walk')]
+    assert any('touch(m->base + idx[0] * 12, m->base + idx[1] * 12' in text and 't = ' not in text for text in children)

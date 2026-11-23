@@ -41,7 +41,7 @@ from .line_scan import block_end, block_start, lines, mentions, words
 
 FAMILY = 'reload_temp_inline'
 FAMILIES = (FAMILY,)
-LIMIT = 6
+LIMIT = 12  # a 1337-instruction function had eight inlinable temporaries; the one that paid was the eighth
 _DEF = re.compile(r'(?P<t>[A-Za-z_]\w*) = (?P<e>[^;]*);')
 _EFFECT = re.compile(r'[A-Za-z_]\w*\s*\(|\+\+|--|\bvolatile\b|(?<![=!<>])=(?!=)')
 _CALL = re.compile(r'[A-Za-z_]\w*\s*\(')
@@ -313,6 +313,17 @@ def _inline_one(source, name, t):
 
 
 def variants(source, name):
+    out = _variants(source, name)
+    if len(out) < LIMIT:
+        # a search's packed line hides its temporaries from the line scan: lay the function out and look again
+        from .line_scan import layout, packed
+        laid = layout(source, name) if packed(source, name) else None
+        if laid:
+            out += [child for child in _variants(laid, name) if child not in out][:LIMIT - len(out)]
+    return out
+
+
+def _variants(source, name):
     fn = _Function(source, name)
     if not fn.ok:
         return []

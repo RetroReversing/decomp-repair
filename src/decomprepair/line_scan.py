@@ -125,3 +125,73 @@ def with_local(source, part, declaration):
 
 def apply(source, edits):
     return edit(source, edits)
+
+
+def layout(source, name):
+    """The function with every statement on a line of its own and every brace on its own line, or None.
+
+    A search's packed lines (`do { if (a) { t = p->x; f(t); } q += 3; } while (0);` on one line) hide their
+    statements from every family that scans lines: one 1337-instruction function kept a whole loop body on one line,
+    and `reload_temp_inline` never saw the temporary in it. Only a function whose body has no comment, string or
+    preprocessor line is laid out (the blanked text must equal the source); `for (;;)` headers and other parentheses
+    are kept whole. Returns None when nothing would change."""
+    from .integer_repair_support import view
+
+    part = view(source, name)
+    if not part:
+        return None
+    body = source[part.opening + 1:part.end - 1]
+    if body != part.clean[part.opening + 1:part.end - 1] or '#' in body:
+        return None
+    pieces, current, paren = [], '', 0
+
+    def flush():
+        nonlocal current
+        if current.strip():
+            pieces.append(' '.join(current.split()))
+        current = ''
+
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == '(':
+            paren += 1
+        elif ch == ')':
+            paren -= 1
+        if paren == 0 and ch in '{}':
+            flush()
+            pieces.append(ch)
+        elif paren == 0 and ch == ';':
+            current += ch
+            flush()
+        elif paren == 0 and ch == ':' and re.fullmatch(r'\s*(?:[A-Za-z_]\w*|case\s+[^:?]+|default)\s*', current) \
+                and body[i + 1:i + 2] != ':':
+            current += ch
+            flush()
+        else:
+            current += ch
+        i += 1
+    flush()
+    out, depth = [], 1
+    for piece in pieces:
+        if piece == '}':
+            depth -= 1
+        out.append('  ' * max(depth, 0) + piece)
+        if piece == '{':
+            depth += 1
+    text = source[:part.opening + 1] + '\n' + '\n'.join(out) + '\n' + source[part.end - 1:]
+    return None if text == source else text
+
+
+def packed(source, name):
+    """True when a line of the function holds two statements, or a brace beside a statement (`} while (0);`)."""
+    from .integer_repair_support import view
+
+    part = view(source, name)
+    if not part:
+        return False
+    for line in lines(part, source):
+        s = re.sub(r'\([^()]*(?:\([^()]*\)[^()]*)*\)', '()', line.stripped)
+        if s.count(';') > 1 or (('{' in s or '}' in s) and s not in ('{', '}', '};')):
+            return True
+    return False
