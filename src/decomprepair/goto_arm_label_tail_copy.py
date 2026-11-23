@@ -19,7 +19,8 @@ goto_arm_label_tail_copy
     jump, and whose whole `if`/`else` statement is followed directly by `goto M;`: every `goto label;` that is a statement of its
     own (after `;`, `{` or `}`) outside the run is replaced by the run and `goto M;`; one child places the copy right where
     the `goto` was, one places it before the statement just ahead of the `goto` when that is a plain assignment. The label
-    stays when other `goto`s to it remain. At most 4 children."""
+    stays when other `goto`s to it remain. Each copy is also offered with the holding `if (C) {A} else {B}` written
+    `if (!C) {B} else {A}`, the pair a match needed (320 -> 60 on the same routine). At most 6 children."""
 import re
 
 from .goto_arm_label_copy import _BAD_RUN, _DECL, RUN_LIMIT
