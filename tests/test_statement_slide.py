@@ -96,3 +96,14 @@ def test_a_local_flag_clear_passes_member_stores_and_a_call_that_do_not_name_it(
     assert all(t.index('kind = 0;') > t.index('rec[kind].loaded = 1;') for _, t in variants(named, 'f'))
     taken = source.replace('scan(rec, &mode);', 'scan(rec, &kind);')
     assert all(t.index('kind = 0;') > t.index('scan(rec, &kind);') for _, t in variants(taken, 'f'))
+
+
+def test_a_float_constant_slides_and_declarations_are_not_a_run():
+    # An effect spawner (KMC GCC 2.7.2): `height = 120.0f;` above three statements, away from its copy, 80 -> 70.
+    from decomprepair import statement_slide as s
+    source = ('void f(void *a)\n{\n  f32 height;\n  f32 y;\n  void *t;\n  s32 k;\n  s32 m;\n'
+              '  t = *((void **) (((char *) a) + 0x6C));\n  k = 3;\n  m = k + 1;\n  height = 120.0f;\n  y = height;\n'
+              '  g(t, k, m, y);\n}\n')
+    out = [text for _, text in s.variants(source, 'f')]
+    assert any(o.index('height = 120.0f;') < o.index('k = 3;') for o in out)
+    assert not any(o.index('f32 y;') < o.index('f32 height;') for o in out)
