@@ -15,7 +15,9 @@ everything says it is a constant read where it is used:
 - the symbol is declared `f64`/`double` (an `extern` in the source or the header), never an array, pointer or float;
 - the function only reads it: never assigned, incremented, called, indexed, a member read or its address taken, and no
   other function in the source names it;
-- the target's assembly loads it with `ldc1` through `$at` (`%lo`) and does nothing else with it;
+- the target's assembly loads it with `ldc1` through `$at` (`%lo`), or as GAS's `li.d` into a register pair (`lui $at`
+  and two `lw ... ($at)`, the value then held in two saved registers across a loop's calls), and does nothing else
+  with it;
 - the value is a normal finite double (not zero, a denormal, inf or NaN, nor a magnitude nobody writes: exponent within
   2**-64 and 2**64), written with the fewest digits that give the same 64 bits back (`0.5`, never a lossy decimal).
 Every proposal is judged; a value that is a real global's initial value only costs a compile. The explanation of the
@@ -67,16 +69,27 @@ def _declared_double(symbol, texts):
 
 
 def _double_loads(symbol, asm):
-    """True when the target's assembly only loads `symbol` as a double through `$at`, at least once."""
+    """True when the target's assembly only loads `symbol` as a double through `$at`, at least once: with `ldc1`, or as the
+    two `lw`s GAS writes for `li.d` into a pair of general registers (`lui $at, %hi(S)`, `lw $s4, %lo(S)($at)`, `lw $s5,
+    %lo(S+4)($at)`, the second word under a name of its own when the data is split by word). A global read into a
+    register pair is `lw` through its own destination register (`lui $s4, ...; lw $s4, ...($s4)`), so `$at` there means
+    the literal pool; an indexed table read puts an `addu $at` between the `lui` and the `lw` and is not taken."""
     loads = 0
     pattern = re.compile(r'%(?:hi|lo|gp_rel)\(\s*' + re.escape(symbol) + r'\s*(?:[+-][^)]*)?\)')
-    for line in (asm or '').splitlines():
-        if not pattern.search(line):
+    codes = [re.sub(r'/\*.*?\*/', ' ', line).strip() for line in (asm or '').splitlines()]
+    codes = [code for code in codes if code and not code.endswith(':') and not code.startswith(('.', 'glabel'))]
+    pair = re.compile(r'lw\s+\$\w+\s*,\s*%lo\(\s*' + re.escape(symbol) + r'\s*\)\s*\(\s*\$at\s*\)')
+    second = re.compile(r'lw\s+\$\w+\s*,\s*%lo\([^)]*\)\s*\(\s*\$at\s*\)')
+    for at, code in enumerate(codes):
+        if not pattern.search(code):
             continue
-        code = re.sub(r'/\*.*?\*/', ' ', line).strip()
         if re.match(r'lui\s+\$at\s*,\s*%hi\(', code):
             continue
         if re.match(r'ldc1\s+\$\w+\s*,\s*%lo\(\s*' + re.escape(symbol) + r'\s*\)\s*\(\s*\$at\s*\)', code):
+            loads += 1
+            continue
+        if (pair.match(code) and at > 0 and re.match(r'lui\s+\$at\s*,\s*%hi\(\s*' + re.escape(symbol) + r'\s*\)', codes[at - 1])
+                and at + 1 < len(codes) and second.match(codes[at + 1])):
             loads += 1
             continue
         return False
