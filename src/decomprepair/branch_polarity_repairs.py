@@ -22,6 +22,7 @@ from .pattern_repairs import close, negate
 
 FAMILY = 'branch_polarity'
 FAMILIES = (FAMILY,)
+LIMIT = 12  # every `if` is read (a cap of 24 never reached the second half of a 1337-instruction function)
 
 IDENT = r'[A-Za-z_]\w*'
 
@@ -107,12 +108,13 @@ def variants(source, name):
     if not end or '#' in clean[opening:end]:
         return []
     result = _repeated_flag_variants(source, clean, opening, end)
+    tails = []
 
     def add(text):
         if text != source and (FAMILY, text) not in result:
             result.append((FAMILY, text))
 
-    for hit in list(re.finditer(r'\bif\s*\(', clean[opening:end]))[:24]:
+    for hit in list(re.finditer(r'\bif\s*\(', clean[opening:end])):
         start = opening + hit.start()
         paren = opening + hit.end() - 1
         cond_end = close(clean, paren)
@@ -147,7 +149,28 @@ def variants(source, name):
         if not tail_end or not rest.strip() or re.search(rf'(?m)^[ \t]*{IDENT}:|\bcase\b|\bdefault\b', rest) \
                 or re.search(r'(?m)^[ \t]*(?:u8|s8|u16|s16|s32|u32|f32|int|char|void)\b[^;()]*;', rest):
             continue
-        text = (source[:paren + 1] + flipped + source[cond_end - 1:a] + '{' + source[b:tail_end]
-                + '}\n' + ' ' * (start - source.rfind('\n', 0, start) - 1) + 'else ' + source[a:b] + source[tail_end:])
-        add(text)
-    return result[:6]
+        swap = (flipped + source[cond_end - 1:a] + '{' + source[b:tail_end]
+                + '}\n' + ' ' * (start - source.rfind('\n', 0, start) - 1) + 'else ' + source[a:b])
+        tails.append((paren + 1, tail_end, swap, _shape(clean[paren:tail_end])))
+        add(source[:paren + 1] + swap + source[tail_end:])
+    # The same goto tail in two loops of one function (m2c copies a loop per mesh format) is laid out by one rule:
+    # alone, each flip changes which arm the other loop's tail cross-jumps with; together they gave 10585 -> 7206
+    # (alone 9761 and 10075) on a 1337-instruction KMC GCC 2.7.2 collision sweep. Offer each like-shaped group whole.
+    groups = {}
+    for tail in tails:
+        groups.setdefault(tail[3], []).append(tail)
+    combined = []
+    for group in groups.values():
+        if len(group) < 2 or any(x[1] > y[0] for x, y in zip(group, group[1:])):
+            continue
+        text = source
+        for begin, finish, swap, _ in reversed(group):
+            text = text[:begin] + swap + text[finish:]
+        if text != source and (FAMILY, text) not in combined:
+            combined.append((FAMILY, text))
+    return (combined + result)[:LIMIT]
+
+
+def _shape(text):
+    """A branch's text with its names and spacing blotted out: two copies of one statement run compare equal."""
+    return re.sub(r'\s+', '', re.sub(r'\b' + IDENT + r'\b', 'x', re.sub(r'\b\d\w*', '0', text)))
