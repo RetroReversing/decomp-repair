@@ -52,3 +52,25 @@ def test_a_statement_that_does_not_read_its_own_word_is_left_alone():
 
 def test_it_declares_itself():
     assert REPAIR['variants'] is variants and FAMILY in REPAIR['families']
+
+
+CAST_SOURCE = '''void f(void *s, u32 i)
+{
+    void *t;
+
+    t = s;
+    *((s32 *) (((char *) ((void **) (((char *) t) + 0x418))[i]) + 0x28)) = (*((s32 *) (((char *) ((void **) (((char *) t) + 0x418))[i]) + 0x28)) & ~0xFC) | 0x10;
+    *((s16 *) (((char *) t) + 0x20)) = 1;
+}
+'''
+
+
+def test_m2c_cast_form_with_an_element_base_and_a_complement_mask():
+    # An effect spawner (KMC GCC 2.7.2): `markers[i]->flags = (markers[i]->flags & ~0xFC) | 0x10` in m2c's cast spelling;
+    # as a local updated in steps its block's last ordering rows closed (200 -> 185 with the app's judge).
+    out = [text for _, text in variants(CAST_SOURCE, 'f')]
+    word = '*((s32 *) (((char *) ((void **) (((char *) t) + 0x418))[i]) + 0x28))'
+    assert any(f'rmw_value = {word};\n    rmw_value &= ~0xFC;\n    rmw_value |= 0x10;\n    {word} = rmw_value;' in o
+               and 's32 rmw_value;' in o for o in out)
+    other = CAST_SOURCE.replace('& ~0xFC) | 0x10;', '& ~0xFC) | g;')
+    assert variants(other, 'f') == []
