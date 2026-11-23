@@ -13,6 +13,11 @@ A child is offered only when the moved statement commutes with every statement i
 pointer other than an `M2C_FIELD(base, type *, offset)` (compared by base, byte interval), no shared local that one writes
 and the other touches. The move is a hypothesis for the scheduler; the judge decides. Bounded to `LIMIT` children,
 shortest slides first.
+
+A statement that only works on a plain local no call can reach (declared, never address-taken, not `volatile`) also
+passes a statement with a call that does not name it, and `x += K;` counts as a statement on `x`: the call is a
+barrier to the scheduler, so the order against it is the one thing the source decides (a 1133-instruction effect
+spawner: `phase += 0.21f;` below the statement that calls `__cosf`, 3555 -> 3215).
 """
 import re
 
@@ -41,7 +46,12 @@ def _effects(text):
             split = pos
             break
     if split is None:
-        return None
+        compound = re.match(rf'\s*({IDENT})\s*(?:[-+*/%&|^]|<<|>>)=(?!=)\s*(.+?)\s*;?\s*$', text, re.S)
+        value = re.sub(r'\b\d+\.\d*[fF]?|\B\.\d+[fF]?', '0', compound[2]) if compound else ''  # (float literals)
+        if not compound or CALL.search(value) or DEREF.search(value) or OTHER.search(value) or '&' in value:
+            return None
+        names = {('v', ident) for ident in re.findall(rf'\b{IDENT}\b', value) if ident not in WIDTH}
+        return {('v', compound[1])}, names | {('v', compound[1])}
     left, right = text[:split], text[split + 1:]
     stripped = CAST_POINTER.sub(' ', FIELD.sub(' ', left + ' = ' + right))
     if CALL.search(stripped) or DEREF.search(stripped) or OTHER.search(stripped) or '&' in left:
@@ -76,6 +86,27 @@ def commutes(one, two):
     if not first or not second:
         return False
     return not (_clash(first[0], second[0] | second[1]) or _clash(second[0], first[1]))
+
+
+def commutes_past_call(one, two, locals_):
+    """`one` only works on plain locals (never address-taken, so no call can reach them) and `two`, which has a call
+    in it, names none of them: the order is then the scheduler's tie-break alone, a call being a barrier it cannot move
+    anything across."""
+    first = _effects(one)
+    if not first or not CALL.search(two):
+        return False
+    names = {key[1] for key in first[0] | first[1]}
+    if any(key[0] != 'v' for key in first[0] | first[1]) or not names <= locals_:
+        return False
+    return not (names & set(re.findall(rf'\b{IDENT}\b', two)))
+
+
+def _locals(part):
+    """The plain scalar locals of the function that nothing takes the address of and that are not `volatile`."""
+    body = part.clean[part.opening:part.end]
+    declared = set(re.findall(rf'(?m)^[ \t]*(?:register\s+)?(?:unsigned\s+)?(?:s8|u8|s16|u16|s32|u32|f32|f64|int|char|short|long|float|double)'
+                              rf'[ \t]+({IDENT})[ \t]*;', body))
+    return {name for name in declared if not re.search(rf'&\s*{name}\b', body)}
 
 
 def _runs(clean, start, end):
@@ -123,6 +154,7 @@ def variants(source, name, header=''):
     if not part:
         return []
     found = []
+    safe = _locals(part)
     for run in _runs(part.clean, part.opening + 1, part.clean.rindex('}', part.opening, part.end)):
         texts = [source[s:e] for s, e in run]
         for index, text in enumerate(texts):
@@ -133,7 +165,7 @@ def variants(source, name, header=''):
                         continue
                     lo, hi = sorted((index, target))
                     between = [texts[k] for k in range(lo, hi + 1) if k != index]
-                    if all(commutes(text, other) for other in between):
+                    if all(commutes(text, other) or commutes_past_call(text, other, safe) for other in between):
                         order = list(range(len(texts)))
                         order.insert(target, order.pop(index))
                         pieces = [source[run[k][0]:run[k][1]] for k in order]
