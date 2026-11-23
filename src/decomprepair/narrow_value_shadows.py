@@ -23,6 +23,15 @@ and a plain spelling folds away:
                        (`mult w, i` on the raw counter), and the copies of it are HImode moves. 2700 -> 2010 on the
                        sprite drawer (a `u16` position), and 2175 -> 1885 with its arm-head copy typed `u16` too.
 
+  arm_copy_chain       `x = E; if (c) { ... x ... x ... }` -> `x = E; q = x; if (c) { a = q; ... a ... q ... }`
+                       The two copies together: one right after the value, one at the head of the arm that reads it
+                       (from the first copy), the arm's first read taking the second and its later reads the first.
+                       Neither copy folds into the value because the reads sit after a nested `if` (a new
+                       extended basic block for cse), and the target holds the value, its copy and the arm's copy in
+                       three registers. 1760 -> 730 -> 585 -> 430 with operand orders on a 664-instruction sprite drawer
+                       (the copies alone: 2460 -> 2295; they pay off only with the operand order, so the child is offered
+                       whole).
+
 Children carry the family name; only integer locals are rewritten and the original statements are untouched except for the
 read names. The candidate is never a verdict: the judge decides.
 """
@@ -35,11 +44,12 @@ FAMILY_CAST = 'narrow_cast_shadow'
 FAMILY_ARM = 'arm_head_copy'
 FAMILY_COUNTER = 'counter_cast_test'
 FAMILY_RETYPE = 'wide_local_to_halfword'
-FAMILIES = (FAMILY_CAST, FAMILY_ARM, FAMILY_COUNTER, FAMILY_RETYPE)
+FAMILY_CHAIN = 'arm_copy_chain'
+FAMILIES = (FAMILY_CAST, FAMILY_ARM, FAMILY_COUNTER, FAMILY_RETYPE, FAMILY_CHAIN)
 _ID = r'[A-Za-z_]\w*'
 _WIDE = ('s32', 'u32', 'int', 'unsigned int', 'signed int', 'long', 'unsigned long')
 _NARROW = ('u16', 's16', 'u8', 's8')
-_MAX_CHILDREN = 24
+_MAX_CHILDREN = 40
 _DECLARATION = re.compile(r'(?m)^([ \t]*)((?:unsigned |signed |const |register )*[A-Za-z_]\w*)[ \t]+([^;(){}\n]+);')
 _CAST = re.compile(rf'\(\s*(u16|s16|u8|s8)\s*\)\s*({_ID})\b(?!\s*[\[(.]|->)')
 
@@ -247,13 +257,44 @@ def _retype_children(source, clean, opening, end):
     return out
 
 
+def _chain_children(source, clean, opening, end):
+    declared = _declared(clean, opening, end)
+    out = []
+    for at, arms in _if_arms(clean, opening, end):
+        parent = enclosing_block(clean, at, opening)
+        if parent < 0:
+            continue
+        for start, stop in arms:
+            body = clean[start + 1:stop]
+            if not re.search(r'\bif\s*\(', body):
+                continue  # the copies only survive when the reads sit after a nested conditional
+            for v, kind in declared.items():
+                reads = _reads(body, v)
+                if kind not in _WIDE or len(reads) < 2 or _writes(body, v):
+                    continue
+                found = _assign_before(clean, v, parent, at)
+                if not found or _writes(clean[found[1]:at], v):
+                    continue
+                first = _unique(clean, f'__repair_{v}_q')
+                second = _unique(clean + first, f'__repair_{v}_arm')
+                inner = source[start + 1:stop]
+                spots = [m.start() for m in re.finditer(rf'(?<![\w.>]){re.escape(v)}\b(?!\s*\()', inner)]
+                for k, offset in reversed(list(enumerate(spots))):
+                    inner = f'{inner[:offset]}{second if k == 0 else first}{inner[offset + len(v):]}'
+                edited = f'{source[:start + 1]}\n{second} = {first};{inner}{source[stop:]}'
+                edited = f'{edited[:found[1]]} {first} = {v};{edited[found[1]:]}'
+                edited = _declare(edited, opening, f'{kind} {first}, {second};')
+                out.append((FAMILY_CHAIN, edited))
+    return out
+
+
 def variants(source, name):
     found = _body(source, name)
     if not found:
         return []
     clean, opening, end = found
     out = []
-    for build in (_cast_children, _arm_children, _counter_children, _retype_children):
+    for build in (_cast_children, _arm_children, _counter_children, _retype_children, _chain_children):
         out.extend(build(source, clean, opening, end))
     return out[:_MAX_CHILDREN]
 
