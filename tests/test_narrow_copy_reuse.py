@@ -54,6 +54,12 @@ def test_dropping_the_reassignments_alone_keeps_the_test_and_the_expression():
     assert len(only) == 1
 
 
+def test_a_call_argument_in_parentheses_is_not_a_masked_expression():
+    code = CODE.replace('put((word & 0xFF0000) | (word & 0xFF));', 'put(word & 0xFF);')
+    assert all('put low' not in squash(child) and 'putlow' not in squash(child) for _, child in variants(code, 'f'))
+    assert all('put(word & 0xFF)' in squash(child) for _, child in variants(code, 'f'))
+
+
 def test_the_word_assigned_again_or_taken_by_address_is_left_alone():
     assert variants(CODE.replace('put(', 'word = 1; put('), 'f') == []
     assert variants(CODE.replace('put(', 'g(&word); put('), 'f') == []
