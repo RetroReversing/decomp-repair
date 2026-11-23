@@ -4,6 +4,10 @@ gcc loads a comparison's left operand first, so `a < b` and `b > a` differ in wh
 for floats, which way `c.lt.s` reads). m2c writes the order its reading of the branch gave: two N64 functions, a
 float and a byte comparison of two fields, were exact with the sides swapped (`f(a) < f(b)` as `f(b) > f(a)`). The
 meaning is the same; only the operand order changes.
+
+The `((Field_f32 *) (((char *) base) + 0x14))->v` cells that m2c's drafts for this project use are operands too: on a
+1137-instruction player-update routine (KMC GCC 2.7.2, `-G0 -mips3 -mgp32 -mfp32 -O2`) `!(field < locals.vec58[1])`
+written `!(locals.vec58[1] > field)` loaded the two floats in the target's order (570 -> 550 and a row less).
 """
 import re
 
@@ -14,6 +18,7 @@ FAMILY = 'comparison_sides'
 FAMILIES = (FAMILY,)
 
 IDENT = r'[A-Za-z_]\w*'
+FIELD_TYPE = r'Field_[A-Za-z_]\w*'
 FLIP = {'<': '>', '>': '<', '<=': '>=', '>=': '<=', '==': '==', '!=': '!='}
 
 
@@ -23,6 +28,11 @@ def _operand_end(text, start):
     if m:
         paren = start + m.end() - 1
         return close(text, paren)
+    m = re.match(r'\s*\(\s*\(\s*' + FIELD_TYPE + r'\s*\*\s*\)', text[start:])
+    if m:  # `((Field_s16 *) (((char *) base) + 0x7A))->v`, the cell the project's drafts write
+        stop = close(text, start + m.start() + text[start:].index('('))
+        tail = re.match(r'\s*->\s*' + IDENT, text[stop:]) if stop else None
+        return stop + tail.end() if tail else None
     m = re.match(r'\s*' + IDENT + r'(?:\s*(?:->|\.)\s*' + IDENT + r'|\s*\[[^\]]*\])+', text[start:])
     return start + m.end() if m else None
 
@@ -42,7 +52,7 @@ def variants(source, name):
         # the left operand: the load ending right before the operator
         left_end = len(clean[:at].rstrip())
         left_start = None
-        for cand in re.finditer(r'M2C_FIELD\s*\(|\*\s*\(|' + IDENT, clean[max(opening, at - 400):left_end]):
+        for cand in re.finditer(r'M2C_FIELD\s*\(|\*\s*\(|\(\s*\(\s*' + FIELD_TYPE + r'\s*\*\s*\)|' + IDENT, clean[max(opening, at - 400):left_end]):
             s = max(opening, at - 400) + cand.start()
             e = _operand_end(clean, s)
             if e == left_end and (s == 0 or not re.match(r'[\w.>]', clean[s - 1])):
