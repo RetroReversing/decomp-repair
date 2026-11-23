@@ -22,8 +22,9 @@ stack slot) declares `directives` and is also run on the function exactly as wri
 `needs` are the `variants` parameter names the caller can supply, a subset of CONTEXT: `source` and `name` always,
 and `header`, `arch`, `asm` (the target's assembly) and `flags` (the compiler's flags) when wanted. `words` is game data
 the C can't show: {symbol: the 32-bit word at its address, in the game's byte order}, for the symbols the caller chose
-to read (decompdecomp: the float constants only one function refers to). It is OPTIONAL: a caller older than it leaves
-it out, so a module that needs it gives the parameter a default and gets nothing then (`arguments`). Each is passed by
+to read (decompdecomp: the float constants only one function refers to). `callees` is the matched C of the function's callees, as one
+text (decompdecomp: capture_followup_repairs.callee_evidence), evidence of a callee's own parameters. Both are OPTIONAL:
+a caller older than them leaves them out, so a module that needs it gives the parameter a default and gets nothing then (`arguments`). Each is passed by
 keyword, so the order of the parameters is the module's own business. Lanes: `draft` (a draft's repair pass, which is
 limited), `beam` (the Deep Permuter's beam, which asks the same pass with no limit), `local` (the Deep Permuter's local
 lane, which tries the library's rewrites on its current best).
@@ -40,8 +41,8 @@ import sys
 from dataclasses import dataclass
 from functools import lru_cache
 
-CONTEXT = ('source', 'name', 'header', 'arch', 'asm', 'flags', 'words')
-OPTIONAL = ('words',)  # context a caller may not have yet: left out, the parameter's default is used
+CONTEXT = ('source', 'name', 'header', 'arch', 'asm', 'flags', 'words', 'callees')
+OPTIONAL = ('words', 'callees')  # context a caller may not have yet: left out, the parameter's default is used
 LANES = ('draft', 'beam', 'local')
 DEFAULT_ORDER = 1000
 _DECLARES = re.compile(r'^REPAIR\s*(?::[^=\n]*)?=', re.M)
