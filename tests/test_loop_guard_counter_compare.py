@@ -44,9 +44,8 @@ def test_the_counter_must_still_be_zero_and_its_loop_test_must_follow():
     assert variants(SOURCE.replace('  j = 5;', '  g(&i);'), 'f') == []
     # the loop does not test it against the count
     assert variants(SOURCE.replace('while (i < count)', 'while (j < count)'), 'f') == []
-    # not a block guard, or a goto in the function
+    # not a block guard
     assert variants(SOURCE.replace('  if (count != 0)\n  {', '  if (count != 0) g(1);\n  {'), 'f') == []
-    assert variants(SOURCE.replace('  j = 5;', '  goto done;\n  done:'), 'f') == []
 
 
 TWO_ROLES = """extern void g(int);
@@ -88,3 +87,34 @@ def test_every_merge_of_the_guarded_text_is_offered_as_one_combined_child():
     merged = [text for text in children if 'if (i < count)' in text and 'biggest = h(2)' in text]
     assert merged and all('u32 later;' not in text for text in merged)
     assert all(text != TWO_ROLES for text in children)
+
+
+GLOBAL_COUNT_GOTO_LOOP = """extern void g(int);
+extern unsigned char gCount;
+void f(void)
+{
+  u32 i;
+  i = 0;
+  if (gCount != 0)
+  {
+top:
+    {
+      g(i);
+      i += 1;
+    }
+    if (i < (u8) gCount) goto top;
+  }
+}
+"""
+
+
+def test_a_count_read_from_a_global_and_a_goto_loop_closing_test_are_offered():
+    # m2c writes a counted loop over a byte global as `if (g != 0) { L: ...; if (i < (u8) g) goto L; }`
+    [(family, revised)] = variants(GLOBAL_COUNT_GOTO_LOOP, 'f')
+    assert family == FAMILY
+    assert '  if (i < gCount)\n' in revised and 'gCount != 0' not in revised
+    assert 'goto top' in revised
+
+
+def test_a_signed_global_count_is_not_offered_for_not_equal():
+    assert variants(GLOBAL_COUNT_GOTO_LOOP.replace('unsigned char', 'int'), 'f') == []

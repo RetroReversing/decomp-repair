@@ -52,15 +52,21 @@ def _unsigned(kind):
     return bool(re.match(r'unsigned\b|u(?:8|16|32|64)$', kind))
 
 
+def _global_declared(source, name):
+    """The type text of a file-level `extern T name;` or `extern T name[];` (a count read from memory), or ''."""
+    found = re.search(rf'(?:^|[;{{}}])\s*(?:extern\s+)?(?P<type>{KIND})\s+{re.escape(name)}\s*;', source)
+    return re.sub(r'\s+', ' ', found['type']).strip() if found else ''
+
+
 def variants(source, name, header=''):
     part = view(source, name)
-    if not part or re.search(r'\b(?:asm|__asm__|goto)\b', part.body):
+    if not part or re.search(r'\b(?:asm|__asm__)\b', part.body):
         return []
     clean = part.clean
     result = []
     for guard in GUARD.finditer(clean, part.opening, part.end):
         count = guard['n']
-        kind = _declared(part, count)
+        kind = _declared(part, count) or _global_declared(source[:part.opening], count)
         if not kind or (guard['op'] == '!=' and not _unsigned(kind)):
             continue
         brace = guard.end()
@@ -77,7 +83,9 @@ def variants(source, name, header=''):
             counter = zero['i']
             if counter == count or not _declared(part, counter):
                 continue
-            if not re.search(rf'\bwhile\s*\(\s*{re.escape(counter)}\s*<\s*{re.escape(count)}\s*\)', block):
+            # `while (i < n)` of a do-while, or m2c's `if (i < (u8) n) goto L;` closing a loop written with a label
+            if not re.search(rf'\b(?:while|if)\s*\(\s*{re.escape(counter)}\s*<\s*(?:\(\s*\w+\s*\)\s*)?{re.escape(count)}\s*\)'
+                             rf'(?:\s*goto\b|\s*;|\s*\{{)', block):
                 continue
             # the zero is the counter's last write before the guard, and its address is never taken
             rest = before[zero.end():]
