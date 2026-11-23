@@ -1,5 +1,6 @@
 import re
 
+from decomprepair import scaffold_strip as s
 from decomprepair.scaffold_strip import COMBINED, FAMILY, variants
 
 HEADER = """typedef struct { u8 pad[4]; u8 group; u8 slot; } Entry;
@@ -171,3 +172,16 @@ def test_goto_and_a_nested_declaration_keep_the_flow_analysis_out():
         for _, child in variants(SOURCE.replace('    release(entry);', marker), 'insert'):
             body = _body(child)
             assert 'union' not in body and 'position = (u8) group;' in body and 'u32 current;' in body
+
+
+def test_unfence_opens_every_fence_without_its_own_break_and_plain_strips_too():
+    source = ('int g;\nvoid f(int *p, int n) {\n    do { *p = 1; do { g = 2; } while (0); } while (0);\n'
+              '    do { if (n) break; g = 3; } while (0);\n    do { g = 4; } while (n);\n}\n')
+    text = s.unfence(source, 'f')
+    assert 'do { if (n) break; g = 3; } while (0);' in text and 'do { g = 4; } while (n);' in text
+    assert '{ *p = 1; { g = 2; } }' in text
+    assert s.unfence('void f(void) { g = 1; }\n', 'f') is None
+    arms = 'int g;\nvoid f(int x) {\n    do { if (x) { g = 1; } else { g = 1; } } while (0);\n}\n'
+    plain = s.plain(arms, 'f')
+    assert 'while (0)' not in plain and 'else' not in plain and 'g = 1;' in plain
+    assert s.plain('int g;\nvoid f(void) {\n    g = 1;\n}\n', 'f') is None
