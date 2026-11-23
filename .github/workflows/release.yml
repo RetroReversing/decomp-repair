@@ -3,7 +3,11 @@
 # since the last tag; if there are some, the checks run, the patch version is bumped in pyproject.toml and uv.lock, the
 # commit and tag are pushed together, and the GitHub release is created from the changes' subjects. scripts/release.py
 # has the rules. decompdecomp's library-pin workflow then moves its pin to the new tag.
-# Needs no secret: the workflow's own token pushes (main isn't protected) and creates the release.
+# The workflow's own token pushes (main isn't protected) and creates the release. The last step also starts
+# decompdecomp's library-pin right away, so the pin doesn't wait for GitHub's scheduled runs (which are delayed and
+# often skipped). That crosses repositories, so it needs a secret, DECOMPDECOMP_DISPATCH_TOKEN: a fine-grained token
+# for RetroReversing/decompdecomp with "Actions: Read and write". Without it the step logs a notice and is skipped;
+# library-pin's own schedule still catches the release later.
 name: release
 on:
   push:
@@ -41,3 +45,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.rel.outputs.tag }}
         run: gh release create "$TAG" --verify-tag --title "decomprepair ${TAG#v}" --notes-file release-notes.md
+      - if: steps.rel.outputs.tag != ''
+        name: Start decompdecomp's library-pin
+        env:
+          DISPATCH_TOKEN: ${{ secrets.DECOMPDECOMP_DISPATCH_TOKEN }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          if [ -z "$DISPATCH_TOKEN" ]; then
+            echo "::notice::DECOMPDECOMP_DISPATCH_TOKEN is not set, so library-pin was not started for $TAG; its schedule will pin it later."
+            exit 0
+          fi
+          GH_TOKEN="$DISPATCH_TOKEN" gh workflow run library-pin --repo RetroReversing/decompdecomp --ref main \
+            || echo "::warning::could not start library-pin for $TAG (token expired or missing Actions: write?); its schedule will pin it later."
