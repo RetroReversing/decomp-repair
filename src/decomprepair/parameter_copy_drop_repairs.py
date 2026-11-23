@@ -40,16 +40,29 @@ def _parameters(part):
         return {}
     found = {}
     for text in signature[1].split(','):
-        match = re.fullmatch(rf'\s*({TYPE})\s+({IDENT})\s*', text)
+        match = re.fullmatch(rf'\s*({TYPE})((?:\s*\*)*)\s*\b({IDENT})\s*', text)
         if match:
-            found[match[2]] = _norm(match[1])
+            found[match[3]] = _norm(match[1]) + ' ' * bool(match[2]) + match[2].replace(' ', '').strip()
     return found
+
+
+def _assigned(body, local, copy):
+    """True when the local is written anywhere but its copy (`=`, `op=`, `++`, `--`)."""
+    for hit in re.finditer(rf'(?<![\w.>])(?<!->){local}\b', body):
+        if copy.start() <= hit.start() < copy.end():
+            continue
+        after, before = body[hit.end():hit.end() + 3], body[max(0, hit.start() - 2):hit.start()]
+        if re.match(r'\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|\s*(?:\+\+|--)', after) or before in ('++', '--'):
+            return True
+    return False
 
 
 def _singles(source, name):
     part = view(source, name)
-    if not part or re.search(r'\b(?:asm|__asm__|goto|setjmp|longjmp)\b|^\s*#', part.body, re.M):
+    if not part or re.search(r'\b(?:asm|__asm__|setjmp|longjmp)\b|^\s*#', part.body, re.M):
         return []
+    # a backward `goto` could run the copy again after the parameter changed: then only a local nothing else writes
+    jumps = re.search(r'\bgoto\b', part.body) is not None
     parameters = _parameters(part)
     if not parameters:
         return []
@@ -61,12 +74,15 @@ def _singles(source, name):
             continue
         if re.search(rf'(?<![\w.>])(?<!->){param}\b', body[:copy.start()] + body[copy.end():]):
             continue
-        if re.search(rf'&\s*{local}\b', body):
+        if re.search(rf'&\s*{local}\b', body) or (jumps and _assigned(body, local, copy)):
             continue
         declaration = None
         for decl in re.finditer(rf'\b({TYPE})\s+([^;(){{}}=\[\]]*?)\s*;', body):
             names = [n.strip() for n in decl[2].split(',')]
-            if local in names and _norm(decl[1]) == parameters[param] and decl.end() <= copy.start():
+            stars = re.fullmatch(rf'((?:\*\s*)*){re.escape(local)}', names[0]) if len(names) == 1 else None
+            kind = _norm(decl[1]) + (' ' + stars[1].replace(' ', '') if stars and stars[1] else '')
+            if (local in names and _norm(decl[1]) == parameters[param] or stars and kind == parameters[param]) \
+                    and decl.end() <= copy.start():
                 declaration = decl
         if not declaration:
             continue
@@ -78,7 +94,7 @@ def _singles(source, name):
         if before:
             continue
         names = [n.strip() for n in declaration[2].split(',')]
-        rest = [n for n in names if n != local]
+        rest = [n for n in names if n != local and re.sub(r'[\s*]', '', n) != local]
         edits = [(base + copy.start(), base + copy.end(), '')]
         edits.append((base + declaration.start(), base + declaration.end(),
                       f'{declaration[1]} {", ".join(rest)};' if rest else ''))
