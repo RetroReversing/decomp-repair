@@ -45,7 +45,9 @@ def _adjacent(source, part):
 
     The reading statement may only store: another call or step in it could swap order with E."""
     clean, base, result = part.clean, part.opening + 1, []
-    for decl in re.finditer(r'(?m)^([ \t]*)(\w+)\s*=\s*([^;{}=][^;{}]*);[ \t]*\n([ \t]*[^;{}\n]+;)', clean[base:part.end]):
+    # (the assignment may follow another statement on its line: `S; x = E;`, which edited sources and m2c's own
+    # `a = b; c = d;` lines have, and the line-start-only form skipped)
+    for decl in re.finditer(r'(?m)((?:^[ \t]*|(?<=;)[ \t]+))(\w+)\s*=\s*([^;{}=][^;{}]*);[ \t]*\n([ \t]*[^;{}\n]+;)', clean[base:part.end]):
         local, nxt = decl[2], decl[4]
         if not re.search(rf'^\s*[*\w\[\]().+\- >]*=\s*(?:\([^()]*\)\s*)?{local}\s*;$', nxt) or re.search(r'\w\s*\(\s*[^)]*\)\s*[^;]*\b' + local, nxt.split('=', 1)[0]):
             continue
@@ -58,7 +60,9 @@ def _adjacent(source, part):
         use = base + decl.start(4) + nxt.index(local, nxt.index('='))
         start, end = base + decl.start(), base + decl.end(3) + 1
         # drop the assignment (its line), then put E in the use; the declaration of `x` stays unused
-        text = edit(source, [(use, use + len(local), '(' + expression + ')'), (start, source.index('\n', end) + 1, '')])
+        mid_line = start > 0 and source[start - 1] != '\n'
+        text = edit(source, [(use, use + len(local), '(' + expression + ')'),
+                             (start, source.index('\n', end) + (0 if mid_line else 1), '')])
         result.append((FAMILY, text))
     return result
 
