@@ -41,3 +41,31 @@ def test_a_body_that_reads_the_default_first_is_left_alone():
 
 def test_every_family_is_named():
     assert set(repair.FAMILIES) >= {'default_into_else', 'else_into_default', 'default_into_then'}
+
+
+BLOCKED = '''void f(u8 *a, u16 *out, u16 *tbl) {
+  u16 v;
+  {
+    *tbl = 1;
+    v = 0x37;
+  }
+  if (((a[8] == 0) | (a[8] == 2)) == 0)
+  {
+    v = *(u16 *)(a + 4) * 2;
+  }
+  *out = v;
+}
+'''
+
+
+def test_a_default_that_ends_a_bare_block_moves_into_the_else_of_the_if_after_it():
+    out = dict((family, text) for family, text in repair.variants(BLOCKED, 'f'))
+    text = out['default_into_else']
+    assert text.index('else') > text.index('v = *(u16 *)(a + 4) * 2;') and text.count('v = 0x37;') == 1
+    assert text.index('v = 0x37;') > text.index('else')
+    assert text.index('*tbl = 1;') < text.index('if (')
+
+
+def test_a_default_at_the_end_of_a_loop_or_if_body_is_not_moved_out_of_it():
+    guarded = BLOCKED.replace('  {\n    *tbl = 1;', '  if (a[0])\n  {\n    *tbl = 1;')
+    assert repair.variants(guarded, 'f') == []

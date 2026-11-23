@@ -30,6 +30,21 @@ FAMILIES = (FAMILY, INVERSE, THEN)
 _DEFAULT = re.compile(r'(?P<x>[A-Za-z_]\w*) = (?P<d>-?(?:0[xX][0-9A-Fa-f]+|\d+)|[A-Za-z_]\w*);')
 
 
+def _test_after(body, i):
+    """The index of the `if (` line the default at `i` leads into: the next line, or the next after the `}` that closes
+    the bare block the default ends (a block of statements that always runs: `{ ...; x = 0; } if (c) { x = f(); }`)."""
+    if i + 1 >= len(body):
+        return None
+    if body[i + 1].stripped.startswith('if (') and i + 2 < len(body):
+        return i + 1
+    if body[i + 1].stripped == '}' and i + 2 < len(body) and body[i + 2].stripped.startswith('if ('):
+        first = block_start(body, i + 1)
+        before = body[first - 1].stripped if first else ''
+        if first and body[first].stripped == '{' and before.endswith((';', '{', '}')):
+            return i + 2
+    return None
+
+
 def variants(source, name):
     part = view(source, name)
     if not part:
@@ -38,25 +53,26 @@ def variants(source, name):
     out = []
     for i, line in enumerate(body):
         hit = _DEFAULT.fullmatch(line.stripped)
-        if hit and i + 2 < len(body) and body[i + 1].stripped.startswith('if (') and not body[i + 1].stripped.endswith(';'):
-            opening = block_open(body, i + 1)
+        j = _test_after(body, i) if hit else None
+        if hit and j and not body[j].stripped.endswith(';'):
+            opening = block_open(body, j)
             closing = block_end(body, opening) if opening is not None else None
             if closing is None or (closing + 1 < len(body) and body[closing + 1].stripped.startswith('else')):
                 continue
             inside = '\n'.join(l.text for l in body[opening + 1:closing])
-            if mentions(body[i + 1].text, hit['x']) or not re.search(rf'(?m)^\s*{re.escape(hit["x"])} =(?!=)', inside) \
+            if mentions(body[j].text, hit['x']) or not re.search(rf'(?m)^\s*{re.escape(hit["x"])} =(?!=)', inside) \
                     or reads_first(inside, hit['x']):
                 continue
-            indent = body[i + 1].indent
+            indent = body[j].indent
             arm = f'{indent}else\n{indent}{{\n{indent}  {line.stripped}\n{indent}}}\n'
             out.append((FAMILY, apply(source, [(line.start, line.end, ''), (body[closing].end, body[closing].end, arm)])))
-            test = re.fullmatch(r'if \((.*)\)', body[i + 1].stripped)
+            test = re.fullmatch(r'if \((.*)\)', body[j].stripped)
             inverse = negate(test[1]) if test else None
             if inverse:
                 text = ''.join(l.source + '\n' for l in body[opening + 1:closing])
                 whole = (f'{indent}if ({inverse})\n{indent}{{\n{indent}  {line.stripped}\n{indent}}}\n'
                          f'{indent}else\n{indent}{{\n{text}{indent}}}\n')
-                out.append((THEN, apply(source, [(line.start, line.end, ''), (body[i + 1].start, body[closing].end, whole)])))
+                out.append((THEN, apply(source, [(line.start, line.end, ''), (body[j].start, body[closing].end, whole)])))
         if line.stripped == 'else':
             opening = block_open(body, i)
             closing = block_end(body, opening) if opening is not None else None
