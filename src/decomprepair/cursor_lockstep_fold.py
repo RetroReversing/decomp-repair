@@ -167,8 +167,7 @@ def _statement_span(clean, start, stop):
 
 def _fold(clean, base, end, helpers, pointer):
     """The edits that fold the cursor `pointer` (a dict from `_cursors`) into the pointer it was cut from, or None."""
-    q, p, K = pointer['name'], pointer['base'], pointer['offset']
-    init = pointer['init']
+    q, init = pointer['name'], pointer['init']
     uses, steps = [], []
     for m in re.finditer(rf'(?<![\w.>]){re.escape(q)}\b', clean[base:end]):
         at = base + m.start()
@@ -219,7 +218,7 @@ def _writes(clean, name, lo, hi):
 
 
 def _lockstep(clean, base, helpers, pointer, uses, steps, region):
-    q, p, K = pointer['name'], pointer['base'], pointer['offset']
+    p, K = pointer['base'], pointer['offset']
     # q's own writes are only the steps; p's writes inside the region are exactly the paired increments
     paired = []
     writes = _writes(clean, p, region[0], region[1])
@@ -271,7 +270,7 @@ def _lockstep(clean, base, helpers, pointer, uses, steps, region):
 
 
 def _counter(clean, base, end, helpers, pointer, uses, blocks):
-    q, p, K = pointer['name'], pointer['base'], pointer['offset']
+    p, K = pointer['base'], pointer['offset']
     loops = [b for b in blocks if re.search(r'\bdo\s*$', clean[max(base, b[0] - 60):b[0]])
              and re.match(r'\s*while\b', clean[b[1]:b[1] + 40]) and all(b[0] < at and stop < b[1] for at, stop, _ in uses)]
     if not loops:
