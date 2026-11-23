@@ -65,3 +65,17 @@ def test_a_value_narrowed_twice_is_held_and_stored():
 def test_a_sign_extension_in_the_target_blocks_the_hold():
     asm = '  sh $a0, 0x20($s1)\n  sll $v0, $a0, 16\n  sra $a0, $v0, 16\n'
     assert not [t for family, t in nsw.variants(HOLD, 'f', asm=asm) if family == nsw.FAMILY_HOLD]
+
+
+def test_a_constant_word_store_the_target_stores_as_a_byte():
+    # A 1133-instruction effect spawner: `*((s32 *) (rec + 0x28)) = 0x80;` where the target has `sb` (6305 -> 6105); the
+    # same offset is a word in the flag update beside it, which stays.
+    source = ('void f(void *rec) {\n    *((s32 *) (((char *) rec) + 0x28)) = (s32) ((*((s32 *) (((char *) rec) + 0x28))) | 4);\n'
+              '    *((s32 *) (((char *) rec) + 0x28)) = 0x80;\n    *((s32 *) (((char *) rec) + 0x30)) = 0x80;\n}\n')
+    asm = 'glabel f\n  sb $v0, 0x28($s0)\n  sw $v0, 0x30($s0)\n'
+    out = [text for _family, text in nsw.variants(source, 'f', asm=asm)]
+    assert len(out) == 1
+    assert '*((u8 *) (((char *) rec) + 0x28)) = 0x80;' in out[0]
+    assert '*((s32 *) (((char *) rec) + 0x28)) = (s32)' in out[0] and '*((s32 *) (((char *) rec) + 0x30)) = 0x80;' in out[0]
+    # a value the byte cannot hold stays a word
+    assert nsw.variants(source.replace('= 0x80;\n    *((s32 *) (((char *) rec) + 0x30)) = 0x80;', '= 0x180;\n'), 'f', asm=asm) == []
