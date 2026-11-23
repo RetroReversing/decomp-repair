@@ -17,6 +17,7 @@ calls) read and written in one statement:
   `LV |= K;`                -> `LV = LV | K;`
 One child per site, one with every site of the function respelled.
 """
+import itertools
 import re
 
 from .arm_block_support import IDENT, NUMBER, brace_pairs, statements
@@ -109,6 +110,27 @@ def variants(source, name):
         result = edit(source, edits)
         if result != source and (FAMILY, result) not in out:
             out.append((FAMILY, result))
+    # one temporary for several sites, the other way: in a 534-instruction panel builder two of the three flag-word
+    # updates (the third's own temporary or the plain expression changed nothing) respelled through ONE shared temporary were
+    # 820 -> 660 where a temporary each (the all-sites child above) was 820; the shared name is one pseudo with every site's
+    # references, which is what changed the order of the registers around the calls (a hypothesis read from the dumps)
+    word = [number for number, (site, _) in enumerate(made) if site[0] == 'word']
+    if len(word) > 1:
+        shared = names[word[0]]
+        subsets = [word] + ([list(pair) for pair in itertools.combinations(word, 2)] if len(word) > 2 else [])
+        for subset in subsets:
+            types = {made[number][1][3] for number in subset}
+            if len(types) != 1:
+                continue
+            edits = []
+            for number in subset:
+                _, _, _, lv, mask, k, _ = made[number][0]
+                start, end = made[number][1][:2]
+                edits.append((start, end, f'{shared} = {lv}; {shared} &= {mask}; {shared} |= {k}; {lv} = {shared};'))
+            edits.append((decl_at, decl_at, f'{indent}{types.pop()} {shared};\n'))
+            result = edit(source, edits)
+            if result != source and (FAMILY, result) not in out:
+                out.append((FAMILY, result))
     return out
 
 
