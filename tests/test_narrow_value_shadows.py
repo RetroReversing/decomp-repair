@@ -1,5 +1,12 @@
 """A loop's 16-bit shadow of a value, a copy at the head of an arm, and a wide counter with a narrowed test."""
-from decomprepair.narrow_value_shadows import FAMILY_ARM, FAMILY_CAST, FAMILY_COUNTER, FAMILY_RETYPE, variants
+from decomprepair.narrow_value_shadows import (
+    FAMILY_ARM,
+    FAMILY_CAST,
+    FAMILY_CHAIN,
+    FAMILY_COUNTER,
+    FAMILY_RETYPE,
+    variants,
+)
 
 # A tile drawer (KMC GCC 2.7.2): `u16 i, j` counters, a position read through `(u16)` twice, two arms that read `x` often.
 SAVED = '''void f(s32 ox, s32 oy, Spr *p)
@@ -89,3 +96,37 @@ def test_a_local_that_is_stepped_or_has_its_address_taken_keeps_its_type():
 def test_s16_is_offered_when_the_function_casts_to_it():
     source = SAVED.replace('put(x * 4,', 'put((s16) (x * 4),', 1)
     assert any('s16 x;' in s for s in _of(FAMILY_RETYPE, source))
+
+
+NESTED = '''void f(s32 ox, Spr *p)
+{
+  s32 x, ly;
+  x = p->x + ox;
+  if (hires != 0)
+  {
+    if (p->flags & 4)
+      ly = 1;
+    else
+      ly = 2;
+    put(x * 4, ly, (x + p->w) * 4);
+  }
+  else
+  {
+    put(x * 4, 0, (x + p->w) * 4);
+  }
+}
+'''
+
+
+def test_the_copy_chain_gives_the_arm_two_copies_the_first_read_taking_the_second():
+    out = _of(FAMILY_CHAIN, NESTED)
+    assert len(out) == 1
+    assert 'x = p->x + ox; __repair_x_q = x;' in out[0]
+    assert 's32 __repair_x_q, __repair_x_arm;' in out[0]
+    assert '{ __repair_x_arm = __repair_x_q;' in out[0]
+    assert 'put(__repair_x_arm * 4, ly, (__repair_x_q + p->w) * 4);' in out[0]
+    assert 'put(x * 4, 0, (x + p->w) * 4);' in out[0]
+
+
+def test_an_arm_without_a_nested_conditional_gets_no_chain():
+    assert _of(FAMILY_CHAIN) == []
