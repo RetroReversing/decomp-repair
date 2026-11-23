@@ -59,3 +59,11 @@ def test_other_statements_are_left_alone():
 def test_the_module_declares_itself():
     from decomprepair import registry
     assert any(r.module == 'compound_operand_split' for r in registry.declared())
+
+
+def test_a_field_read_through_a_pointer_is_split_and_comes_first():
+    source = ('void f(Obj *o, f32 k) { f32 a; f32 b; f32 v; a = b * k; '
+              'v = ((Obj *) o)->speed / k; o->x = v + a; }')
+    found = [text for family, text in variants(source, 'f') if family == FAMILY]
+    assert 'v = ((Obj *) o)->speed;\n' in found[0] and 'v /= k;' in found[0]
+    assert not variants('void f(Obj *o, f32 k) { f32 v; v = o->a > k; }', 'f')
