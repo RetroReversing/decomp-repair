@@ -57,3 +57,25 @@ def test_nothing_without_a_two_arm_branch_or_when_the_inputs_change_first():
     assert _found(one_arm) == []
     changed = SOURCE.replace('    if (tag == 45) {', '    mask = mask + 1;\n    if (tag == 45) {', 1)
     assert _found(changed) == []
+
+
+ONE_ARM = """void bump(char *base, Def *def, s32 idx) {
+    char *rec;
+    rec = base + (idx * 8);
+    if (def->limit != 1) {
+        rec[0x1FD] += 1;
+        play(0x11D);
+    }
+}
+"""
+
+
+def test_a_product_used_only_in_a_one_arm_if_is_sunk_into_it():
+    found = [_flat(text) for text in _found(ONE_ARM, 'bump')]
+    assert any('if (def->limit != 1) { char *rec; rec = base + (idx * 8); rec[0x1FD] += 1;' in text for text in found)
+    assert all('rec = base + (idx * 8); if' not in text for text in found)
+
+
+def test_a_dereference_is_still_refused():
+    assert _found(ONE_ARM.replace('rec = base + (idx * 8);', 'rec = *base + idx;').replace('char *rec;', 's32 rec;'),
+                  'bump') == []
