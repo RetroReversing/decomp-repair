@@ -56,3 +56,8 @@ def test_the_local_read_after_the_store_is_not_replaced():
 def test_an_arm_that_reads_the_local_in_its_operand_is_left_alone():
     chained = SOURCE.replace('offset -= quarter;', 'offset -= offset >> 1;')
     assert variants(chained, 'settle') == []
+
+
+def test_a_member_with_the_locals_name_is_not_a_read_of_the_local():
+    later = SOURCE.replace('        w->offset = offset;\n', '        w->offset = offset;\n        use(w->offset);\n')
+    assert variants(later, 'settle') != []

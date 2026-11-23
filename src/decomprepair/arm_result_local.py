@@ -36,6 +36,11 @@ def _declaration(part, name):
     return (base + found.start(), base + found.end(), re.sub(r'\s+', ' ', found['type'])) if found else None
 
 
+def _names(text, name):
+    """The occurrences of the local `name`, not the members that happen to be called that."""
+    return [m for m in re.finditer(rf'\b{re.escape(name)}\b', text) if not re.search(r'(?:->|\.)\s*$', text[:m.start()])]
+
+
 def _operand(x):
     x = x.strip()
     return x if re.fullmatch(rf'-?(?:{IDENT}|\d+)', x) else f'({x})'
@@ -98,9 +103,9 @@ def _children(source, name):
             continue
         # `v` is not read after the store (a write is fine), nor inside another arm's expression
         later = clean[store.end():part.end]
-        if any(not re.match(r'\s*=(?!=)', later[m.end():]) for m in re.finditer(rf'\b{re.escape(v)}\b', later)):
+        if any(not re.match(r'\s*=(?!=)', later[m.end():]) for m in _names(later, v)):
             continue
-        if any(re.search(rf'\b{re.escape(v)}\b', arm['x']) for _, arm in arms):
+        if any(_names(arm['x'], v) for _, arm in arms):
             continue
         edits = []
         for _, arm in arms:
