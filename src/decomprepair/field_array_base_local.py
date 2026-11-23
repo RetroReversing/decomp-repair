@@ -25,6 +25,7 @@ FAMILIES = (FAMILY,)
 LIMIT = 6
 
 IDENT = r'[A-Za-z_]\w*'
+MEMBER = rf'{IDENT}(?:\s*\.\s*{IDENT})*'  # a variable or a union/record member of one
 NUM = r'(?:0[xX][0-9a-fA-F]+|\d+)'
 SIZE = {'s16': 2, 'u16': 2, 'short': 2, 's32': 4, 'u32': 4, 'f32': 4, 'int': 4}
 _HEAD = re.compile(rf'\*\s*\(\s*(?P<type>{"|".join(SIZE)})\s*\*\s*\)\s*\(')
@@ -47,7 +48,7 @@ def _parts(inner, size):
         return None
     base = offset = index = None
     for term in terms:
-        hit = re.fullmatch(rf'\(\s*char\s*\*\s*\)\s*(?P<b>{IDENT})', term)
+        hit = re.fullmatch(rf'\(\s*char\s*\*\s*\)\s*(?P<b>{MEMBER})', term)
         if hit and base is None:
             base = hit['b']
             continue
@@ -59,7 +60,7 @@ def _parts(inner, size):
             index = hit['i'] or hit['j']
             continue
         return None
-    return (base, index, offset) if None not in (base, index, offset) else None
+    return (re.sub(r'\s+', '', base), index, offset) if None not in (base, index, offset) else None
 
 
 def variants(source, name):
@@ -78,7 +79,7 @@ def variants(source, name):
             continue
         size = SIZE[hit['type']]
         parts = _parts(clean[hit.end():stop - 1], size)
-        if not parts or re.search(rf'\b{parts[0]}\s*(?:=(?!=)|\+\+|--)', clean[hit.start():stop]):
+        if not parts or re.search(rf'{re.escape(parts[0])}\s*(?:=(?!=)|\+\+|--)', clean[hit.start():stop]):
             continue
         at = _statement_start(clean, hit.start(), opening)
         if re.search(r'\b(?:for|while|do|return|goto|else|switch|case)\b', clean[at:hit.start()]):

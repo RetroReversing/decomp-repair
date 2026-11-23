@@ -58,3 +58,8 @@ def test_the_offset_is_also_offered_above_the_array_pointer_lines_of_the_same_st
     found = texts(source)
     assert any("        off1 = idx(kind) * 8;\n        field1 = (s16 *)((char *)p + 0x1BC);\n        sprintf" in t for t in found)
     assert any('field1 = (s16 *)((char *)p + 0x1BC);\n        off1 = idx(kind) * 8;' in t for t in found)
+
+
+def test_a_member_of_a_variable_is_a_base_too():
+    source = SOURCE.replace('((s8 *)p)[idx(kind) * 8 + 0x1FF]', '((s8 *)store.pointer)[idx(kind) * 8 + 0x1FF]')
+    assert any('*(s8 *)((char *)store.pointer + off1 + 0x1FF)' in t for t in texts(source))

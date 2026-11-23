@@ -26,9 +26,10 @@ FAMILIES = (FAMILY,)
 LIMIT = 6
 
 IDENT = r'[A-Za-z_]\w*'
+MEMBER = rf'{IDENT}(?:\s*\.\s*{IDENT})*'  # a variable or a union/record member of one
 NUM = r'(?:0[xX][0-9a-fA-F]+|\d+)'
 EXPR = rf'(?:{IDENT}\s*\([^()]*\)|[\w.]+(?:->\w+)*)'
-_SUM = re.compile(rf'\*\s*\(\s*(?P<type>[su](?:8|16|32)|f32)\s*\*\s*\)\s*\(\s*\(\s*char\s*\*\s*\)\s*(?P<base>{IDENT})\s*\+\s*'
+_SUM = re.compile(rf'\*\s*\(\s*(?P<type>[su](?:8|16|32)|f32)\s*\*\s*\)\s*\(\s*\(\s*char\s*\*\s*\)\s*(?P<base>{MEMBER})\s*\+\s*'
                   rf'\(?\s*(?P<expr>{EXPR})\s*\*\s*(?P<scale>{NUM})\s*\)?\s*\+\s*(?P<offset>{NUM})\s*\)')
 _CALL = re.compile(rf'\b(?!(?:if|while|for|switch|sizeof|return)\b)({IDENT})\s*\(')
 
@@ -47,9 +48,9 @@ def _sites(clean, opening, end):
     found = []
     for hit in _SUM.finditer(clean, opening, end):
         found.append((hit.start(), hit.end(), hit['type'], hit['base'], hit['expr'], hit['scale'], hit['offset']))
-    for hit in re.finditer(rf'\(\s*\(\s*(?P<type>s8|u8|char)\s*\*\s*\)\s*(?P<base>{IDENT})\s*\)\s*\[\s*(?P<expr>{EXPR})\s*\*\s*(?P<scale>{NUM})\s*\+\s*(?P<offset>{NUM})\s*\]', clean[opening:end]):
+    for hit in re.finditer(rf'\(\s*\(\s*(?P<type>s8|u8|char)\s*\*\s*\)\s*(?P<base>{MEMBER})\s*\)\s*\[\s*(?P<expr>{EXPR})\s*\*\s*(?P<scale>{NUM})\s*\+\s*(?P<offset>{NUM})\s*\]', clean[opening:end]):
         found.append((opening + hit.start(), opening + hit.end(), hit['type'], hit['base'], hit['expr'], hit['scale'], hit['offset']))
-    for hit in re.finditer(rf'\(\s*(?P<type>s8|u8|char)\s*\*\s*\)\s*(?P<base>{IDENT})\s*\[\s*(?P<expr>{EXPR})\s*\*\s*(?P<scale>{NUM})\s*\+\s*(?P<offset>{NUM})\s*\]', clean[opening:end]):
+    for hit in re.finditer(rf'\(\s*(?P<type>s8|u8|char)\s*\*\s*\)\s*(?P<base>{MEMBER})\s*\[\s*(?P<expr>{EXPR})\s*\*\s*(?P<scale>{NUM})\s*\+\s*(?P<offset>{NUM})\s*\]', clean[opening:end]):
         found.append((opening + hit.start(), opening + hit.end(), hit['type'], hit['base'], hit['expr'], hit['scale'], hit['offset']))
     return sorted(set(found))
 
@@ -77,12 +78,12 @@ def variants(source, name):
         at = _statement_start(clean, start, opening)
         if re.search(r'\b(?:for|while|do|return|goto|else|switch|case)\b', clean[at:start]):
             continue
-        if re.search(rf'\b{base}\s*(?:=(?!=)|\+\+|--)', clean[start:stop]):
+        if re.search(rf'{re.escape(base)}\s*(?:=(?!=)|\+\+|--)', clean[start:stop]):
             continue
         calls = _CALL.findall(clean[at:start])
         if '(' in expr and len(calls) > 1:
             continue
-        sites.append((start, stop, type_, base, expr.strip(), scale, offset, at))
+        sites.append((start, stop, type_, re.sub(r'\s+', '', base), expr.strip(), scale, offset, at))
     if not sites:
         return []
 

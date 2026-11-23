@@ -50,3 +50,9 @@ def test_it_is_declared_for_every_lane():
     declared = registry.get('field_array_base_local')
     assert declared is not None and registry.problems(declared) == []
     assert registry.run('field_array_base_local', source=SOURCE, name='f')
+
+
+def test_a_member_of_a_variable_is_a_base_too():
+    source = SOURCE.replace('(char *)p + (kind * 2) + 0x1BC', '(char *)store.pointer + (kind * 2) + 0x1BC')
+    found = texts(source)
+    assert found and 'field1 = (s16 *)((char *)store.pointer + 0x1BC);' in found[0]
