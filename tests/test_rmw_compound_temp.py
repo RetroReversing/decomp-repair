@@ -30,9 +30,16 @@ def test_each_site_alone_and_every_site_together():
 
 def test_the_temporary_word_form_keeps_one_assignment_per_step():
     texts = _texts()
-    one = [t for t in texts if 'rmw1 = *(s32 *) ((char *) m + 0x2C); rmw1 &= ~0xFC; rmw1 |= 0x1C;' in t]
+    one = [t for t in texts if 'rmw3 = *(s32 *) ((char *) m + 0x2C); rmw3 &= ~0xFC; rmw3 |= 0x1C;' in t]
     assert len(one) == 2
-    assert all('  s32 rmw1;' in t for t in one)
+    assert all('  s32 rmw3;' in t for t in one)
+
+
+def test_every_word_site_gets_a_temporary_of_its_own():
+    source = SOURCE.replace('  w = *(s32 *) ((char *) m + 0x28);\n  w = (w & ~0xFC) | 0x10;\n  *(s32 *) ((char *) m + 0x28) = w;\n',
+                            '  *(s32 *) ((char *) m + 0x28) = (*(s32 *) ((char *) m + 0x28) & ~0xFC) | 0x10;\n')
+    both = [t for t in _texts(source) if 'rmw2 &= ~0xFC' in t and 'rmw3 &= ~0xFC' in t]
+    assert len(both) == 1 and '  s32 rmw2;' in both[0] and '  s32 rmw3;' in both[0]
 
 
 def test_the_flag_or_becomes_a_plain_read_or_write():

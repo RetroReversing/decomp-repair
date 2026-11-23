@@ -42,14 +42,6 @@ def _type(lvalue):
     return name if re.fullmatch(r'(?:u|s)(?:8|16|32)', name) else None
 
 
-def _fresh(clean):
-    for number in range(1, 20):
-        name = f'rmw{number}'
-        if not re.search(rf'\b{name}\b', clean):
-            return name
-    return None
-
-
 def variants(source, name):
     part = view(source, name)
     if not part:
@@ -81,11 +73,16 @@ def variants(source, name):
                         and _plain(m1['lv'])):
                     sites.append(('temp', b[0], b[1], m1['t'], m2['mask'].strip(), m2['k'].strip(), None))
     out = []
-    tmp = _fresh(clean)
     decl_at = clean.find('\n', part.opening) + 1
     indent = re.match(r'[ \t]*', source[decl_at:])[0] or '  '
+    names = []
+    for number in range(1, len(sites) + 1):
+        fresh = f'rmw{number}'
+        if re.search(rf'\b{fresh}\b', clean):
+            return []
+        names.append(fresh)
 
-    def replacement(site):
+    def replacement(site, tmp):
         kind, start, end, lv, mask, k, _ = site
         if kind == 'word':
             return (start, end, f'{tmp} = {lv}; {tmp} &= {mask}; {tmp} |= {k}; {lv} = {tmp};', _type(lv))
@@ -93,23 +90,24 @@ def variants(source, name):
             return (start, end, f'{lv} = {lv} | {k};', None)
         return (start, end, f'{lv} &= {mask}; {lv} |= {k};', None)
 
-    if not tmp:
-        return []
-    made = [(site, replacement(site)) for site in sites]
-    for site, (start, end, text, type_) in made:
+    # one temporary per site: a name shared by two sites is one pseudo with both lifetimes (370 against 180 on the
+    # spawner's two marker blocks, each respelled with its own)
+    made = [(site, replacement(site, names[number])) for number, site in enumerate(sites)]
+    for number, (site, (start, end, text, type_)) in enumerate(made):
         edits = [(start, end, text)]
         if type_:
-            edits.append((decl_at, decl_at, f'{indent}{type_} {tmp};\n'))
+            edits.append((decl_at, decl_at, f'{indent}{type_} {names[number]};\n'))
         result = edit(source, edits)
         if result != source and (FAMILY, result) not in out:
             out.append((FAMILY, result))
     if len(made) > 1:
-        edits = [(start, end, text) for _, (start, end, text, _) in made]
-        types = {type_ for _, (_, _, _, type_) in made if type_}
-        for type_ in sorted(types):
-            edits.append((decl_at, decl_at, f'{indent}{type_} {tmp};\n'))
+        edits = []
+        for number, (_, (start, end, text, type_)) in enumerate(made):
+            edits.append((start, end, text))
+            if type_:
+                edits.append((decl_at, decl_at, f'{indent}{type_} {names[number]};\n'))
         result = edit(source, edits)
-        if result != source and len(types) <= 1 and (FAMILY, result) not in out:
+        if result != source and (FAMILY, result) not in out:
             out.append((FAMILY, result))
     return out
 
