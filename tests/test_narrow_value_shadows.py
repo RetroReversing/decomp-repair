@@ -1,5 +1,5 @@
 """A loop's 16-bit shadow of a value, a copy at the head of an arm, and a wide counter with a narrowed test."""
-from decomprepair.narrow_value_shadows import FAMILY_ARM, FAMILY_CAST, FAMILY_COUNTER, variants
+from decomprepair.narrow_value_shadows import FAMILY_ARM, FAMILY_CAST, FAMILY_COUNTER, FAMILY_RETYPE, variants
 
 # A tile drawer (KMC GCC 2.7.2): `u16 i, j` counters, a position read through `(u16)` twice, two arms that read `x` often.
 SAVED = '''void f(s32 ox, s32 oy, Spr *p)
@@ -70,3 +70,22 @@ def test_no_loop_no_counter_child():
 
 def test_unknown_function_has_no_children():
     assert variants(SAVED, 'missing') == []
+
+
+def test_a_wide_local_that_only_holds_sums_is_a_child_declared_u16():
+    out = _of(FAMILY_RETYPE)
+    assert any('u16 x;' in s and 's32 y, ly;' in s for s in out)
+    assert any('u16 y;' in s and 's32 x, ly;' in s for s in out)
+    assert all('s16 ' not in s for s in out)
+
+
+def test_a_local_that_is_stepped_or_has_its_address_taken_keeps_its_type():
+    stepped = SAVED.replace('x = p->x + ox + p->w * i;', 'x = p->x + ox + p->w * i;\n      x++;')
+    assert not any('u16 x;' in s for s in _of(FAMILY_RETYPE, stepped))
+    taken = SAVED.replace('put(x * 4,', 'g(&x); put(x * 4,')
+    assert not any('u16 x;' in s for s in _of(FAMILY_RETYPE, taken))
+
+
+def test_s16_is_offered_when_the_function_casts_to_it():
+    source = SAVED.replace('put(x * 4,', 'put((s16) (x * 4),', 1)
+    assert any('s16 x;' in s for s in _of(FAMILY_RETYPE, source))

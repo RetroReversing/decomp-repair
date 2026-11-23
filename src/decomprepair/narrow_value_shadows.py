@@ -17,6 +17,12 @@ and a plain spelling folds away:
                        The counter itself stays unextended (the target multiplies by it directly and only the test
                        narrows it), where a `u16` counter is extended before every use.
 
+  wide_local_to_halfword  `s32 tx; ... tx = a + b * i;` -> `u16 tx;`
+                       A wide local that only holds a sum or product, declared 16-bit: the expression is evaluated in
+                       HImode, so a loop counter it multiplies by is read unextended (no `andi`), as the target does
+                       (`mult w, i` on the raw counter), and the copies of it are HImode moves. 2700 -> 2010 on the
+                       sprite drawer (a `u16` position), and 2175 -> 1885 with its arm-head copy typed `u16` too.
+
 Children carry the family name; only integer locals are rewritten and the original statements are untouched except for the
 read names. The candidate is never a verdict: the judge decides.
 """
@@ -28,7 +34,8 @@ from .csource import _blank, find
 FAMILY_CAST = 'narrow_cast_shadow'
 FAMILY_ARM = 'arm_head_copy'
 FAMILY_COUNTER = 'counter_cast_test'
-FAMILIES = (FAMILY_CAST, FAMILY_ARM, FAMILY_COUNTER)
+FAMILY_RETYPE = 'wide_local_to_halfword'
+FAMILIES = (FAMILY_CAST, FAMILY_ARM, FAMILY_COUNTER, FAMILY_RETYPE)
 _ID = r'[A-Za-z_]\w*'
 _WIDE = ('s32', 'u32', 'int', 'unsigned int', 'signed int', 'long', 'unsigned long')
 _NARROW = ('u16', 's16', 'u8', 's8')
@@ -205,13 +212,48 @@ def _counter_children(source, clean, opening, end):
     return out
 
 
+def _redeclare(text, declaration, names, kind):
+    """`text` with `names` split out of the declaration statement matched by `declaration` and declared `kind`."""
+    parts = [p.strip() for p in declaration.group(3).split(',')]
+    keep = [p for p in parts if p not in names]
+    moved = [p for p in parts if p in names]
+    lines = ([f'{declaration.group(1)}{declaration.group(2).strip()} {", ".join(keep)};'] if keep else []) + [f'{declaration.group(1)}{kind} {", ".join(moved)};']
+    return f'{text[:declaration.start()]}{chr(10).join(lines)}{text[declaration.end():]}'
+
+
+def _retype_children(source, clean, opening, end):
+    """One child per wide local that only ever holds an arithmetic result: declared `u16` (and `s16` when the code casts to it)."""
+    declarations = {}
+    for m in _DECLARATION.finditer(clean, opening, end):
+        if m.group(2).strip() in _WIDE:
+            for part in m.group(3).split(','):
+                if re.fullmatch(_ID, part.strip()):
+                    declarations[part.strip()] = m
+    out = []
+    for v, declaration in declarations.items():
+        body = clean[declaration.end():end]
+        n = re.escape(v)
+        assigned = [m.group(1) for m in re.finditer(rf'(?<![\w.>]){n}\s*=(?!=)([^;{{}}]*);', body)]
+        if not assigned or len(_reads(body, v)) < len(assigned) + 2:
+            continue
+        # every assignment is arithmetic, and nothing steps, compounds or takes the address of the local
+        if any(not re.search(r'[-+*]|<<', a) or re.search(r'\?|==|!=|<=|>=|&&|\|\|', a) for a in assigned):
+            continue
+        if re.search(rf'&\s*{n}\b|(?:\+\+|--)\s*{n}\b|(?<![\w.>]){n}\s*(?:\+\+|--|[-+*/%&|^]=|<<=|>>=)', body):
+            continue
+        kinds = ['u16'] + (['s16'] if re.search(r'\(\s*s16\s*\)', body) else [])
+        for kind in kinds:
+            out.append((FAMILY_RETYPE, _redeclare(source, declaration, {v}, kind)))
+    return out
+
+
 def variants(source, name):
     found = _body(source, name)
     if not found:
         return []
     clean, opening, end = found
     out = []
-    for build in (_cast_children, _arm_children, _counter_children):
+    for build in (_cast_children, _arm_children, _counter_children, _retype_children):
         out.extend(build(source, clean, opening, end))
     return out[:_MAX_CHILDREN]
 
