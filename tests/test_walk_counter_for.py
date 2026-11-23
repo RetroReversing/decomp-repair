@@ -141,3 +141,39 @@ def test_counters_are_merged_on_a_source_whose_loops_are_already_for_loops():
     assert 'u32 off;' in first and 'u32 k;' in first  # the first step's child keeps a counter per loop
     again = [_flat(text) for family, text in variants(first, 'walk') if family == MERGE]
     assert again and 'u32 off;' not in again[-1] and 'u32 k;' not in again[-1]
+
+
+MID_STEP = """void voices(void *rec, s32 count)
+{
+    s32 i;
+    s32 ch;
+    void *p;
+    p = rec;
+    if (p != NULL) {
+        i = 0;
+        do {
+            ch = i & 0xFF;
+            put(7, ch, *((u8 *) (((char *) p) + 5)));
+            i += 1;
+            put(10, ch, *((u8 *) (((char *) p) + 6)));
+            put(91, ch, *((u8 *) (((char *) p) + 7)));
+            p += 8;
+        } while (i < 16);
+    }
+}
+"""
+
+
+def test_a_counter_stepped_among_the_calls_and_a_companion_read_after_it_is_still_a_counted_loop():
+    children = [c for f, c in variants(MID_STEP, 'voices') if f == FAMILY]
+    assert children
+    child = children[0]
+    assert 'p += 8;' not in child and 'i += 1;' not in child
+    assert '(p + i * 8)' in child
+    assert re.search(r'for \(; i < 16; i\+\+\)', child)
+    assert 'p = rec;' in child  # the NULL test above the loop still reads it
+
+
+def test_a_companion_read_after_its_own_step_is_left_alone():
+    source = MID_STEP.replace('            p += 8;\n', '            p += 8;\n            put(92, ch, *((u8 *) (((char *) p) + 0)));\n')
+    assert not [c for f, c in variants(source, 'voices') if f == FAMILY]
