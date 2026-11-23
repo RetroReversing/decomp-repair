@@ -12,7 +12,12 @@ asks `registry.declared()` and runs each entry with only the context it says it 
         "order": 100,                            # lower runs first, default 1000 (ties: the module's name)
         "lanes": ("draft", "beam", "local"),     # where it runs (the default is all three)
         "archs": ("mips",),                      # optional: only for these processors
+        "directives": True,                      # optional: it reads the function's own `#define` lines
     }
+
+`directives`: a caller that sees a `#` inside the function hands the draft to a masking path (preprocessor lines blanked,
+so nothing a module reads is a macro). A module that reads those lines themselves (a hand-written `#define` that names a
+stack slot) declares `directives` and is also run on the function exactly as written, in the draft lane only.
 
 `needs` are the `variants` parameter names the caller can supply, a subset of CONTEXT: `source` and `name` always,
 and `header`, `arch`, `asm` (the target's assembly) and `flags` (the compiler's flags) when wanted. Each is passed by
@@ -47,6 +52,7 @@ class Repair:
     order: int
     lanes: tuple
     archs: tuple
+    directives: bool = False
 
     def runs_in(self, lane, arch=None):
         return lane in self.lanes and (not self.archs or arch is None or arch in self.archs)
@@ -70,6 +76,7 @@ def _make(module_name, declared):
         order=declared.get('order', DEFAULT_ORDER),
         lanes=tuple(declared.get('lanes', LANES)),
         archs=tuple(declared.get('archs', ())),
+        directives=bool(declared.get('directives', False)),
     )
 
 
