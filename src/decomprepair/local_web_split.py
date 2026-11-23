@@ -172,7 +172,7 @@ def _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels):
         for k in members:
             a = assigns[k]
             body = clean[a['stmt_end']:a['scope_end']]
-            if re.search(r'\bgoto\b', body) or GOTO_LABEL.search(body):
+            if GOTO_LABEL.search(body) or not _leaves_forward(clean, body, var, a['scope_end'], end):
                 ok = False
             for q in (m.start() for m in LABEL.finditer(clean, a['stmt_end'], a['scope_end'])):
                 if not any(b0 > a['stmt_end'] and q < b1 <= a['scope_end'] for b0, b1 in switches):
@@ -182,6 +182,22 @@ def _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels):
         result.append((sorted(members, key=lambda k: assigns[k]['at']), edits, ok, min(assigns[k]['at'] for k in members)))
     result.sort(key=lambda w: w[3])
     return result
+
+
+def _leaves_forward(clean, body, var, scope_end, end):
+    """True when the web has no `goto`, or only gotos to a label that lies after it where `var` is never mentioned
+    again: the value cannot flow along the jump, so the web is as closed as one that ends in `return`. (A switch
+    case that ends `goto block_66;` for the common exit, the exit reading none of the arms' scratch locals.)"""
+    names = re.findall(r'\bgoto\s+([A-Za-z_]\w*)\s*;', body)
+    if len(names) != len(re.findall(r'\bgoto\b', body)):
+        return False
+    for label in set(names):
+        where = re.search(r'(?m)^[ \t]*' + re.escape(label) + r'[ \t]*:(?!:)', clean[scope_end:end])
+        if not where:
+            return False
+        if _mentions(var).search(clean, scope_end + where.start(), end):
+            return False
+    return True
 
 
 def _apply(source, clean, plans, drop_register, taken):
