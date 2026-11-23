@@ -1,4 +1,6 @@
 """The other polarity of a branch: bit tests, `!` and m2c's goto-tail `if`."""
+import re
+
 from decomprepair import branch_polarity_repairs as b
 
 SWAP = '''void f(u16 *p, u8 *q) {
@@ -63,3 +65,60 @@ def test_left_alone():
     assert b.variants(SWAP.replace('p[0] & 0x10', 'p[0] == 4'), 'f') == []
     assert b.variants(SWAP.replace('p[0] & 0x10', 'g(p)'), 'f') == []
     assert not any('if (p[0] & 0x10)' in o for _, o in b.variants(GOTO.replace('    q[2] = 255;\n', '    M:\n    q[2] = 255;\n'), 'f'))
+
+
+LOOPS = '''float g(float);
+int f(float t, float u, float *a, int n)
+{
+  int i;
+  int k;
+  i = 0;
+  do {
+    if (g(t) < 1.0f) {
+      if (!(t < 0.0f))
+      {
+        a[0] = t;
+        goto next;
+      }
+      if (a[2] > 0.0f)
+      {
+        return 1;
+      }
+      goto next;
+    }
+    next:
+    i++;
+  } while (i < n);
+  k = 0;
+  do {
+    if (g(u) < 1.0f) {
+      if (!(u < 0.0f))
+      {
+        a[1] = u;
+        goto again;
+      }
+      if (a[3] > 0.0f)
+      {
+        return 1;
+      }
+      goto again;
+    }
+    again:
+    k++;
+  } while (k < n);
+  return 0;
+}
+'''
+
+
+def test_like_shaped_goto_tails_in_two_loops_are_flipped_together_first():
+    children = [text for _, text in b.variants(LOOPS, 'f')]
+    both = re.sub(r'\s+', ' ', children[0])
+    assert 'if (t < 0.0f)' in both and 'if (u < 0.0f)' in both and '!(' not in both
+    assert sum(1 for text in children[1:] if '!(t < 0.0f)' not in text and '!(u < 0.0f)' in text) == 1
+
+
+def test_every_if_is_read_in_a_long_function():
+    filler = ''.join('  if (n == %d) { a[0] = %d.0f; }\n' % (i, i) for i in range(30))
+    long = LOOPS.replace('  int k;\n', '  int k;\n' + filler, 1)
+    assert any('if (t < 0.0f)' in text and 'if (u < 0.0f)' in text for _, text in b.variants(long, 'f'))
