@@ -50,3 +50,13 @@ def test_the_flag_or_becomes_a_plain_read_or_write():
 def test_a_side_effect_in_the_field_is_left_alone():
     source = SOURCE.replace('*(u16 *) ((char *) m + 0x1E) |= 2;', 'tab[n++] |= 2;')
     assert not any('n++' in t and '= tab[n++] | 2' in t for t in _texts(source))
+
+
+def test_two_word_sites_are_also_offered_through_one_shared_temporary():
+    source = SOURCE.replace('  w = *(s32 *) ((char *) m + 0x28);\n  w = (w & ~0xFC) | 0x10;\n  *(s32 *) ((char *) m + 0x28) = w;\n',
+                            '  *(s32 *) ((char *) m + 0x28) = (*(s32 *) ((char *) m + 0x28) & ~0xFC) | 0x10;\n')
+    shared = [text for text in _texts(source) if text.count('rmw2 = ') == 2 and 'rmw3' not in text]
+    assert len(shared) == 1
+    assert shared[0].count('s32 rmw2;') == 1
+    assert 'rmw2 &= ~0xFC; rmw2 |= 0x10; *(s32 *) ((char *) m + 0x28) = rmw2;' in shared[0]
+    assert 'rmw2 &= ~0xFC; rmw2 |= 0x1C; *(s32 *) ((char *) m + 0x2C) = rmw2;' in shared[0]
