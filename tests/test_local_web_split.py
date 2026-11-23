@@ -166,3 +166,42 @@ def test_loop_around_inner_assignment_merges_webs():
 
 def test_declared_for_the_registry():
     assert any(r.module == 'local_web_split' for r in declared())
+
+
+GOTO_EXIT = '''void h(s32 mode, u16 *rec, u16 *tab)
+{
+    s32 scratch;
+    s32 sum;
+
+    switch (mode) {
+    case 0:
+        scratch = rec[1];
+        sum = tab[scratch * 2] + tab[scratch];
+        if (sum > 3) {
+            rec[2] = sum;
+        }
+        break;
+    case 2:
+        if (rec[0] != 0) {
+            scratch = rec[3];
+            tab[scratch * 2] = tab[scratch * 2] + 1;
+            rec[4] = tab[scratch];
+            goto exit;
+        }
+        return;
+    }
+    rec[5] = 1;
+exit:
+    done(rec);
+}
+'''
+
+
+def test_a_web_that_ends_in_a_goto_past_every_mention_is_split():
+    texts = [text for label, text in w.variants(GOTO_EXIT, 'h') if label == w.FAMILY]
+    assert texts and any('scratch_1' in text and 'scratch_2' in text for text in texts)
+
+
+def test_a_web_whose_goto_lands_where_the_local_is_read_stays():
+    reads = GOTO_EXIT.replace('    done(rec);', '    done(rec, scratch);')
+    assert not [t for label, t in w.variants(reads, 'h') if label == w.FAMILY and 'scratch_2' in t]
