@@ -87,6 +87,21 @@ def _flat(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def _arm(source, indent, label, body):
+    code = source[body[0]:body[1]].strip()
+    return f'{indent}  {label}\n{indent}    {code}\n{indent}    break;\n'
+
+
+def _build(source, variable, cases, labels, default, indent):
+    """The `switch` text: the cases in value order, then the labels of the low values and `default:`."""
+    default_label = ''.join(f'case {v}:\n{indent}  ' for v in labels)
+    lines = ''.join(_arm(source, indent, f'case {value:#x}:' if abs(value) > 9 else f'case {value}:', body)
+                    for value, body in cases)
+    return (f'switch ({variable})\n{indent}{{\n{lines}'
+            f'{indent}  {default_label}default:\n{indent}    {source[default[0]:default[1]].strip()}\n'
+            f'{indent}    break;\n{indent}}}')
+
+
 def variants(source, name):
     """Proposals: each qualifying chain as a `switch`, with the `case v:` labels first and without them second."""
     span = find(source, name)
@@ -125,19 +140,9 @@ def variants(source, name):
         if limit <= 0 or limit > LABELS + 1:
             labels = []
 
-        def arm(label, body):
-            code = source[body[0]:body[1]].strip()
-            return f'{indent}  {label}\n{indent}    {code}\n{indent}    break;\n'
-
-        def build(with_labels):
-            default_label = ''.join(f'case {v}:\n{indent}  ' for v in labels) if with_labels else ''
-            lines = ''.join(arm(f'case {value:#x}:' if abs(value) > 9 else f'case {value}:', body) for value, body in cases)
-            return (f'switch ({variable})\n{indent}{{\n{lines}'
-                    f'{indent}  {default_label}default:\n{indent}    {source[default[0]:default[1]].strip()}\n'
-                    f'{indent}    break;\n{indent}}}')
-
         for with_labels in ((True, False) if labels else (False,)):
-            out.append(source[:hit.start()] + build(with_labels) + source[end:])
+            built = _build(source, variable, cases, labels if with_labels else [], default, indent)
+            out.append(source[:hit.start()] + built + source[end:])
     return [(FAMILY, text) for text in dict.fromkeys(out)][:2]
 
 
