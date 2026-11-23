@@ -8,6 +8,11 @@ lui $a3,0x7F; j L2; move $a0,$s6; L: move $a0,$s6` in the target and fell straig
 an `else` block whose only insn the delay slot of the first test had taken. The default written as `else { a3 = 0; }`
 (and the same for a second default two tests earlier) made the function exact; each alone left it at 335 / 400.
 
+A default that is a small expression with no call (`len = n * 4;` before `if (n > 0x100) { len = 0x400; }`, a KMC or IDO
+loop-bound clamp: `if (n > 0x100) { len = 0x400; } else { len = n * 4; }` is the branch layout of the target, the
+default before the test is not) takes the same moves as `default_expression_into_else` and `default_expression_into_then`,
+when the test has no call either and the arm sets the local on a line of its own outer level.
+
 Both directions: the default of a local moved into an `else` that the `if` doesn't have yet (the body must assign the
 local before reading it), and a lone `else { x = default; }` moved up in front of its `if`.
 
@@ -26,8 +31,13 @@ from .pattern_repairs import negate
 FAMILY = 'default_into_else'
 INVERSE = 'else_into_default'
 THEN = 'default_into_then'
-FAMILIES = (FAMILY, INVERSE, THEN)
+EXPRESSION = 'default_expression_into_else'
+EXPRESSION_THEN = 'default_expression_into_then'
+FAMILIES = (FAMILY, INVERSE, THEN, EXPRESSION, EXPRESSION_THEN)
 _DEFAULT = re.compile(r'(?P<x>[A-Za-z_]\w*) = (?P<d>-?(?:0[xX][0-9A-Fa-f]+|\d+)|[A-Za-z_]\w*);')
+# a default that is a small side-effect-free expression (`len = n * 4;`): no call, no assignment, no `++`/`--`
+_EXPRESSION = re.compile(r'(?P<x>[A-Za-z_]\w*) = (?P<d>[^;={}]*[^;={}\s]);')
+_EFFECT = re.compile(r'[A-Za-z_]\w*\s*\(|\+\+|--|\bvolatile\b|[+\-*/%&|^]=|<<=|>>=')
 
 
 def _test_after(body, i):
@@ -45,6 +55,14 @@ def _test_after(body, i):
     return None
 
 
+def _top_level_set(inside, x):
+    """True when the arm assigns `x` on a line of its own outer level, so that no path through it leaves the default."""
+    if not inside:
+        return False
+    level = inside[0].indent
+    return any(l.indent == level and re.match(rf'{re.escape(x)} =(?!=)', l.stripped) for l in inside)
+
+
 def variants(source, name):
     part = view(source, name)
     if not part:
@@ -53,6 +71,13 @@ def variants(source, name):
     out = []
     for i, line in enumerate(body):
         hit = _DEFAULT.fullmatch(line.stripped)
+        expression = None
+        if not hit:
+            expression = _EXPRESSION.fullmatch(line.stripped)
+            if expression and (_EFFECT.search(expression['d']) or mentions(expression['d'], expression['x'])
+                               or _DEFAULT.fullmatch(line.stripped)):
+                expression = None
+            hit = expression
         j = _test_after(body, i) if hit else None
         if hit and j and not body[j].stripped.endswith(';'):
             opening = block_open(body, j)
@@ -63,16 +88,20 @@ def variants(source, name):
             if mentions(body[j].text, hit['x']) or not re.search(rf'(?m)^\s*{re.escape(hit["x"])} =(?!=)', inside) \
                     or reads_first(inside, hit['x']):
                 continue
+            if expression and (_EFFECT.search(re.sub(r'^\s*if\b', '', body[j].text)) or not _top_level_set(body[opening + 1:closing], hit['x'])):
+                continue
             indent = body[j].indent
             arm = f'{indent}else\n{indent}{{\n{indent}  {line.stripped}\n{indent}}}\n'
-            out.append((FAMILY, apply(source, [(line.start, line.end, ''), (body[closing].end, body[closing].end, arm)])))
+            out.append((EXPRESSION if expression else FAMILY,
+                        apply(source, [(line.start, line.end, ''), (body[closing].end, body[closing].end, arm)])))
             test = re.fullmatch(r'if \((.*)\)', body[j].stripped)
             inverse = negate(test[1]) if test else None
             if inverse:
                 text = ''.join(l.source + '\n' for l in body[opening + 1:closing])
                 whole = (f'{indent}if ({inverse})\n{indent}{{\n{indent}  {line.stripped}\n{indent}}}\n'
                          f'{indent}else\n{indent}{{\n{text}{indent}}}\n')
-                out.append((THEN, apply(source, [(line.start, line.end, ''), (body[j].start, body[closing].end, whole)])))
+                out.append((EXPRESSION_THEN if expression else THEN,
+                            apply(source, [(line.start, line.end, ''), (body[j].start, body[closing].end, whole)])))
         if line.stripped == 'else':
             opening = block_open(body, i)
             closing = block_end(body, opening) if opening is not None else None
