@@ -18,7 +18,6 @@ earlier runs write.  A candidate for the exact judge, never a verdict. (The comp
 reading `sched.c`'s basic-block scheduling, confirmed only by the judge's result on that function.)
 """
 import re
-from itertools import combinations
 
 from .integer_repair_support import edit, view
 
