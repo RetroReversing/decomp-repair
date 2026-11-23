@@ -10,7 +10,8 @@ function, 405 -> 360 with nothing else changed; no instruction is added or remov
 in the original order saw only a register swap.
 
 Each pair of adjacent declarations of the shape `T *x = 0;`, `T x = NULL;`, `T x = 1;` (a literal start, so neither
-refers to the other) is offered swapped. A candidate rewrite; the exact judge decides.
+refers to the other), or m2c's plain `x = NULL;` (two globals cleared at entry: their stores' order in a
+1337-instruction collision sweep, 6300 -> 6260), is offered swapped. A candidate rewrite; the exact judge decides.
 """
 import re
 
@@ -20,7 +21,10 @@ from .line_scan import lines
 FAMILY = 'adjacent_init_swap'
 FAMILIES = (FAMILY,)
 MAX_CHILDREN = 8
-_DECL = re.compile(rf'^(?P<type>(?:(?:unsigned|signed|struct|const)\s+)*{IDENT}[\s*]*?)(?P<name>{IDENT})\s*=\s*(?P<value>NULL|0|-?\d+|0[xX][0-9a-fA-F]+)\s*;$')
+# A type and its name are apart (a space or a `*`); m2c's split form, a plain `x = 0;`, has no type. Without the
+# separator the pattern split one name in two (`gPlayerActo` + `r`), and two names ending in one letter looked equal.
+_DECL = re.compile(rf'^(?P<type>(?:(?:unsigned|signed|struct|const)\s+)*{IDENT}(?:\s+|\s*\*[\s*]*))?'
+                   rf'(?P<name>{IDENT})\s*=\s*(?P<value>NULL|0|-?\d+|0[xX][0-9a-fA-F]+)\s*;$')
 
 
 def variants(source, name):
