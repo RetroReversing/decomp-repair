@@ -580,8 +580,30 @@ def clean(source, name, header=''):
     return found[-1][1] if found else None
 
 
+def _single_steps(source, name, header):
+    """What one older family offers for `source` alone: a level equal to one of these is that family's child."""
+    out = {text for _, text in identical_arm_collapse_repairs.variants(source, name)}
+    for step in (lambda: scaffold_strip.unfence(source, name), lambda: scaffold_strip.strip(source, name, header),
+                 lambda: scaffold_strip.plain(source, name, header)):
+        try:
+            out.add(step())
+        except Exception:  # a family that cannot read the function offers nothing
+            pass
+    return out
+
+
 def variants(source, name, header=''):
-    return levels(source, name, header)
+    """The levels, without one that a single older family already offers (the caller keeps the first family that
+    offers a source, and the child keeps that family's name: an arm collapse stays `identical_arm_collapse`)."""
+    found = levels(source, name, header)
+    if not found:
+        return []
+    taken = _single_steps(source, name, header)
+    return [(family, text) for family, text in found if text not in taken]
 
 
-REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header'), 'order': 97}
+# last: a level often equals one family's single child (an arm collapse, a fence opened), and the caller keeps the
+# first family that offers a source, so the specific families keep their names
+
+
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header'), 'order': 5000}

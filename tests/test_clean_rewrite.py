@@ -201,7 +201,11 @@ def test_levels_and_registry():
     assert families == [c.STRUCTURE, c.SCAFFOLD, c.FAMILY]
     repair = registry.get('clean_rewrite')
     assert repair and not registry.problems(repair)
+    # after every specific family: a level that equals one family's child must not take that child's name
+    assert repair.order > max(item.order for item in registry.declared() if item.module != 'clean_rewrite')
     assert c.variants('void f(void) { }', 'f') == []
+    arms = 'void f(int *p, int a)\n{\n  if (a) { p[0] = 1; } else { p[0] = 1; }\n}\n'
+    assert c.levels(arms, 'f') and c.variants(arms, 'f') == []  # identical_arm_collapse's own child
 
 
 @host
