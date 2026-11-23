@@ -188,7 +188,7 @@ def _apply(source, clean, sites, name):
                           r'(?:\s+int)?[ \t]+' + c + r'[ \t]*;')
         if not decl.search(body):
             return None
-        body = decl.sub(lambda m: m.group(1) + 'u16 ' + count + ';', body, count=1)
+        body = decl.sub(lambda m, var=count: m.group(1) + 'u16 ' + var + ';', body, count=1)
     return out[:span[0]] + body + out[span[1]:]
 
 
