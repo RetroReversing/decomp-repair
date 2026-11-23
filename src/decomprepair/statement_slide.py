@@ -17,7 +17,11 @@ shortest slides first.
 A statement that only works on a plain local no call can reach (declared, never address-taken, not `volatile`) also
 passes a statement with a call that does not name it, and `x += K;` counts as a statement on `x`: the call is a
 barrier to the scheduler, so the order against it is the one thing the source decides (a 1133-instruction effect
-spawner: `phase += 0.21f;` below the statement that calls `__cosf`, 3555 -> 3215). It passes a store through a
+spawner: `phase += 0.21f;` below the statement that calls `__cosf`, 3555 -> 3215). A float literal on the right of a plain
+assignment (`height = 120.0f;`) is a constant like any other, and declarations are not part of a run (their order
+is not code): with both, the spawner's `height = 120.0f;` moved above three statements before its copy `var_fs1 =
+height;`, so cse no longer swaps the constant into the copy (`(set REG0 REG1)` after the insn that set REG1, cse.c),
+80 -> 70. It passes a store through a
 member, an array or a pointer that does not name it too: a flag cleared with `kind = 0;` after a call and two stores
 (`rec[id].loaded = 1; mode = 1;`) was the target's when cleared above the call (an 874-instruction N64 object spawner,
 KMC GCC 2.7.2 `-O2`, 15 -> 0). Set before the call, the flag is live across it, so global.c gives it a saved register
@@ -56,7 +60,7 @@ def _effects(text):
             return None
         names = {('v', ident) for ident in re.findall(rf'\b{IDENT}\b', value) if ident not in WIDTH}
         return {('v', compound[1])}, names | {('v', compound[1])}
-    left, right = text[:split], text[split + 1:]
+    left, right = text[:split], re.sub(r'\b\d+\.\d*[fF]?|\B\.\d+[fF]?', '0', text[split + 1:])  # (float literals)
     stripped = CAST_POINTER.sub(' ', FIELD.sub(' ', left + ' = ' + right))
     if CALL.search(stripped) or DEREF.search(stripped) or OTHER.search(stripped) or '&' in left:
         return None
@@ -114,6 +118,10 @@ def _locals(part):
     return {name for name in declared if not re.search(rf'&\s*{name}\b', body)}
 
 
+_DECLARATION = re.compile(r'(?:(?:register|static|const|volatile|unsigned|signed|struct|union)\s+)*[A-Za-z_]\w*'
+                          r'(?:\s*\*+\s*|\s+)[A-Za-z_]\w*(?:\s*\[[^\]]*\])?')
+
+
 def _runs(clean, start, end):
     """Maximal runs of consecutive simple `...;` statements, as `[(from, to, [(s, e), ...])]` at one block level."""
     runs = []
@@ -140,7 +148,8 @@ def _runs(clean, start, end):
                 stop += 1
             if stop < end and clean[stop] == ';':
                 text = clean[i:stop]
-                if re.match(r'(?:if|for|while|do|else|switch|return|goto|case|default)\b', text) or ':' in text.replace('?', '').replace('::', ''):
+                if (re.match(r'(?:if|for|while|do|else|switch|return|goto|case|default)\b', text)
+                        or ':' in text.replace('?', '').replace('::', '') or _DECLARATION.fullmatch(text.strip())):
                     runs.append(stack[-1])
                     stack[-1] = []
                 else:
