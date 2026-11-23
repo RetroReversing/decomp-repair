@@ -57,5 +57,13 @@ def test_a_narrow_index_is_kept_as_it_is():
     assert 'u8 idx = a & 0x7F;' in child and 'u8 idx_copy = idx;' in child
 
 
+def test_a_volatile_global_outside_the_function_does_not_decline_it():
+    assert variants('extern volatile s32 g;\n' + SOURCE, 'pick')
+
+
+def test_a_volatile_local_does_decline_it():
+    assert variants(SOURCE.replace('s32 idx', 'volatile s32 idx'), 'pick') == []
+
+
 def test_registry_declares_the_family():
     assert any(FAMILY in repair.families for repair in registry.declared())

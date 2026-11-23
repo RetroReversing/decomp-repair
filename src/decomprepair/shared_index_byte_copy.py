@@ -47,7 +47,7 @@ def _wrap(text, indent, scopes):
 
 def variants(source, name):
     part = view(source, name)
-    if not part or re.search(r'\b(?:volatile|asm|__asm__|goto)\b', part.clean):
+    if not part or re.search(r'\b(?:volatile|asm|__asm__|goto)\b', part.body):
         return []
     clean = part.clean
     blocks = _blocks(clean, part.opening, part.end)
