@@ -13,13 +13,13 @@ The shape: `if (X < K) { R = EXPR1; } else { R = EXPR2; }` (any of `<`, `<=`, `>
 `X` and `R` different plain integer locals of one declared type, `R` mentioned nowhere before the statement and assigned
 by no other statement, and `X` mentioned nowhere after the statement (its first mention before it is an assignment, so
 no loop carries a value of it around to a read above). Then the statement is `X = (X < K) ? (EXPR1) : (EXPR2);`, every later `R` is `X`, and `R`'s
-declaration goes. One child per clamp, at most four. A hypothesis; the judge decides."""
+declaration goes. One child per clamp, at most four, and one with every clamp at once. A hypothesis; the judge decides."""
 import re
 
 from .integer_repair_support import IDENT, edit, locals_for, refs, view
 
 FAMILY = 'clamp_result_operand_reuse'
-FAMILIES = (FAMILY,)
+FAMILIES = (FAMILY, FAMILY + '_all')
 LIMIT = 4
 
 _NUMBER = r'(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*'
@@ -29,7 +29,7 @@ _CLAMP = re.compile(
 _WRITE = re.compile(r'\s*(?:=(?!=)|\+\+|--|[-+*/%&|^]=|<<=|>>=)')
 
 
-def variants(source, name):
+def _single(source, name):
     part = view(source, name)
     if not part or re.search(r'\b(?:volatile|asm|__asm__)\b', part.clean):
         return []
@@ -65,6 +65,21 @@ def variants(source, name):
         out.append((FAMILY, edit(source, edits)))
         if len(out) == LIMIT:
             break
+    return out
+
+
+def variants(source, name):
+    children = _single(source, name)
+    out = list(children)
+    if len(children) > 1:  # every clamp at once: each alone leaves the other's result local in the allocator's way
+        text, applied = source, 0
+        for _ in range(LIMIT):
+            step = _single(text, name)
+            if not step:
+                break
+            text, applied = step[0][1], applied + 1
+        if applied > 1 and all(text != child for _, child in children):
+            out.append((FAMILY + '_all', text))
     return out
 
 

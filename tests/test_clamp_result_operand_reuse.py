@@ -53,5 +53,17 @@ def test_a_result_the_arms_use_to_compute_itself_is_declined():
     assert variants(SOURCE.replace('key_out = 0x7F;', 'key_out = key_out + 1;'), 'note') == []
 
 
+def test_two_clamps_are_also_offered_at_once():
+    two = SOURCE.replace('s32 key_out;', 's32 key_out;\n    s32 vel;\n    s32 vel_out;').replace(
+        '    play(key_out & 0xFF, 0x40);',
+        '    vel = event[3];\n    if (vel < 0x80) {\n        vel_out = vel & ((~vel) >> 31);\n    } else {\n'
+        '        vel_out = 0x7F;\n    }\n    play(key_out & 0xFF, vel_out & 0xFF);')
+    children = variants(two, 'note')
+    assert [f for f, _ in children] == [FAMILY, FAMILY, FAMILY + '_all']
+    both = children[-1][1]
+    assert 'key = (key < 0x80)' in both and 'vel = (vel < 0x80)' in both
+    assert 'play(key & 0xFF, vel & 0xFF);' in both and 'key_out' not in both and 'vel_out' not in both
+
+
 def test_registry_declares_the_family():
     assert any(FAMILY in repair.families for repair in registry.declared())
