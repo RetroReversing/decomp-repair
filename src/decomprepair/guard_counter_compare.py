@@ -12,6 +12,12 @@ A proposal rewrites one guard `if (X != 0)` (or `if (X)`) as `if (v < X)` when t
 `v = 0;` and the guarded body holds a loop that tests `v` against the same text, with `v` not otherwise used between
 the init and the guard. Each guard is offered alone and all together, because the frame needs a number of them that
 only the measurement knows. MIPS only.
+
+The counter's init can also sit inside the guard, as the guarded block's first statement (with its declaration):
+`if (n != 0) { u32 j; j = 0; ... while (j < n); }`. The original's `for (j = 0; j < n; j++)` sets the counter before
+the test, so the init (and the declaration) moves out in front of the guard, in a block of its own, and the guard
+becomes the counter's compare (a 681-instruction bit-stream decoder, KMC GCC 2.7.2: the target's sixth 8-byte spill
+slot, never read or written, came from exactly this loop, 2252 -> 1965).
 """
 import re
 
@@ -24,6 +30,8 @@ LIMIT = 24
 _ID = r'[A-Za-z_]\w*'
 _EFFECT = re.compile(r'\+\+|--|(?<![=!<>])=(?!=)|\w\s*\(')
 _INIT_BEFORE = re.compile(rf'({_ID})\s*=\s*0\s*;\s*$')
+_INIT_INSIDE = re.compile(rf'\s*(?:((?:unsigned|signed|const|[us](?:8|16|32)|int|long|short|char)(?:\s+\w+)*)\s+({_ID})\s*;)?'
+                          rf'\s*({_ID})\s*=\s*0\s*;')
 
 
 def _close(clean, start, left, right):
@@ -53,21 +61,29 @@ def _guards(source, clean, opening, closing):
         operand = compare[1] if compare else condition.strip()
         if not operand or _EFFECT.search(operand) or re.search(r'[<>=!&|]', operand.replace('->', '')):
             continue
-        previous = _INIT_BEFORE.search(clean[opening + 1:at].rstrip())
-        if not previous:
-            continue
-        counter = previous[1]
         brace = re.compile(r'\s*\{').match(clean, paren_end)
         body_end = _close(clean, brace.end() - 1, '{', '}') if brace else None
         if not body_end:
             continue
+        previous = _INIT_BEFORE.search(clean[opening + 1:at].rstrip())
+        inside = None
+        if previous:
+            counter = previous[1]
+        else:
+            inside = _INIT_INSIDE.match(clean, brace.end())
+            if not inside or (inside[2] and inside[2] != inside[3]) or re.match(r'\s*else\b', clean[body_end:]):
+                continue
+            counter = inside[3]
         body = _squash(clean[brace.end():body_end])
         flat = _squash(operand)
         # a loop whose test mentions the counter, a `<`, and the guard's operand (possibly under a cast)
         tests = re.findall(r'while\((.*?)\);', body)
         if not any(counter in test and '<' in test and flat in test for test in tests):
             continue
-        found.append((paren + 1, paren_end - 1, source[paren + 1:paren_end - 1], counter, operand.strip()))
+        if inside is None:
+            found.append((paren + 1, paren_end - 1, source[paren + 1:paren_end - 1], counter, operand.strip()))
+        elif not re.search(rf'\b{counter}\b', operand):
+            found.append((at, body_end, source[brace.end():inside.end()], counter, operand.strip(), brace.end()))
     return found
 
 
@@ -89,8 +105,13 @@ def variants(source, name, arch='mips'):
 
     def rewrite(chosen):
         new = source
-        for start, end, _, counter, operand in sorted(chosen, reverse=True):
-            new = new[:start] + f'{operand} > {counter}' + new[end:]
+        for start, end, text, counter, operand, *inner in sorted(chosen, reverse=True):
+            if not inner:
+                new = new[:start] + f'{operand} > {counter}' + new[end:]
+                continue
+            # the init inside the guard: it moves out in front, in a block of its own that also closes after the guard
+            body = new[inner[0] + len(text):end]
+            new = new[:start] + '{ ' + ' '.join(text.split()) + f' if ({operand} > {counter}) {{' + body + ' }' + new[end:]
         return new
 
     out = [(FAMILY, rewrite([one])) for one in found]
