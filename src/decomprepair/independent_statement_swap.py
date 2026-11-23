@@ -21,7 +21,7 @@ FAMILIES = (FAMILY,)
 LIMIT = 80
 _NAME = re.compile(IDENT)
 _CALL = re.compile(rf'(?<![\w.>])(?!(?:if|while|for|switch|return|sizeof)\b){IDENT}\s*\(')
-_NEUTRAL = re.compile(rf'\b(?:inline_fn\d*|__repair_\w+)\b')
+_NEUTRAL = re.compile(r'\b(?:inline_fn\d*|__repair_\w+)\b')
 
 
 def _left(text):
