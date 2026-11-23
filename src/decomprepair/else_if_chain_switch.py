@@ -22,7 +22,10 @@ allocation block exact). The `x < N` arm repeats the default's code, so the valu
 `default:` (the labels are what make the tree; a plain `default` alone compiles to another tree), and `if_tree_switch`
 does not read `else if` chains. Only chains over one plain variable with `==` and `<` tests whose arms are one
 statement or one block without `break`, `continue`, `goto` or `case` are read; anything else is left alone. The
-`case 0:` labels are a hypothesis read off one compiler's tree (KMC GCC 2.7.2); a child without them comes second."""
+`case 0:` labels are a hypothesis read off one compiler's tree (KMC GCC 2.7.2); a child without them comes last. The
+first child writes `default:` as the first label of the `switch`: gcc places the code of the labels in source order, and
+the target's default arm follows the compare chain directly (1252 -> 502 on the object allocator above, the single
+largest step of its match); with `default:` last the children are the second and third."""
 import re
 
 from .csource import _blank, find
@@ -34,6 +37,7 @@ FAMILIES = (FAMILY,)
 IDENT = r'[A-Za-z_]\w*'
 NUMBER = r'-?\s*(?:0[xX][0-9a-fA-F]+|\d+)'
 HEAD = re.compile(rf'(?<![\w])if\s*\(\s*({IDENT})\s*(==|<)\s*({NUMBER})[uUlL]*\s*\)')
+LIMIT = 3
 LABELS = 4  # (how many `case v:` labels to write for the values below the range arm's limit)
 
 
@@ -92,14 +96,14 @@ def _arm(source, indent, label, body):
     return f'{indent}  {label}\n{indent}    {code}\n{indent}    break;\n'
 
 
-def _build(source, variable, cases, labels, default, indent):
-    """The `switch` text: the cases in value order, then the labels of the low values and `default:`."""
+def _build(source, variable, cases, labels, default, indent, first=False):
+    """The `switch` text: the cases in value order, the labels of the low values and `default:` last (or first)."""
     default_label = ''.join(f'case {v}:\n{indent}  ' for v in labels)
     lines = ''.join(_arm(source, indent, f'case {value:#x}:' if abs(value) > 9 else f'case {value}:', body)
                     for value, body in cases)
-    return (f'switch ({variable})\n{indent}{{\n{lines}'
-            f'{indent}  {default_label}default:\n{indent}    {source[default[0]:default[1]].strip()}\n'
-            f'{indent}    break;\n{indent}}}')
+    fallback = (f'{indent}  {default_label}default:\n{indent}    {source[default[0]:default[1]].strip()}\n'
+                f'{indent}    break;\n')
+    return f'switch ({variable})\n{indent}{{\n' + (fallback + lines if first else lines + fallback) + f'{indent}}}'
 
 
 def variants(source, name):
@@ -140,10 +144,10 @@ def variants(source, name):
         if limit <= 0 or limit > LABELS + 1:
             labels = []
 
-        for with_labels in ((True, False) if labels else (False,)):
-            built = _build(source, variable, cases, labels if with_labels else [], default, indent)
+        for with_labels, first in (((True, True), (True, False), (False, False)) if labels else ((False, True), (False, False))):
+            built = _build(source, variable, cases, labels if with_labels else [], default, indent, first)
             out.append(source[:hit.start()] + built + source[end:])
-    return [(FAMILY, text) for text in dict.fromkeys(out)][:2]
+    return [(FAMILY, text) for text in dict.fromkeys(out)][:LIMIT]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 56}
