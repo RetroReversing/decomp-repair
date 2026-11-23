@@ -15,6 +15,10 @@ do not mention it and call nothing: each such statement split on its own (`+` an
 since the target may have written either), and every statement of the function split together as one child, as the
 edits of a late match often only pay off combined. A statement under an unbraced `if` is left alone. Only MIPS, and a
 function with no `volatile`. The candidate is never a verdict: the judge decides.
+
+An operand may read a field through `->` (`v = ((T *) p)->f / k;` as `v = ((T *) p)->f; v /= k;`, the load then goes
+straight into `v`'s register: 85 -> 75 on a 1300-instruction KMC GCC 2.7.2 controller routine), and statements that
+load come first, before the cap.
 """
 import re
 
@@ -52,8 +56,11 @@ def _split(rhs):
             nxt = rhs[i + 1:i + 2]
             if c in '*/+-' and nxt in '=+-' and c in '+-' and nxt == c:
                 return None
+            if c == '-' and nxt == '>':  # a member access (`p->f`): part of the operand
+                prev = c
+                continue
             if c in '*/+-':
-                if nxt == '=' or (c == '-' and nxt == '>'):
+                if nxt == '=':
                     return None
                 exponent = c in '+-' and prev in 'eE' and re.search(r'\d[eE]$', rhs[:i])
                 if prev and _OPERAND_END.match(prev) and not exponent:
@@ -73,7 +80,7 @@ def _paren(text):
 
 def _simple(operand, name):
     return (operand and not re.search(rf'\b{name}\b', operand) and not re.search(rf'{_ID}\s*\(', operand)
-            and not re.search(r'[=<>!&|?]|\+\+|--', operand))
+            and not re.search(r'[=<!&|?]|(?<!-)>|\+\+|--', operand))
 
 
 def _children(clean, lo, hi, floats):
@@ -93,6 +100,9 @@ def _children(clean, lo, hi, floats):
         indent = hit[1].split('\n')[-1]
         forms = [(left, right)] + ([(right, left)] if op in '+*' else [])
         out.append((hit.start(2), hit.end(), [f'{name} = {a};\n{indent}{name} {op}= {_paren(b)};' for a, b in forms]))
+    # a load split from its operation first (the target's load straight into the local), then the rest in order:
+    # a 1300-instruction function had its one such statement past the first _LIMIT
+    out.sort(key=lambda item: not re.search(r'->|\[|\*\s*\(', item[2][0].split(';')[0]))
     return out[:_LIMIT]
 
 
