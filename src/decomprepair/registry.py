@@ -20,7 +20,10 @@ so nothing a module reads is a macro). A module that reads those lines themselve
 stack slot) declares `directives` and is also run on the function exactly as written, in the draft lane only.
 
 `needs` are the `variants` parameter names the caller can supply, a subset of CONTEXT: `source` and `name` always,
-and `header`, `arch`, `asm` (the target's assembly) and `flags` (the compiler's flags) when wanted. Each is passed by
+and `header`, `arch`, `asm` (the target's assembly) and `flags` (the compiler's flags) when wanted. `words` is game data
+the C can't show: {symbol: the 32-bit word at its address, in the game's byte order}, for the symbols the caller chose
+to read (decompdecomp: the float constants only one function refers to). It is OPTIONAL: a caller older than it leaves
+it out, so a module that needs it gives the parameter a default and gets nothing then (`arguments`). Each is passed by
 keyword, so the order of the parameters is the module's own business. Lanes: `draft` (a draft's repair pass, which is
 limited), `beam` (the Deep Permuter's beam, which asks the same pass with no limit), `local` (the Deep Permuter's local
 lane, which tries the library's rewrites on its current best).
@@ -37,7 +40,8 @@ import sys
 from dataclasses import dataclass
 from functools import lru_cache
 
-CONTEXT = ('source', 'name', 'header', 'arch', 'asm', 'flags')
+CONTEXT = ('source', 'name', 'header', 'arch', 'asm', 'flags', 'words')
+OPTIONAL = ('words',)  # context a caller may not have yet: left out, the parameter's default is used
 LANES = ('draft', 'beam', 'local')
 DEFAULT_ORDER = 1000
 _DECLARES = re.compile(r'^REPAIR\s*(?::[^=\n]*)?=', re.M)
@@ -63,8 +67,8 @@ class Repair:
         return getattr(module, getattr(self.variants, '__name__', 'variants'), self.variants) if module else self.variants
 
     def arguments(self, context):
-        """The keyword arguments of `variants` out of `context`."""
-        return {key: context[key] for key in self.needs}
+        """The keyword arguments of `variants` out of `context` (an OPTIONAL key the caller lacks is left out)."""
+        return {key: context[key] for key in self.needs if key in context or key not in OPTIONAL}
 
 
 def _make(module_name, declared):
@@ -117,6 +121,9 @@ def problems(repair):
     for key in repair.needs:
         if key in CONTEXT and key not in parameters:
             out.append(f'{repair.module}: variants has no parameter "{key}" that "needs" names')
+    for key in repair.needs:
+        if key in OPTIONAL and key in parameters and parameters[key].default is inspect.Parameter.empty:
+            out.append(f'{repair.module}: "{key}" is optional context (an older caller has none): give it a default')
     for key, parameter in parameters.items():
         if parameter.default is inspect.Parameter.empty and parameter.kind in (
                 parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY) \
