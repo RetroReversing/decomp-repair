@@ -52,3 +52,46 @@ def test_the_module_declares_itself_to_the_registry():
     for repair in registry.declared():
         if repair.module == 'guarded_do_to_for':
             assert registry.problems(repair) == []
+
+
+TWO = '''inline static u32 widen(s16 arg0)
+{
+  return (u32) arg0;
+}
+
+void fill(s32 *out, s16 *count, s32 n)
+{
+  s32 i;
+  i = 0;
+  if (n > 0)
+  {
+    do
+    {
+      out[i] = 1;
+      i += 1;
+    }
+    while (i < n);
+  }
+  if (((s32) (widen((s32) *count) >> 2)) > 0)
+  {
+    i = 0;
+    do
+    {
+      out[i] = 0;
+      i += 1;
+    }
+    while (i < ((s32) (widen(*count) >> 2)));
+  }
+}
+'''
+
+
+def test_a_counter_set_before_the_guard_and_bounds_that_differ_by_casts_and_a_cast_helper():
+    # a 392-instruction object initialiser: each `for` adds an 8-byte stale frame slot; 22 -> 0 only with both
+    texts = [text for _, text in variants(TWO, 'fill')]
+    first, second, helper, both, both_helper = texts
+    assert 'for (i = 0; i < n; i++)' in first and 'i = 0;\n  if (n > 0)' not in first and 'while (i < ((s32)' in first
+    assert 'for (i = 0; i < ((s32) (widen(*count) >> 2)); i++)' in second
+    assert 'for (i = 0; i < ((s32) (((u32) (s16) (*count)) / 4)); i++)' in helper
+    assert 'do' not in both.split('fill', 1)[1] and 'widen(*count)' in both
+    assert 'for (i = 0; i < n; i++)' in both_helper and '/ 4)); i++)' in both_helper and 'do\n' not in both_helper
