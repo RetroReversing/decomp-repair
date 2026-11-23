@@ -675,6 +675,47 @@ def strip(source, name, header=''):
     return text if text != source else None
 
 
+FENCE = re.compile(r'\bdo\s*\{')
+FENCE_END = re.compile(r'\s*while\s*\(\s*0\s*\)\s*;')
+
+
+def unfence(source, name):
+    """Every `do { S } while (0);` in the function written as the block `{ S }`, where S has no `break` or `continue`
+    (which the fence would scope), or None when there is none. A search's fences keep a loop note between statements
+    (sched.c orders across it, cse2 merges across it); the plain block is where an agent restarts from."""
+    text, skip = source, 0
+    for _ in range(64):  # one fence a round, the text read again: nested fences shift each other's offsets
+        part = view(text, name)
+        if not part:
+            return None
+        clean, found = part.clean, None
+        for index, hit in enumerate(FENCE.finditer(clean, part.opening, part.end)):
+            if index < skip:
+                continue
+            brace = hit.end() - 1
+            end = close(clean, brace, '{', '}')
+            tail = FENCE_END.match(clean, end) if end else None
+            if not tail or re.search(r'\b(?:break|continue)\b', clean[brace:end]):
+                skip = index + 1
+                continue
+            found = (hit.start(), brace + 1, end - 1, tail.end())
+            break
+        if not found:
+            break
+        start, body, close_at, stop = found
+        text = text[:start] + '{' + text[body:close_at] + '}' + text[stop:]
+    return text if text != source else None
+
+
+def plain(source, name, header=''):
+    """The saved best as a person would restart from it: its fences opened (`unfence`) and its scaffolding stripped
+    (`strip`), or None when neither changed anything. Offered beside the best when a function is claimed (the
+    match-function skill's setup.py), not a permuter child: a fence is often what a near-match's score rests on."""
+    text = unfence(source, name) or source
+    text = strip(text, name, header) or text
+    return text if text != source else None
+
+
 def variants(source, name, header=''):
     plain = strip(source, name, header)
     if not plain:
