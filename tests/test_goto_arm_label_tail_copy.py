@@ -40,12 +40,22 @@ def children(source):
 
 def test_the_arm_is_copied_after_and_before_the_assignment_with_the_join_goto():
     found = children(SOURCE)
-    assert len(found) == 2
-    after = [t for t in found if t.index('w = 0xA0;') < t.index('h = 0x78;', t.index('w = 0xA0;'))][0]
-    assert 'w = 0xA0;\n            h = 0x78;\n            goto join;' in after
-    before = [t for t in found if t is not after][0]
-    assert 'h = 0x78;\n            w = 0xA0;\n            goto join;' in before
-    assert 'goto shared;' not in after and 'goto shared;' not in before
+    assert len(found) == 4
+    plain = [t for t in found if 'if (!(gFlip == 1))' in t]
+    assert len(plain) == 2
+    after = [t for t in plain if 'w = 0xA0;\n            h = 0x78;\n            goto join;' in t]
+    before = [t for t in plain if 'h = 0x78;\n            w = 0xA0;\n            goto join;' in t]
+    assert len(after) == 1 and len(before) == 1
+    assert all('goto shared;' not in t for t in found)
+
+
+def test_each_copy_is_also_offered_with_the_polarity_of_the_if_that_held_the_arm_swapped():
+    swapped = [t for t in children(SOURCE) if 'if (gFlip == 1)' in t]
+    assert len(swapped) == 2
+    child = [t for t in swapped if 'w = 0xA0;\n            h = 0x78;\n            goto join;' in t][0]
+    # the arms trade places: the old else arm comes first, the labelled arm second
+    assert child.index('w = 0xA0;', child.index('if (gFlip == 1)')) < child.index('shared:')
+    assert 'else\n        {\n            shared:\n            h = 0x78;' in child
 
 
 def test_an_arm_that_ends_in_a_jump_or_is_not_followed_by_a_goto_is_left_alone():

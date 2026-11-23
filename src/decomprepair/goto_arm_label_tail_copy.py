@@ -19,15 +19,17 @@ goto_arm_label_tail_copy
     jump, and whose whole `if`/`else` statement is followed directly by `goto M;`: every `goto label;` that is a statement of its
     own (after `;`, `{` or `}`) outside the run is replaced by the run and `goto M;`; one child places the copy right where
     the `goto` was, one places it before the statement just ahead of the `goto` when that is a plain assignment. The label
-    stays when other `goto`s to it remain. At most 4 children."""
+    stays when other `goto`s to it remain. Each copy is also offered with the holding `if (C) {A} else {B}` written
+    `if (!C) {B} else {A}`, the pair a match needed (320 -> 60 on the same routine). At most 6 children."""
 import re
 
 from .goto_arm_label_copy import _BAD_RUN, _DECL, RUN_LIMIT
 from .join_tail_arm_split_repairs import _blocks, _body, _gotos, _label
+from .pattern_repairs import close, negate
 
 FAMILY = 'goto_arm_label_tail_copy'
 FAMILIES = (FAMILY,)
-LIMIT = 4
+LIMIT = 6
 _GOTO = re.compile(r'goto\s+([A-Za-z_]\w*)\s*;')
 _PLAIN = re.compile(r'[^;{}()]*(?:\([^;{}()]*\))?[^;{}()]*=(?!=)[^;{}]*;')
 
@@ -42,6 +44,38 @@ def _parent(blocks, lo, hi):
             if start <= lo < end and (best is None or end - start < best[2]):
                 best = (items, index, end - start)
     return best
+
+
+def _swapped(source, clean, start, end):
+    """(start, end, text) of the `if (C) {A} else {B}` at [start, end) written `if (!C) {B} else {A}` (or the plain
+    negation of a single comparison), or None."""
+    head = re.match(r'if\s*\(', clean[start:end])
+    if not head:
+        return None
+    paren = start + head.end() - 1
+    stop = close(clean, paren, '(', ')')
+    opening = re.compile(r'\s*\{').match(clean, stop or 0)
+    if not stop or not opening:
+        return None
+    a_open = opening.end() - 1
+    a_end = close(clean, a_open, '{', '}')
+    other = re.compile(r'(\s*)else(\s*)\{').match(clean, a_end or 0)
+    if not a_end or not other:
+        return None
+    b_open = other.end() - 1
+    b_end = close(clean, b_open, '{', '}')
+    if not b_end or b_end > end:
+        return None
+    condition = source[paren + 1:stop - 1].strip()
+    inner = re.fullmatch(r'!\s*\((.*)\)', condition, re.S)
+    if inner and close(condition, condition.index('(')) == len(condition):
+        negated = inner[1].strip()
+    else:
+        negated = negate(condition)
+    if not negated:
+        return None
+    text = f'if ({negated})' + source[stop:a_open] + source[b_open:b_end] + other[1] + 'else' + other[2] + source[a_open:a_end]
+    return start, b_end, text
 
 
 def variants(source, name):
@@ -97,6 +131,12 @@ def variants(source, name):
             for start, stop, new in sorted(edits, reverse=True):
                 child = child[:start] + new + child[stop:]
             built.append((FAMILY, child))
+            flip = _swapped(source, clean, holder_items[index][0], holder_items[index][1])
+            if flip and not any(flip[0] <= e[0] < flip[1] or e[0] <= flip[0] < e[1] for e in edits):
+                both = source
+                for start, stop, new in sorted(edits + [flip], reverse=True):
+                    both = both[:start] + new + both[stop:]
+                built.append((FAMILY, both))
         out += built
     return out[:LIMIT]
 
