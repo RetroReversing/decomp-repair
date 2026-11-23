@@ -198,71 +198,124 @@ def _statements(clean, opening, closing):
     return out
 
 
-def _updates(source, clean, opening, closing):
-    """[(load_stmt, store_stmt, middle, base, offset, shift, width, constant)] for each recognised update."""
+def _walk(statements, top, base, offset):
+    """Walk back from statement `top` through simple statements to the load of the word at `base + offset`:
+    (index of the load, its variable, [indices between]) or None."""
+    middle = []
+    for back in range(top, max(top - 9, -1), -1):
+        earlier = statements[back]
+        if earlier is None:
+            return None
+        m = re.match(rf'\s*(?P<var>{_ID})\s*=\s*(?:\(\s*{_CASTS}\s*\)\s*)?(?P<load>\(?\s*\*.+)\Z', earlier[2], re.S)
+        text = m['load'].strip() if m else ''
+        while text.startswith('(') and text.endswith(')') and _ACCESS.fullmatch(text[1:-1].strip()):
+            text = text[1:-1].strip()
+        access = _ACCESS.fullmatch(text) if m else None
+        if m and access and (access['base'] or access['cbase']) == base \
+                and int(access['off'] or access['coff'], 0) == offset:
+            return back, m['var'], middle
+        if re.search(r'\w\s*\(|\*\s*\(\(|\+\+|--', earlier[2]) and not re.match(rf'\s*{_ID}\s*=', earlier[2]):
+            return None
+        if _ACCESS.search(earlier[2]) and re.match(r'\s*\*', earlier[2]):
+            return None  # another store in between: keep the program's order
+        middle.append(back)
+    return None
+
+
+def _arm(statements, value, walked):
+    """(shift, bits, constant, [statement indices to drop]) when the statements back to the load set one field."""
+    load, var, middle = walked
+    locals_ = {}
+    for back in sorted(middle):
+        m = re.match(rf'\s*({_ID})\s*=\s*(.+)\Z', statements[back][2], re.S)
+        tree = _parse(m[2]) if m else None
+        if tree:
+            locals_[m[1]] = tree
+    tree = _parse(value)
+    decoded = _decode(tree, var, locals_) if tree else None
+    if not decoded:
+        return None
+    used, todo = set(), set(re.findall(_ID, value))
+    while todo:
+        local = todo.pop()
+        if local in locals_ and local not in used:
+            used.add(local)
+            todo |= set(re.findall(_ID, next(statements[k][2] for k in middle
+                                              if re.match(rf'\s*{local}\s*=', statements[k][2]))))
+    defs = [k for k in sorted(middle) if re.match(rf'\s*({_ID})\s*=', statements[k][2])
+            and re.match(rf'\s*({_ID})', statements[k][2])[1] in used]
+    return (*decoded, [load, *defs])
+
+
+def _store(text):
+    """(base, offset, value) of a store `*ACC = value;` to a word, else None."""
+    m = re.match(r'\s*(?P<access>.+?)\s*=\s*(?P<value>[^=].*)\Z', text, re.S)
+    target = _ACCESS.fullmatch(m['access'].strip()) if m and not _SKIP.match(text) else None
+    if not target:
+        return None
+    offset = int(target['off'] or target['coff'], 0)
+    return (target['base'] or target['cbase']), offset, m['value'] if offset % 4 == 0 else None
+
+
+def _updates(clean, opening, closing):
+    """Items for every update recognised, and the statement list.
+
+    An item is {offset, base, fields: [(shift, bits)], edits: [(statement index, text or None)], drop: [indices],
+    replaced: [(start, end)]}: `edits` replace a statement, `drop` are the loads and locals that go when unread."""
     statements = _statements(clean, opening, closing)
-    found = []
+    items = []
     for index, item in enumerate(statements):
         if item is None:
             continue
-        start, end, text = item
-        store = re.match(r'\s*(?P<access>.+?)\s*=\s*(?P<value>[^=].*)\Z', text, re.S)
-        if not store:
+        parts = _store(item[2])
+        if not parts or parts[2] is None:
             continue
-        target = _ACCESS.fullmatch(store['access'].strip())
-        if not target or _SKIP.match(text):
+        base, offset, value = parts
+        walked = _walk(statements, index - 1, base, offset)
+        arm = _arm(statements, value, walked) if walked else None
+        if arm:
+            shift, bits, constant, drop = arm
+            items.append({'offset': offset, 'base': base, 'fields': [(shift, bits)],
+                          'edits': [(index, shift, constant, '')], 'drop': drop, 'replaced': [item[:2]]})
+    # a join: `label: *(p + off) = f(locals); goto next;`, reached by gotos and by falling into it, each arm setting the locals
+    for m in re.finditer(rf'(?m)^[ \t]*({_ID})[ \t]*:(?!:)', clean[opening:closing]):
+        label = m[1]
+        position, after = opening + m.start(), opening + m.end()
+        index = next((k for k, s in enumerate(statements) if s and s[0] >= after), None)
+        if index is None or index + 1 >= len(statements) or statements[index + 1] is None or label == 'default':
             continue
-        base = target['base'] or target['cbase']
-        offset = int(target['off'] or target['coff'], 0)
-        if offset % 4:
+        parts = _store(statements[index][2])
+        goes = re.fullmatch(rf'goto\s+({_ID})', statements[index + 1][2].strip())
+        if not parts or parts[2] is None or not goes:
             continue
-        # walk back through simple statements (no labels or braces) to the load of the same word
-        middle, load = [], None
-        for back in range(index - 1, max(index - 9, -1), -1):
-            earlier = statements[back]
-            if earlier is None:
+        base, offset, value = parts
+        ends = [(k, True) for k, s in enumerate(statements) if s and re.fullmatch(rf'goto\s+{label}', s[2].strip())]
+        before = [k for k, s in enumerate(statements) if s and s[1] <= position]
+        if before and all(x is None for x in statements[before[-1] + 1:index]) \
+                and not re.match(r'\s*(?:goto|return|break)\b', statements[before[-1]][2]):
+            ends.append((before[-1], False))
+        if not ends:
+            continue
+        edits, drop, fields, ok = [], [], [], True
+        for k, is_goto in ends:
+            walked = _walk(statements, k - 1 if is_goto else k, base, offset)
+            arm = _arm(statements, value, walked) if walked else None
+            if not arm:
+                ok = False
                 break
-            m = re.match(rf'\s*(?P<var>{_ID})\s*=\s*(?:\(\s*{_CASTS}\s*\)\s*)?(?P<load>\*.+)\Z', earlier[2], re.S)
-            access = _ACCESS.fullmatch(m['load'].strip()) if m else None
-            if m and access and (access['base'] or access['cbase']) == base \
-                    and int(access['off'] or access['coff'], 0) == offset:
-                load = (back, m['var'])
-                break
-            if re.search(r'\w\s*\(|\*\s*\(\(|\+\+|--', earlier[2]) and not re.match(rf'\s*{_ID}\s*=', earlier[2]):
-                break
-            if _ACCESS.search(earlier[2]) and re.match(r'\s*\*', earlier[2]):
-                break  # another store in between: keep the program's order
-            middle.append(back)
-        if not load:
-            continue
-        locals_ = {}
-        for back in sorted(middle):
-            m = re.match(rf'\s*({_ID})\s*=\s*(.+)\Z', statements[back][2], re.S)
-            if m:
-                tree = _parse(m[2])
-                if tree:
-                    locals_[m[1]] = tree
-        tree = _parse(store['value'])
-        if not tree:
-            continue
-        decoded = _decode(tree, load[1], locals_)
-        if decoded:
-            used, todo = set(), set(re.findall(_ID, store['value']))
-            while todo:
-                local = todo.pop()
-                if local in locals_ and local not in used:
-                    used.add(local)
-                    todo |= set(re.findall(_ID, next(statements[k][2] for k in middle
-                                                      if re.match(rf'\s*{local}\s*=', statements[k][2]))))
-            defs = [k for k in sorted(middle) if re.match(rf'\s*({_ID})\s*=', statements[k][2])
-                    and re.match(rf'\s*({_ID})', statements[k][2])[1] in used]
-            found.append((load[0], index, defs, base, offset, *decoded))
-    return found, statements
+            shift, bits, constant, dropped = arm
+            edits.append((k, shift, constant, f' goto {goes[1]};', is_goto))
+            drop += dropped
+            fields.append((shift, bits))
+        if ok:
+            items.append({'offset': offset, 'base': base, 'fields': fields, 'edits': edits, 'drop': drop,
+                          'replaced': [(position, statements[index + 1][1])], 'join': label})
+    return items, statements
 
 
-def _layout(updates_for_word):
+def _layout(fields):
     """[(shift, width)] sorted, or None when two different fields overlap."""
-    fields = sorted({(shift, width) for shift, width in updates_for_word}, reverse=True)
+    fields = sorted(set(fields), reverse=True)
     last = 32
     for shift, width in fields:
         if shift + width > last:
@@ -292,47 +345,62 @@ def variants(source, name):
     closing = clean.rfind('}', 0, span[1])
     if opening < 0 or closing < opening or re.search(r'^\s*#', clean[span[0]:span[1]], re.M):
         return []
-    found, statements = _updates(source, clean, opening, closing)
-    if not found:
+    items, statements = _updates(clean, opening, closing)
+    if not items:
         return []
     words = {}
-    for item in found:
-        words.setdefault(item[4], []).append(item)
+    for item in items:
+        words.setdefault(item['offset'], []).append(item)
 
     def build(offsets):
-        edits, declarations, used = [], [], set()
+        edits, declarations, replaced, candidates = [], [], [], []
         for offset in offsets:
-            items = words[offset]
-            layout = _layout([(i[5], i[6]) for i in items])
+            chosen = words[offset]
+            layout = _layout([field for item in chosen for field in item['fields']])
             if not layout or re.search(rf'__repair_bits_{offset:X}\b', clean):
                 continue
             declarations.append(_typedef(offset, layout))
-            for load, store, middle, base, _, shift, width, constant in items:
-                start, end, text = statements[store]
-                edits.append((start, end, f'((__repair_bits_{offset:X} *) {base})->f{shift} |= 0x{constant:X};'))
-                used.add(offset)
-                # drop the load and the locals only this update read, when nothing else reads them
-                later = clean[end:closing]
-                gone = [load, *middle]
-                for k in gone:
-                    local = re.match(rf'\s*({_ID})', statements[k][2])[1]
-                    others = ''.join(statements[j][2] for j in range(load, store)
-                                     if statements[j] is not None and j not in gone)
-                    reads = rf'\b{local}\b(?!\s*=(?!=))'
-                    if not re.search(reads, later) and not re.search(reads, others):
-                        first, last = statements[k][0], statements[k][1]
-                        while first > 0 and source[first - 1] in ' \t':
-                            first -= 1
-                        if first > 0 and source[first - 1] == '\n' and source[last:last + 1] == '\n':
-                            last += 1
-                        edits.append((first, last, ''))
-        if not used or not edits:
+            for item in chosen:
+                kind = f'((__repair_bits_{offset:X} *) {item["base"]})->f'
+                for edit in item['edits']:
+                    k, shift, constant = edit[:3]
+                    update = f'{kind}{shift} |= 0x{constant:X};'
+                    start, end, _ = statements[k]
+                    if len(edit) == 4:       # a plain update: the store itself
+                        edits.append((start, end, update))
+                    elif edit[4]:            # a join's goto
+                        edits.append((start, end, update + edit[3]))
+                    else:                    # the arm that falls into the join label
+                        edits.append((end, end, '\n' + re.search(r'([ \t]*)$', source[:start])[1] + update + edit[3]))
+                replaced += item['replaced']
+                candidates += item['drop']
+                if 'join' in item:
+                    edits.append((item['replaced'][0][0], item['replaced'][0][1], ''))
+        if not edits:
             return None
+        # a load or a local goes when nothing else reads it
+        spans = replaced + [statements[k][:2] for k in set(candidates)]
+        spans += [item[:2] for item in statements if item and re.fullmatch(
+            rf'\s*(?:(?:unsigned|signed|register|volatile|const)\s+)*{_ID}(?:\s*\*+\s*|\s+){_ID}\s*', item[2])]
+        names = {}
+        for k in set(candidates):
+            names.setdefault(re.match(rf'\s*({_ID})', statements[k][2])[1], []).append(k)
+        for local, owners in names.items():
+            reads = [m for m in re.finditer(rf'\b{local}\b(?!\s*=(?!=))', clean[opening:closing])
+                     if not any(a <= opening + m.start() < b for a, b in spans)]
+            if reads:
+                continue
+            for k in owners:
+                first, last = statements[k][0], statements[k][1]
+                while first > 0 and source[first - 1] in ' \t':
+                    first -= 1
+                if first > 0 and source[first - 1] == '\n' and source[last:last + 1] == '\n':
+                    last += 1
+                edits.append((first, last, ''))
         new = source
         for start, end, replacement in sorted(set(edits), reverse=True):
             new = new[:start] + replacement + new[end:]
-        at = span[0]
-        return new[:at] + ''.join(declarations) + new[at:]
+        return new[:span[0]] + ''.join(declarations) + new[span[0]:]
 
     groups = [[offset] for offset in sorted(words)]
     if len(groups) > 1:
