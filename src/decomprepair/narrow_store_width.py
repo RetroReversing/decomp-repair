@@ -13,7 +13,11 @@ target's own evidence.
 and once at the store (`v = (s16) ((s32) f); *((s16 *) p) = (s16) ((s32) f);`), where the target keeps the word the
 conversion made and stores its low half (`sh`, no `sll`/`sra` pair): the local holds `(s32) f` and the store writes the
 local. Only when the target stores that width at that offset and its assembly has no halfword sign extension at all
-(5245 -> 5035 with the width change above)."""
+(5245 -> 5035 with the width change above).
+
+A constant word store (`*((s32 *) (((char *) rec) + 0x28)) = 0x80;`) has no cast to say what the game stored, but the
+target's `sb $reg, 0x28($reg)` does: a child per such constant, as `u8` (or `u16` for `sh`). On a 1133-instruction
+effect spawner the one store judged 6305 -> 6105 (the field is a word elsewhere in that function, so never all at once)."""
 import re
 
 from .integer_repair_support import edit, view
@@ -27,6 +31,9 @@ _CAST = {'s16': ('sh', 's16'), 'u16': ('sh', 'u16'), 's8': ('sb', 's8'), 'u8': (
 _STORE = re.compile(
     r'\*\s*\(\(\s*(?P<wide>[su]32|int|unsigned(?:\s+int)?)\s*\*\s*\)\s*\(\(\(\s*char\s*\*\s*\)\s*(?P<base>[A-Za-z_]\w*)\s*\)\s*'
     r'\+\s*(?P<offset>0[xX][0-9a-fA-F]+|\d+)\s*\)\s*\)\s*=\s*\(\s*(?P<narrow>[su](?:8|16))\s*\)\s*')
+_CONSTANT = re.compile(
+    r'\*\s*\(\(\s*(?P<wide>[su]32|int|unsigned(?:\s+int)?)\s*\*\s*\)\s*\(\(\(\s*char\s*\*\s*\)\s*(?P<base>[A-Za-z_]\w*)\s*\)\s*'
+    r'\+\s*(?P<offset>0[xX][0-9a-fA-F]+|\d+)\s*\)\s*\)\s*=\s*(?P<value>0[xX][0-9a-fA-F]+|\d+)[uU]?\s*;')
 _HOLD = re.compile(
     r'(?P<v>[A-Za-z_]\w*)\s*=\s*\(\s*(?P<n>[su](?:8|16))\s*\)\s*\(\s*\(\s*s32\s*\)\s*(?P<e>[^;]+?)\s*\)\s*;\s*'
     r'\*\s*\(\(\s*(?P=n)\s*\*\s*\)\s*\(\(\(\s*char\s*\*\s*\)\s*(?P<base>[A-Za-z_]\w*)\s*\)\s*\+\s*'
@@ -82,6 +89,17 @@ def variants(source, name, asm=''):
         if len(sites) >= LIMIT:
             break
     out = [(FAMILY, edit(source, one)) for one in sites]
+    # a constant that m2c stored as a word where the target stores its low byte or halfword (`*((s32 *) p) = 0x80;` for
+    # `sb`): one child per site, never all at once (the same offset is a word elsewhere in the function)
+    constants = []
+    for hit in _CONSTANT.finditer(part.clean, part.opening, part.end):
+        value, offset = int(hit['value'], 0), int(hit['offset'], 0)
+        for mnemonic, narrow, limit in (('sb', 'u8', 0xFF), ('sh', 'u16', 0xFFFF)):
+            if (mnemonic, offset) in stores and value <= limit:
+                constants.append((FAMILY, edit(source, [(hit.start('wide'), hit.end('wide'), narrow)])))
+        if len(constants) >= LIMIT:
+            break
+    out += constants
     if len(sites) > 1:
         out.append((FAMILY, edit(source, [item for one in sites for item in one])))
     holds = _holds(part, stores, asm)
