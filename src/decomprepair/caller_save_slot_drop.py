@@ -17,6 +17,11 @@ lands elsewhere (a KMC gcc 2.7.2 collision sweep had `$s0` where the target keep
 with `copy = mask;` folded too (`copy` replaced by `mask`), so the compiler makes the save itself. On that function
 4737 -> 4587 (slot only) -> 4497 (both), the masks then in the target's `$t2`/`$fp` with the target's saves.
 That caller-save.c makes the slot is read in the 2.7.2 source; that this was the original's shape is one function.
+
+Two values saved around the same calls give interleaved round trips (`slot_a = a; slot_b = b; a = slot_a; b = slot_b;`,
+a 1928-instruction collision sweep with two grid masks): a round trip may have other plain copies between its store and
+its read-back, and a child drops every such slot at once (`ALL`), since one slot alone leaves the other's round trip and
+the extra frame slots (24474 -> 24464 there, the frame then the target's 0x290; each slot alone does not shrink it).
 """
 import re
 
@@ -24,7 +29,8 @@ from .csource import _blank, find
 
 FAMILY = 'caller_save_slot_drop'
 COMBINED = 'caller_save_slot_drop_fold'
-FAMILIES = (FAMILY, COMBINED)
+ALL = 'caller_save_slot_drop_all'
+FAMILIES = (FAMILY, COMBINED, ALL)
 
 I = r'[A-Za-z_]\w*'
 SCALAR = r'(?:(?:unsigned|signed|register)\s+)*(?:s8|u8|s16|u16|s32|u32|int|short|char|long|unsigned|signed)'
@@ -46,9 +52,10 @@ def _scalars(text):
 
 def _drop_slot(body, slot):
     """`body` without the slot: its round trips and stores removed. None when the slot is read any other way."""
-    pairs = re.compile(r'(?m)^[ \t]*' + slot + r'\s*=\s*(?P<v>' + I + r')\s*;[ \t]*\n[ \t]*(?P=v)\s*=\s*' + slot +
-                       r'\s*;[ \t]*\n')
-    text = pairs.sub('', body)
+    pairs = re.compile(r'(?m)^[ \t]*' + slot + r'\s*=\s*(?P<v>' + I + r')\s*;[ \t]*\n'
+                       r'(?P<between>(?:[ \t]*' + I + r'\s*=\s*' + I + r'\s*;[ \t]*\n)*?)'
+                       r'[ \t]*(?P=v)\s*=\s*' + slot + r'\s*;[ \t]*\n')
+    text = pairs.sub(lambda m: m['between'], body)
     text = re.sub(r'(?m)^[ \t]*' + slot + r'\s*=\s*' + I + r'\s*;[ \t]*\n', '', text)
     text = re.sub(r'(?m)^[ \t]*' + SCALAR + r'\s+' + slot + r'\s*;[ \t]*\n', '', text, count=1)
     if text == body or re.search(r'\b' + slot + r'\b', _blank(text)):
@@ -88,6 +95,8 @@ def variants(source, name):
     body = source[opening:end]
     decls = _scalars(body)
     result = []
+    every = body
+    dropped_slots = 0
     for slot in decls:
         reads = re.findall(r'\b' + I + r'\s*=\s*' + slot + r'\s*;', _blank(body))
         if not reads:
@@ -97,7 +106,13 @@ def variants(source, name):
         if dropped is None:
             continue
         result.append((FAMILY, source[:opening] + dropped + source[end:]))
+        together = _drop_slot(every, slot)
+        if together is not None:
+            every = together
+            dropped_slots += 1
         folded = _fold_copies(dropped, _scalars(dropped), saved)
         if folded is not None:
             result.append((COMBINED, source[:opening] + folded + source[end:]))
-    return result[:4]
+    if dropped_slots > 1:
+        result.insert(0, (ALL, source[:opening] + every + source[end:]))
+    return result[:5]

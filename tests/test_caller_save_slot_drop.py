@@ -47,3 +47,43 @@ def test_a_copy_assigned_again_is_not_folded():
     again = SOURCE.replace('g(i);', 'g(i);\n      copy = 3;')
     children = dict(m.variants(again, 'f'))
     assert m.FAMILY in children and m.COMBINED not in children
+
+
+TWO = """s32 g(s32);
+void f(s32 *p, s32 n)
+{
+  s32 a;
+  s32 b;
+  s32 slot_a;
+  s32 slot_b;
+  s32 i;
+  a = *p & 0xFF;
+  b = *p & 0xFF00;
+  slot_a = a;
+  slot_b = b;
+  for (i = 0; i < n; i++)
+  {
+    if ((a & p[i]) && (b & p[i]))
+    {
+      slot_a = a;
+      slot_b = b;
+      a = slot_a;
+      b = slot_b;
+      g(i);
+    }
+  }
+}
+"""
+
+
+def test_interleaved_round_trips_of_two_slots_go_together():
+    children = dict(m.variants(TWO, 'f'))
+    text = children[m.ALL]
+    assert 'slot_a' not in text and 'slot_b' not in text
+    assert 'a = *p & 0xFF;' in text and 'g(i);' in text
+
+
+def test_each_interleaved_slot_alone_is_a_child_too():
+    texts = [t for fam, t in m.variants(TWO, 'f') if fam == m.FAMILY]
+    assert any('slot_a' not in t and 'slot_b' in t for t in texts)
+    assert any('slot_b' not in t and 'slot_a' in t for t in texts)
