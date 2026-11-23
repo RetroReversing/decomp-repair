@@ -70,3 +70,29 @@ def test_a_local_update_passes_a_statement_with_a_call_that_does_not_name_it():
     # an address-taken local is reachable by the call
     taken = source.replace('sum = g(phase);', 'sum = g(&phase);')
     assert all(t.index('phase += 0.21f;') < t.index('sum = sum + ((f64) h(turn));') for _, t in variants(taken, 'f'))
+
+
+def test_a_local_flag_clear_passes_member_stores_and_a_call_that_do_not_name_it():
+    # An 874-instruction object spawner (KMC GCC 2.7.2): `kind = 0;` after a call and two stores was the target's
+    # above the call (15 -> 0): set there, the flag lives across the call and takes a saved register.
+    source = '''void f(Rec *rec, s32 id)
+{
+    s32 mode;
+    s8 kind;
+
+    scan(rec, &mode);
+    rec[id].loaded = 1;
+    mode = 1;
+    kind = 0;
+    if (kind == 0) {
+        g();
+    }
+}
+'''
+    children = [text for _, text in variants(source, 'f')]
+    assert any(t.index('kind = 0;') < t.index('scan(rec, &mode);') for t in children)
+    # a store that names the flag, or an address-taken flag, keeps it below
+    named = source.replace('rec[id].loaded = 1;', 'rec[kind].loaded = 1;')
+    assert all(t.index('kind = 0;') > t.index('rec[kind].loaded = 1;') for _, t in variants(named, 'f'))
+    taken = source.replace('scan(rec, &mode);', 'scan(rec, &kind);')
+    assert all(t.index('kind = 0;') > t.index('scan(rec, &kind);') for _, t in variants(taken, 'f'))
