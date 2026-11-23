@@ -19,7 +19,9 @@ loops, is left alone. Four operations, each one a rename:
 
 - `loop_counter_fresh`: one loop of a variable shared by several gets a new variable of the same type;
 - `loop_counter_reassign`: one loop takes another counter variable of the same type whose own regions don't
-  overlap it (the loop's region may not contain another region of that variable);
+  overlap it (the loop's region may not contain another region of that variable); it may also lie below the
+  variable's later readers (a 1133-instruction effect spawner took its third loop's counter from the first loop's,
+  read after that loop for a table index: 6000 -> 6040 alone, the loop's registers in the target's order);
 - `loop_counter_merge`: two variables of one type whose regions never overlap become one;
 - `loop_counter_swap`: two loops trade their variables.
 
@@ -178,8 +180,9 @@ def variants(source, name):
         for region in regions[u]:
             if found[u][3] and region is regions[u][-1]:
                 continue
-            if found[w][3] and region[1] > regions[w][-1][0]:
-                continue  # (it must lie above w's last loop, which sets w again before w's later readers)
+            if found[w][3] and region[1] > regions[w][-1][0] and not all(m[0] < region[0] for m in found[w][3]):
+                continue  # (it must lie above w's last loop, which sets w again before w's later readers; or below
+                #           every one of those readers, which it then sets after: `i = 0;` again, a loop later)
             if not any(_overlap(region, other) for other in regions[w]):
                 add(REASSIGN, _rename(region, w))
     for u, w in same:
