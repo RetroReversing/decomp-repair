@@ -37,3 +37,17 @@ def test_the_module_declares_itself_to_the_registry():
     for repair in registry.declared():
         if repair.module == 'adjacent_init_swap':
             assert registry.problems(repair) == []
+
+
+def test_two_plain_assignments_whose_names_end_alike_are_swapped():
+    from decomprepair.adjacent_init_swap import variants as swaps
+    code = '''extern void *gReferenceActor;
+extern void *gPlayerActor;
+void f(void)
+{
+  gReferenceActor = NULL;
+  gPlayerActor = NULL;
+}
+'''
+    children = [text for _, text in swaps(code, 'f')]
+    assert children and children[0].index('gPlayerActor = NULL;') < children[0].index('gReferenceActor = NULL;')
