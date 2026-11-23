@@ -9,8 +9,9 @@ with no predecessor has priority 1, and the memory unit blocks it in the slot be
 shift's register. Wrapped in `do { c = G; } while (0);` the read follows a loop note, and sched.c makes the insn after a
 loop note depend on every insn before it (`sched_analyze`, the `NOTE_INSN_LOOP_BEG/END` case), so the load stays after
 the `or`; `c` keeps one set and one death, a block-local pseudo that local-alloc gives the freed register (60 -> 0 on a
-118-instruction menu update; the shared-local form of `volatile_rmw_counter_share` reached only 25, its local having two
-deaths and going to global.c). The loop-note rule is read from sched.c; the register outcome is measured on one function.
+118-instruction menu update; the shared-local form, the retired `volatile_rmw_counter_share`, reached only 25, its local
+having two deaths and going to global.c: a dead end, since the flag already holds the register the target gives the
+counter while the shared local is live, so it was removed and this family covers its shape). The loop-note rule is read from sched.c; the register outcome is measured on one function.
 
 The shape: a statement storing through a dereference (`*expr = value;`, a `volatile` cast included) immediately followed by
 `G++;`, `G += K;` or `G = G + K;` for a global `G` whose `extern` declaration (in the source or the header) names its type.

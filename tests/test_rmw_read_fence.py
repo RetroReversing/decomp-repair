@@ -47,3 +47,17 @@ def test_shapes_it_leaves_alone():
 def test_the_module_declares_itself_for_the_registry():
     assert f.REPAIR['variants'] is f.variants and f.REPAIR['families'] == f.FAMILIES
     assert f.REPAIR['needs'] == ('source', 'name', 'header')
+
+
+def test_the_retired_shared_local_shape_is_covered_by_the_fence():
+    """volatile_rmw_counter_share (retired) wrote the counter into the masked value's local: two deaths, a global
+    pseudo, 25 at best on the function both were measured on, where this family reached 0. Its exact shape is fenced."""
+    import importlib.util
+    assert importlib.util.find_spec('decomprepair.volatile_rmw_counter_share') is None
+    source = ('typedef struct { u8 pad[16]; u32 color; } Item;\nextern u16 gTick;\nextern u16 gAlpha;\n\n'
+              'void pulse(Item *current) {\n'
+              '    *((volatile u32 *) (&current->color)) = (current->color & (~255)) | (gAlpha << 3);\n'
+              '    gTick++;\n}\n')
+    ((family, text),) = f.variants(source, 'pulse')
+    body = text.split('void pulse')[1]
+    assert 'rmw_c = gTick;' in body and 'gTick = rmw_c + 1;' in body
