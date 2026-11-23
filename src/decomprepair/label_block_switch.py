@@ -44,6 +44,14 @@ def _python(condition, name):
     return text
 
 
+def _close(body, index):
+    """The line that closes the `{` at `index`; Stop when the braces never balance (the tree is not one to read)."""
+    close = block_end(body, index)
+    if close is None:
+        raise Stop
+    return close
+
+
 def _parse(body, index, end):
     """Statements from index up to end (exclusive) as nodes; an `if` is ('if', condition, then, otherwise)."""
     nodes = []
@@ -60,19 +68,19 @@ def _statement(body, index, end):
     if not text:
         return None, index + 1
     if text == '{':  # a bare block
-        close = block_end(body, index)
+        close = _close(body, index)
         return ('block', _parse(body, index + 1, close)), close + 1
     if re.match(r'if\s*\(', text):
         condition = text[text.index('(') + 1:text.rindex(')')]
         if index + 1 >= end or body[index + 1].stripped != '{':
             raise Stop
-        close = block_end(body, index + 1)
+        close = _close(body, index + 1)
         then = _parse(body, index + 2, close)
         index = close + 1
         otherwise = []
         if index < end and body[index].stripped == 'else':
             if index + 1 < end and body[index + 1].stripped == '{':
-                close = block_end(body, index + 1)
+                close = _close(body, index + 1)
                 otherwise = _parse(body, index + 2, close)
                 index = close + 1
             elif index + 1 < end and re.match(r'if\s*\(', body[index + 1].stripped):
@@ -151,6 +159,8 @@ def variants(source, name):
             nxt = end + 1
             if nxt < len(body) and body[nxt].stripped == 'else' and nxt + 1 < len(body) and body[nxt + 1].stripped == '{':
                 end = block_end(body, nxt + 1)
+                if end is None:
+                    continue
             tree = _parse(body, index, end + 1)
             variable = re.search(r'\b([A-Za-z_]\w*)\b', CAST.sub(' ', re.sub(r'\binline_fn\w*', ' ', line.stripped[line.stripped.index('('):])))
             if not variable:
