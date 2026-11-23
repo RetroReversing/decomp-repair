@@ -8,6 +8,10 @@ with that edit alone (the combined test also moves the flag's load above the bod
 branches do not). Why the first form is folded is a hypothesis (fold-const's TRUTH_ORIF_EXPR -> TRUTH_OR_EXPR for
 operands without side effects), not read in the compiler's source here.
 
+The same fold hides in a guard that skips the rest of the body: `if (A || B) { continue; }` is one combined branch where
+the game wrote `if (A) { continue; }` and `if (B) { continue; }` (a 534-instruction panel builder's inner loop,
+10386 -> 9321 with it); `variants` offers that split too, for each such `continue` whose two sides are plain comparisons.
+
 `variants` rewrites, in each `for`/`while` body, a last statement `if (A || B) { BODY }` (no `else`, `A` and `B` plain
 comparisons of names, constants and field reads, no assignment, call or `++`) into
 
@@ -73,12 +77,43 @@ def _jumps(body):
     return bool(re.search(r'\bbreak\b', _blocks(plain, r'\bswitch\s*\([^{};]*\)\s*\{')))
 
 
+SKIP = re.compile(r'\bif\s*\(')
+
+
+def _skips(source, clean, span):
+    """`if (A || B) { continue; }` as `if (A) { continue; }` and `if (B) { continue; }`: one child for all of them."""
+    edits = []
+    for hit in SKIP.finditer(clean, span[0], span[1]):
+        cond_open = hit.end() - 1
+        cond_close = close(clean, cond_open)
+        if not cond_close:
+            continue
+        tail = re.match(r'\s*(?:\{\s*continue\s*;\s*\}|continue\s*;)', clean[cond_close:span[1]])
+        if not tail or re.match(r'\s*else\b', clean[cond_close + tail.end():span[1]]):
+            continue
+        parts = _split_or(clean[cond_open + 1:cond_close - 1])
+        if len(parts) < 2 or any(_flip(part) is None for part in parts):
+            continue
+        line = source.rfind('\n', 0, hit.start()) + 1
+        indent = re.match(r'[ \t]*', source[line:hit.start()])[0]
+        if source[line:hit.start()].strip():
+            continue  # (not the first thing on its line)
+        text = ('\n' + indent).join(f'if ({part.strip()})\n{indent}{{\n{indent}    continue;\n{indent}}}' for part in parts)
+        edits.append((hit.start(), cond_close + tail.end(), text))
+    if not edits:
+        return []
+    out = source
+    for a, b, text in sorted(edits, reverse=True):
+        out = out[:a] + text + out[b:]
+    return [out]
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
         return []
     clean = _blank(source)
-    out = []
+    out = _skips(source, clean, span)
     for loop in LOOP.finditer(clean, span[0], span[1]):
         head_close = close(clean, loop.end() - 1)
         if not head_close:

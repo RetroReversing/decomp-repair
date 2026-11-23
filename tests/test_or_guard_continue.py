@@ -38,3 +38,13 @@ def test_other_shapes_are_left_alone():
     assert variants(CODE.replace('work(j + 2);', 'continue;'), 'run') == []
     assert variants(CODE.replace('        }\n    }\n}', '        }\n        work(9);\n    }\n}'), 'run') == []
     assert variants(CODE, 'missing') == []
+
+
+def test_an_or_continue_is_split_into_two_continues():
+    code = CODE.replace('        if (gPause == 0 || j != 1) {\n            work(j + 1);\n            work(j + 2);\n        }\n',
+                        '        if (gPause == 0 || j != 1) {\n            continue;\n        }\n        work(j + 1);\n')
+    children = [squash(text) for _, text in variants(code, 'run')]
+    assert any('if (gPause == 0) { continue; } if (j != 1) { continue; } work(j + 1);' in text for text in children)
+    assert all('||' not in text for text in children[:1])
+    assert not any('if (gPause == 0) { continue; }' in squash(text) for _, text in
+                   variants(code.replace('gPause == 0 || j != 1', 'work(j) || j != 1'), 'run'))
