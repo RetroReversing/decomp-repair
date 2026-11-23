@@ -145,3 +145,13 @@ def test_the_loop_invariants_m2c_named_are_written_back_in_a_second_child():
     assert 'temp_s1' not in both and 'sp14' not in both
     assert 'if ((arg4 - 1) < var_t4)' in both
     assert 'gDPSetTextureImage(gfx++, arg5, 1, ((u32) arg3 >> 1), arg1);' in both
+
+
+def test_a_signed_cast_that_belongs_to_a_shifted_operand_is_kept_when_the_mask_is_dropped():
+    """`(s32) (x + 8) >> 3` is an arithmetic shift of a signed sum. The field's `& 0x1FF` is the macro's own mask, but the
+    cast sits inside the field: dropping it made the shift logical on an unsigned sum (`sra` became `srl`, 855 -> 655 once
+    the cast was back on a 315-instruction tile builder). A cast on the whole field is still dropped."""
+    draft = DRAFT.replace('temp_a0 = ((var_t4 >> 3) & 0x1FF) << 9;',
+                          'temp_a0 = (((s32) (var_t4 + 8) >> 3) & 0x1FF) << 9;')
+    body = _out(draft)
+    assert 'gDPSetTile(gfx++, arg5, 1, (s32) (var_t4 + 8) >> 3, 0, 7, 0, 2, 0, 0, 2, 0, 0);' in body
