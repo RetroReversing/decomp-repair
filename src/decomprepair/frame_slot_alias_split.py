@@ -90,7 +90,7 @@ def variants(source, name):
     if not reads or len(changes) == reads:
         return []
     start = find_start(part, name)
-    typedefs = ''.join(records.values())
+    typedefs = ''.join(text for record, text in records.items() if f'}} {record};' not in source)
     return [(FAMILY, edit(source, changes + [(start, start, typedefs)]))]
 
 
