@@ -45,6 +45,11 @@ def _declaration(part, name):
     return found, re.sub(r'\s+', ' ', found['type'])
 
 
+def _names(text, name):
+    """The occurrences of the local `name`, not the members that happen to be called that."""
+    return [m for m in re.finditer(rf'\b{re.escape(name)}\b', text) if not re.search(r'(?:->|\.)\s*$', text[:m.start()])]
+
+
 def _fresh(part):
     taken = set(re.findall(IDENT, part.clean[part.opening:part.end]))
     for candidate in ('clamped', 'clamped_byte', 'byte_clamp'):
@@ -70,7 +75,7 @@ def _children(source, name):
         declared = _declaration(part, t)
         if not declared or declared[1] not in _WIDE or '==' in dst or re.search(r'[<>!]=?', dst.replace('->', '')):
             continue
-        if re.search(rf'\b{re.escape(t)}\b', expr) or re.search(IDENT + r'\s*\(|\+\+|--|[^=!<>]=[^=]', expr):
+        if _names(expr, t) or re.search(IDENT + r'\s*\(|\+\+|--|[^=!<>]=[^=]', expr):
             continue
         fresh = _fresh(part)
         if not fresh:
@@ -79,13 +84,12 @@ def _children(source, name):
         after = part.clean[hit.end():part.end]
         # the wide local is not read before the clamp, and after it only as `(u8) t` or as a write target
         span = _declaration_span(part, declared[0])
-        if any(not re.match(_WRITE, before[m.end():]) for m in re.finditer(rf'\b{re.escape(t)}\b', before)
-               if start + m.start() not in span):
+        if any(not re.match(_WRITE, before[m.end():]) for m in _names(before, t) if start + m.start() not in span):
             continue
         bad = False
         casts = []
         writes = []
-        for m in re.finditer(rf'\b{re.escape(t)}\b', after):
+        for m in _names(after, t):
             prefix = after[:m.start()]
             at = hit.end() + m.start()
             cast = re.search(rf'{_CAST}$', prefix)

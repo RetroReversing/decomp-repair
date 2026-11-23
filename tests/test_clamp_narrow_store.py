@@ -54,3 +54,10 @@ def test_a_wide_local_read_before_the_clamp_is_left_alone():
 def test_the_other_arm_order_is_not_a_clamp_of_this_shape():
     swapped = SOURCE.replace('proposed >= 256', 'proposed >= 255')
     assert variants(swapped, 'update') == []
+
+
+def test_a_member_with_the_locals_name_is_not_a_read_of_the_local():
+    source = SOURCE.replace('s32 proposed;', 's32 proposed, selected;').replace(
+        '            proposed = w->selected + 1;', '            proposed = w->proposed + 1;')
+    [(_, text)] = variants(source.replace('(u8)proposed < sum', '(u8)proposed < w->proposed'), 'update')
+    assert 'clamped < w->proposed' in text
