@@ -65,7 +65,6 @@ def variants(source, name):
             kind, offset = members.get(hit['member'], (None, 0))
             if kind is None or _SIZES[kind] == 1:
                 continue
-            slot = (a + len(clean[a:b]) - len(clean[a:b].lstrip()), None)
             lead = a + len(clean[a:b]) - len(clean[a:b].lstrip())
             plain = (lead, lead + hit.end(), f'(*({kind} *)((char *)&{var} + {offset})){hit["op"]}')
             options = []
@@ -83,7 +82,6 @@ def variants(source, name):
                 seen.add(key)
                 typedefs = ''.join({x[3]: x[4] for x in accesses if f'}} {x[3]};' not in source}.values())
                 edits = [plain] + [(x[0], x[1], x[2]) for x in accesses]
-                edits = [(x[0], x[1], x[2]) for x in edits]
                 at = find_start(part, name)
                 result.append((FAMILY, edit(source, edits + [(at, at, typedefs)])))
     return result
