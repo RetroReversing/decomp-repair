@@ -30,7 +30,8 @@ FAMILIES = (FAMILY,)
 LIMIT = 6
 FLAG = '-fno-strength-reduce'
 _STEP = re.compile(rf'(?m)^[ \t]*(?P<v>{IDENT})\s*(?:\+=\s*(?P<k>{NUMBER})|\+\+)\s*;[ \t]*\n')
-_ASSIGN = re.compile(rf'(?m)^(?P<lead>[ \t]*)(?:/\*__repair_loop_weight\*/)?(?:do \{{ ?)*(?P<v>{IDENT}) = (?P<init>[^;{{}}]+);(?: ?\}} while \(0\);)*[ \t]*\n')
+# a start may also stand mid-line, after another statement (a saved best keeps several statements on one line)
+_ASSIGN = re.compile(rf'(?m)(?:^|(?<=[;{{}}]))(?P<lead>[ \t]*)(?:/\*__repair_loop_weight\*/)?(?:do \{{ ?)*(?P<v>{IDENT}) = (?P<init>[^;{{}}]+);(?: ?\}} while \(0\);)*(?:[ \t]*\n|(?=[ \t]*\S))')
 _BYTE = re.compile(r'\b(?:void|char|[su]8)\s*\*\s*$')
 
 
