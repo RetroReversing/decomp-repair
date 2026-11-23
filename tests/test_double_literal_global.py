@@ -65,3 +65,44 @@ def test_a_symbol_another_function_names_or_the_function_writes_is_left_alone():
 def test_the_module_declares_itself_to_the_registry():
     repair = next(r for r in registry.declared() if r.module == 'double_literal_global')
     assert 'words' in repair.needs and repair.archs == ('mips',)
+
+
+PAIR_SOURCE = '''extern f64 D_800D47F8;
+extern f64 D_800D4800;
+
+void f(f32 *out)
+{
+    f64 phase;
+
+    phase = D_800D47F8;
+    out[0] = (f32) (phase * D_800D4800);
+}
+'''
+PAIR_ASM = '''glabel f
+/* 0 80001000 3C01800D */  lui        $at, %hi(D_800D47F8)
+/* 4 80001004 8C3447F8 */  lw         $s4, %lo(D_800D47F8)($at)
+/* 8 80001008 8C3547FC */  lw         $s5, %lo(D_800D47FC)($at)
+/* C 8000100C 3C01800D */  lui        $at, %hi(D_800D4800)
+/* 10 80001010 D43E4800 */  ldc1       $fs5, %lo(D_800D4800)($at)
+'''
+TENTH = struct.unpack('>Q', bytes.fromhex('3FB9E83E425AEE63'))[0]
+
+
+def test_a_double_held_in_two_general_registers_is_the_literal_gas_loads_as_two_words():
+    # A 1133-instruction effect spawner, KMC GCC 2.7.2: the phase offset of a sine loop lives in $s4/$s5 across the
+    # loop's calls; GAS's `li.d` loads it `lui $at; lw; lw` with the shared `$at` (a global read uses `lui $s4; lw $s4,
+    # ($s4); lui $s5; ...`). As the literal: 610 -> 495, and 470 with the ldc1 doubles beside it.
+    out = dlg.variants(PAIR_SOURCE, 'f', asm=PAIR_ASM, words={'D_800D47F8': TENTH, 'D_800D4800': THIRD})
+    children = [child for _, child in out]
+    assert any('phase = 0.1012;' in c and 'D_800D4800' in c.split('{', 1)[1] for c in children)
+    assert any('phase = 0.1012;' in c and 'phase * 0.3333333333333333' in c for c in children)
+
+
+def test_a_global_read_into_a_register_pair_or_an_indexed_table_is_not_a_literal():
+    own = PAIR_ASM.replace('lui        $at, %hi(D_800D47F8)', 'lui        $s4, %hi(D_800D47F8)').replace(
+        'lw         $s4, %lo(D_800D47F8)($at)', 'lw         $s4, %lo(D_800D47F8)($s4)')
+    assert not dlg._double_loads('D_800D47F8', own)
+    indexed = PAIR_ASM.replace('lui        $at, %hi(D_800D47F8)\n', 'lui        $at, %hi(D_800D47F8)\n'
+                               '/* 2 80001002 00220821 */  addu       $at, $at, $v0\n')
+    assert not dlg._double_loads('D_800D47F8', indexed)
+    assert dlg._double_loads('D_800D47F8', PAIR_ASM)
