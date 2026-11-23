@@ -44,7 +44,6 @@ def variants(source, name):
     body = lines(part, source)
     members = _members(source, part.clean, part)
     out = []
-    declarations = []
     for index, line in enumerate(body):
         text = line.stripped
         if not re.match(r'if\s*\(', text):
