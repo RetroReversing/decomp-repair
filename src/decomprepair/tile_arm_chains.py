@@ -3,9 +3,8 @@ written the way the compiler's allocator and cross-jumper want it (KMC GCC 2.7.2
 
 m2c writes every arm as `p = ((i & 0xFF) * K1) + ((row * K2) + TABLE);`. A tile/collision lookup with ten of them (five
 arms over a row-selected bank, five over one table) stood at 6175 and needed seven edits, none of which the permuter could
-find one at a time, to reach 60 (the last two rows are an instruction order GCC's scheduler picks). Each edit changes a
-different decision of the compiler; all are readings of gcc-2.7.2's passes that the judge agreed with, labelled
-hypotheses:
+find one at a time, to reach 0. Each edit changes a different decision of the compiler; all are readings of
+gcc-2.7.2's passes that the judge agreed with, labelled hypotheses:
 
 1. `bank_index_first`: the bank's address in a local, the row product in a one-shot scope of its own, and the index term
    added as the *first* operand (`p = (u8 *)(i * K1) + (s32)bank;`).
@@ -27,14 +26,22 @@ hypotheses:
    before the shift, so the scheduler keeps the load order and `b` does not conflict with the pointer).
 4. `zero_arm_inversion`: `if (C) { return 0; } rest; return x;` at the end of a function as `if (!C) { rest; return x; }
    return 0;`, which makes reorg.c annul the delay slot that holds `li $v0,0` (`bnel`) as the target does.
-5. `tile_arm_chains` is the first four at once, since the arms only match together; `bank_arm_scope` and
-   `table_arm_scope` then try the one-shot scopes arm by arm (the arms did not all want the same: two bank arms with the
-   scope and one without, one table arm with the small term's add in a scope, one with the index value in one). On the
-   draft (KMC GCC 2.7.2) the combined child alone went 6175 -> 1875 and the per-arm steps 1875 -> 1680; the rest of the
-   measured route to 60 (the arms' shared tail copied into each arm, a local per arm, the dead parameter's name reused
-   for a later arm's value, the loads before the shift) is `goto_run_copy`, `arm_variable_share` and these families'
-   other children. A hand run of those steps with the judge between each took the draft 6175 -> 2005 -> 1140 -> 905 ->
-   670 -> 295 -> 260 -> 60, the last two rows a scheduler order.
+5. `shared_return_split` (`goto L;` to `L: return *p << 7;`: each arm returns on its own and the arm that fell into the label
+   gets a pointer of its own: a pseudo set in several arms is a global one, which the allocator colours after the
+   quantities of each arm and so swaps the arm's registers; the same edit makes reorg.c annul the delay slot of the
+   `return 0` test as the target has it), `label_run_copy` (a label's run copied in place of each `goto` to it, the arms'
+   tails then merged back by jump.c's cross-jumping after allocation, which is what leaves the arms' chains separate)
+   and `dead_local_reuse` (a local tested by an `if` whose arm leaves, and the next local first assigned after it:
+   the later one takes the dead one's name, so its value is in the dead one's register) are the remaining steps.
+6. `tile_arm_chains` is `bank_index_first`, `byte_entry_copy`, `dead_local_reuse` and `zero_arm_inversion` at once, since
+   the arms only match together; `bank_arm_scope` and `table_arm_scope` then try the one-shot scopes arm by arm (the arms
+   did not all want the same: some bank arms with the scope and some without, one table arm with the small term's add
+   in a scope, one with the index value in one, one with the index read before the table's address and no scope).
+   On the draft (KMC GCC 2.7.2) the combined child alone went 6175 -> 1685 and the per-arm steps below 1700; the whole
+   route as the steps were found by hand, with the judge between each, was 6175 -> 2005 (arms) -> 1140 (the dead
+   parameter's name reused) -> 905 (byte copy) -> 670 -> 295 (tails copied into the arms and a local per arm, with the
+   later `local_web_split` and weight steps) -> 260 (loads before the shift) -> 60 -> 0 (the last arm's return not
+   shared with its sibling).
 
 Every child compiles to a program with the same behaviour as its source: the rewrites move statements and spell the same
 arithmetic differently, they invent no value."""
@@ -44,7 +51,7 @@ from .csource import _blank, find
 from .pattern_repairs import close, negate
 
 FAMILIES = ('bank_index_first', 'bank_arm_scope', 'table_arm_scope', 'byte_entry_copy', 'load_shift_split', 'zero_arm_inversion',
-            'tile_arm_chains')
+            'shared_return_split', 'label_run_copy', 'dead_local_reuse', 'tile_arm_chains')
 LIMIT = 40
 
 _IDENT = r'[A-Za-z_]\w*'
@@ -140,9 +147,9 @@ def bank_arm_scope(source, name):
 
 
 def table_arm_scope(source, name):
-    """One table arm at a time, three spellings of the same arithmetic with a different one-shot scope: the small term's
-    add in a scope of its own (the index chain outranks the index value), the index value in a scope, and the index value
-    in a scope before the table's address is taken."""
+    """One table arm at a time, four spellings of the same arithmetic with a different one-shot scope: the small term's
+    add in a scope of its own (the index chain outranks the index value), the index value in a scope, the index value in
+    a scope before the table's address is taken, and the index value read before the table's address with no scope."""
     span = _span(source, name)
     if not span:
         return []
@@ -154,9 +161,155 @@ def table_arm_scope(source, name):
             forms.append(f'{{ u8 *bp = {sym}; u8 *sm; sm = bp + {idx} * {k1}; do {{ {lhs} = sm{tail}; }} while (0); }}')
         forms.append(f'{{ u8 *bp = {sym}; u32 bb; do {{ bb = {idx}; }} while (0); {lhs} = bp + bb * {k1}{tail}; }}')
         forms.append(f'{{ u32 bb; u8 *bp; do {{ bb = {idx}; }} while (0); bp = {sym}; {lhs} = bp + bb * {k1}{tail}; }}')
+        forms.append(f'{{ u32 bb; u8 *bp; bb = {idx}; bp = {sym}; {lhs} = bp + bb * {k1}{tail}; }}')
         for text in forms:
             result.append(source[:hit.start()] + text + source[hit.end():])
     return result
+
+
+def _declared_type(clean, name):
+    hit = re.search(rf'^[ \t]*((?:(?:unsigned|signed|struct|const)\s+)?[A-Za-z_]\w*(?:\s*\*)*)\s*\**\s*\b{name}\b\s*;', clean, re.M)
+    return hit and (hit.group(0).split(name)[0].strip(), hit.end(), hit.start())
+
+
+def shared_return_split(source, name):
+    """A `goto L;` to `L: return EXPR;`, one arm assigning the variable the return reads just before the label and others
+    jumping in: each jumping arm returns on its own and the arm that falls into the label gets a variable of its own,
+    so no pointer is shared across the arms (a pseudo set in several arms is a global one: the allocator, not local-alloc,
+    gives it a register after the quantities of each arm, which swaps the arm's registers)."""
+    span = _span(source, name)
+    if not span:
+        return []
+    clean = _blank(source)
+    start, end = span
+    opening = clean.find('{', start, end)
+    result = []
+    for label in re.finditer(rf'(?<![\w.>:])(?P<label>{_IDENT})\s*:(?!:)\s*return\s+(?P<expr>[^;{{}}]+);', clean[opening:end]):
+        at = opening + label.start()
+        text, expr = label['label'], label['expr'].strip()
+        jumps = [m for m in re.finditer(rf'\bgoto\s+{text}\s*;', clean[opening:end])]
+        before = clean[opening:at]
+        prior = re.search(rf'(?P<v>{_IDENT})\s*=(?!=)[^;{{}}]*;\s*\}}?\s*$', before)
+        if not jumps or not prior or prior['v'] not in re.findall(_IDENT, expr):
+            continue
+        var = prior['v']
+        decl = _declared_type(clean[opening:], var)
+        if not decl or f'{var}_b' in clean:
+            continue
+        ctype, declaration_end, declaration_start = decl
+        edited = source
+        edits = []
+        line = clean.rfind('\n', 0, opening + prior.start('v')) + 1
+        indent = re.match(r'[ \t]*', clean[line:])[0] or '    '
+        edits.append((at, opening + label.end(), f'{indent}return {re.sub(rf"(?<![\w.>]){var}\b", var + "_b", expr)};'))
+        assign_start = opening + prior.start('v')
+        edits.append((assign_start, assign_start + len(var), f'{var}_b'))
+        for jump in jumps:
+            edits.append((opening + jump.start(), opening + jump.end(), f'return {expr};'))
+        for a, b, replacement in sorted(edits, reverse=True):
+            edited = edited[:a] + replacement + edited[b:]
+        line_end = opening + declaration_end
+        edited = edited[:line_end] + f'\n    {ctype} {var}_b;' + edited[line_end:]
+        result.append(edited)
+    return result
+
+
+def label_run_copy(source, name):
+    """A label's run of statements copied in place of each `goto` to it, followed by a jump to the label the run falls
+    into: the arms stop sharing one block (jump.c cross-jumps the identical tails afterwards, or not, as the target has
+    it)."""
+    span = _span(source, name)
+    if not span:
+        return []
+    clean = _blank(source)
+    start, end = span
+    opening = clean.find('{', start, end)
+    result = []
+    labels = list(re.finditer(rf'(?<![\w.>:?])(?P<label>{_IDENT})\s*:(?!:)', clean[opening:end]))
+    for number, label in enumerate(labels[:-1]):
+        name_ = label['label']
+        if name_ in ('default', 'else'):
+            continue
+        run_start = opening + label.end()
+        following = labels[number + 1]
+        run = source[run_start:opening + following.start()].strip('\n')
+        run_clean = clean[run_start:opening + following.start()]
+        if not run.strip() or len(run) > 400 or re.search(r'\b(?:return|goto|for|while|do|switch|if|case)\b|[{}]', run_clean):
+            continue
+        jumps = [m for m in re.finditer(rf'\bgoto\s+{name_}\s*;', clean[opening:end]) if opening + m.start() < run_start - len(name_) - 1
+                 or opening + m.start() > opening + following.start()]
+        if not jumps:
+            continue
+        text = source
+        for jump in reversed(jumps):
+            indent = re.search(r'[ \t]*$', source[:opening + jump.start()])[0]
+            body = '\n'.join(line if not line.strip() else indent + line.strip() for line in run.split('\n'))
+            text = text[:opening + jump.start()] + body.lstrip() + f'\n{indent}goto {following["label"]};' + text[opening + jump.end():]
+        result.append(text)
+    return result
+
+
+def dead_local_reuse(source, name):
+    """A local `a` that a top-level `if` tests and whose arm always leaves, then a later local `b` first assigned after the
+    `if`: `b` takes `a`'s name in what follows (the later value takes the dead one's register, the parameter's when `a`
+    was masked out of it), and `a`, if the code after the `if` assigns it again before reading it, gets a name of its own
+    for that."""
+    span = _span(source, name)
+    if not span:
+        return []
+    clean = _blank(source)
+    start, end = span
+    opening = clean.find('{', start, end)
+    last = clean.rfind('}', opening, end)
+    body = clean[opening:last]
+    names = list(re.findall(rf'^[ \t]*(?:(?:u|s)(?:8|16|32)|int|unsigned)\s+({_IDENT})\s*;', body, re.M))
+    types = dict(re.findall(rf'^[ \t]*((?:u|s)(?:8|16|32)|int|unsigned)\s+({_IDENT})\s*;', body, re.M)[i][::-1] for i in range(len(names)))
+    result = []
+    depth = 0
+    for hit in re.finditer(r'[{}]|(?<![\w.])if\s*\(', body):
+        if hit[0] == '{':
+            depth += 1
+        elif hit[0] == '}':
+            depth -= 1
+        elif depth == 1:
+            at = opening + hit.start()
+            paren = clean.find('(', at)
+            after = close(clean, paren)
+            brace = clean.find('{', after) if after else -1
+            if brace < 0 or clean[after:brace].strip():
+                continue
+            arm_end = close(clean, brace, '{', '}')
+            if arm_end is None or re.match(r'\s*else\b', clean[arm_end:last]) or not re.search(r'(?:return[^;]*|goto\s+\w+)\s*;\s*\}$', clean[brace:arm_end]):
+                continue
+            condition = clean[paren:after]
+            rest = clean[arm_end:last]
+            for a in names:
+                if not re.search(rf'(?<![\w.>]){a}\b', condition):
+                    continue
+                first_a = re.search(rf'(?<![\w.>]){a}\b', rest)
+                if first_a and not re.match(rf'{a}\s*=(?!=)', rest[first_a.start():]):
+                    continue
+                for b in names:
+                    if b == a or re.search(rf'(?<![\w.>]){b}\b', clean[at:arm_end]):
+                        continue
+                    first_b = re.search(rf'(?<![\w.>]){b}\b', rest)
+                    if not first_b or not re.match(rf'{b}\s*=(?!=)', rest[first_b.start():]):
+                        continue
+                    fresh = f'{a}_b'
+                    if fresh in clean:
+                        continue
+                    renamed = source[arm_end:last]
+                    if first_a:
+                        renamed = re.sub(rf'(?<![\w.>]){a}\b', fresh, renamed)
+                    renamed = re.sub(rf'(?<![\w.>]){b}\b', a, renamed)
+                    text = source[:arm_end] + renamed + source[last:]
+                    if first_a:
+                        declaration = re.search(rf'^[ \t]*({types.get(a, "s32")})\s+{a}\s*;[ \t]*\n', text, re.M)
+                        text = text[:declaration.end()] + f'{declaration.group(0).split(a)[0]}{fresh};\n' + text[declaration.end():]
+                    text = re.sub(rf'^[ \t]*(?:(?:u|s)(?:8|16|32)|int|unsigned)\s+{b}\s*;[ \t]*\n', '', text, count=1, flags=re.M)
+                    if text != source and text not in result:
+                        result.append(text)
+    return result[:LIMIT]
 
 
 def byte_entry_copy(source, name):
@@ -195,15 +348,15 @@ def byte_entry_copy(source, name):
     return None
 
 
-def load_shift_split(source, name):
-    """`b = LOAD1; a = LOAD0 << S;` as `a = LOAD0; b = LOAD1; a = a << S;`."""
+def load_shift_pairs(source, name):
+    """The `b = LOAD1; a = LOAD0 << S;` pairs of the function: (start, end, a, b, load0, load1, shift, indent)."""
     span = _span(source, name)
     if not span:
-        return None
+        return []
     clean = _blank(source)
     start, end = span
     pair = re.compile(rf'(?P<b>{_IDENT})\s*=\s*(?P<l1>{_LOAD}[^;]*);\s*(?P<a>{_IDENT})\s*=\s*(?P<l0>{_LOAD}[^;]*?)\s*<<\s*(?P<s>\d+)\s*;')
-    edits = []
+    found = []
     for hit in pair.finditer(clean, start, end):
         if hit['a'] == hit['b'] or re.search(rf'(?<![\w.>])(?:{hit["a"]}|{hit["b"]})\b', hit['l1'] + ' ' + hit['l0']):
             continue
@@ -211,10 +364,26 @@ def load_shift_split(source, name):
         if base(hit['l1']) != base(hit['l0']):
             continue
         a, b, l0, l1 = (source[hit.start(g):hit.end(g)] for g in ('a', 'b', 'l0', 'l1'))
-        indent = re.search(r'[ \t]*$', source[:hit.start()])[0]
-        text = f'{a} = {l0};\n{indent}{b} = {l1};\n{indent}{a} = {a} << {hit["s"]};'
-        edits.append((hit.start(), hit.end(), text))
+        found.append((hit.start(), hit.end(), a, b, l0, l1, hit['s'], re.search(r'[ \t]*$', source[:hit.start()])[0]))
+    return found
+
+
+def load_shift_split(source, name, only=None):
+    """`b = LOAD1; a = LOAD0 << S;` as `a = LOAD0; b = LOAD1; a = a << S;` (every pair, or the `only`th)."""
+    edits = []
+    for number, (a0, b0, a, b, l0, l1, shift, indent) in enumerate(load_shift_pairs(source, name)):
+        if only is None or only == number:
+            edits.append((a0, b0, f'{a} = {l0};\n{indent}{b} = {l1};\n{indent}{a} = {a} << {shift};'))
     return _splice(source, edits) if edits else None
+
+
+def load_shift_swap(source, name, only):
+    """The pair's two statements in the other order: `a = LOAD0 << S; b = LOAD1;`."""
+    pairs = load_shift_pairs(source, name)
+    if only >= len(pairs):
+        return None
+    a0, b0, a, b, l0, l1, shift, indent = pairs[only]
+    return _splice(source, [(a0, b0, f'{a} = {l0} << {shift};\n{indent}{b} = {l1};')])
 
 
 def zero_arm_inversion(source, name):
@@ -266,13 +435,22 @@ def variants(source, name):
         add('bank_arm_scope', text)
     for text in table_arm_scope(source, name):
         add('table_arm_scope', text)
+    for text in shared_return_split(source, name):
+        add('shared_return_split', text)
+    for text in label_run_copy(source, name):
+        add('label_run_copy', text)
+    for text in dead_local_reuse(source, name):
+        add('dead_local_reuse', text)
     add('byte_entry_copy', byte_entry_copy(source, name))
     add('load_shift_split', load_shift_split(source, name))
+    for number in range(min(len(load_shift_pairs(source, name)), 6)):
+        add('load_shift_split', load_shift_split(source, name, number))
+        add('load_shift_split', load_shift_swap(source, name, number))
     add('zero_arm_inversion', zero_arm_inversion(source, name))
     # the combination: the arms only match together
     text = source
     for step in (lambda t: bank_index_first(t, name, True), lambda t: byte_entry_copy(t, name),
-                 lambda t: load_shift_split(t, name), lambda t: zero_arm_inversion(t, name)):
+                 lambda t: (dead_local_reuse(t, name) or [None])[0], lambda t: zero_arm_inversion(t, name)):
         text = step(text) or text
     add('tile_arm_chains', text)
     return result[:LIMIT]
