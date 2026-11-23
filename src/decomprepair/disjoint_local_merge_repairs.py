@@ -35,10 +35,18 @@ outside the block that declares the earlier one, the earlier declaration now mov
 merge changes whether the variable is global, which decides the tie, so the child is also offered with the operands
 of a commutative operation `x = y OP temp;` in the earlier variable's block written the other way round
 (`disjoint_local_merge_swap`).
+
+A fourth, from a 970-instruction N64 state-machine handler (KMC gcc 2.7.2, same flags): m2c typed a flag `long` and
+named the value the later `flag & mask` produced a second flag, typed `char`. The game had one variable. Two pseudos,
+the second short and heavily used, outranked the 76-reference object pointer in global.c's priority order and took the
+register the pointer needed (`$s2`/`$s3` exchanged in 76 rows); one long pseudo ranks below the pointer
+(6745 -> 6335, the register rows 105 -> 21). `locals_for` reads no `long`, so the pair never came up; a `long`
+local now pairs with any narrower integer or word local, the survivor keeping the earlier type once and taking the
+later one once, counted apart (`WIDTH_LIMIT`) so the nearest same-type pairs keep their places.
 """
 import re
 
-from .integer_repair_support import IDENT, locals_for, view
+from .integer_repair_support import IDENT, _address_taken, locals_for, view
 from .line_scan import apply, lines, loops
 
 FAMILY = 'disjoint_local_merge'
@@ -49,6 +57,29 @@ LOOP_TOTAL = 24
 SWAP_FAMILY = 'disjoint_local_merge_swap'
 FAMILIES = (FAMILY, SWAP_FAMILY)
 WORD = {'s32', 'u32', 'int', 'unsigned', 'unsigned int', 'signed int'}
+# the narrower and `long` spellings m2c gives a flag or a count it recovered from a byte test: one variable in the
+# original, whose first name m2c typed `long` and whose second (`temp & mask`'s result) it typed `char`
+LONG = {'long', 'unsigned long', 'long int', 'unsigned long int'}
+NARROW = {'char', 'signed char', 'unsigned char', 's8', 'u8', 's16', 'u16', 'short', 'unsigned short'} | WORD
+WIDTH_LIMIT = 6  # pairs of different widths, counted apart so the nearest same-type pairs are not crowded out
+
+
+LONG_DECL = re.compile(rf'\b(?P<type>(?:unsigned\s+)?long(?:\s+int)?)\s+(?P<name>{IDENT})\s*;')
+
+
+def _long_locals(part):
+    """`long name;` declarations (m2c's spelling of a register-sized flag), read like locals_for reads the others."""
+    found = []
+    for decl in LONG_DECL.finditer(part.clean, part.opening + 1, part.end):
+        prefix = part.clean[part.opening + 1:decl.start()].rstrip()
+        if prefix and prefix[-1] not in ';{}':
+            continue
+        name = decl['name']
+        mentions = re.findall(rf'\b(?:unsigned\s+)?(?:long|char|short|int|float|double|void)\s*\**\s*{re.escape(name)}\s*(?=[;=,\[])',
+                              part.body)
+        if len(mentions) == 1 and not _address_taken(part.body, name):
+            found.append(decl)
+    return found
 
 
 def _assigned_first(part, name, start):
@@ -98,7 +129,7 @@ def variants(source, name):
     part = view(source, name)
     if not part:
         return []
-    decls = locals_for(part)
+    decls = sorted(locals_for(part) + _long_locals(part), key=lambda decl: decl.start())
     if len(decls) < 2:
         return []
     body = lines(part, source)
@@ -113,30 +144,36 @@ def variants(source, name):
         for late in decls:
             a, b = early['name'], late['name']
             same = early['type'] == late['type']
-            if a == b or not (same or {early['type'], late['type']} <= WORD) or a not in use or b not in use:
+            kinds = {early['type'], late['type']}
+            # a word with a narrower one stays apart (the later name's width is part of what the compiler sees); a
+            # `long` takes either, since m2c types a register-sized flag `long` and its derived value by the byte test
+            mixed = bool(kinds & LONG) and kinds <= LONG | NARROW
+            if a == b or not (same or kinds <= WORD or mixed) or a not in use or b not in use:
                 continue
             if not use[a][1] < use[b][0]:
                 continue
             if any(s <= use[a][1] and use[b][0] <= e for s, e in spans):
                 if not (_assigned_first(part, a, early.end()) and _assigned_first(part, b, late.end())):
                     continue
-            ranked.append((use[b][0] - use[a][1], a, b, early, late))
+            width = not same and not kinds <= WORD
+            ranked.append((use[b][0] - use[a][1], a, b, early, late, width))
     ranked.sort(key=lambda item: item[:3])
     # across blocks, a local written once and read once as an operand of a commutative operation first: the one whose
     # register a block-local tie decides
     ranked.sort(key=lambda item: not _tie_operand(part, item[1]))
     out = []
-    taken = {False: 0, True: 0, 'loop': 0}
+    taken = {False: 0, True: 0, 'loop': 0, 'width': 0}
     per_loop = {}
-    for _, a, b, early, late in ranked:
+    for _, a, b, early, late, width in ranked:
         opening, closing = _block(part.clean, early.start(), part.opening)
         hoist = opening != part.opening and use[b][1] > closing
         # a value that lives only in a loop and the one after it: farther apart than the nearest pairs the plain cap
         # keeps, and the one a shared pseudo's priority and conflicts (an a1-preferring start pointer after a
         # loop's flag, 35 -> 15) turn on
         loop = not hoist and any(s <= use[a][0] and use[a][1] <= e < use[b][0] for s, e in spans)
-        kind = 'loop' if loop else hoist
-        if taken[kind] >= (LOOP_TOTAL if loop else HOIST_LIMIT if hoist else LIMIT) or (loop and per_loop.get(a, 0) >= LOOP_LIMIT):
+        kind = 'width' if width else 'loop' if loop else hoist
+        limit = WIDTH_LIMIT if width else LOOP_TOTAL if loop else HOIST_LIMIT if hoist else LIMIT
+        if taken[kind] >= limit or (loop and per_loop.get(a, 0) >= LOOP_LIMIT):
             continue
         taken[kind] += 1
         if loop:
