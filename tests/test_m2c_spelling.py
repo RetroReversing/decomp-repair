@@ -45,3 +45,41 @@ def test_a_draft_whose_macro_differs_keeps_its_fields():
 def test_a_longer_name_ending_in_the_macro_is_not_expanded():
     draft = DRAFT.replace('return M2C_FIELD(&D_80100000, s32 *, 8);', 'return MY_M2C_FIELD(arg0, s32 *, 8);')
     assert 'MY_M2C_FIELD(arg0, s32 *, 8)' in m2c_spelling.plain(draft)
+
+
+FRAME = """\
+void func_80002000(s32 *arg0) {
+    struct {
+        s32 sp30;
+        s8 sp34;
+        char reserved[20];
+    } locals;
+    s32 var_v0;
+#define sp30 locals.sp30
+#define sp34 locals.sp34
+    sp30 = 1;
+    sp34 = (s8) arg0[0];
+    var_v0 = helper(&sp30, &sp34) + sp30;
+    return;
+}
+"""
+
+
+def test_a_frame_view_define_is_written_out_and_the_define_dropped():
+    text = m2c_spelling.plain(FRAME)
+    assert '#define' not in text
+    assert '    locals.sp30 = 1;' in text
+    assert '    locals.sp34 = (s8) arg0[0];' in text
+    assert 'var_v0 = helper(&locals.sp30, &locals.sp34) + locals.sp30;' in text
+    assert '    } locals;' in text and '        s32 sp30;' in text
+    assert m2c_spelling.variants(FRAME, 'func_80002000') == [('m2c_spelling', text)]
+
+
+def test_a_define_that_is_not_a_frame_view_stays():
+    other = FRAME.replace('} locals;', '} frame;')
+    assert '#define sp30 locals.sp30' in m2c_spelling.plain(other)
+    outside = '#define sp30 locals.sp30\nvoid f(void) { sp30 = 1; }\n'
+    assert m2c_spelling.plain(outside) == outside
+    redefined = FRAME.replace('#define sp34 locals.sp34\n', '#define sp34 locals.sp34\n#undef sp34\n')
+    text = m2c_spelling.plain(redefined)
+    assert '#define sp34 locals.sp34' in text and 'locals.sp30 = 1;' in text
