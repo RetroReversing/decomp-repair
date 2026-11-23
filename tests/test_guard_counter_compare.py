@@ -62,3 +62,34 @@ def test_a_guard_without_the_counter_init_before_it_is_left_alone():
 
 def test_other_processors_are_not_offered_it():
     assert variants(BEFORE, 'f', 'ppc') == []
+
+
+# A bit-stream decoder's table loop (GCC 2.7.2, KMC, N64): the counter is declared and set inside the guard, as m2c
+# writes `if (n != 0) { j = 0; do { .. } while (j < n); }`; the original `for` set it first and tested `j < n`, and the
+# dead compare pseudo that test leaves is the target's sixth spill slot.
+INNER = '''void f(u32 *t, u32 n)
+{
+  u32 c;
+  for (c = 1; c < 16; c++) {
+    if (n != 0) {
+      u32 j;
+      j = 0;
+      do {
+        t[j] += c;
+        j++;
+      } while (j < n);
+    }
+  }
+}
+'''
+
+
+def test_a_counter_set_inside_the_guard_moves_out_in_front_of_it():
+    found = [_squash(src) for src in _all(INNER)]
+    assert found == [_squash(INNER.replace('if (n != 0) {\n      u32 j;\n      j = 0;', '{ u32 j; j = 0; if (n > j) {')
+                             .replace('} while (j < n);\n    }', '} while (j < n);\n    } }'))]
+
+
+def test_an_inner_init_before_a_guard_with_an_else_is_left_alone():
+    other = INNER.replace('} while (j < n);\n    }', '} while (j < n);\n    } else { t[0] = 0; }')
+    assert _all(other) == []
