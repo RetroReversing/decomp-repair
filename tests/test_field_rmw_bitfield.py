@@ -85,3 +85,56 @@ void f(void *p)
 def test_nothing_to_do_for_plain_code():
     assert variants('void f(int *p)\n{\n  *p = 1;\n}\n', 'f') == []
     assert variants(SOURCE, 'missing') == []
+
+
+JOIN = '''typedef unsigned int u32;
+void f(int sel, void *p)
+{
+  u32 t;
+  u32 keep;
+  u32 add;
+  switch (sel)
+  {
+    case 1:
+      t = (u32) (*((s32 *) (((char *) p) + 0x58)));
+      keep = t & 0xFFFF0003;
+      add = ((t >> 2) & 0x3FFF) | 0x200;
+      goto join;
+
+    case 2:
+      g(p);
+      t = (u32) (*((s32 *) (((char *) p) + 0x58)));
+      keep = t & 0xFFFF0003;
+      add = ((t >> 2) & 0x3FFF) | 0x40;
+      goto join;
+
+    case 3:
+      t = (u32) (*((s32 *) (((char *) p) + 0x58)));
+      keep = t & 0xFFFF0003;
+      add = ((t >> 2) & 0x3FFF) | 0x10;
+      join:
+      *((s32 *) (((char *) p) + 0x58)) = (s32) (keep | (add * 4));
+      goto after;
+
+    case 4:
+      after:
+      h(p);
+      return;
+  }
+}
+'''
+
+
+def test_a_join_that_stores_two_locals_each_arm_set_is_written_in_every_arm():
+    found = _all(JOIN)
+    text = [t for t in found if '__repair_bits_58 *) p)->f2 |= 0x200; goto after;' in t]
+    assert text
+    text = text[0]
+    assert '->f2 |= 0x40; goto after;' in text and '->f2 |= 0x10; goto after;' in text
+    assert 'join:' not in text and 'keep =' not in text and 'add =' not in text and 'goto join' not in text
+    assert 'g(p);' in text
+
+
+def test_a_join_with_an_arm_that_is_not_an_update_is_left_alone():
+    broken = JOIN.replace('add = ((t >> 2) & 0x3FFF) | 0x40;', 'add = 5;')
+    assert [t for t in _all(broken) if 'join:' not in t] == []
