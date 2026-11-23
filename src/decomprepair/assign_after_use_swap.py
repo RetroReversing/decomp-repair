@@ -18,12 +18,13 @@ reads nothing the statement changes, and a statement without a call or an increm
 """
 import re
 
+from . import narrow_table_addend
 from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'assign_after_use_swap'
 FAMILIES = (FAMILY,)
 
-LIMIT = 6
+LIMIT = 8
 _PAIR = re.compile(
     r'(?m)^(?P<indent>[ \t]*)(?P<use>[^;{}\n]*;)[ \t]*\n'
     r'(?P<indent2>[ \t]*)(?P<local>' + IDENT + r')[ \t]*=(?!=)[ \t]*(?P<expr>[^;{}\n]+);[ \t]*\n')
@@ -34,7 +35,7 @@ def _calls(text):
     return re.search(rf'(?<![\w.>)\]])\s*(?<!\bsizeof)\b(?!if\b|while\b|for\b|switch\b|return\b){IDENT}\s*\(', text) is not None
 
 
-def variants(source, name):
+def variants(source, name, header=''):
     part = view(source, name)
     if not part:
         return []
@@ -71,7 +72,12 @@ def variants(source, name):
         for text in (swapped, inlined):
             if text != source and (FAMILY, text) not in result:
                 result.append((FAMILY, text))
+            # the swap alone changes nothing the judge can see while a signed table read is added into the
+            # halfword store (`lhu` for the game's `lh`): the combination is one child
+            wide = narrow_table_addend.widen(text, name, header)
+            if wide and (FAMILY, wide) not in result:
+                result.append((FAMILY, wide))
     return result[:LIMIT]
 
 
-REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header')}

@@ -33,3 +33,11 @@ def test_a_local_mentioned_earlier_stays():
 def test_a_call_in_the_use_or_the_assignment_stays():
     assert not made(SOURCE.replace('table[idx * 2]', 'lookup(idx)'))
     assert not made(SOURCE.replace('obj + (idx * 2)', 'find(obj, idx)'))
+
+
+def test_a_signed_table_addend_is_widened_in_the_combined_child():
+    source = SOURCE.replace('void f(', 'extern s16 table[];\n\nvoid f(')
+    texts = [t for family, t in variants(source, 'f', '') if family == FAMILY]
+    assert any('__repair_wide1' in t and '(p = obj + (idx * 2))' in t for t in texts)
+    assert any('__repair_wide1' in t and 'p = obj + (idx * 2);\n' in t for t in texts)
+    assert sum('__repair_wide1' not in t for t in texts) == 2
