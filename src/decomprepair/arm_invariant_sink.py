@@ -14,7 +14,13 @@ tables and local-alloc.c, not confirmed in the compiler source.
 `variants` first splits each block's initialised declarations (`local_weight_ladder.split_declarations`, no change to
 the code: the arm's own loads then come after the sunk statement), then takes each plain assignment `x = e;` whose
 expression names only locals and parameters (no memory, no call), whose variable is set once and read only inside one
-brace arm of the next two-arm `if`, and offers the statement moved to the top of that arm: in the scope, and plain."""
+brace arm of the next two-arm `if`, and offers the statement moved to the top of that arm: in the scope, and plain.
+
+The same holds for an `if` with no `else` (its body is the arm), and a product is an expression like any other (`*` is
+refused only as a dereference): a 1300-instruction KMC GCC 2.7.2 controller routine wrote `rec = base + idx * 8;` before
+`if (def->limit != 1) { rec->count += 1; .. }`, where the product's register is shared with an earlier `idx * 0xE8` by
+cse; sunk into the body (plain), the product lives past the compare and ranks below the record pointer it swapped
+`$a2`/`$a3` with: 125 -> 85."""
 import re
 
 from .integer_repair_support import IDENT, edit, view
@@ -40,7 +46,8 @@ def _close(clean, opening):
 
 
 def _next_if(clean, start, limit):
-    """(then_open, then_close, else_open, else_close) of the first `if (..) {..} else {..}` at the depth of `start`."""
+    """(then_open, then_close, else_open, else_close) of the first `if (..) {..} else {..}` at the depth of `start`;
+    the else pair is None for an `if` with no `else`."""
     depth, index = 0, start
     while index < limit:
         char = clean[index]
@@ -63,8 +70,8 @@ def _next_if(clean, start, limit):
                 return None
             then_close = _close(clean, then_open)
             rest = clean[then_close + 1:].lstrip()
-            if not rest.startswith('else'):
-                return None
+            if not re.match(r'else\b', rest):
+                return then_open, then_close, None, None  # a one-arm `if`: its body is the arm
             else_open = clean.index('{', then_close)
             if clean[then_close + 1:else_open].strip() != 'else':
                 return None
@@ -97,7 +104,8 @@ def variants(source, name):
             continue
         x, expr = match['x'], match['e']
         words = set(re.findall(IDENT, expr)) - _CASTS
-        if not words or not words <= tracked or re.search(r'[\[\]*]|->|\.|\+\+|--|\(\s*\)', expr) or x in words:
+        if not words or not words <= tracked or re.search(r'[\[\]]|(?:^|[(,=+\-*/&|!~<>?:])\s*\*|->|\.|\+\+|--|\(\s*\)',
+                                                          expr) or x in words:
             continue
         if len(re.findall(rf'(?<![\w.>]){re.escape(x)}\s*=(?!=)', clean[part.opening:part.end])) != 1 \
                 or re.search(rf'[(,=]\s*&\s*{re.escape(x)}\b', clean[part.opening:part.end]):
@@ -109,7 +117,8 @@ def variants(source, name):
         block_end = then_open
         uses = [m.start() for m in re.finditer(rf'(?<![\w.>]){re.escape(x)}\b', clean[end:part.end])]
         uses = [end + u for u in uses]
-        inside = [u for u in uses if then_open < u < then_close], [u for u in uses if else_open < u < else_close]
+        inside = ([u for u in uses if then_open < u < then_close],
+                  [u for u in uses if else_open is not None and else_open < u < else_close])
         if not uses or len(inside[0]) + len(inside[1]) != len(uses) or (inside[0] and inside[1]):
             continue
         if any(re.search(rf'(?<![\w.>]){re.escape(w)}\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|\+\+\s*{re.escape(w)}|{re.escape(w)}\s*\+\+',
