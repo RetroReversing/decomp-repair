@@ -41,3 +41,32 @@ def test_a_load_does_not_slide_past_a_store_to_its_cell():
 def test_control_flow_ends_a_run_and_children_are_bounded():
     assert variants('void f(void) {\n    a = 1;\n    if (a) { b = 2; }\n    c = 3;\n}\n', 'f') == []
     assert len(variants(SOURCE, 'f')) <= 40
+
+
+def test_a_local_update_passes_a_statement_with_a_call_that_does_not_name_it():
+    # A 1133-instruction effect spawner: `phase += 0.21f;` below the statement that calls `__cosf` (3555 -> 3215): the
+    # call is a barrier to the scheduler, so only the source decides which side of it the add falls on.
+    source = '''void f(f32 a)
+{
+    f32 phase;
+    f32 turn;
+    f64 sum;
+    s32 n;
+
+    phase = a;
+    turn = 0.5f;
+    sum = g(phase);
+    phase += 0.21f;
+    sum = sum + ((f64) h(turn));
+    n = 1;
+}
+'''
+    children = [text for _, text in variants(source, 'f')]
+    moved = [t for t in children if t.index('sum = sum + ((f64) h(turn));') < t.index('phase += 0.21f;')]
+    assert moved
+    # a call that names the variable, or an update of a variable the call's statement reads, stays where it is
+    named = source.replace('sum = sum + ((f64) h(turn));', 'sum = sum + ((f64) h(phase));')
+    assert all(t.index('phase += 0.21f;') < t.index('sum = sum + ((f64) h(phase));') for _, t in variants(named, 'f'))
+    # an address-taken local is reachable by the call
+    taken = source.replace('sum = g(phase);', 'sum = g(&phase);')
+    assert all(t.index('phase += 0.21f;') < t.index('sum = sum + ((f64) h(turn));') for _, t in variants(taken, 'f'))
