@@ -51,3 +51,11 @@ def test_the_clobber_child_runs_a_pointer_parameter_before_the_first_call():
     found = [c for family, c in variants(source, 'spawn') if family == 'entry_parameter_clobber']
     assert any(c.index('b = b_in;') < c.index('make(0x50)') and 'b_in = 0;' in c for c in found)
     assert 'entry_parameter_clobber' in __import__('decomprepair.entry_parameter_copy_repairs', fromlist=['x']).FAMILIES
+
+
+def test_a_function_pointer_local_is_a_declaration_and_the_copy_goes_below_it():
+    source = ('void act(void *a, s32 b, s32 c) {\n  s32 (*fn)(void *);\n  s32 t;\n  t = b;\n'
+              '  fn = table[c];\n  fn(a);\n  use(b, c);\n}\n')
+    found = [c for family, c in variants(source, 'act') if family == 'entry_parameter_copy' and 'c_in)' in c]
+    assert found
+    assert all(c.index('s32 (*fn)(void *);') < c.index('c = c_in;') for c in found)

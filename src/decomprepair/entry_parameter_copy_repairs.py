@@ -63,9 +63,11 @@ def _matching(clean, opening):
 
 
 def _after_declarations(clean, cursor, end):
-    """The offset past the leading declarations, which stay first."""
+    """The offset past the leading declarations, which stay first (a function-pointer local, `T (*f)(void *);`, is one:
+    m2c writes the callee it calls through that way, and a copy placed above it did not compile)."""
     while True:
-        match = re.match(rf'\s*(?:typedef\b[^;]*?{{[^{{}}]*}}\s*{IDENT}\s*;|{TYPE}\s+\**\s*{IDENT}\b[^;(){{}}=]*(?:=[^;(){{}}]*)?;)',
+        match = re.match(rf'\s*(?:typedef\b[^;]*?{{[^{{}}]*}}\s*{IDENT}\s*;|{TYPE}\s+\**\s*{IDENT}\b[^;(){{}}=]*(?:=[^;(){{}}]*)?;'
+                         rf'|{TYPE}\s*\(\s*\*\s*{IDENT}\s*\)\s*\([^;(){{}}]*\)\s*;)',
                          clean[cursor:end])
         if not match or CONTROL.match(match.group().strip()):
             return cursor
