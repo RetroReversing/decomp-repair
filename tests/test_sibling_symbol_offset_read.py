@@ -41,6 +41,13 @@ def test_the_bound_is_read_at_the_top_of_the_body_through_the_neighbours_address
     assert 'rank = gTotalSlots;' in child  # the first read of the global stays
 
 
+def test_the_assembly_may_name_the_base_symbol_differently_from_the_source():
+    renamed = ASM.replace('gVisibleCount', 'D_801002C0')
+    child = _children(asm=renamed)[0]
+    assert 'limit = ((s32 *) &gVisibleCount)[-3];' in child
+    assert _children(SOURCE.replace('&gVisibleCount', 'NULL'), asm=renamed) == []  # no address taken: no base to use
+
+
 def test_no_assembly_or_no_negative_load_off_a_symbol_base_gives_nothing():
     assert variants(SOURCE, 'rank', '') == []
     assert _children(asm=ASM.replace('-0xC($t0)', '0xC($t0)')) == []

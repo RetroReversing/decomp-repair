@@ -13,12 +13,14 @@ allowed to move), and cse's second pass leaves the register form alone. A read w
 in the loop, and in the loop condition it is folded back (hypothesis for the folding half: the toy compile showed it, `cse.c` was not
 traced through). 215 -> 60 of the final 0 in a 154-instruction function.
 
-`sibling_symbol_offset_read` needs the target's assembly as evidence: `addiu $r, $r, %lo(H)` and a later load with a
+`sibling_symbol_offset_read` needs the target's assembly as evidence: `addiu $r, $r, %lo(X)` and a later load with a
 negative displacement from that same register (`lw $x, -0xc($r)`, `lh`, `lhu`, `lb`, `lbu`), the register not written
-in between. For each `do { ... } while (... G ...);` whose condition names a global `G` declared as a plain integer of
-the load's width, the condition's `G` is replaced by a new local `limit`, set as the body's first statement from
-`((T *) &H)[-N]`. `H` and `G` are different symbols the program links at the addresses the assembly shows, so the
-judge's bytes decide whether `G` is the one.
+in between. The base symbol is the one the source takes the address of in the function (`volatile s32 *count =
+&H;`): the assembly of a project keeps the names it was split with, which can differ from the renamed ones in the
+source, so `X` is only preferred when the source has it. For each `do { ... } while (... G ...);` whose condition names
+a global `G` declared as a plain integer of the load's width, the condition's `G` is replaced by a new local `limit`, set
+as the body's first statement from `((T *) &H)[-N]`. `H` and `G` are different symbols the program links at the
+addresses the assembly shows, so the judge's bytes decide whether `G` is the one.
 """
 import re
 
@@ -82,14 +84,20 @@ def variants(source, name, asm=''):
         return []
     externs = _globals(source)
     clean = part.clean
+    taken = [n for n in dict.fromkeys(re.findall(rf'&\s*({IDENT})\b', part.body)) if n in externs]
     declared = [d for d in locals_for(part)]
     limit = 'limit'
     while re.search(rf'\b{limit}\b', clean):
         limit += '_'
     out = []
+    pairs = []
     for symbol, op, offset in evidence:
+        for base in ([symbol] if symbol in taken else taken):
+            if (base, op, offset) not in pairs:
+                pairs.append((base, op, offset))
+    for symbol, op, offset in pairs:
         kind, size = WIDTH[op]
-        if offset % size or symbol not in externs:
+        if offset % size:
             continue
         for body, end, cond_open, cond_close in _do_loops(clean, part.opening + 1, part.end - 1):
             cond = clean[cond_open + 1:cond_close - 1]
