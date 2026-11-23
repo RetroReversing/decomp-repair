@@ -59,3 +59,29 @@ def test_a_call_between_the_copy_and_the_loop_is_not_crossed():
 def test_the_body_must_step_the_counter_once():
     source = SOURCE.replace('before += w->rows[i++].height;', 'before += w->rows[i++].height + w->rows[i++].height;')
     assert not [t for t in children(source) if 'w->selected; i++' in t]
+
+
+START = """void sum_rows(Window *w)
+{
+    s16 i, sum;
+    s32 bound;
+
+    i = w->selected;
+    bound = w->count;
+    sum = 0;
+    if (i < bound) {
+        do { sum += w->rows[i++].height; } while (i < bound);
+    }
+    use(sum);
+}
+"""
+
+
+def test_a_loop_that_starts_at_a_member_and_is_guarded_by_its_own_test_is_a_for_loop():
+    [text] = [t for f, t in variants(START, 'sum_rows', HEADER) if f == FAMILY]
+    assert '    sum = 0;\n    for (i = w->selected; i < w->count; i++) sum += w->rows[i].height;\n    use(sum);' in text
+    assert 'bound = w->count;' not in text and 'i = w->selected;' not in text.replace('for (i = w->selected', '')
+
+
+def test_a_start_that_reads_the_bound_is_left_alone():
+    assert not [t for f, t in variants(START.replace('i = w->selected;', 'i = bound;'), 'sum_rows', HEADER) if 'for (i = ' in t]

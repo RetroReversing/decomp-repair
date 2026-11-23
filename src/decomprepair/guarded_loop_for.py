@@ -30,6 +30,9 @@ _UNSIGNED = r'(?:u8|u16|u32|unsigned(?:\s+(?:char|short|int))?)'
 _LOOP = re.compile(
     rf'(?P<i>{IDENT})\s*=\s*0\s*;\s*if\s*\(\s*(?P<b>{IDENT})\s*\)\s*\{{\s*do\s*\{{\s*(?P<body>[^{{}}]*?)\s*\}}\s*'
     rf'while\s*\(\s*(?P=i)\s*<\s*(?P=b)\s*\)\s*;\s*\}}')
+_START_LOOP = re.compile(
+    rf'if\s*\(\s*(?P<i>{IDENT})\s*<\s*(?P<b>{IDENT})\s*\)\s*\{{\s*do\s*\{{\s*(?P<body>[^{{}}]*?)\s*\}}\s*'
+    rf'while\s*\(\s*(?P=i)\s*<\s*(?P=b)\s*\)\s*;\s*\}}')
 _DECLARATION = re.compile(rf'(?m)^[ \t]*{INTEGER}\s+[^;=(]*;')
 _COPY = rf'(?P<base>{IDENT})\s*->\s*(?P<field>{IDENT})'
 _PLAIN = re.compile(rf'\s*{IDENT}\s*=(?!=)\s*[^;{{}}]*?\s*;')
@@ -111,8 +114,58 @@ def _children(source, name, header):
     return result[:LIMIT]
 
 
+def _statements_before(clean, low, end):
+    """The plain statements right before `end`, last first, as (start, end, text): stops at the first thing that is not one."""
+    found, at = [], end
+    while True:
+        head = clean[low:at].rstrip()
+        if not head.endswith(';'):
+            return found
+        start = max(head.rfind(';', 0, len(head) - 1), head.rfind('{'), head.rfind('}')) + 1
+        text = head[start:]
+        if not _PLAIN.fullmatch(text.strip()) or re.search(IDENT + r'\s*\(', text):
+            return found
+        found.append((low + start, low + len(head), text.strip()))
+        at = low + start
+
+
+def _start_children(source, name, header):
+    part = view(source, name)
+    if not part or re.search(r'\b(?:volatile|goto|asm|__asm__)\b', part.body):
+        return []
+    clean, result = part.clean, []
+    for loop in _START_LOOP.finditer(clean, part.opening + 1, part.end):
+        i, b, body = loop['i'], loop['b'], loop['body'].strip()
+        if (len(re.findall(rf'\b{re.escape(i)}\s*\+\+', body)) != 1 or body.count(';') != 1 or not body.endswith(';')
+                or re.search(rf'\+\+\s*{re.escape(i)}\b|\b{re.escape(i)}\s*(?:--|[-+*/&|^]?=(?!=))', body)
+                or re.search(r'\b(?:if|for|while|do|return|break|continue)\b', body)):
+            continue
+        statements = _statements_before(clean, part.opening + 1, loop.start())
+        copy = next((s for s in statements if re.fullmatch(rf'\s*{re.escape(b)}\s*=\s*{_COPY}\s*;', s[2])), None)
+        start = next((s for s in statements if re.fullmatch(rf'\s*{re.escape(i)}\s*=[^;]+;', s[2])), None)
+        if not copy or not start:
+            continue
+        reach = min(copy[0], start[0])
+        between = [s for s in statements if s[0] >= reach and s is not copy and s is not start]
+        if any(_names(s[2], b) or _names(s[2], i) for s in between) or _names(start[2].split('=', 1)[1], b):
+            continue
+        if not _written_before_read(clean, loop.end(), part.opening, part.end, b):
+            continue
+        member = re.fullmatch(rf'\s*{re.escape(b)}\s*=\s*{_COPY}\s*;', copy[2])
+        bound = f'{member["base"]}->{member["field"]}'
+        value = start[2].split('=', 1)[1].rstrip(';').strip()
+        new_body = re.sub(rf'\b{re.escape(i)}\s*\+\+', i, body)
+        edits = [(loop.start(), loop.end(), f'for ({i} = {value}; {i} < {bound}; {i}++) {new_body}')]
+        for removed in (copy, start):
+            line = source.rfind('\n', 0, removed[0]) + 1
+            lead = not source[line:removed[0]].strip()
+            edits.append((line if lead else removed[0], removed[1] + (1 if lead and source[removed[1]:removed[1] + 1] == '\n' else 0), ''))
+        result.append((FAMILY, edit(source, edits)))
+    return result[:LIMIT]
+
+
 def variants(source, name, header=''):
-    return _children(source, name, header)
+    return _children(source, name, header) + _start_children(source, name, header)
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header')}
