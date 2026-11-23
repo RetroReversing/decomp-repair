@@ -80,7 +80,8 @@ def test_one_arm_at_a_time():
     back = texts(off[0], 'bank_arm_scope')
     assert any(t.count('do { bank') == 2 for t in back)
     forms = texts(scoped, 'table_arm_scope')
-    assert len(forms) == 2 * 3  # two table arms, three spellings each
+    assert len(forms) == 2 * 4  # two table arms, four spellings each
+    assert any('u32 bb; u8 *bp; bb = (arg1 & 0xFF); bp = D_80002000; var_v0 = bp + bb * 0x24 + temp_t0;' in t for t in forms)
     assert any('do { temp_v1 = sm + (arg0 & 0x1F); } while (0);' in t for t in forms)
     assert any('u32 bb; do { bb = (arg1 & 0xFF); } while (0); var_v0 = bp + bb * 0x24 + temp_t0;' in t for t in forms)
 
@@ -97,9 +98,13 @@ def test_a_parameter_masked_twice_is_read_through_a_byte_copy():
 def test_the_loads_come_before_the_shift():
     source = SOURCE.replace('var_v1 = M2C_FIELD(temp_v1, u8 *, 0x20);\n            var_v0_3 = M2C_FIELD(temp_v1, u8 *, 0) << 7;',
                             'var_v1 = M2C_FIELD(temp_v1, u8 *, 1);\n            var_v0_3 = M2C_FIELD(temp_v1, u8 *, 0) << 7;')
-    [text] = texts(source, 'load_shift_split')
+    [text, *others] = texts(source, 'load_shift_split')
     assert ('var_v0_3 = M2C_FIELD(temp_v1, u8 *, 0);\n            var_v1 = M2C_FIELD(temp_v1, u8 *, 1);\n'
             '            var_v0_3 = var_v0_3 << 7;') in text
+    # each pair alone, and with its two statements the other way round
+    assert text.count('var_v0_3 = var_v0_3 << 7;') >= 1 and any(other.count('var_v0_3 = var_v0_3 << 7;') == 1 for other in others)
+    assert any('var_v0_3 = M2C_FIELD(temp_v1, u8 *, 0) << 7;\n            var_v1 = M2C_FIELD(temp_v1, u8 *, 1);' in other
+               for other in others)
 
 
 def test_the_zero_arm_moves_to_the_end():
@@ -132,3 +137,45 @@ def test_volatile_is_left_alone():
 def test_the_module_declares_itself():
     repair = next(r for r in registry.declared() if r.module == 'tile_arm_chains')
     assert repair.families == p.FAMILIES and registry.problems(repair) == []
+
+
+def test_the_joining_return_is_copied_into_the_arms_that_jump_to_it():
+    source = SOURCE.replace('''    var_v0 = ((arg1 & 0xFF) * 0x24) + D_80002000 + temp_t0;
+    return *var_v0 << 7;''', '''    var_v0 = ((arg1 & 0xFF) * 0x24) + D_80002000 + temp_t0;
+block_27:
+    return *var_v0 << 7;''').replace('''        goto block_19;
+    }
+    temp_t0''', '''        var_v0 = ((arg1 & 0xFF) * 0x24) + ((temp_a2 * 0x240) + D_80001000);
+        goto block_27;
+    }
+    temp_t0''')
+    text = texts(source, 'shared_return_split')[-1]
+    assert 'var_v0_b = ((arg1 & 0xFF) * 0x24) + D_80002000 + temp_t0;\n    return *var_v0_b << 7;' in text
+    assert 'var_v0_b;' in text
+    assert 'goto block_27' not in text and '        return *var_v0 << 7;' in text
+
+
+def test_a_goto_is_replaced_by_the_run_it_jumps_to():
+    source = SOURCE.replace('''        goto block_19;
+    }
+    temp_t0''', '''        goto block_18;
+    }
+    temp_t0''').replace('''block_19:
+        return''', '''block_18:
+        temp_v1 = var_v1_2 + (arg0 & 0xFE);
+        var_v1 = M2C_FIELD(temp_v1, u8 *, 1);
+block_19:
+        return''')
+    [text] = texts(source, 'label_run_copy')
+    assert 'temp_v1 = var_v1_2 + (arg0 & 0xFE);\n        var_v1 = M2C_FIELD(temp_v1, u8 *, 1);\n        goto block_19;' in text
+    assert 'goto block_18' not in text and 'block_18:' in text
+
+
+def test_the_later_value_takes_the_dead_locals_name():
+    source = SOURCE.replace('    u32 temp_t0;', '    u32 temp_t0;\n    u32 temp_b;').replace(
+        'temp_t0 = arg0 & 0xFF;\n    if (temp_t0 < 0x40U) {\n        temp_v1 = ((arg1 & 0xFF) * 0x24) + D_80002000',
+        'temp_b = arg0 & 0xFF;\n    if (temp_b < 0x40U) {\n        temp_v1 = ((arg1 & 0xFF) * 0x24) + D_80002000').replace(
+        'D_80002000 + temp_t0;', 'D_80002000 + temp_b;')
+    [reused] = texts(source, 'dead_local_reuse')
+    assert 'temp_b' not in reused and 'u32 temp_a2_b;' not in reused
+    assert reused.count('temp_a2 = arg0 & 0xFF;') == 1 and 'temp_a2_b' not in reused
