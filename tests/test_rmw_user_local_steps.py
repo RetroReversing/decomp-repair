@@ -43,7 +43,7 @@ def test_the_load_and_the_steps_are_also_offered_above_the_statements_before_the
 def test_the_local_goes_in_three_places_in_the_declarations():
     found = children(SOURCE)
     places = {t.split('\n').index('  u32 rmw_value;') for t in found}
-    assert places == {1, 2, 3}
+    assert places == {2, 3, 4}
 
 
 def test_a_statement_that_does_not_read_its_own_word_is_left_alone():
