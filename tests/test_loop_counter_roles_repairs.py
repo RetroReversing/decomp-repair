@@ -111,6 +111,38 @@ def test_a_counter_read_after_its_last_loop_may_take_loops_but_not_give_its_own_
     assert all('    s32 k;\n' in t for t in texts)
 
 
+def test_a_later_loop_may_take_a_counter_whose_readers_all_come_before_it():
+    # A 1133-instruction effect spawner: the first loop's counter is read after that loop (a table index) and a later
+    # loop, below the read, counted with a variable of its own; taking the first loop's counter is safe (it sets it
+    # again below the read) and the allocator then sees one pseudo for both loops: 6040 -> 6000.
+    text = PRELUDE + '''
+void f(void) {
+    s32 i;
+    s32 k;
+
+    i = 0;
+    do {
+        A[i] = reader(A, 1);
+        i += 1;
+    } while (i < 4);
+    A[9] = i;
+    k = 0;
+    do {
+        B[k] = reader(B, 2);
+        k += 1;
+    } while (k < 5);
+}
+'''
+    found = h._counters(text, 'f')[0]
+    assert found['i'][3] and not found['k'][3]  # `i` is read after its loop
+    texts = [t for _, t in h.variants(text, 'f')]
+    # the second loop counts with `i`: it sets it below the read of the first loop's value
+    assert any('    i = 0;\n    do {\n        B[i] = reader(B, 2);' in t and 'A[9] = i;' in t for t in texts)
+    # a read below the second loop would see its value instead: no such child
+    after = text.replace('    } while (k < 5);\n}', '    } while (k < 5);\n    A[8] = i;\n}')
+    assert all('B[i] = reader' not in t for _, t in h.variants(after, 'f'))
+
+
 # the loops of a function that reads a counter long after its goto loop: `a` counts the first loop, `b` the inner goto
 # loop of the second, and `if (b)` guards the last loop's body (the same work in both arms)
 GUARDED = PRELUDE + '''
