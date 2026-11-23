@@ -59,3 +59,9 @@ def test_an_address_taken_frame_or_a_name_used_elsewhere_is_left_alone():
 def test_the_family_declares_itself_to_the_registry():
     [repair] = [item for item in registry.declared() if FAMILY in item.families]
     assert registry.problems(repair) == []
+
+
+def test_it_declares_that_it_reads_the_functions_own_directives():
+    [repair] = [item for item in registry.declared() if FAMILY in item.families]
+    assert repair.directives is True
+    assert not any(item.directives for item in registry.declared() if item.module == 'pair_pointer_struct')

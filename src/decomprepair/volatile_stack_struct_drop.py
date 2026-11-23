@@ -17,8 +17,9 @@ volatile frame, a chain of the library's families stuck there; 2155 with a plain
 `variants` takes a function that declares such a struct inside its body, removes the declaration and the `#define`
 lines that name its members, and declares each named member as a plain local of its own type (a member read as
 `stack.field` without a name becomes `stack_field`). Members nothing names are padding and go. It declines a struct
-whose address is taken, one with a member that is itself an aggregate, and a name used outside the function. The
-exact judge decides whether the frame still comes out the same."""
+whose address is taken, one with a member that is itself an aggregate, and a name used outside the function. It reads the
+function's own `#define` lines, so it declares `directives` (registry.py): a caller that masks a function with a `#`
+in it still runs it on the text as written. The exact judge decides whether the frame still comes out the same."""
 import re
 
 from .csource import find
@@ -89,4 +90,4 @@ def variants(source, name):
     return [(FAMILY, source[:span[0]] + child + source[span[1]:])]
 
 
-REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 99}  # the registry: no caller wiring (registry.py)
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 99, 'directives': True}  # the registry: no caller wiring (registry.py)
