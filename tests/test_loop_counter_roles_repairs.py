@@ -254,3 +254,19 @@ void f(void) {
     assert not guarded_reuse_variants(source.replace('second = 0;', 'publish(first); second = 0;'), 'f', rows)
     assert not guarded_reuse_variants(source.replace('ready();', 'publish(second);'), 'f', rows)
     assert not guarded_reuse_variants(source.replace('consume(first)', 'consume(&first)'), 'f', rows)
+
+
+def test_a_counter_set_in_its_for_header_is_a_counter_loop():
+    source = """void f(void) {
+    s32 i;
+    s32 j;
+    for (i = 0; i < 4; i++) {
+        A[i] = reader(A, 1);
+    }
+    for (j = 0; j < 4; j++) {
+        B[j] = reader(B, 2);
+    }
+}
+"""
+    assert {'i', 'j'} <= set(h._counters(source, 'f')[0])
+    assert any(label == h.MERGE for label, _ in h.variants(source, 'f'))

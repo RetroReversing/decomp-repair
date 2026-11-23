@@ -106,6 +106,8 @@ def _counters(source, name):
             if cond is None or not re.search(rf'(?<![\w.>]){re.escape(var)}\b', cond) or not _stepped(clean, var, loop):
                 continue
             first = _set_before(clean, var, loop, spans[1])
+            if first is None and re.match(rf'for\s*\(\s*{re.escape(var)}\s*=\s*(?:-?\d+|0x[0-9A-Fa-f]+)\s*;', clean[loop[0]:loop[1]]):
+                first = loop[0]  # (`for (v = 0; ...)`: the set is the loop's own first clause)
             if first is not None:
                 regions.append((first, loop[1]))
         regions.sort()
