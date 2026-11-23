@@ -12,6 +12,11 @@ gcc converts a float to `u32` with a test against 2^31: below it a plain truncat
 Compiled as written that is two truncations, a test and an `or` the source never had, and a frame slot for them: an
 N64 function was 84.1% so and exact as `ret = (u8) (u32) temp_fv1;`. The condition may come as `>=`, `<`, `!(... >=
 ...)` or with a cast on the float; an arm may still carry the `register` an earlier permuter bug put on it.
+
+The two arms may also store through one lvalue with a narrowing cast, where no variable is assigned (a field of a record read
+as `*(u16 *)((char *)p + 0x26)`): `LV = (u16) ((s32) (F - 2.1474836e9f) | 0x80000000);` and `LV = (u16) (s32) F;` become `LV =
+(u16) (u32) F;` (two such conversions in a 443-instruction display-state updater were 1915 -> 855 -> 0 once written back,
+one site at a time).
 """
 import re
 
@@ -29,6 +34,19 @@ CONDITION = re.compile(r'^\s*(?P<not>!\s*\(\s*)?(?:\(\s*(?:u32|unsigned(?:\s+int
 ASSIGNED = re.compile(r'(?:register\s+)?(?P<var>' + IDENT + r')\s*=(?!=)')
 MASK = re.compile(r'&\s*(?P<mask>0[xX][fF]{2}|0[xX][fF]{4}|255|65535)\s*;')
 NARROW = {0xFF: 'u8', 0xFFFF: 'u16'}
+
+
+def _cast_store(arms, flt):
+    """`LV = (T) (u32) F;` for arms that store the two truncations through one lvalue with a narrowing cast:
+    `LV = (T) ((s32) (F - 2.1474836e9f) | 0x80000000);` and `LV = (T) (s32) F;` (a field of a record, `*(u16 *)((char *)p + 0x26)`,
+    where the draft's variable form above has a name to assign), or None."""
+    for high, low in (arms, arms[::-1]):
+        top = re.fullmatch(r'\s*(?P<lv>[^=;]+?)\s*=(?!=)\s*\(\s*(?P<t>\w+)\s*\)\s*\(\s*\(s32\)\s*\(\s*' + re.escape(flt)
+                           + r'\s*-\s*2\.1474836e9f\s*\)\s*\|\s*0x80000000\s*\)\s*;\s*', high)
+        bottom = re.fullmatch(r'\s*(?P<lv>[^=;]+?)\s*=(?!=)\s*\(\s*(?P<t>\w+)\s*\)\s*\(s32\)\s*' + re.escape(flt) + r'\s*;\s*', low)
+        if top and bottom and top['lv'].strip() == bottom['lv'].strip() and top['t'] == bottom['t']:
+            return f"{top['lv'].strip()} = ({top['t']}) (u32) {flt};"
+    return None
 
 
 def _schedule_sites(source, condition, arms, ranges, cond_span, flipped, isolated):
@@ -102,6 +120,12 @@ def variants(source, name):
                             (cond_open + 1, cond_close - 1), flipped, isolated)
         targets = {m['var'] for arm in arms for m in ASSIGNED.finditer(arm)}
         flt = condition['float']
+        stored = _cast_store([source[then_open + 1:then_close - 1], source[else_open + 1:else_close - 1]], flt)
+        if stored:
+            text = source[:opening + hit.start()] + stored + source[else_close:]
+            if text not in [t for _, t in result]:
+                result.append((FAMILY, text))
+            continue
         if len(targets) != 1 or not all(flt in arm for arm in arms) or '0x80000000' not in ''.join(arms):
             continue
         var = targets.pop()
