@@ -90,7 +90,10 @@ def _walks(source, clean, a, b, header, immediates):
             continue
         loop_end = end + tail.end()
         body = clean[opening + 1:end - 1]
-        if re.search(r'\b(?:goto|continue|break|return|switch)\b', body) or re.search(rf'(?m)^[ \t]*{ID}\s*:(?!:)', body):
+        if re.search(r'\b(?:continue|switch)\b', body):
+            continue  # (`continue` runs the condition before the steps: its uses of the cursor read another pass)
+        jumps = _jumps(body)
+        if jumps is None:
             continue
         before = clean[a:a + do.start()]
         for step in re.finditer(rf'(?m)^[ \t]*({ID})\s*\+=\s*(0[xX][0-9a-fA-F]+|\d+)\s*;[ \t]*\n?', body):
@@ -113,6 +116,9 @@ def _walks(source, clean, a, b, header, immediates):
                 if not zero or re.search(rf'\b{re.escape(counter)}\s*(?:(?:[-+*/%|&^]|<<|>>)?=(?!=)|\+\+|--)|(?:\+\+|--|&)\s*{re.escape(counter)}\b',
                                          before[zero[-1].end():]):
                     continue
+                if jumps and any(min(step.start(), counter_step.start()) < label < max(step.end(), counter_step.end())
+                                 for label in jumps):
+                    continue  # (a jump lands between the two steps: one pass would step the cursor and not the counter)
                 others = body[:counter_step.start()] + body[counter_step.end():]
                 if re.search(rf'\b{re.escape(counter)}\s*(?:(?:[-+*/%|&^]|<<|>>)?=(?!=)|\+\+|--)|(?:\+\+|--|&)\s*{re.escape(counter)}\b', others):
                     continue
@@ -120,6 +126,17 @@ def _walks(source, clean, a, b, header, immediates):
                                start, cursor, stride, table, address, counter, header, immediates)
                 if edits:
                     yield edits
+
+
+def _jumps(body):
+    """The positions of the labels in a loop body when every `goto` in it is a forward one to a label of the body
+    (`break` and `return` leave the loop; neither steps one of the two and not the other), else None
+    (a backward `goto` makes an inner loop, a `goto` to a label the body does not have leaves it)."""
+    labels = {m[1]: m.start() for m in re.finditer(rf'(?m)^[ \t]*({ID})\s*:(?!:)', body)}
+    for jump in re.finditer(rf'\bgoto\s+({ID})\s*;', body):
+        if labels.get(jump[1], -1) < jump.start():
+            return None
+    return list(labels.values())
 
 
 def _stride(step, pointee, immediates):
