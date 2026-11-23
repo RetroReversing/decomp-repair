@@ -28,10 +28,18 @@ the guard, so its priority changes). It pays off only with a second edit, so eve
 the guarded text is offered too, as one combined child: there, the second loop's `temp_s1_2` (m2c's name for the
 register's third role) written as the packed-size maximum `var_s1` took the function from 355 to 0 (the merge alone
 leaves 22). A greedy chain never takes the first step, so the combination has to be one child.
+
+Loops closed by m2c's latch (`top: { ... } if (i < n) goto top;` inside the guarded block) are the same loop with
+the test spelled as a jump, and are offered too. The frame slot is made per guard, so a function with three such
+loops (a KMC GCC 2.7.2 vertex blender: the machine draft's frame was 0x28 below the target's, an agent's
+`volatile u64 scratch[3]` hid it at a score of 695) needs every guard written as its counter's compare at once: one
+child rewrites all of them, and one more drops the unused `volatile` scratch that had been standing in for the slots
+(the same score with a source that no longer carries the padding; every family that refuses `volatile` is on again).
 """
 import re
 
 from .disjoint_local_merge_repairs import variants as merges
+from .frame_padding_repairs import drop_variants as padding_drops
 from .integer_repair_support import IDENT, edit, view
 from .pattern_repairs import close
 
@@ -39,6 +47,7 @@ FAMILY = 'loop_guard_counter_compare'
 FAMILIES = (FAMILY,)
 LIMIT = 6
 GUARD = re.compile(rf'\bif\s*\(\s*(?P<n>{IDENT})\s*(?P<op>!=|>)\s*0\s*\)')
+LABEL = re.compile(r'(?<![\w.>?:])(?P<n>[A-Za-z_]\w*)\s*:(?!:)')
 KIND = r'(?:(?:unsigned|signed)\s+)?(?:(?:long|short)\s+)?' + IDENT
 
 
@@ -52,12 +61,31 @@ def _unsigned(kind):
     return bool(re.match(r'unsigned\b|u(?:8|16|32|64)$', kind))
 
 
+def _loop_test(block, counter, count):
+    """The block tests the counter against the count: `while (i < n)` or m2c's latch `if (i < n) goto top;`."""
+    if re.search(rf'\bwhile\s*\(\s*{re.escape(counter)}\s*<\s*{re.escape(count)}\s*\)', block):
+        return True
+    latch = re.search(rf'\bif\s*\(\s*{re.escape(counter)}\s*<\s*{re.escape(count)}\s*\)\s*goto\s+(?P<label>\w+)\s*;', block)
+    return bool(latch and re.search(rf'(?<![\w.>]){latch["label"]}\s*:', block[:latch.start()]))
+
+
+def _closed(clean, start, stop, whole_start, whole_end):
+    """Every jump inside [start, stop) lands inside it, and no jump from outside lands in it."""
+    block = clean[start:stop]
+    inside = {m['n'] for m in LABEL.finditer(block) if m['n'] not in ('default',)}
+    if any(target not in inside for target in re.findall(r'\bgoto\s+(\w+)', block)):
+        return False
+    outside = clean[whole_start:start] + clean[stop:whole_end]
+    return not any(target in inside for target in re.findall(r'\bgoto\s+(\w+)', outside))
+
+
 def variants(source, name, header=''):
     part = view(source, name)
-    if not part or re.search(r'\b(?:asm|__asm__|goto)\b', part.body):
+    if not part or re.search(r'\b(?:asm|__asm__)\b', part.body):
         return []
     clean = part.clean
     result = []
+    edits = []
     for guard in GUARD.finditer(clean, part.opening, part.end):
         count = guard['n']
         kind = _declared(part, count)
@@ -73,11 +101,13 @@ def variants(source, name, header=''):
             continue
         block = clean[brace:stop]
         before = clean[part.opening:guard.start()]
+        if not _closed(clean, brace, stop, part.opening, part.end):
+            continue
         for zero in re.finditer(rf'(?<![\w.>])(?P<i>{IDENT})\s*=\s*0\s*;', before):
             counter = zero['i']
             if counter == count or not _declared(part, counter):
                 continue
-            if not re.search(rf'\bwhile\s*\(\s*{re.escape(counter)}\s*<\s*{re.escape(count)}\s*\)', block):
+            if not _loop_test(block, counter, count):
                 continue
             # the zero is the counter's last write before the guard, and its address is never taken
             rest = before[zero.end():]
@@ -85,16 +115,31 @@ def variants(source, name, header=''):
                           rf'(?:\+\+|--)\s*{re.escape(counter)}\b|(?<![\w.>]){re.escape(counter)}\s*(?:\+\+|--)', rest)
                     or re.search(rf'&\s*{re.escape(counter)}\b', clean[part.opening:part.end])):
                 continue
-            changed = edit(source, [(guard.start(), guard.end(), f'if ({counter} < {count})')])
+            # a label between the zero and the guard may be entered with the counter not zero
+            if LABEL.search(rest) or re.search(r'\bgoto\b', rest):
+                continue
+            edit_ = (guard.start(), guard.end(), f'if ({counter} < {count})')
+            changed = edit(source, [edit_])
             if changed not in result:
                 result.append(changed)
+                edits.append(edit_)
             break
         if len(result) >= LIMIT:
             break
     combined = []
+    if len(edits) > 1:
+        # the slot is made per guard: every guard written as its counter's compare, as one child
+        everything = edit(source, edits)
+        combined.append(everything)
+        combined += [text for _, text in padding_drops(everything, name)]
     for text in result:
         combined += [child for _, child in merges(text, name) if child != text]
-    return [(FAMILY, text) for text in result + combined if text != source]
+        combined += [drop for _, drop in padding_drops(text, name)]
+    unique = []
+    for text in result + combined:
+        if text != source and text not in unique:
+            unique.append(text)
+    return [(FAMILY, text) for text in unique]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 100}  # the registry: no caller wiring (registry.py)
