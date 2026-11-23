@@ -60,3 +60,10 @@ def test_a_second_call_is_a_second_child():
 
 def test_registry_declares_the_family():
     assert any(FAMILY in repair.families for repair in registry.declared())
+
+
+def test_a_volatile_global_outside_the_function_and_a_register_hint_do_not_decline_it():
+    source = 'extern volatile s32 g;\n' + SOURCE.replace('    s32 key;', '    register s32 key;')
+    [(family, child)] = variants(source, 'run')
+    assert 'key = lookup(key, 2);' in child and 'register' not in child
+    assert variants(SOURCE.replace('s32 key;', 'volatile s32 key;'), 'run') == []
