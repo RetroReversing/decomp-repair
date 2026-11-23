@@ -16,15 +16,21 @@ other steps of the chain; alone it scored 2465 against 2420, as the table was ri
 `variants` takes each `switch` that has a `default:` and, immediately before it, a run of empty `case N:` labels, and for
 each range check the target has (`switch_range_repairs.ranges`: the lowest value and the count of an `sltiu`, with the
 `addiu` that biases the index) that spans every other label of the switch, removes the labels of the run that are outside
-it. The labels inside the range stay (they are the table's ends). One child per check, at most 2."""
+it. The labels inside the range stay (they are the table's ends). One child per check, at most 2. Each is offered
+again with the function's `volatile` casts written plain (`volatile_cast_unpin`, as `switch_range_trim_unpin`): in the
+spawner's chain, once its first switch's arms were right (415), the trim alone was 460, the plain read alone 555 and the
+two together 0. The `nop` that a `volatile` load leaves in a branch's delay slot is one word, and it moves every entry
+of the second switch's table the way the extra labels move its range; neither half alone puts the 43 entries back."""
 import re
 
 from .csource import _blank, find
 from .pattern_repairs import close
 from .switch_range_repairs import NUMBER, ranges
+from .volatile_cast_unpin import variants as unpinned
 
 FAMILY = 'switch_range_trim'
-FAMILIES = (FAMILY,)
+UNPIN = 'switch_range_trim_unpin'
+FAMILIES = (FAMILY, UNPIN)
 LIMIT = 2
 
 
@@ -69,7 +75,11 @@ def variants(source, name, asm):
                 text = text[:offset + hit.start()] + text[offset + hit.end():]
             if text not in [t for _, t in result]:
                 result.append((FAMILY, text))
-    return result[:LIMIT]
+    result = result[:LIMIT]
+    for _, text in list(result):
+        for _, plain in unpinned(text, name)[:1]:
+            result.append((UNPIN, plain))
+    return result
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'asm'), 'order': 60}  # the registry: no caller wiring (registry.py)
