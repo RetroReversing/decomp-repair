@@ -54,10 +54,10 @@ def _flat(text):
 
 def test_runs_of_calls_are_units_beside_the_single_calls():
     found = units(SOURCE, 'walk')
-    texts = [_flat(text) for _, _, text, _ in found]
+    texts = [_flat(text) for _, _, text, _, _ in found]
     assert 'prepare(obj, arg0); ready(obj, arg0);' in texts
     assert 'prepare(obj, arg0);' in texts and 'ready(obj, arg0);' in texts
-    run = next(counts for _, _, text, counts in found if _flat(text) == 'prepare(obj, arg0); ready(obj, arg0);')
+    run = next(counts for _, _, text, counts, _ in found if _flat(text) == 'prepare(obj, arg0); ready(obj, arg0);')
     assert run == {'obj': 2, 'arg0': 2}
 
 
@@ -95,3 +95,32 @@ def test_nothing_without_two_calls_that_name_a_local():
     assert variants('void f(s32 a) { g(); h(); }', 'f') == []
     assert variants('void f(s32 a) { g(a); }', 'f') == []
     assert variants('void f(s32 a) { asm("nop"); g(a); h(a); }', 'f') == []
+
+
+def test_a_call_that_opens_a_switch_arm_is_a_unit_and_the_arms_stay_distinct_children():
+    code = '''extern void use(int, int, int);
+void run(int a, int b, int c)
+{
+    int j;
+    f32 scale = 1.0f;
+    for (j = 0; j < 3; j++) {
+        switch (j) {
+        case 0:
+            use(a, b, j);
+            break;
+        case 1:
+            use(b, c, j);
+            break;
+        case 2:
+            use(a, c, j);
+            break;
+        }
+    }
+}
+'''
+    found = units(code, 'run')
+    assert [_flat(text) for _, _, text, _, _ in found] == ['use(a, b, j);', 'use(b, c, j);', 'use(a, c, j);']
+    texts = [_flat(text) for _, text in variants(code, 'run')]
+    for arm in ('case 0: use(a, b, j);', 'case 1: use(b, c, j);', 'case 2: use(a, c, j);'):
+        wrapped = arm.replace('use(', 'do { use(').replace(');', '); } while (0);', 1)
+        assert any(wrapped in text for text in texts), arm
