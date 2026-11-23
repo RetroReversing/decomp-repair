@@ -1,5 +1,11 @@
 """A sentinel guard over a do-while with the same test, written as the plain `while` it stands for.
 
+guard_prefix_while (a stream refill, `ido-7.1`, 60 -> 0 as the last step of a 222-instruction match): m2c's guard
+`if (P && Q) { do { B } while (Q); }` repeats only the trailing operands Q at the bottom; the target's loop is a `while`
+whose entry test is Q, nested in an `if (P)`. Written as `if (P) { while (Q) { B } }` the compiler lays the entry
+test out as the target does; the nested form is the same program when Q has no side effect (it is read once in the
+guard and once at the loop's entry, with nothing in between that P could change).
+
 Matched on a KMC gcc 2.7.2 (`-G0 -mips3 -mgp32 -mfp32 -O2`) voice-picker that walked two chains of byte links: for
 every chain position it read the first link and then followed `next` until the 0xFF sentinel. m2c wrote the walk as
 
@@ -31,7 +37,8 @@ from .c_scan import close, normal
 from .integer_repair_support import edit, view
 
 FAMILY = 'guarded_sentinel_while'
-FAMILIES = (FAMILY,)
+PREFIX = 'guard_prefix_while'
+FAMILIES = (FAMILY, PREFIX)
 LIMIT = 8
 _IF = re.compile(r'\bif\s*\(')
 _DO = re.compile(r'\s*do\b\s*')
@@ -40,8 +47,36 @@ _IMPURE = re.compile(r'\+\+|--|(?<![=!<>])=(?!=)|[A-Za-z_]\w*\s*\(|\bvolatile\b'
 _BLOCKED = re.compile(r'\bgoto\b|\bcase\b|\bdefault\b|^\s*[A-Za-z_]\w*\s*:(?!:)', re.M)
 
 
+def _conjuncts(clean, low, high):
+    """The (start, end) offsets of the top-level `&&` operands of clean[low:high]."""
+    spans, depth, start, i = [], 0, low, low
+    while i < high:
+        c = clean[i]
+        if c in '([':
+            depth += 1
+        elif c in ')]':
+            depth -= 1
+        elif depth == 0 and clean.startswith('&&', i):
+            spans.append((start, i))
+            start, i = i + 2, i + 1
+        i += 1
+    spans.append((start, high))
+    return spans
+
+
+def _prefix(clean, low, high, test):
+    """The offset where the guard's trailing operands, equal to the loop's test, begin, and the end of the operands
+    before them; None when no proper suffix of the guard is the test (or the guard has one operand)."""
+    spans = _conjuncts(clean, low, high)
+    for k in range(1, len(spans)):
+        if normal(clean[spans[k][0]:high]) == normal(test):
+            return spans[k - 1][1]
+    return None
+
+
 def _pairs(clean, source, low, high):
-    """(start, end, replacement) for each `if (C) [{] do { B } while (C); [}]` in clean[low:high]."""
+    """(start, end, replacement, family) for each `if (C) [{] do { B } while (C); [}]` in clean[low:high], and for each
+    `if (P && C) do { B } while (C);`, whose leading operands P are no part of the loop's test."""
     found = []
     for hit in _IF.finditer(clean, low, high):
         opening = hit.end() - 1
@@ -70,8 +105,15 @@ def _pairs(clean, source, low, high):
         test_open = tail.end() - 1
         test_close = close(clean, test_open, '(', ')')
         after = re.match(r'\s*;', clean[test_close + 1:]) if test_close > 0 else None
-        if not after or normal(clean[test_open + 1:test_close]) != normal(condition):
+        if not after:
             continue
+        test = clean[test_open + 1:test_close]
+        family, head = FAMILY, None
+        if normal(test) != normal(condition):
+            head = _prefix(clean, opening + 1, closing, test)
+            if head is None:
+                continue
+            family = PREFIX
         end = test_close + 1 + after.end()
         if braced:
             rest = re.match(r'\s*\}', clean[end:])
@@ -80,8 +122,10 @@ def _pairs(clean, source, low, high):
             end += rest.end()
         if re.match(r'\s*else\b', clean[end:]) or _BLOCKED.search(clean[body_open:body_close]):
             continue
-        found.append((hit.start(), end,
-                      f'while ({source[opening + 1:closing].strip()}) {source[body_open:body_close + 1]}'))
+        loop = f'while ({source[test_open + 1:test_close].strip()}) {source[body_open:body_close + 1]}'
+        if head is not None:
+            loop = f'if ({source[opening + 1:head].strip()}) {{ {loop} }}'
+        found.append((hit.start(), end, loop, family))
     return found
 
 
@@ -92,9 +136,11 @@ def variants(source, name, header=''):
     pairs = _pairs(part.clean, source, part.opening + 1, part.end)
     # a pair nested inside another one is edited by the outer edit alone
     pairs = [p for p in pairs if not any(q is not p and q[0] < p[0] and p[1] <= q[1] for q in pairs)][:LIMIT]
-    children = [(FAMILY, edit(source, [p])) for p in pairs]
-    if len(pairs) > 1:
-        children.append((FAMILY, edit(source, pairs)))
+    children = [(p[3], edit(source, [p[:3]])) for p in pairs]
+    for family in (FAMILY, PREFIX):
+        same = [p[:3] for p in pairs if p[3] == family]
+        if len(same) > 1:
+            children.append((family, edit(source, same)))
     return children
 
 
