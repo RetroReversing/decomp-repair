@@ -51,3 +51,31 @@ def test_an_indexed_or_offset_use_blocks_it():
 def test_it_declares_itself_to_the_registry():
     repair = registry.get('param_record_view')
     assert repair is not None and registry.problems(repair) == []
+
+
+LOCAL = '''void g(u16 *tab, s32 n) {
+    void *cmd;
+    cmd = ((char *) tab) + (n * 0x50 + 0x10);
+    lookup(cmd + 0x30, n);
+    *((s32 *) (((char *) cmd) + 0x30)) = 0;
+    *((s32 *) (((char *) cmd) + 0x40)) = n;
+    *((s16 *) (((char *) cmd) + 0x40)) = 1;
+    *((s16 *) (((char *) cmd) + 0x42)) = 2;
+    *((u8 *) (((char *) cmd) + 0x3F)) = 3;
+}
+'''
+
+
+def test_a_void_pointer_local_becomes_a_record_with_a_word_halfword_union():
+    [(family, text)] = prv.variants(LOCAL, 'g')
+    assert family == prv.LOCAL
+    assert 'Rec_g_cmd *cmd;' in text
+    assert 'cmd = (Rec_g_cmd *) (((char *) tab) + (n * 0x50 + 0x10));' in text
+    assert 'lookup(&cmd->m30, n);' in text and 'cmd->m30 = 0;' in text
+    assert 'union { s32 w; struct { s16 m40; s16 m42; } h; } u40;' in text
+    assert 'cmd->u40.w = n;' in text and 'cmd->u40.h.m40 = 1;' in text and 'cmd->u40.h.m42 = 2;' in text
+    assert 'u8 m3F;' in text and 'cmd->m3F = 3;' in text
+
+
+def test_a_local_used_another_way_is_left_alone():
+    assert prv.variants(LOCAL.replace('lookup(cmd + 0x30, n);', 'lookup(cmd[1], n);'), 'g') == []
