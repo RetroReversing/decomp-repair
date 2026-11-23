@@ -15,7 +15,8 @@ The shape: a statement `R = f(A, ...);` where `R` and `A` are different plain in
 is assigned by no other statement and every mention of it comes after this one, and `A` is not mentioned again after the
 call (and its first mention before the call is an assignment, so no loop carries a value of it around to a read above
 the call). Then the call is `A = f(A, ...);`, every later `R` is `A`, and `R`'s declaration goes. One child per such
-statement, at most four. A hypothesis; the judge decides."""
+statement, at most four. A `register` hint on a scalar declaration is dropped from the child (a draft's search scaffolding hides the declaration
+from the scan, and the compiler gets the same pseudo either way). A hypothesis; the judge decides."""
 import re
 
 from .integer_repair_support import IDENT, edit, locals_for, refs, view
@@ -25,6 +26,7 @@ FAMILIES = (FAMILY,)
 LIMIT = 4
 
 _CALL = re.compile(rf'(?m)^([ \t]*)({IDENT})[ \t]*=[ \t]*({IDENT})[ \t]*\([ \t]*({IDENT})[ \t]*([,)])')
+_PLAIN = re.compile(rf'(?m)^([ \t]*)register[ \t]+(?=(?:s|u)(?:8|16|32)[ \t]+{IDENT}[ \t]*;)')
 _WRITE = re.compile(r'\s*(?:=(?!=)|\+\+|--|[-+*/%&|^]=|<<=|>>=)')
 
 
@@ -33,8 +35,9 @@ def _kind(text, decl):
 
 
 def variants(source, name):
+    source = _PLAIN.sub(r'\1', source)  # a `register` hint hides a declaration from the scalar scan
     part = view(source, name)
-    if not part or re.search(r'\b(?:volatile|asm|__asm__)\b', part.clean):
+    if not part or re.search(r'\b(?:volatile|asm|__asm__)\b', part.body):
         return []
     decls = {d['name']: d for d in locals_for(part)}
     out = []

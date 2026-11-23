@@ -13,7 +13,8 @@ The shape: `if (X < K) { R = EXPR1; } else { R = EXPR2; }` (any of `<`, `<=`, `>
 `X` and `R` different plain integer locals of one declared type, `R` mentioned nowhere before the statement and assigned
 by no other statement, and `X` mentioned nowhere after the statement (its first mention before it is an assignment, so
 no loop carries a value of it around to a read above). Then the statement is `X = (X < K) ? (EXPR1) : (EXPR2);`, every later `R` is `X`, and `R`'s
-declaration goes. One child per clamp, at most four, and one with every clamp at once. A hypothesis; the judge decides."""
+declaration goes. One child per clamp, at most four, and one with every clamp at once. A `register` hint on a scalar declaration is dropped from the child (a draft's search scaffolding hides the declaration
+from the scan, and the compiler gets the same pseudo either way). A hypothesis; the judge decides."""
 import re
 
 from .integer_repair_support import IDENT, edit, locals_for, refs, view
@@ -26,12 +27,14 @@ _NUMBER = r'(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*'
 _CLAMP = re.compile(
     rf'if\s*\(\s*(({IDENT})\s*(?:<=|>=|<|>)\s*{_NUMBER})\s*\)\s*{{?\s*({IDENT})\s*=\s*([^;{{}}]+);\s*}}?'
     rf'\s*else\s*{{?\s*({IDENT})\s*=\s*([^;{{}}]+);\s*}}?')
+_PLAIN = re.compile(rf'(?m)^([ \t]*)register[ \t]+(?=(?:s|u)(?:8|16|32)[ \t]+{IDENT}[ \t]*;)')
 _WRITE = re.compile(r'\s*(?:=(?!=)|\+\+|--|[-+*/%&|^]=|<<=|>>=)')
 
 
 def _single(source, name):
+    source = _PLAIN.sub(r'\1', source)  # a `register` hint hides a declaration from the scalar scan
     part = view(source, name)
-    if not part or re.search(r'\b(?:volatile|asm|__asm__)\b', part.clean):
+    if not part or re.search(r'\b(?:volatile|asm|__asm__)\b', part.body):
         return []
     decls = {d['name']: d for d in locals_for(part)}
     out = []

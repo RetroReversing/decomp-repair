@@ -67,3 +67,9 @@ def test_two_clamps_are_also_offered_at_once():
 
 def test_registry_declares_the_family():
     assert any(FAMILY in repair.families for repair in registry.declared())
+
+
+def test_a_volatile_global_outside_the_function_and_a_register_hint_do_not_decline_it():
+    source = 'extern volatile s32 g;\n' + SOURCE.replace('    s32 key_out;', '    register s32 key_out;')
+    assert len(variants(source, 'note')) == 1
+    assert variants(SOURCE.replace('s32 key_out;', 'volatile s32 key_out;'), 'note') == []
