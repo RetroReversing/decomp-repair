@@ -39,6 +39,11 @@ def _signed_locals(part):
     return out
 
 
+def _value(text):
+    """A literal as an int, its `U`/`L` suffix dropped (`0x5EU`: m2c writes unsigned compares that way)."""
+    return int(text.rstrip('uUlL'), 0)
+
+
 def _folds(part, source, signed):
     """[(start, end, replacement)] of the offset compares of signed locals."""
     out = []
@@ -46,9 +51,9 @@ def _folds(part, source, signed):
                          rf'|\(\s*(?P<x2>{IDENT})\s*(?P<sign2>[+-])\s*(?P<c2>{NUMBER})\s*\)\s*(?P<op2>[<>]=?)\s*(?P<k2>-?{NUMBER})')
     for hit in pattern.finditer(part.clean, part.opening + 1, part.end):
         if hit['x']:
-            x, op, k, c, sign = hit['x'], _OPS[hit['op']], int(hit['k'], 0), int(hit['c'], 0), hit['sign']
+            x, op, k, c, sign = hit['x'], _OPS[hit['op']], _value(hit['k']), _value(hit['c']), hit['sign']
         else:
-            x, op, k, c, sign = hit['x2'], hit['op2'], int(hit['k2'], 0), int(hit['c2'], 0), hit['sign2']
+            x, op, k, c, sign = hit['x2'], hit['op2'], _value(hit['k2']), _value(hit['c2']), hit['sign2']
         if x not in signed:
             continue
         shift = k - (c if sign == '+' else -c)  # x + c OP k  ->  x OP (k - c)

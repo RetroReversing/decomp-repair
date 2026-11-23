@@ -58,3 +58,11 @@ def test_a_wide_declaration_has_no_proposal_of_its_own():
 def test_the_family_declares_itself_to_the_registry():
     [repair] = [item for item in registry.declared() if FAMILY in item.families]
     assert registry.problems(repair) == []
+
+
+def test_a_literal_with_an_unsigned_suffix_is_read_not_a_crash():
+    """An m2c range test `(u32)(id - 0x2B) < 0x5EU` made the whole proposal pass raise ValueError (int('0x5EU', 0))."""
+    code = CODE.replace('if (3 < (count + 1)) {', 'if ((u32)(count - 0x2B) < 0x5EU) {').replace('typedef int s32;', 'typedef int s32;\ntypedef unsigned int u32;')
+    children = [squash(text) for _, text in variants(code, 'pick')]
+    assert all(isinstance(text, str) for text in children)
+    assert any('s32 randomIntBelow();' in text for text in children)
