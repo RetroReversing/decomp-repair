@@ -19,6 +19,10 @@ twice: 110 -> 0 as one child, the 85th of 203 children from the saved best). Tho
 allocation table, not confirmed in the compiler source. The wrappers are scaffolding a developer would not have written: polishing removes them once the match is
 recorded.
 
+A call that opens a `case`/`default:` arm and a function whose leading declarations carry initialisers (`f32 x = 1.0f;`)
+are read too: in a 534-instruction panel builder the call of a switch's last arm, wrapped three deep (and nothing else), was
+the whole of the allocation change that gave two hoisted addresses their saved registers (7596 -> 4702).
+
 `variants` takes the calls that name at least one declared local or parameter, and the runs of consecutive calls as one
 unit as well, and offers every choice of up to three units at depth one to three (six wrappers at most), one child for
 each distinct change in the weighted references of the names (two choices that move every name alike are one child, the
@@ -35,7 +39,8 @@ LIMIT = 240
 MAX_UNITS = 3
 MAX_DEPTH = 3
 MAX_WRAPPERS = 6
-_CALL = re.compile(rf'(?<=[;{{}}])(?P<lead>[ \t\r\n]*)(?P<call>(?!(?:if|while|for|switch|return|sizeof|do|else)\b){IDENT}\s*\([^;{{}}]*\))\s*;')
+_CALL = re.compile(rf'(?:(?<=[;{{}}])|(?<=\bdefault:)|(?<=\bcase \d:)|(?<=\bcase 0x[0-9a-fA-F]:)|(?<=\bcase \d\d:))(?P<lead>[ \t\r\n]*)(?P<call>(?!(?:if|while|for|switch|return|sizeof|do|else)\b){IDENT}\s*\([^;{{}}]*\))\s*;')
+_INITIALISED = re.compile(rf'(?:(?:unsigned|signed|const|volatile|static|register)\s+)*(?:{IDENT}\s+)+\**\s*(?P<n>{IDENT})\s*(?:\[[^\]]*\])?\s*(?:=[^;{{}}]*)?;$')
 
 
 def _parameters(part):
@@ -48,6 +53,15 @@ def _declared(part):
     end = _declarations_end(part.clean, part)
     text = part.clean[part.opening + 1:part.opening + 1 + end]
     names = {m['n'] for m in re.finditer(rf'(?<=[;{{}}])\s*(?:{IDENT}\s+)+\**\s*(?P<n>{IDENT})\s*(?:\[[^\]]*\])?\s*;', ';' + text)}
+    # declarations with initialisers go on after the plain ones (`f32 cx = 160.0f;`): they end the declarations as far as
+    # `_declarations_end` goes, but their names are locals all the same
+    body = part.clean[part.opening + 1:part.end]
+    for line in re.finditer(r'[^;{}]*;', body[end:]):
+        text = line.group(0).strip()
+        hit = _INITIALISED.match(text)
+        if not hit or text.startswith(('return', 'else', 'goto')):
+            break
+        names.add(hit['n'])
     return names | set(_parameters(part))
 
 
@@ -56,7 +70,7 @@ def _wrap(text, depth):
 
 
 def units(source, name):
-    """[(start, end, text, {name: references})] of the call statements and of runs of consecutive ones."""
+    """[(start, end, text, {name: references}, arm)] of the call statements and of runs of consecutive ones."""
     part = view(source, name)
     if not part or re.search(r'\b(?:asm|__asm__|setjmp|longjmp)\b|^\s*#', part.body, re.M):
         return []
@@ -78,7 +92,10 @@ def units(source, name):
         counts = {n: len(re.findall(rf'(?<![\w.>]){re.escape(n)}\b', part.clean[start:end])) for n in names}
         counts = {n: c for n, c in counts.items() if c}
         if counts:
-            result.append((start, end, text, counts))
+            # the arm of a switch the call is in: calls that name the same things in different arms are different
+            # choices (their hoisted addresses and constants are not names)
+            arm = len(re.findall(r'\b(?:case\s+[^:;{}]+|default)\s*:', part.clean[part.opening:start]))
+            result.append((start, end, text, counts, arm))
     return result
 
 
@@ -99,7 +116,7 @@ def vectors(found):
                 for i, depth in zip(chosen, depths):
                     for n, c in found[i][3].items():
                         delta[n] = delta.get(n, 0) + c * depth
-                key = tuple(sorted(delta.items()))
+                key = (tuple(sorted(delta.items())), tuple(sorted({found[i][4] for i in chosen})))
                 if key in seen:
                     continue
                 seen.add(key)
