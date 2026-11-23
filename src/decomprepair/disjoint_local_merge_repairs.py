@@ -44,6 +44,8 @@ from .line_scan import apply, lines, loops
 FAMILY = 'disjoint_local_merge'
 LIMIT = 12
 HOIST_LIMIT = 8  # merges across blocks, counted apart: the nearest in-block pairs must not crowd them out
+LOOP_LIMIT = 8  # per local: a loop's own local merged with one used after the loop, counted apart for the same reason
+LOOP_TOTAL = 24
 SWAP_FAMILY = 'disjoint_local_merge_swap'
 FAMILIES = (FAMILY, SWAP_FAMILY)
 WORD = {'s32', 'u32', 'int', 'unsigned', 'unsigned int', 'signed int'}
@@ -124,13 +126,21 @@ def variants(source, name):
     # register a block-local tie decides
     ranked.sort(key=lambda item: not _tie_operand(part, item[1]))
     out = []
-    taken = {False: 0, True: 0}
+    taken = {False: 0, True: 0, 'loop': 0}
+    per_loop = {}
     for _, a, b, early, late in ranked:
         opening, closing = _block(part.clean, early.start(), part.opening)
         hoist = opening != part.opening and use[b][1] > closing
-        if taken[hoist] >= (HOIST_LIMIT if hoist else LIMIT):
+        # a value that lives only in a loop and the one after it: farther apart than the nearest pairs the plain cap
+        # keeps, and the one a shared pseudo's priority and conflicts (an a1-preferring start pointer after a
+        # loop's flag, 35 -> 15) turn on
+        loop = not hoist and any(s <= use[a][0] and use[a][1] <= e < use[b][0] for s, e in spans)
+        kind = 'loop' if loop else hoist
+        if taken[kind] >= (LOOP_TOTAL if loop else HOIST_LIMIT if hoist else LIMIT) or (loop and per_loop.get(a, 0) >= LOOP_LIMIT):
             continue
-        taken[hoist] += 1
+        taken[kind] += 1
+        if loop:
+            per_loop[a] = per_loop.get(a, 0) + 1
         edits = [(late.start(), late.end(), '')]
         for m in re.finditer(rf'(?<![\w.>]){re.escape(b)}\b', part.clean[late.end():part.end]):
             edits.append((late.end() + m.start(), late.end() + m.end(), a))

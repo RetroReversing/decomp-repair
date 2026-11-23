@@ -150,3 +150,36 @@ def test_a_binary_and_with_a_local_is_not_an_address():
     assert _address_taken('p = (u32 *)&n;', 'n')
     assert _address_taken('x = (s32)&n;', 'n')
     assert _address_taken('return &n;', 'n')
+
+
+def test_a_loop_local_flag_is_offered_a_merge_with_a_value_far_after_the_loop():
+    names = "n0..n4"
+    decls = '\n'.join(f'    s32 n{i};' for i in range(5))
+    uses = '\n'.join(f'    n{i} = F({i}); G(n{i});' for i in range(5))
+    src = f"""void f(s32 k, s32 limit) {{
+    s32 flag;
+    s32 temp;
+{decls}
+    s32 i;
+    i = 0;
+    do
+    {{
+        flag = 0;
+        if (k > i)
+        {{
+            flag = 1;
+        }}
+        if (flag != 0)
+        {{
+            H(i);
+        }}
+        i += 1;
+    }}
+    while (i < limit);
+{uses}
+    temp = F(k);
+    G(temp);
+}}
+"""
+    out = [text for _, text in variants(src, 'f')]
+    assert any('temp = F(k);' not in text and 'flag = F(k);' in text for text in out), names
