@@ -140,7 +140,7 @@ def _narrow(source, part, header):
             field = re.search(rf'(?:\.|->)\s*({IDENT})\s*$', value)
             fits = fits and not item['op'] and bool(
                 (number and int(re.sub(r'[uUlL]+$', '', value), 0) <= 0xFFFF)
-                or re.fullmatch(rf'\(\s*(?:u8|u16)\s*\)[^;]*', value)
+                or re.fullmatch(r'\(\s*(?:u8|u16)\s*\)[^;]*', value)
                 or (field and members.get(field.group(1)) and members[field.group(1)] <= unsigned_small))
         if fits:
             edits.append((decl.start('type'), decl.end('type'), 'u16'))
