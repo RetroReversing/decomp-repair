@@ -169,7 +169,7 @@ def test_a_counter_stepped_among_the_calls_and_a_companion_read_after_it_is_stil
     assert children
     child = children[0]
     assert 'p += 8;' not in child and 'i += 1;' not in child
-    assert '(p + i * 8)' in child
+    assert '(rec + i * 8)' in child
     assert re.search(r'for \(; i < 16; i\+\+\)', child)
     assert 'p = rec;' in child  # the NULL test above the loop still reads it
 
