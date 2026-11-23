@@ -39,6 +39,15 @@ def variants(source, name):
             result.append(('callee_parameter_width', edit(source, [(offset+match.start(1), offset+match.end(1), 'int')])))
             if len(result) >= 6:
                 break
+        # A narrow return the caller only tests: the compiler then extends it (`sll`/`andi`) before every test, which a
+        # caller of an `int` function does not. Only a result that is used (not a call statement) is a reason.
+        narrow = re.match(rf'\s*(?:extern\s+)?({INTEGER})\s+{re.escape(callee)}\s*\(', proto[0])
+        used = any(not re.search(r'(?:[;{}]|\))\s*$|^\s*$', re.sub(rf'{re.escape(callee)}\s*\($', '', part.clean[part.opening+1:start]))
+                   or re.search(r'\b(?:if|while)\s*\(\s*$', re.sub(rf'{re.escape(callee)}\s*\($', '', part.clean[part.opening+1:start]))
+                   for start, _ in sites)
+        if narrow and ' '.join(narrow[1].split()) in NARROW and used:
+            offset = proto.start()+narrow.start(1)
+            result.append(('callee_return_wide', edit(source, [(offset, proto.start()+narrow.end(1), 's32')])))
         # Infer return-width choices only from a captured direct result subsequently masked in this caller.
         returns = re.match(rf'\s*(?:extern\s+)?({INTEGER})\s+{re.escape(callee)}\s*\(', proto[0])
         if returns and ' '.join(returns[1].split()) in {'s32', 'u32', 'int', 'signed int', 'unsigned int'}:

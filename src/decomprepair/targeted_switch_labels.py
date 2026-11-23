@@ -12,6 +12,10 @@ CASE = re.compile(r'\bcase\s+(-?(?:0[xX][0-9a-fA-F]+|0|[1-9][0-9]*))\s*:')
 
 
 def variants(source, name, differences):
+    return _relabel(source, name, differences) + empty_arm_variants(source, name, differences)
+
+
+def _relabel(source, name, differences):
     if not 2 <= len(differences) <= 32:
         return []
     # A default entry or a destination introduced by a different switch
@@ -55,6 +59,86 @@ def variants(source, name, differences):
         if len(candidates) > 1:
             return []  # No source-to-table association for two possible switches.
     return [(FAMILY, candidate) for candidate in candidates if candidate != source]
+
+
+EMPTY_ARM = 'linked_switch_empty_arm'
+
+
+def empty_arm_variants(source, name, differences):
+    """Cases the target sends to the switch's join, written as an arm of their own that only breaks.
+
+    A switch whose arms assign a preset value (`v = 1; switch (k) { case 4: v &= f(); break; default: v = 0; }`)
+    keeps the preset for the kinds a developer listed with nothing to do (`case 10: case 11: break;`). Without those
+    labels the kinds fall to `default:`, and the compiled table sends them to the default arm's code while the
+    target's table sends them past it: the judge's "linked jump-table differences" rows, every instruction equal.
+    The rows name the cases and the one destination the target gives them; that destination is not where any case of
+    the compiled table goes (it is the code after the switch, which only a `break` reaches), so no relabelling of the
+    existing arms can reach it. The proposal takes those labels out of the arms that hold them (an arm is never left
+    without a label) and writes them as a new `case a: case b: break;` group in front of the arm that holds
+    `default:`, or after the last arm when there is none. One proposal per switch; the judge decides."""
+    if not 1 <= len(differences) <= 64 or len({row['table'] for row in differences}) != 1:
+        return []
+    targets = {row['target'] for row in differences}
+    if len(targets) != 1 or targets & {row['candidate'] for row in differences}:
+        return []
+    moved = sorted({row['case'] for row in differences})
+    part = view(source, name)
+    if not part or re.search(r'\b(?:asm|__asm__)\b', part.body):
+        return []
+    out = []
+    for switch in re.compile(r'\bswitch\s*\(').finditer(part.clean, part.opening + 1, part.end - 1):
+        after = close(part.clean, switch.end() - 1)
+        opening = re.match(r'\s*{', part.clean[after:part.end]) if after else None
+        if not opening:
+            continue
+        brace = after + opening.end() - 1
+        end = close(part.clean, brace, '{', '}')
+        if not end:
+            continue
+        scope = [*block_path(part, brace), brace]
+        marks = [hit for hit in re.compile(r'\b(?:case|default)\b').finditer(part.clean, brace + 1, end - 1)
+                 if block_path(part, hit.start()) == scope]
+        spans = []  # (start, end, value or None for default) of each label
+        for hit in marks:
+            label = CASE.match(part.clean, hit.start())
+            default = re.compile(r'default\s*:').match(part.clean, hit.start())
+            if label:
+                spans.append((label.start(), label.end(), int(label[1], 0)))
+            elif default:
+                spans.append((default.start(), default.end(), None))
+        if not spans or len(spans) != len(marks) or sum(span[2] is None for span in spans) > 1:
+            continue
+        groups, group = [], []
+        for number, span in enumerate(spans):
+            group.append(span)
+            stop = spans[number + 1][0] if number + 1 < len(spans) else end - 1
+            if part.clean[span[1]:stop].strip():
+                groups.append(group)
+                group = []
+        if group:
+            continue
+        values = {span[2] for span in spans if span[2] is not None}
+        removals = []
+        for value in moved:
+            if value not in values:
+                continue
+            owner = next(group for group in groups if any(span[2] == value for span in group))
+            if len(owner) < 2:
+                removals = None
+                break
+            removals.append(next(span[:2] for span in owner if span[2] == value))
+        if removals is None:
+            continue
+        holder = next((group for group in groups if any(span[2] is None for span in group)), None)
+        if holder is None and not all(value in values for value in moved):
+            continue  # a case with no label and no default is outside the switch
+        at = holder[0][0] if holder else end - 1
+        lead = re.search(r'[ \t]*$', source[:at])[0] if holder else ''
+        at -= len(lead)
+        hexed = any('x' in source[span[0]:span[1]].lower() for span in spans if span[2] is not None)
+        text = ' '.join(f'case {value:#x}:' if hexed else f'case {value}:' for value in moved) + ' break;\n'
+        out.append((EMPTY_ARM, edit(source, [*[(a, b, '') for a, b in removals], (at, at, lead + text)])))
+    return list(dict.fromkeys(out))[:2]
 
 
 ZERO_BOUND = re.compile(
