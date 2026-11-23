@@ -62,3 +62,39 @@ def test_requires_the_second_bound_to_follow_the_first():
     assert variants(GOTO.replace('>= 0xDD', '>= 0xDE'), 'clampit') == []
     assert variants(COMMA.replace('var_v0 = 0xDC,', 'other = 0xDC,'), 'clampit') == []
     assert variants(COMMA.replace('var_v0 = -0xDC;', 'var_v0 = 0xDC;'), 'clampit') == []
+
+
+FLOAT = """void steer(Obj *temp_s1)
+{
+    f32 temp_fv0_5;
+    f32 var_fv1_2;
+    temp_fv0_5 = temp_s1->x;
+    var_fv1_2 = -0.5625f;
+    if ((temp_fv0_5 < (-0.5625f)) || ((var_fv1_2 = 0.5625f, temp_fv0_5 > 0.5625f)))
+    {
+        temp_s1->x = var_fv1_2;
+    }
+    temp_s1->y = 1.0f;
+}
+"""
+
+
+def test_float_comma_clamp_becomes_two_arm_stores():
+    [(family, revised)] = variants(FLOAT, 'steer')
+    assert family == FAMILY
+    assert ('if (temp_fv0_5 < (-0.5625f)) {\n        temp_s1->x = -0.5625f;\n    } '
+            'else if (temp_fv0_5 > 0.5625f) {\n        temp_s1->x = 0.5625f;\n    }') in revised
+    assert 'var_fv1_2 =' not in revised
+    assert variants(revised, 'steer') == []
+
+
+def test_float_clamps_are_offered_together_too():
+    two = FLOAT.replace('    temp_s1->y = 1.0f;\n', FLOAT.split('temp_s1->x;\n')[1].split('    temp_s1->y')[0]
+                        .replace('temp_s1->x', 'temp_s1->z') + '    temp_s1->y = 1.0f;\n')
+    result = variants(two, 'steer')
+    assert len(result) == 3
+    assert '||' not in result[-1][1]
+
+
+def test_float_clamp_needs_its_own_temporary_in_both_places():
+    assert variants(FLOAT.replace('var_fv1_2 = 0.5625f,', 'other = 0.5625f,'), 'steer') == []
