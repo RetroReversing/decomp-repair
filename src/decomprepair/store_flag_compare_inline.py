@@ -143,7 +143,7 @@ def _rewrite(source, webs):
         edits.append((m1, end, ''))
         conds.setdefault((c0, c1), []).append((var, cmp))
     for (c0, c1), uses in conds.items():
-        text = source[c0:c1]
+        text = _definition_order(source[c0:c1], [var for var, _ in uses])
         for var, cmp in uses:
             text = re.sub(rf'\(\s*{re.escape(var)}\s*\^\s*1\s*\)', lambda _m, c=cmp: f'!({c})', text)
             text = _mention(var).sub(lambda _m, c=cmp: f'({c})', text)
@@ -154,6 +154,24 @@ def _rewrite(source, webs):
     for a, b, text in sorted(edits, reverse=True):
         source = source[:a] + text + source[b:]
     return source
+
+
+def _definition_order(text, names):
+    """A test that combines exactly two flags, with its operands put in the order the flags were set.
+
+    m2c names the flags after their registers and writes them in the test in whatever order the `or`/`and` read the
+    registers; the game's compares come in the order the flags were computed (a "not near zero" test whose `<=` came
+    first in the target was `!(x >= -K) | !(x <= K)` in m2c's test: 470 -> 420 written in the flags' order)."""
+    if len(names) != 2:
+        return text
+    first, second = names
+    for shape in (r'(\(\s*\(\s*\(\s*){a}(\s*\^\s*1\s*\)\s*\|\s*\(\s*){b}(\s*\^\s*1\s*\)\s*\)\s*!=\s*0\s*\))',
+                  r'(\(\s*\(?\s*){a}(\s*&\s*){b}(\s*\)?)'):
+        pattern = shape.format(a=re.escape(second), b=re.escape(first))
+        m = re.match(pattern + r'(?=\s*(?:&&|\|\||\)|$))', text)
+        if m:
+            return text[:m.start()] + m.group(1) + first + m.group(2) + second + m.group(3) + text[m.end():]
+    return text
 
 
 def _balanced(text):

@@ -84,3 +84,11 @@ def test_a_flag_read_twice_is_left_alone():
 
 def test_it_declares_itself():
     assert REPAIR['variants'] is variants and REPAIR['families'] == (FAMILY,)
+
+
+def test_the_compares_come_in_the_order_the_flags_were_set():
+    swapped = SOURCE.replace('if (((var_v1_7 ^ 1) | (var_v0_6 ^ 1)) != 0)', 'if (((var_v0_6 ^ 1) | (var_v1_7 ^ 1)) != 0)')
+    swapped = swapped.replace('if (var_v0_2 & var_v1_3)', 'if (var_v1_3 & var_v0_2)')
+    first = squash(children(swapped)[0])
+    assert 'if (!(x <= 0.0002f) | !(x >= (-0.0002f)))' in first
+    assert 'if ((o->x <= 0.0002f) & (o->x >= (-0.0002f)))' in first
