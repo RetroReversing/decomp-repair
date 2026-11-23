@@ -80,3 +80,50 @@ void f(void) {
 '''
     typed = r.variants(source, 'f')[0][1]
     assert 'while (*(D_T + var_a0) != 0xFFFF);' in typed
+
+
+GOTO = '''typedef struct { u32 flags; } V;
+extern V *D_T[];
+extern void touch(V *);
+extern void note(s32);
+
+void f(void) {
+    V **entry;
+    V *view;
+    u32 i;
+
+    i = 0;
+    entry = D_T;
+    do {
+        view = *entry;
+        if (view == NULL) {
+            goto next;
+        }
+        touch(*entry);
+        if ((*entry)->flags & 2) {
+            note(i);
+        }
+        next:
+        i += 1;
+        entry += 1;
+    } while (i < 6);
+}
+'''
+
+
+def test_a_forward_goto_to_a_label_before_both_steps_is_a_pass_that_steps_both():
+    found = r.variants(GOTO, 'f')
+    assert len(found) == 2 and found[0][0] == r.FAMILY
+    typed = found[0][1]
+    assert 'view = *(D_T + i);' in typed and 'touch(*(D_T + i));' in typed
+    assert 'if ((*(D_T + i))->flags & 2)' in typed
+    assert 'entry' not in typed and 'goto next;' in typed and 'next:' in typed and 'i += 1;' in typed
+
+
+def test_a_label_between_the_steps_or_a_backward_goto_is_refused():
+    between = GOTO.replace('        i += 1;\n        entry += 1;', '        i += 1;\n        next2:\n        entry += 1;').replace('goto next;', 'goto next2;')
+    assert r.variants(between, 'f') == []
+    back = GOTO.replace('        view = *entry;', '        again:\n        view = *entry;').replace('goto next;', 'goto again;')
+    assert r.variants(back, 'f') == []
+    cont = GOTO.replace('goto next;', 'continue;')
+    assert r.variants(cont, 'f') == []
