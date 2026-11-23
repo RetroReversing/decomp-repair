@@ -88,3 +88,53 @@ def test_every_merge_of_the_guarded_text_is_offered_as_one_combined_child():
     merged = [text for text in children if 'if (i < count)' in text and 'biggest = h(2)' in text]
     assert merged and all('u32 later;' not in text for text in merged)
     assert all(text != TWO_ROLES for text in children)
+
+
+LATCH = """extern void g(int);
+void f(int n, int m)
+{
+    volatile u64 scratch[3];
+    s32 count;
+    s32 total;
+    s32 i;
+    count = n;
+    total = m;
+    i = 0;
+    if (count > 0) {
+    first: {
+            g(i);
+            i += 1;
+        }
+        if (i < count) goto first;
+    }
+    i = 0;
+    if (total > 0) {
+    second: {
+            g(i + 1);
+            i += 1;
+        }
+        if (i < total) goto second;
+    }
+}
+"""
+
+
+def test_a_latch_loop_closed_by_a_goto_is_offered():
+    children = [text for family, text in variants(LATCH, 'f') if family == FAMILY]
+    assert any('if (i < count) {' in text and 'if (count > 0)' not in text for text in children)
+    assert any('if (i < total) {' in text and 'if (total > 0)' not in text for text in children)
+
+
+def test_every_guard_is_one_child_and_the_scratch_it_replaces_another():
+    children = [text for family, text in variants(LATCH, 'f') if family == FAMILY]
+    everything = [text for text in children if 'if (count > 0)' not in text and 'if (total > 0)' not in text]
+    assert everything and any('scratch' in text for text in everything)
+    assert any('scratch' not in text for text in everything)  # the padding dropped with the guards
+    assert all(text != LATCH for text in children)
+
+
+def test_a_goto_into_the_block_or_out_of_it_is_declined():
+    entered = LATCH.replace('    i = 0;\n    if (total', '    if (m) goto first;\n    i = 0;\n    if (total')
+    assert not any('if (i < count) {' in text for _, text in variants(entered, 'f'))
+    left = LATCH.replace('g(i);\n            i += 1;', 'g(i);\n            if (m) goto second;\n            i += 1;')
+    assert not any('if (i < count) {' in text for _, text in variants(left, 'f'))
