@@ -60,3 +60,12 @@ def test_element_zero_is_read_through_the_base_which_is_retyped_and_stepped():
     assert 'u8 *p;' in text and 'p = (u8 *) start();' in text
     assert 'g(*((u8 *) p), ' in text
     assert 'q += 3;\n    p += 3;' in text
+
+
+def test_a_byte_pointer_start_without_a_cast():
+    src = BYTES.replace('u16 *p;', 'unsigned char *p;').replace('p = start();', 'p = (unsigned char *) start();')
+    src = src.replace('typedef unsigned char u8;', 'typedef unsigned char u8;\n#define uchar u8').replace(
+        'unsigned char *p;', 'u8 *p;').replace('(unsigned char *) start()', '(u8 *) start()').replace(
+        'q = ((char *) p) + 2;', 'q = p + 2;')
+    [text] = [t for fam, t in m.variants(src, 'f') if fam == m.BASE]
+    assert 'g(*((u8 *) p), ' in text and 'q += 3;\n    p += 3;' in text
