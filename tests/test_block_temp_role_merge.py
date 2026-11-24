@@ -46,3 +46,15 @@ def test_a_survivor_the_block_mentions_is_left_alone():
 
 def test_a_survivor_a_macro_mentions_is_left_alone():
     assert not any('a = t[k];' in src for src in _children('#define GET(d) d = a\n' + PASSES))
+
+
+def test_a_bare_declaration_set_first_is_offered_too():
+    # the decoder's scatter index, declared bare and set as the block's first use of it (215 -> 110 needed it as `y`)
+    text = PASSES.replace('    u32 cd = t[k];\n', '    u32 cd;\n    cd = t[k];\n')
+    children = _children(text)
+    assert any('    a = t[k];\n' in src and 'cd' not in src for src in children)
+
+
+def test_a_bare_declaration_read_before_it_is_set_is_left_alone():
+    text = PASSES.replace('    u32 cd = t[k];\n', '    u32 cd;\n    tab[1] = cd;\n    cd = t[k];\n')
+    assert not any('cd' not in src for src in _children(text))

@@ -14,7 +14,9 @@ later 900 -> 865 (a loaded code held in the bit reader's variable). This family'
 its children 850 -> 815 -> 785 -> 770 -> 760, each checked against a clean transcription on generated bit streams.
 
 A child for each pair (temporary, survivor), each temporary's most-used survivors first, round-robin over the
-temporaries up to the cap: the temporary declared with an initializer at the head of a block, the
+temporaries up to the cap: the temporary declared at the head of a block (with an initializer, or bare when the
+block's first mention of it sets it: `u32 ix; ... ix = e;`, the form two steps of the decoder's 215 -> 110 fell
+into), the
 survivor a function-level local of the same type that the block never mentions, whose next mention after the block (if
 any) is a plain assignment, and that every loop around the block sets before reading. The declaration becomes an
 assignment; other initialised declarations after it in that block are split into a declaration and an assignment so
@@ -30,6 +32,7 @@ FAMILIES = (FAMILY,)
 LIMIT = 48
 _TYPE = r'(?:unsigned\s+(?:int|short|char)|signed\s+(?:int|short|char)|[us](?:8|16|32)|int|short|char)'
 _INIT = re.compile(rf'(?m)^([ \t]*)({_TYPE})\s+([A-Za-z_]\w*)\s*=\s*([^;]+);')
+_BARE = re.compile(rf'(?m)^([ \t]*)({_TYPE})\s+([A-Za-z_]\w*)\s*;[ \t]*\n?')
 _DECL = re.compile(rf'\s*({_TYPE}(?:\s*\*+)?|[A-Za-z_]\w*\s*\*+)\s*([A-Za-z_]\w*)\s*(=\s*([^;]+))?;')
 _LOOP = re.compile(r'\b(?:for|while)\s*\(|\bdo\s*\{')
 
@@ -104,7 +107,9 @@ def variants(source, name):
     uses = {n: len(re.findall(rf'\b{n}\b', clean[lo:hi])) for _, n in survivors}
     survivors.sort(key=lambda item: -uses[item[1]])  # the long-lived, much-used variables first: the likely roles
     per_temp = []
-    for temp in _INIT.finditer(clean, lo, hi):
+    temps = sorted([(m, True) for m in _INIT.finditer(clean, lo, hi)] + [(m, False) for m in _BARE.finditer(clean, lo, hi)],
+                   key=lambda item: item[0].start())
+    for temp, initialised in temps:
         children = []
         per_temp.append(children)
         opening = _open_of(clean, temp.start(), lo)
@@ -118,6 +123,22 @@ def variants(source, name):
         if closing is None or var in macro_names or re.search(rf'&\s*{var}\b', clean[opening:closing]):
             continue
         ttype = re.sub(r'\s+', ' ', temp[2])
+        if not initialised:
+            # `u32 ix; ... ix = e;`: the same temporary declared bare; its first mention in the block must set it
+            rest = clean[temp.end():closing]
+            if not _first_is_assignment(rest, var) or not re.search(rf'\b{var}\b', rest):
+                continue
+            for stype, survivor in survivors:
+                if stype != ttype or survivor == var or re.search(rf'\b{survivor}\b', clean[opening:closing]):
+                    continue
+                if not _first_is_assignment(clean[closing:hi], survivor):
+                    continue
+                around = [body for body in loops if body[0] < opening and closing < body[1]]
+                if any(not _first_is_assignment(clean[body[0]:body[1]], survivor) for body in around):
+                    continue
+                renamed = re.sub(rf'\b{var}\b', survivor, source[temp.end():closing])
+                children.append((FAMILY, edit(source, [(temp.start(), closing, renamed)])))
+            continue
         later_decls = []
         at = temp.end()
         while True:
