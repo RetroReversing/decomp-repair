@@ -65,3 +65,55 @@ def test_two_loops_are_named_together_in_one_child():
     fam, text = m.variants(two, 'f')[0]
     assert fam == m.COMBINED
     assert 'seg(sp168_arg, tri);' in text and 'seg(sp158_arg, tri);' in text
+
+
+WALK = """typedef float f32;
+void seg(f32 *out, f32 *a, f32 *b);
+f32 dist(f32 *a, f32 *b);
+struct obj { struct obj *next; int n; };
+void f(struct obj *o, f32 *tri)
+{
+  f32 spD0[3];
+  f32 sp150[3];
+  f32 *sp22C;
+  int i;
+  f32 d;
+  sp22C = &sp150;
+  for (;;)
+  {
+    i = 0;
+    do
+    {
+      seg(sp22C, tri, &spD0);
+      d = dist(sp22C, &spD0);
+      *((f32 *) (&spD0)) = d;
+      i++;
+    }
+    while (i < o->n);
+    i = 0;
+    again:
+    seg(sp22C, tri, &spD0);
+    if (++i < o->n) goto again;
+    o = o->next;
+    if (o == 0)
+      break;
+  }
+}
+"""
+
+
+def test_an_enclosing_walk_names_the_array_once_for_all_its_loops():
+    children = [text for fam, text in m.variants(WALK, 'f') if fam == m.OUTER]
+    assert children
+    text = children[0]
+    assert 'sp22C = &sp150;\n  spD0_arg = &spD0;\n  for (;;)' in text
+    assert text.count('seg(sp22C, tri, spD0_arg);') == 2 and 'dist(sp22C, spD0_arg);' in text
+    # A struct copy through the address stays on the array itself.
+    assert '*((f32 *) (&spD0)) = d;' in text
+    assert 'f32 *spD0_arg;' in text
+
+
+def test_a_loop_holding_no_other_loop_is_not_an_enclosing_one():
+    flat = WALK.replace('    do\n    {', '    {').replace('    while (i < o->n);\n    i = 0;', '    i = 0;').replace(
+        '    if (++i < o->n) goto again;\n', '')
+    assert all(fam != m.OUTER for fam, _ in m.variants(flat, 'f'))

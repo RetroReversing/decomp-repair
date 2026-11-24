@@ -14,6 +14,17 @@ behaviour, the source's spelling is a hypothesis.
 
 Children: one per (loop, array) pair, and one naming at once every array whose calls pass, in that argument, what other
 calls of the same callee pass as such a pointer local (the spilled-invariant signature).
+
+`loop_address_argument_local_outer`: the same naming for a loop of any kind (`for (;;)`, `while`, `do`) whose body
+holds other loops, with every call argument `&X` in the whole body read through the one local, set before that loop
+beside its siblings. A 2,267-instruction collision sweep (KMC gcc 2.7.2) builds an object walk (m2c's `for (;;)`)
+around two triangle loops, one a `do`, one a goto loop, inside the retry walk's `do`: the target computes `&spD0` once
+per walk into `$s7` (`addiu $s7, $sp, 0xD0` beside the walk's other pointer locals) and passes `$s7` to every call,
+where `&spD0` in each call compiled to a fresh address the loop pass hoists out of the retry loop and reload spills.
+Named before the walk, 7228 -> 4793 (one function). Hypothesis from the 2.7.2 source: loop.c `scan_loop` moves a user
+variable's set out of a loop only when it is executed on every iteration (not after a jump in the loop body), and the
+walk's head sits after the actor loop's branches, so the named pointer stays in its register for the whole walk.
+Struct copies through the address (`*((T *) (&X)) = ...`) are left as they are: the target reads them off `$sp`.
 """
 import re
 
@@ -21,7 +32,8 @@ from .csource import _blank, find
 
 FAMILY = 'loop_address_argument_local'
 COMBINED = 'loop_address_argument_local_all'
-FAMILIES = (FAMILY, COMBINED)
+OUTER = 'loop_address_argument_local_outer'
+FAMILIES = (FAMILY, COMBINED, OUTER)
 
 I = r'[A-Za-z_]\w*'
 
@@ -39,6 +51,30 @@ def _loops(clean, start, end):
                 depth -= 1
                 if depth == 0:
                     out.append((start + m.start(), opening + 1, k))
+                    break
+    return out
+
+
+def _enclosing_loops(clean, start, end):
+    """(keyword-start, body-start, body-end) of each `for (...) {`, `while (...) {` or `do {` in [start, end) whose
+    body holds another loop (a `do`, `for`, `while` or a label that a `goto` in the body jumps back to)."""
+    out = []
+    for m in re.finditer(r'\b(?:do|for\s*\([^;{}()]*;[^;{}()]*;[^{}()]*\)|while\s*\((?:[^(){};]|\([^(){};]*\))*\))\s*\{',
+                         clean[start:end]):
+        opening = start + m.end() - 1
+        depth = 0
+        for k in range(opening, end):
+            if clean[k] == '{':
+                depth += 1
+            elif clean[k] == '}':
+                depth -= 1
+                if depth == 0:
+                    body = clean[opening + 1:k]
+                    labels = re.findall(r'(?m)^\s*(' + I + r')\s*:(?!:)', body) + re.findall(r'[;{}]\s*(' + I + r')\s*:(?!:)', body)
+                    inner = re.search(r'\b(?:do\s*\{|for\s*\(|while\s*\()', body) or any(
+                        re.search(r'\bgoto\s+' + lab + r'\s*;', body) for lab in labels if lab != 'default')
+                    if inner:
+                        out.append((start + m.start(), opening + 1, k))
                     break
     return out
 
@@ -132,6 +168,26 @@ def _plan(source, name):
     return opening, plans
 
 
+def _outer_plans(source, name):
+    span = find(source, name)
+    if not span:
+        return None, []
+    clean = _blank(source)
+    opening = clean.find('{', span[0], span[1])
+    if opening < 0:
+        return None, []
+    plans = []
+    for loop_at, body_start, body_end in _enclosing_loops(clean, opening, span[1]):
+        setup_end, line_start = _pointer_setups(source, clean, loop_at)
+        body = clean[body_start:body_end]
+        for array in sorted(set(re.findall(r'&\s*\(?\s*(' + I + r')\b', body))):
+            hits = [m for m in _argument(array).finditer(body) if _call_slot(clean, body_start + m.start())]
+            if len(hits) < 2:
+                continue
+            plans.append((setup_end, line_start, body_start, body_end, array, hits, False))
+    return opening, plans
+
+
 def _apply(source, opening, plans):
     names = set(re.findall(r'\b' + I + r'\b', _blank(source)))
     edits = []
@@ -159,13 +215,15 @@ def _apply(source, opening, plans):
 
 def variants(source, name):
     opening, plans = _plan(source, name)
-    if not plans:
-        return []
     out = [(FAMILY, _apply(source, opening, [p])) for p in plans]
     paired = [p for p in plans if p[-1]]
     if len(paired) > 1:
         out.insert(0, (COMBINED, _apply(source, opening, paired)))
-    return out[:12]
+    outer_opening, outer = _outer_plans(source, name)
+    # The innermost enclosing loops first: the walk around the triangle loops before the function-wide retry loop.
+    outer.sort(key=lambda p: (p[3] - p[2], p[0]))
+    out += [(OUTER, _apply(source, outer_opening, [p])) for p in outer[:8]]
+    return out[:20]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}
