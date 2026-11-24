@@ -58,3 +58,7 @@ def test_a_body_that_reads_an_unnamed_parameter_is_left_alone():
 
 def test_it_declares_itself():
     assert any(r.module == 'variadic_home_spill' for r in registry.declared())
+
+
+def test_a_nonmatching_header_line_before_the_label_is_skipped():
+    assert v.spilled_from('nonmatching f, 0x2C\n\n' + SPILLS) == 0

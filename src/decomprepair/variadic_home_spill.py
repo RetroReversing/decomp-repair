@@ -38,7 +38,7 @@ def spilled_from(asm):
     regs = []
     for raw in (asm or '').splitlines():
         line = re.sub(r'/\*.*?\*/', '', raw).strip()
-        if not line or line.startswith(('glabel', '.', 'endlabel')):
+        if not line or line.startswith(('glabel', '.', 'endlabel', 'nonmatching')):
             continue
         hit = _SPILL.match(line)
         if not hit or int(hit[2] or '0', 0) != 4 * int(hit[1]):
