@@ -57,7 +57,7 @@ def test_two_globals_also_get_the_combined_children():
     both = children[4]
     assert 'extern u8 D_800B9EA4[];' in both and 'extern u8 D_800B9EB0[];' in both
     assert '*(s32 *) D_800B9EA4' in both and '*(u16 *) D_800B9EB0' in both
-    assert 'extern s32 D_800B9EA4[];' in children[5] and 'extern u8 D_800B9EB0[];' in children[5]
+    assert 'extern s32 D_800B9EA4[];' in children[5] and 'extern u16 D_800B9EB0[];' in children[5] and 'D_800B9EB0[0]' in children[5]
 
 
 def test_no_proposal_for_a_scalar_load_the_target_keeps_beside_its_lui():
