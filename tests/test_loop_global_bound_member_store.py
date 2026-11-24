@@ -45,3 +45,7 @@ def test_a_loop_without_a_byte_offset_store_is_left_alone():
 
 def test_a_bound_read_elsewhere_is_left_alone():
     assert _children(SCAN.replace('  i = 0;\n', '  i = 0;\n  use(count);\n').replace('  {\n    u32 count', '  {\n    u32 count', 1)) == []
+
+
+def test_a_call_in_the_loop_leaves_the_bound_alone():
+    assert _children(SCAN.replace('|= 8;', '|= 8;\n        refresh();')) == []

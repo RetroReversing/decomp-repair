@@ -63,6 +63,9 @@ def variants(source, name, header=''):
         stores = list(_STORE.finditer(clean, body_open.end(), body_end - 1))
         if not stores or re.search(r'\bvolatile\b', body):
             continue
+        calls = re.sub(r'\(\s*(?:\w+\s*)+\**\s*\)', ' ', body)  # casts are not calls
+        if re.search(rf'\b(?!(?:if|while|for|switch|sizeof)\b){IDENT}\s*\(', calls) or re.search(rf'\b{glob}\s*(?:[-+*/|&^]?=(?!=)|\+\+|--)|&\s*{glob}\b', body):
+            continue  # the body could change the global the bound is read from again
         edits = [(start, stop, ''), (lo + loop.start('n'), lo + loop.end('n'), glob)]
         kinds = set()
         for store in stores:
