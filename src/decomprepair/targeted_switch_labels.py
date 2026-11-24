@@ -34,7 +34,8 @@ def _relabel(source, name, differences):
     if len(mapping) != len(differences) or mapping.keys() != set(mapping.values()):
         return []
     part = view(source, name)
-    if not part or re.search(r'\b(?:asm|__asm__|goto)\b', part.body):
+    # A `goto` is no reason to decline: the edit only exchanges case numbers, and a label's target is untouched by it.
+    if not part or re.search(r'\b(?:asm|__asm__)\b', part.body):
         return []
     candidates = []
     for switch in re.compile(r'\bswitch\s*\(').finditer(part.clean, part.opening+1, part.end-1):
