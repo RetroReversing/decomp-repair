@@ -114,7 +114,7 @@ def variants(source, name, debug_lines=False):
 
     # Swap braced branches and negate the comparison; no dangling-else reconstruction.
     branches = []
-    for m in list(re.finditer(r'\bif\s*\(',body))[:24]:
+    for m in re.finditer(r'\bif\s*\(',body):  # every `if`: a cap of 24 never reached a 1315-instruction interpreter's 33rd
         end = close(body,m.end()-1)
         if not end:
             continue
@@ -142,7 +142,7 @@ def variants(source, name, debug_lines=False):
                 arms[arm_start] = text[:x-arm_start]+text[y-arm_start:]
                 add('branch_orientation',[(m.end(),end-1,newcond),(a,b,arms[c]),(c,d,arms[a]),cleanup[1]])
         branches.append((b-a+d-c,edits))
-    for _,edits in sorted(branches,key=lambda item:item[0])[:4]:
+    for _,edits in sorted(branches,key=lambda item:item[0])[:12]:  # the ninth smallest pair was the one (5910 -> 5510)
         add('branch_orientation',edits)
 
     for candidate in temporary_repairs.variants(source,name):
