@@ -17,7 +17,12 @@ assembly builds in a register other than `$at` with at least one instruction bet
 `%lo(G)` use (a scalar read has them adjacent). Children, per global, from the plainest:
 - `extern u8 G[];` with every read written `*(T *) G`;
 - `extern T G[];` with every read written `G[0]` (the same as the first for a byte type, so offered once).
-Then each form for all the globals together. At most 4 globals and 24 children."""
+Then each form for all the globals together. At most 4 globals and 24 children.
+
+Second shape (a 7-instruction function, 200 -> 0): a global read as `*(T *)((s8 *)G + K)` at two or more offsets, which
+the compiler folds into the symbol (`lui/%lo(G+K)`), where the target builds the address once (`lui` + `addiu %lo(G)`,
+no load through `%lo(G)`) and reads at `K($r)`. The child declares `extern u8 G[];`, adds `u8 *base_G = G;` and reads
+`*(T *)(base_G + K)`; the array alone scored 600, the pointer local is what pins the address in a register."""
 import re
 
 from .csource import _blank
@@ -70,6 +75,41 @@ def early_address(symbol, asm):
     return first_lui is not None and first_lo is not None and first_lo - first_lui >= 2
 
 
+def address_taken(symbol, asm):
+    """True when the assembly materialises `symbol`'s address (`lui` then `addiu ...%lo(G)`, not through `$at`) and
+    never loads or stores through its `%lo`: every use is the address plus a constant offset."""
+    taken = False
+    for code in _code_lines(asm):
+        if not re.search(r'%(?:hi|lo|gp_rel)\(\s*' + re.escape(symbol) + r'\s*(?:[+-][^)]*)?\)', code):
+            continue
+        high = re.match(r'lui\s+\$(\w+)\s*,\s*%hi\(', code)
+        if high:
+            if high[1] == 'at':
+                return False
+        elif re.match(r'addiu\s+\$\w+\s*,\s*\$\w+\s*,\s*%lo\(', code):
+            taken = True
+        else:
+            return False
+    return taken
+
+
+_BYTE_CAST = re.compile(r'\(\s*(?:(?:unsigned|signed)\s+char|[su]8|char|void)\s*\*\s*\)\s*$')
+
+
+def _offset_form(source, part, symbol, hit, spans):
+    """The byte-array declaration and a `u8 *base_G = G;` local the offset reads go through (`(s8 *)G` becomes
+    `base_G`); None when the local's name is taken."""
+    local = f'base_{symbol}'
+    if local in set(re.findall(IDENT, source)):
+        return None
+    edits = [(hit.start(), hit.end(), f'{hit["indent"]}extern u8 {symbol}[];'),
+             (part.opening + 1, part.opening + 1, f'\n    u8 *{local} = {symbol};')]
+    for a, b in spans:
+        cast = _BYTE_CAST.search(part.clean[:a])
+        edits.append((cast.start() if cast else a, b, local))
+    return edit(source, edits)
+
+
 def _read(kind, symbol):
     pointer = f'{kind}*' if kind.endswith('*') else f'{kind} *'
     return f'*({pointer}) {symbol}'
@@ -93,7 +133,8 @@ def variants(source, name, header='', asm=''):
             break
         if hit.start() >= part.opening or symbol not in used or symbol == name:
             continue
-        if re.search(rf'\b{re.escape(symbol)}\b', header or '') or not early_address(symbol, asm):
+        if re.search(rf'\b{re.escape(symbol)}\b', header or '') \
+                or not (early_address(symbol, asm) or address_taken(symbol, asm)):
             continue
         spans = _reads(part, symbol)
         if not spans:
@@ -101,12 +142,12 @@ def variants(source, name, header='', asm=''):
         uses = len(re.findall(rf'(?<![\w.]){re.escape(symbol)}\b', outside))
         if uses > len(re.findall(rf'\b{re.escape(symbol)}\b[ \t]*;', outside)):
             continue
-        found.append((symbol, kind, hit, spans))
+        found.append((symbol, kind, hit, spans, address_taken(symbol, asm)))
     if not found:
         return []
 
     def plan(entry, form):
-        symbol, kind, hit, spans = entry
+        symbol, kind, hit, spans, _ = entry
         indent = hit['indent']
         if form == 'bytes':
             declaration = f'{indent}extern u8 {symbol}[];'
@@ -120,6 +161,12 @@ def variants(source, name, header='', asm=''):
         return plan(entry, 'bytes' if _BYTES.match(entry[1]) else form)
 
     out = []
+    for entry in found:
+        if entry[4] and len(entry[3]) >= 2:
+            child = _offset_form(source, part, entry[0], entry[2], entry[3])
+            if child:
+                out.append((FAMILY, child))
+    found = [entry for entry in found if not entry[4]]
     for form in ('bytes', 'array'):
         for entry in found:
             if form == 'array' and _BYTES.match(entry[1]):

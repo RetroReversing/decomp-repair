@@ -85,3 +85,31 @@ def test_a_written_global_a_float_a_header_declaration_and_another_users_are_lef
 
 def test_it_declares_itself_to_the_registry():
     assert 'int_global_array_read' in [f for r in registry.declared() for f in r.families]
+
+
+OFFSET_SOURCE = '''extern s32 D_800BD0E0;
+s32 func_8000C43C(void) {
+    return ((*(s32 *)((s8 *)D_800BD0E0 + 0x20)) * 0x10) | (*(s32 *)((s8 *)D_800BD0E0 + 0x1C));
+}
+'''
+OFFSET_ASM = '''glabel func_8000C43C
+/* D03C 8000C43C 3C03800C */  lui        $v1, %hi(D_800BD0E0)
+/* D040 8000C440 2463D0E0 */  addiu      $v1, $v1, %lo(D_800BD0E0)
+/* D044 8000C444 8C620020 */  lw         $v0, 0x20($v1)
+/* D048 8000C448 8C63001C */  lw         $v1, 0x1C($v1)
+'''
+
+
+def test_a_global_read_at_two_offsets_with_its_address_built_once_goes_through_a_pointer_local():
+    children = [c for _, c in igar.variants(OFFSET_SOURCE, 'func_8000C43C', asm=OFFSET_ASM)]
+    assert len(children) == 1
+    child = children[0]
+    assert 'extern u8 D_800BD0E0[];' in child and 'u8 *base_D_800BD0E0 = D_800BD0E0;' in child
+    assert '*(s32 *)(base_D_800BD0E0 + 0x20)' in child and '*(s32 *)(base_D_800BD0E0 + 0x1C)' in child
+
+
+def test_the_offset_shape_needs_two_reads_the_addiu_address_and_no_load_through_the_symbol():
+    one = OFFSET_SOURCE.replace(' | (*(s32 *)((s8 *)D_800BD0E0 + 0x1C))', '')
+    assert igar.variants(one, 'func_8000C43C', asm=OFFSET_ASM) == []
+    loaded = OFFSET_ASM + '/* D04C 0 */  lw         $a0, %lo(D_800BD0E0)($v1)\n'
+    assert igar.variants(OFFSET_SOURCE, 'func_8000C43C', asm=loaded) == []
