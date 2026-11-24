@@ -107,3 +107,37 @@ def test_a_float_constant_slides_and_declarations_are_not_a_run():
     out = [text for _, text in s.variants(source, 'f')]
     assert any(o.index('height = 120.0f;') < o.index('k = 3;') for o in out)
     assert not any(o.index('f32 y;') < o.index('f32 height;') for o in out)
+
+
+# A sound-sequence interpreter's pan command (KMC GCC 2.7.2, N64): the saved best's cast spelling of the fields.
+CAST_ARM = '''void f(void *arg0, s32 v)
+{
+  u8 t;
+  *((u16 *) (((char *) arg0) + 0x50)) = v;
+  t = *((u8 *) (((char *) arg0) + 0x4A));
+  *((u8 *) (((char *) arg0) + 0xC0)) = (s8) (*((u16 *) (&D_800FDB9C)));
+  g(t);
+}
+'''
+
+
+def test_a_cast_spelled_field_read_slides_past_another_fields_store():
+    kids = [src for _, src in variants(CAST_ARM, 'f')]
+    want = CAST_ARM.replace("""  t = *((u8 *) (((char *) arg0) + 0x4A));
+  *((u8 *) (((char *) arg0) + 0xC0)) = (s8) (*((u16 *) (&D_800FDB9C)));
+""", """  *((u8 *) (((char *) arg0) + 0xC0)) = (s8) (*((u16 *) (&D_800FDB9C)));
+  t = *((u8 *) (((char *) arg0) + 0x4A));
+""")
+    assert want in kids
+
+
+def test_a_cast_spelled_read_of_the_stored_field_stays():
+    text = CAST_ARM.replace('+ 0x4A))', '+ 0xC0))')
+    kids = [src for _, src in variants(text, 'f')]
+    assert not any(k.index('t = *') > k.index('+ 0xC0)) = (s8)') for k in kids)
+
+
+def test_a_global_read_does_not_pass_a_store_through_a_pointer():
+    text = CAST_ARM.replace('t = *((u8 *) (((char *) arg0) + 0x4A));', 't = *((u8 *) (&D_800FDB9C));')
+    kids = [src for _, src in variants(text, 'f')]
+    assert not any(k.index('t = *') > k.index('+ 0xC0)) = (s8)') for k in kids)
