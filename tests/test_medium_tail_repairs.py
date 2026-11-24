@@ -84,7 +84,12 @@ def test_a_tested_global_pointer_held_in_a_local():
 
 def test_left_alone_when_a_call_could_change_it():
     assert global_pointer_local_repairs.variants(GLOBAL.replace('    h(&D', '    k();\n    h(&D'), 'f') == []
-    assert global_pointer_local_repairs.variants(GLOBAL.replace('    g(&D', '    D_800BD554 = 0;\n    g(&D'), 'f') == []
+    # a store before the test: only the tested block reads the local, and the call after it reads the global again
+    (_, out), = global_pointer_local_repairs.variants(GLOBAL.replace('    g(&D', '    D_800BD554 = 0;\n    g(&D'), 'f')
+    assert 'D_800BD554 = 0;' in out and 'h(&D_80107EA8, D_800BD554);' in out
+    assert 'if (__repair_D_800BD554 != NULL)' in out
+    assert global_pointer_local_repairs.variants(
+        GLOBAL.replace('    }\n    h(', '        D_800BD554 = 0;\n    }\n    h('), 'f') == []
 
 
 SWITCH = '''void f(void *arg0) {
