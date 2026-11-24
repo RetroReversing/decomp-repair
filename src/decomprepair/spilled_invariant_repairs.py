@@ -20,14 +20,20 @@ decompdecomp's docs/learnings/finding/hoisted-invariant-spill-slots.md):
 `spilled_view_local` turns a union member that is only read and written as a scalar, and lies past every member whose
 address is taken, into a plain local and shrinks the union; `late_constant_local` declares a zero local last and
 compares against it; `walk_index_form` writes the walked pointer's store as an indexed one; `nested_and_if` splits an
-`&&` condition; `spilled_invariant_combined` applies all four. The judge decides."""
+`&&` condition; `spilled_invariant_combined` applies all four. The judge decides.
+
+`nested_and_if` offered only the first four `&&` conditions in the function. `!(v & A) && !(v & B)` is one such
+condition that combine.c folds to a single `andi v, A|B` test where the target has two `andi`/`bnel` pairs: those come
+first, unlimited, and `nested_mask_tests` nests every one at once (a 1928-instruction collision sweep, KMC gcc 2.7.2,
+two such tests past the first four `if`s: each alone 19232 -> 18792 / 18917, both 18477)."""
 import re
 
 from .integer_repair_support import edit, view
 
 FAMILIES = ('spilled_view_local', 'late_constant_local', 'walk_index_form', 'nested_and_if', 'spilled_invariant_combined',
-            'address_load_order', 'mask_test_order')
-VIEW, ZERO, WALK, NEST, COMBINED, LOADS, MASKS = FAMILIES
+            'address_load_order', 'mask_test_order', 'nested_mask_tests')
+VIEW, ZERO, WALK, NEST, COMBINED, LOADS, MASKS, NEST_MASKS = FAMILIES
+MASK_TEST = re.compile(r'^!\s*\(\s*(\w+)\s*&\s*(?:0x[0-9A-Fa-f]+|\d+)\s*\)$')
 LIMIT = 4
 SCALARS = ('s32', 'u32', 'int', 'long')
 SIZES = {'f32': 4, 's32': 4, 'u32': 4, 'int': 4, 'float': 4, 's16': 2, 'u16': 2, 'short': 2, 's8': 1, 'u8': 1, 'char': 1}
@@ -184,6 +190,29 @@ def walk_index_form(source, name):
 
 
 def nested_and_if(source, name):
+    """Each `if (a && b) {..}` without an else as nested ifs: the two-mask tests of one variable first, then the
+    first LIMIT others."""
+    masks = []
+    others = _nested_and_if(source, name, masks)
+    firsts = [source[:start] + new + source[end:] for start, end, new in masks]
+    return firsts + [text for text in others if text not in firsts][:LIMIT]
+
+
+def nested_mask_tests(source, name):
+    """Every `!(v & A) && !(v & B)` condition nested at once (outermost edits only, applied from the end)."""
+    masks = []
+    _nested_and_if(source, name, masks)
+    if len(masks) < 2:
+        return None
+    text = source
+    for start, end, new in sorted(masks, reverse=True):
+        if any(s2 < start and end <= e2 for s2, e2, _ in masks):
+            continue  # nested inside another edit: it is redone on the next run
+        text = text[:start] + new + text[end:]
+    return text
+
+
+def _nested_and_if(source, name, masks=None):
     body = _body(source, name)
     if not body:
         return []
@@ -222,8 +251,12 @@ def nested_and_if(source, name):
                     right = value[1:-1].strip()
         indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, start) + 1:start])[0]
         inner = source[brace:end]
-        out.append(source[:start] + f'if ({left})\n{indent}{{\n{indent}  if ({right})\n{indent}  {inner}\n{indent}}}' + source[end:])
-    return out[:LIMIT]
+        new = f'if ({left})\n{indent}{{\n{indent}  if ({right})\n{indent}  {inner}\n{indent}}}'
+        a, b = MASK_TEST.match(left), MASK_TEST.match(right)
+        if masks is not None and a and b and a[1] == b[1]:
+            masks.append((start, end, new))
+        out.append(source[:start] + new + source[end:])
+    return out
 
 
 def address_load_order(source, name):
@@ -309,6 +342,9 @@ def variants(source, name, header=''):
         out.append((VIEW, one))
     out += [(ZERO, text) for text in late_constant_local(source, name)]
     out += [(WALK, text) for text in walk_index_form(source, name)]
+    every = nested_mask_tests(source, name)
+    if every:
+        out.append((NEST_MASKS, every))
     out += [(NEST, text) for text in nested_and_if(source, name)]
     out += [(LOADS, text) for text in address_load_order(source, name)]
     out += [(MASKS, text) for text in mask_test_order(source, name)]
