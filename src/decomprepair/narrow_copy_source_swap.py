@@ -26,6 +26,12 @@ def _declared(body, kind, name):
     return re.search(rf'(?m)^[ \t]*(?:register\s+)?{kind}[ \t]+{re.escape(name)}[ \t]*;', body) is not None
 
 
+def _narrow_read(rest, read, bits):
+    after = re.match(r'\s*&\s*(0[xX][0-9a-fA-F]+|\d+)', rest[read.end():])
+    before = re.search(r'\(\s*(?:u8|s8|u16|s16)\s*\)\s*$', rest[:read.start()])
+    return bool((after and int(after.group(1), 0) < (1 << bits)) or before)
+
+
 def variants(source, name, header=''):
     part = view(source, name)
     if not part:
@@ -42,6 +48,11 @@ def variants(source, name, header=''):
             continue
         if not (_declared(body, _NARROW, narrow) and _declared(body, _WIDE, wide)):
             continue
+        bits = 8 if re.search(rf'(?m)^[ \t]*(?:register\s+)?(?:u8|s8|unsigned char|signed char|char)[ \t]+{re.escape(narrow)}[ \t]*;', body) else 16
+        rest = clean[found.end():hi]
+        reads = [m for m in re.finditer(rf'(?<![\w.>]){re.escape(wide)}\b(?!\s*=(?!=))', rest)]
+        if not all(_narrow_read(rest, m, bits) for m in reads):
+            continue  # the wide local would carry bits the narrow copy dropped
         text = (source[:found.start()] + f'{found["i1"]}{wide} = {expr.strip()};\n{found["i2"]}{narrow} = {wide};\n'
                 + source[found.end():])
         out.append((FAMILY, text))

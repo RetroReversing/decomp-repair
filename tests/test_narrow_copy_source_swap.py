@@ -38,3 +38,7 @@ def test_two_wide_locals_are_left_alone():
 
 def test_a_sum_that_names_the_wide_local_is_left_alone():
     assert _children(ARM.replace('cmd[0];\n  w = t;', 'w;\n  w = t;')) == []
+
+
+def test_a_wide_read_of_the_copy_leaves_it_alone():
+    assert _children(ARM.replace('link(v, w & 0xFF);', 'link(v, w);')) == []

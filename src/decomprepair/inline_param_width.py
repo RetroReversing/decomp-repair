@@ -10,7 +10,9 @@ a 1315-instruction function. The judge decides; the program is the same when eve
 which a width the callers' expressions are already masked or loaded at is.
 
 Offers, for each scalar integer parameter of each `static inline` function in the source, each other width of
-`u8 u16 s16 u32 s32`, one parameter at a time. Bounded to `LIMIT` children.
+`u8 u16 s16 u32 s32`, one parameter at a time, and a narrower one only when every call passes a value that fits it
+(a literal, a `& 0xFF`/`& 0xFFFF` mask, a `(u8)`/`(u16)` cast or a `u8`/`u16` read): a mask parameter narrowed below
+its callers' constants is another program. Bounded to `LIMIT` children.
 """
 import re
 
@@ -21,6 +23,52 @@ FAMILIES = (FAMILY,)
 LIMIT = 16
 WIDTHS = ('u16', 'u8', 's16', 'u32', 's32')
 _HEAD = re.compile(rf'(?m)^[ \t]*(?:static\s+inline|inline\s+static)\s+[^;{{()]*?\b(?P<fn>{IDENT})\s*\((?P<params>[^)]*)\)\s*\{{')
+
+
+_BITS = {'u8': 8, 'u16': 16, 's16': 15, 'u32': 32, 's32': 32}
+
+
+def _close(text, at):
+    depth = 0
+    for i in range(at, len(text)):
+        depth += (text[i] == '(') - (text[i] == ')')
+        if depth == 0:
+            return i
+    return None
+
+
+def _arguments(text):
+    parts, depth, start = [], 0, 0
+    for at, char in enumerate(text):
+        depth += (char in '([') - (char in ')]')
+        if char == ',' and depth == 0:
+            parts.append(text[start:at].strip())
+            start = at + 1
+    parts.append(text[start:].strip())
+    return parts
+
+
+def _bits(arg):
+    """How many value bits `arg` can carry at most, or 32 when it is not evident."""
+    arg = arg.strip()
+    while arg.startswith('(') and _close(arg, 0) == len(arg) - 1:
+        arg = arg[1:-1].strip()
+    if re.fullmatch(r'0[xX][0-9a-fA-F]+|\d+', arg):
+        return max(int(arg, 0).bit_length(), 1)
+    mask = re.search(r'(?<!&)&\s*(0[xX][0-9a-fA-F]+|\d+)\s*$', arg)
+    depth, loose = 0, False
+    for at, char in enumerate(arg):
+        depth += (char in '([') - (char in ')]')
+        if depth == 0 and (char in '^?,' or (char == '|' and '|' not in arg[at - 1:at + 2].replace('|', '', 1))):
+            loose = True  # an `a | b & K` keeps a's bits
+    if mask and not loose:
+        return int(mask.group(1), 0).bit_length()
+    cast = re.match(r'\(\s*(u8|u16)\s*\)', arg)
+    if cast:
+        return _BITS[cast.group(1)]
+    if re.fullmatch(r'\*\s*\(\s*\(\s*(?:u8|u16)\s*\*\s*\)[^;]*\)', arg):
+        return 8 if 'u8' in arg.split('*')[1] else 16
+    return 32
 
 
 def variants(source, name, header=''):
@@ -35,8 +83,15 @@ def variants(source, name, header=''):
             if found:
                 start = params_start + offset + found.start(2)
                 end = params_start + offset + found.end(2)
+                index = len(head['params'][:offset].split(',')) - 1 if offset else 0
+                need = 0
+                for call in re.finditer(rf'\b{head["fn"]}\s*\(', source[head.end():]):
+                    at = head.end() + call.end() - 1
+                    shut = _close(source, at)
+                    args = _arguments(source[at + 1:shut]) if shut else []
+                    need = max(need, _bits(args[index]) if index < len(args) else 32)
                 for width in WIDTHS:
-                    if width != found.group(2):
+                    if width != found.group(2) and _BITS[width] >= need:
                         out.append((FAMILY, source[:start] + width + source[end:]))
             offset += len(piece) + 1
     return out[:LIMIT]

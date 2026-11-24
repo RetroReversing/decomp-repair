@@ -71,3 +71,8 @@ def test_a_wide_sign_test_is_left_alone():
 
 def test_the_value_read_in_its_own_sum_is_left_alone():
     assert _children(ARM.replace('(cmd << 0x10)', '(level << 0x10)')) == []
+
+
+def test_a_byte_local_or_a_word_store_is_left_alone():
+    assert _children(ARM.replace('u16 level;', 'u8 level;')) == []
+    assert _children(ARM.replace('*((u16 *) (((char *) voice) + 0x50)) = level;\n  if', '*((s32 *) (((char *) voice) + 0x50)) = level;\n  if', 1)) == []

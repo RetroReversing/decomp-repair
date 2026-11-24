@@ -57,6 +57,10 @@ def variants(source, name, header=''):
         compare, bound, cap = found.group(7), found.group(8).strip(), found.group(9).strip()
         if var == sum_name or re.search(rf'\b{var}\b', expr):
             continue
+        if not re.search(rf'(?m)^[ \t]*(?:u16|s16|u32|s32|int|unsigned short|short)[ \t]+{var}[ \t]*;', body):
+            continue  # a byte local is never negative as `(s16)`: the shift test would be another program
+        if store and not re.match(r'\s*\*\s*\(\s*\(\s*[us]16\s*\*', store):
+            continue  # the raw sum stored into a wider cell would keep bits the halfword drops
         inner = indent + '  '
         lines = [f'{indent}{{', f'{indent}s32 {sum_name};', f'{indent}{sum_name} = {expr};']
         if store:
