@@ -10,6 +10,8 @@ reads `-2(q)`/`0(q)` where the target reads `0(q)`/`2(q)`, and when the first el
 - the read at the cursor's own start offset (`q - K`, the base's element 0) written through the base, with the base
   stepped beside the cursor if it was not.
 
+The cursor's start may be written `q = ((char *) p) + K;` or, for a byte pointer p, `q = p + K;`.
+
 A 1928-instruction collision sweep (KMC gcc 2.7.2): the base read 9242 -> 9209 on a byte-index walk, the rebase
 9209 -> 9064 on a halfword one. One function; the judge decides.
 """
@@ -49,8 +51,14 @@ def variants(source, name):
     body_at = clean.find('{', span[0], span[1])
     body = source[body_at:span[1]]
     out = []
-    for m in re.finditer(r'(?m)^([ \t]*)(' + I + r') = \(\(char \*\) (' + I + r')\) \+ (\d+);\n', body):
-        q, p, start = m[2], m[3], int(m[4])
+    starts = re.finditer(r'(?m)^([ \t]*)(' + I + r') = (?:\(\(char \*\) (' + I + r')\)|(' + I + r')) \+ (\d+);\n', body)
+    for m in starts:
+        q, p, start = m[2], m[3] or m[4], int(m[5])
+        if m[4]:
+            # `q = p + K` counts p's elements: only a byte pointer gives bytes
+            decl = re.search(r'(?m)^[ \t]*(\w+) \*' + p + r';', body)
+            if not decl or SIZE.get(decl[1]) != 1:
+                continue
         step = re.search(r'(?m)^([ \t]*)' + q + r' \+= (\d+);\n', body[m.end():])
         if not step:
             continue
@@ -66,7 +74,7 @@ def variants(source, name):
             text = loop
             for r in reversed(reads):
                 text = text[:r[0]] + _spell(q, r[3] - shift, r) + text[r[1]:]
-            head = '%s%s = ((char *) %s) + %d;\n' % (m[1], q, p, start + shift)
+            head = ('%s%s = %s + %d;\n' if m[4] else '%s%s = ((char *) %s) + %d;\n') % (m[1], q, p, start + shift)
             new = body[:m.start()] + head + text + body[m.end() + step.start():]
             out.append((FAMILY, source[:body_at] + new + source[span[1]:]))
         # the base read
