@@ -12,7 +12,9 @@ The word is game data the C cannot show, so the caller supplies it: `words` maps
 address in the game, decoded in the game's byte order (decompdecomp reads it from the ROM, only for a symbol one function
 refers to). A proposal replaces every read of one such symbol in the function by the literal, one child per symbol and
 one with all of them, only when everything says it is a constant read where it is used:
-- the symbol is declared `f32`/`float` (an `extern` in the source or the header), never a double, pointer or array;
+- the symbol is declared `f32`/`float`, or as a plain 32-bit integer word (`s32`, `u32`, `M2C_UNK`: m2c types a pool
+  word by its uses, so `temp_f = D_x;` into a float local leaves it an `s32`; the target's `lwc1` says it is a float),
+  an `extern` in the source or the header, never a double, pointer or array;
 - the function only reads it: never assigned, incremented, called, indexed, a member read or its address taken, and
   no other function in the source names it;
 - the target's assembly loads it with `lwc1` through `$at` (`%lo`) or `$gp` (`%gp_rel`), and does nothing else with it
@@ -61,14 +63,20 @@ def literal(word):
     return f'({text})' if text.startswith('-') else text
 
 
+WORD_TYPES = ('s32', 'u32', 'int', 'unsigned', 'M2C_UNK', 'M2C_UNK32')  # m2c's type for a word it read as an integer
+
+
 def _declared_float(symbol, texts):
-    """True when the last file-scope declaration of `symbol` (in `texts`, in order) is a plain f32/float."""
+    """True when the last file-scope declaration of `symbol` (in `texts`, in order) is a plain f32/float, or a plain
+    32-bit integer word (`s32`, `u32`, `M2C_UNK`): m2c types a literal-pool word by how the code around it uses it, and
+    `temp_f = D_x;` into a float local leaves the word an `s32`. The target's own load is `lwc1` (`_float_loads`), so
+    the word is a float whatever the declaration says."""
     found = None
     pattern = re.compile(r'(?m)^[ \t]*((?:(?:extern|static|const|volatile)[ \t]+)*)(' + _IDENT + r')[ \t]*(\**)[ \t]*'
                          + re.escape(symbol) + r'[ \t]*(\[[^\]]*\])?[ \t]*(?:=[^;]*)?;')
     for text in texts:
         for match in pattern.finditer(_blank(text or '')):
-            found = (match[2] in ('f32', 'float') and not match[3] and not match[4]
+            found = (match[2] in ('f32', 'float') + WORD_TYPES and not match[3] and not match[4]
                      and 'volatile' not in match[1].split())
     return bool(found)
 
