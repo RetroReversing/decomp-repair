@@ -10,18 +10,28 @@ pointer, `extern struct { void *block; } gBlock;`, and read as `gBlock.block`, t
 global_pointer_record
     A global pointer the source declares itself (`extern T *G;`, not in the project header) that is the base of at
     least two stores `*(U *)((char *)(G) + K) = ...;` becomes `extern struct { T *block; } G;` with every use read as
-    `G.block`. One child per global. Hypothesis, read from expr.c's `MEM_IN_STRUCT_P` marking but not traced through
+    `G.block`. One child per global.
+
+global_scalar_record
+    The same for a scalar global the source declares itself (`extern s32 G;`) and updates in place (`G += 1;`,
+    `G++;`, `G = G op ...;`): the target forms its address once (`lui`/`addiu`, then `lw`/`sw` through it) where a
+    scalar is read and written with two `%lo` relocations. As `extern struct { s32 value; } G;` read as `G.value`
+    the same function went 3302 -> 2797. One child per global.
+
+Hypothesis, read from expr.c's `MEM_IN_STRUCT_P` marking but not traced through
     cse.c: a store marked as a structure member does not invalidate a scalar global's load, a member's load it does.
     The exact judge decides.
 """
 import re
 
 FAMILY = 'global_pointer_record'
-FAMILIES = (FAMILY,)
+SCALAR = 'global_scalar_record'
+FAMILIES = (FAMILY, SCALAR)
 LIMIT = 6
 MEMBER = 'block'
 
 _ID = r'[A-Za-z_]\w*'
+_SCALAR = re.compile(rf'(?m)^extern (?P<type>(?:unsigned |signed )?{_ID}) (?P<name>{_ID});[ \t]*$')
 _EXTERN = re.compile(rf'(?m)^extern (?P<type>(?:const )?{_ID}) \*(?P<name>{_ID});[ \t]*$')
 
 
@@ -41,6 +51,17 @@ def variants(source, name, header=''):
         head = source[:found.start()] + f'extern struct {{ {found.group("type")} *{MEMBER}; }} {glob};'
         rest = re.sub(rf'\b{re.escape(glob)}\b(?!\s*\.)', f'{glob}.{MEMBER}', source[found.end():])
         result.append((FAMILY, head + rest))
+    for found in _SCALAR.finditer(source):
+        glob = found.group('name')
+        if found.group('type') in ('struct', 'union', 'enum') or (header and re.search(rf'\b{re.escape(glob)}\b', header)):
+            continue
+        g = re.escape(glob)
+        if re.search(rf'&\s*{g}\b', source) or not re.search(
+                rf'\b{g}\s*(?:[-+*/|&^]|<<|>>)=|\b{g}\s*(?:\+\+|--)|(?:\+\+|--)\s*{g}\b|\b{g}\s*=\s*\(?\s*{g}\b', source):
+            continue
+        head = source[:found.start()] + f'extern struct {{ {found.group("type")} value; }} {glob};'
+        rest = re.sub(rf'\b{g}\b(?!\s*\.)', f'{glob}.value', source[found.end():])
+        result.append((SCALAR, head + rest))
     return result[:LIMIT]
 
 

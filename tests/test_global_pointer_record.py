@@ -26,3 +26,12 @@ def test_the_stored_through_global_becomes_a_record_member():
 def test_a_global_the_header_declares_or_the_source_assigns_is_left_alone():
     assert variants(SOURCE, 'update', 'extern void *gBlock;\n') == []
     assert variants(SOURCE.replace('    use(gOther);', '    gBlock = arg0;'), 'update', '') == []
+
+
+def test_a_scalar_global_updated_in_place_becomes_a_record_member():
+    source = 'extern s32 gCount;\nextern s32 gRead;\n\nvoid bump(void)\n{\n    if (gRead) {\n        gCount += 1;\n    }\n}\n'
+    found = variants(source, 'bump', '')
+    assert [family for family, _ in found] == ['global_scalar_record']
+    assert found[0][1] == source.replace('extern s32 gCount;', 'extern struct { s32 value; } gCount;').replace(
+        'gCount += 1;', 'gCount.value += 1;')
+    assert variants(source, 'bump', 'extern s32 gCount;') == []
