@@ -57,9 +57,39 @@ def test_a_bare_return_after_the_assignment_is_rewritten():
     assert out and 'return temp_v0;\n    }' in out[0][1] and 'return;' not in out[0][1]
 
 
-def test_a_bare_return_before_the_assignment_gives_nothing():
+def test_a_bare_return_before_the_assignment_stays_an_early_exit():
     source = SOURCE.replace('    temp_v0 = alloc', '    if (arg0 == 0) {\n        return;\n    }\n    temp_v0 = alloc')
-    assert vrl.variants(source, 'f', ASM) == []
+    out = vrl.variants(source, 'f', ASM)
+    assert [family for family, _ in out] == [vrl.FAMILY, vrl.FAMILY]
+    pointer = out[0][1]
+    assert 'void * f(void *arg0) {' in pointer
+    # the exit that runs before the object exists is left alone, the final return is added
+    assert pointer.count('return;') == 1 and pointer.rstrip().endswith('return temp_v0;\n}')
+
+
+def test_early_and_late_bare_returns_are_told_apart():
+    source = SOURCE.replace('    temp_v0 = alloc', '    if (arg0 == 0) {\n        return;\n    }\n    temp_v0 = alloc')
+    source = source.replace('    setup(temp_v0);', '    if (arg0 == 1) {\n        return;\n    }\n    setup(temp_v0);')
+    pointer = vrl.variants(source, 'f', ASM)[0][1]
+    assert pointer.count('return;') == 1 and 'return temp_v0;\n    }' in pointer
+
+
+FENCED = SOURCE.replace(
+    '    M2C_FIELD(temp_v0, s32 *, 0) = 0x1021;\n    M2C_FIELD(temp_v0, s32 *, 0x70) = (s32) M2C_FIELD(arg0, s32 *, 0x70);',
+    '    do { M2C_FIELD(temp_v0, s32 *, 0) = 0x1021; } while (0);\n'
+    '    { do { M2C_FIELD(temp_v0, s32 *, 0x70) = (s32) M2C_FIELD(arg0, s32 *, 0x70); } while (0); }')
+
+
+def test_a_fenced_best_also_gets_the_return_on_its_unfenced_form():
+    out = vrl.variants(FENCED, 'f', ASM)
+    assert [family for family, _ in out] == [vrl.FAMILY, vrl.FAMILY, vrl.UNFENCED, vrl.UNFENCED]
+    kept, opened = out[0][1], out[2][1]
+    assert 'do {' in kept and 'return temp_v0;' in kept
+    assert 'do {' not in opened and 'while (0)' not in opened and opened.rstrip().endswith('return temp_v0;\n}')
+
+
+def test_a_function_with_no_fence_has_no_unfenced_child():
+    assert vrl.UNFENCED not in [family for family, _ in vrl.variants(SOURCE, 'f', ASM)]
 
 
 def test_no_child_without_the_evidence():
@@ -71,4 +101,5 @@ def test_no_child_without_the_evidence():
 
 
 def test_it_declares_itself():
-    assert vrl.FAMILY in [f for r in registry.declared() for f in r.families]
+    families = [f for r in registry.declared() for f in r.families]
+    assert vrl.FAMILY in families and vrl.UNFENCED in families

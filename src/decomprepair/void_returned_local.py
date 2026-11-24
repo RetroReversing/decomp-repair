@@ -21,19 +21,30 @@ last first. One child each (they differ only in the declared type, which the tar
 - the local's own pointer type with `return local;` (the usual value);
 - `s32` with `return (s32) local;`.
 Every bare `return;` becomes the same return and a final one is added when the body does not end in one, so the return
-sits after the last store. Nothing is offered when the function is not `void`, a bare `return;` can run before the
-local is assigned, the project's header declares the function `void`, the register is an argument register (that is
+sits after the last store. A bare `return;` that can run BEFORE the local is assigned (an early exit that leaves `$v0`
+as the last call set it: `if (f() == 0x30) { g(a); return; }`) stays as it is, the way the matched twin of such a function
+was written (130 -> 0 on a 25-instruction N64 constructor; before, no child was offered at all). Nothing is offered when the
+function is not `void`, the project's header declares the function `void`, the register is an argument register (that is
 `void_parameter_return`), or the local is assigned more than the evidence allows (an array, a non-pointer). Hypothesis,
 not confirmed in the compiler source: the copy comes from the front end's return expression being the one value live
-across the final stores. Each child is judged; a caller that ignores the value compiles the same."""
+across the final stores. Each child is judged; a caller that ignores the value compiles the same.
+
+The same children are also built on the function with its `do { } while (0)` fences opened (`void_returned_local_unfenced`,
+`scaffold_strip.unfence`). A long search keeps the copy at the end of the function with fences between the last
+statements; the return alone then scores WORSE (225 -> 325 on a 54-instruction N64 constructor whose fences kept the
+stores apart), because the scheduler may not move the `move $v0, $s0` across a fence, and opened it is 0. The
+unfenced child is only offered for a function that has fences, so a saved best that carries its search's scaffolding
+reaches the return in one step."""
 import re
 
 from . import mips_regions as flow
+from . import scaffold_strip
 from .integer_repair_support import IDENT, edit, split_args, view
 from .returned_register_local import _copied_parameter, _instructions, _variables, returned_register
 
 FAMILY = 'void_returned_local'
-FAMILIES = (FAMILY,)
+UNFENCED = 'void_returned_local_unfenced'
+FAMILIES = (FAMILY, UNFENCED)
 
 LIMIT = 2
 
@@ -96,6 +107,16 @@ def _first_assignment(body, local):
 
 
 def variants(source, name, asm, header=''):
+    out = _returning(source, name, asm, header, FAMILY)
+    opened = scaffold_strip.unfence(source, name)
+    if opened:
+        seen = {text for _, text in out}
+        out += [(family, text) for family, text in _returning(opened, name, asm, header, UNFENCED)
+                if text not in seen]
+    return out
+
+
+def _returning(source, name, asm, header, family):
     register = returned_register(asm)
     if not register or re.fullmatch(r'a[0-3]', register):
         return []
@@ -118,20 +139,21 @@ def variants(source, name, asm, header=''):
                               part.clean[:part.opening]))
     result = []
     for local, kind, first in _candidates(part, params, register, asm):
-        if any(m.start() < first for m in bare) and _assignments(body, local):
-            continue  # a bare return could run before the local holds the object
+        # a bare return that can run before the local holds the object is an early exit: it keeps leaving `$v0` as it is
+        early = [m for m in bare if m.start() < first] if _assignments(body, local) else []
+        late = [m for m in bare if m not in early]
         forms = [(kind, local), ('s32', f'(s32) {local}')]
         for new_type, value in forms:
             edits = [(result_at, result_at + 4, new_type)]
             edits += [(m.end() - 4, m.end(), new_type) for m in protos]
-            edits += [(part.opening + m.start(), part.opening + m.end(), f'return {value};') for m in bare]
-            if not _ends_in_return(body):
+            edits += [(part.opening + m.start(), part.opening + m.end(), f'return {value};') for m in late]
+            if not _ends_in_return(body) or (early and bare[-1] in early):
                 close = part.opening + len(body.rstrip()) - 1
                 lead = '' if part.clean[close - 1] == '\n' else '\n'
                 edits.append((close, close, f'{lead}    return {value};\n'))
             text = edit(source, edits)
             if text != source:
-                result.append((FAMILY, text))
+                result.append((family, text))
     return result
 
 
