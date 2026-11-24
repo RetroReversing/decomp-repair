@@ -67,9 +67,22 @@ def test_declines_what_is_not_the_shape():
     assert _children(SOURCE.replace('    D_80177E18 += 8;\n', '    D_80177E18 += 8;\n    foo(D_80177E18);\n')) == []  # (G read again)
     assert _children(SOURCE.replace('M2C_FIELD(temp_t0, s32 *, 4)', 'M2C_FIELD(temp_t0, s16 *, 4)')) == []
     assert _children(SOURCE.replace('M2C_FIELD(temp_t0, s32 *, 4)', 'M2C_FIELD(temp_t0, s32 *, 8)')) == []  # (outside the record)
-    assert _children(SOURCE.replace('    M2C_FIELD(temp_t0, s32 *, 0)', '    bar(temp_t0);\n    M2C_FIELD(temp_t0, s32 *, 0)')) == []
+    assert _children(SOURCE.replace('    M2C_FIELD(temp_t0, s32 *, 0)', '    bar(temp_t0 + 1);\n    M2C_FIELD(temp_t0, s32 *, 0)')) == []
     assert _children(SOURCE + 'void other(void) { D_80177E18 = 0; }\n') == []  # (another function names it)
     assert _children(SOURCE.replace('    D_80177E18 += 8;\n', '    foo();\n    D_80177E18 += 8;\n')) == []  # (not adjacent)
+
+
+def test_stores_between_the_load_and_the_step_and_a_cursor_passed_on():
+    late = SOURCE.replace('    D_80177E18 += 8;\n    M2C_FIELD(temp_t0, s32 *, 0) = 0xFA000000;\n',
+                          '    M2C_FIELD(temp_t0, s32 *, 0) = 0xFA000000;\n    D_80177E18 += 8;\n')
+    postfix = dict(_children(late + ''))[crp.FAMILY]
+    assert 'temp_t0 = D_80177E18++;\n    temp_t0->w0 = 0xFA000000;\n    temp_t0->w1' in postfix.replace('\n\n', '\n')
+    passed = late.replace('    M2C_FIELD(temp_t0, s32 *, 4)', '    bar(-1, temp_t0);\n    M2C_FIELD(temp_t0, s32 *, 4)')
+    assert 'bar(-1, temp_t0);' in dict(_children(passed))[crp.FAMILY]
+    printed = SOURCE.replace('M2C_FIELD(temp_t0, s32 *, 0)', '*((s32 *) (((char *) temp_t0) + 0))').replace(
+        'M2C_FIELD(temp_t0, s32 *, 4)', '(((Field_s32 *) (((char *) temp_t0) + 4))->v)')
+    assert 'temp_t0->w0 = ' in dict(_children(printed))[crp.FAMILY] and '(temp_t0->w1) = ' in dict(_children(printed))[crp.FAMILY]
+    assert _children(SOURCE.replace('    D_80177E18 += 8;\n', '    foo();\n    D_80177E18 += 8;\n')) == []
 
 
 def test_a_type_name_already_taken_is_not_reused():

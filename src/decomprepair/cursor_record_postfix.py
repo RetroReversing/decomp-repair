@@ -58,6 +58,7 @@ FAMILIES = (FAMILY, VIEW_FAMILY)
 MAX_GLOBALS = 3
 MAX_CHILDREN = 8
 MIN_BYTES, MAX_BYTES = 4, 32
+MAX_GAP = 4  # (stores through the cursor between its load and its step)
 
 _INT32 = r'(?:s32|u32|int|unsigned(?:\s+int)?|signed(?:\s+int)?|long|unsigned\s+long)'
 _WORD = rf'(?:{_INT32}|f32|float)'
@@ -65,9 +66,17 @@ _BYTE_PTR = r'(?:void|[su]8|char|(?:unsigned|signed)\s+char)'
 _GLOBAL = re.compile(
     rf'(?m)^(?P<indent>[ \t]*)extern[ \t]+(?P<type>{_BYTE_PTR}[ \t]*\*|{_INT32}|{IDENT}[ \t]*\*)[ \t]*(?P<name>{IDENT})[ \t]*;')
 _LOCAL = rf'(?:{_BYTE_PTR}\s*\*|{_INT32}|{IDENT}\s*\*)'
+# `p = G;`, up to MAX_GAP plain statements, then the step: `G += K;`, `G = G + K;` or `G = p + K;` (with the casts m2c writes)
 _PAIR = re.compile(
-    rf'(?P<p>{IDENT})\s*=\s*(?P<g>{IDENT})\s*;(?P<gap>\s*)(?P=g)\s*'
-    rf'(?:\+=\s*(?P<k1>{NUMBER})|=\s*(?:\([^()]*\)\s*)?\(?\s*(?:(?P=g)|(?P=p))\s*\+\s*(?P<k2>{NUMBER})\s*\)?)\s*;')
+    rf'(?P<head>(?P<p>{IDENT})\s*=\s*(?P<g>{IDENT})\s*;)(?P<gap>(?:[^;{{}}]*;){{0,{MAX_GAP}}}?)'
+    rf'(?P<tail>\s*(?P=g)\s*(?:\+=\s*(?P<k1>{NUMBER})'
+    rf'|=\s*(?:\([^()]*\)\s*)?\(?\s*(?:(?P=g)|(?P=p))\s*\+\s*(?P<k2>{NUMBER})\s*\)?)\s*;)')
+
+
+def _plain_gap(gap, g, local):
+    """True for statements that only store through `local`: no call, no other mention of the global, no branch."""
+    calls = re.findall(rf'({IDENT})\s*\(', gap)
+    return not re.search(rf'\b{re.escape(g)}\b', gap) and all(call == 'M2C_FIELD' for call in calls)
 
 
 def _word_type(text):
@@ -85,9 +94,13 @@ def _accesses(clean, lo, hi, local):
     p = re.escape(local)
     field = re.compile(rf'M2C_FIELD\(\s*{p}\s*,\s*({_WORD})\s*\*\s*,\s*({NUMBER})\s*\)')
     cast = re.compile(rf'\*\(\s*({_WORD})\s*\*\)\s*\(\s*(?:\(\s*(?:u8|s8|char)\s*\*\)\s*)?{p}(?:\s*\+\s*({NUMBER}))?\s*\)')
+    # the printed spellings a saved source carries: `*((T *) (((char *) p) + off))` and `(((Field_T *) (((char *) p) + off))->v)`
+    address = rf'\(\(\(\s*(?:char|u8|s8)\s*\*\)\s*{p}\s*\)\s*\+\s*({NUMBER})\s*\)'
+    printed = re.compile(rf'\*\(\(\s*({_WORD})\s*\*\)\s*{address}\)')
+    member = re.compile(rf'\(\(\s*Field_({_WORD})\s*\*\)\s*{address}\)\s*->\s*v\b')
     index = re.compile(rf'\(\(\s*({_WORD})\s*\*\)\s*{p}\s*\)\s*\[\s*({NUMBER})\s*\]')
     found = []
-    for pattern, scale in ((field, None), (cast, None), (index, 4)):
+    for pattern, scale in ((field, None), (cast, None), (index, 4), (printed, None), (member, None)):
         for hit in pattern.finditer(clean, lo, hi):
             offset = int(re.sub(r'[uUlL]+$', '', hit.group(2) or '0'), 0) * (scale or 1)
             found.append((hit.start(), hit.end(), offset, hit.group(1)))
@@ -96,7 +109,7 @@ def _accesses(clean, lo, hi, local):
 
 
 def _is_store(clean, end):
-    return re.match(r'\s*=(?!=)', clean[end:end + 6]) is not None
+    return re.match(r'\s*\)?\s*=(?!=)', clean[end:end + 8]) is not None  # (a `)` closes the printed member form)
 
 
 def _plan(source, part, g, kind, hit, pairs):
@@ -110,7 +123,9 @@ def _plan(source, part, g, kind, hit, pairs):
     if step % 4 or not MIN_BYTES <= step <= MAX_BYTES:
         return None
     # the global is read and stepped only by the pairs
-    covered = sum(len(re.findall(rf'\b{re.escape(g)}\b', pair[0])) for pair in pairs)
+    if not all(_plain_gap(pair['gap'], g, pair['p']) for pair in pairs):
+        return None
+    covered = sum(len(re.findall(rf'\b{re.escape(g)}\b', pair['head'] + pair['tail'])) for pair in pairs)
     if len(re.findall(rf'\b{re.escape(g)}\b', clean[lo:hi])) != covered:
         return None
     words, loads, edits = {}, set(), []
@@ -124,8 +139,12 @@ def _plan(source, part, g, kind, hit, pairs):
         sites = _accesses(clean, lo, hi, local)
         total = len(re.findall(rf'(?<![\w.]){re.escape(local)}\b(?!\s*->)', clean[lo:hi]))
         inside = sum(len(re.findall(rf'(?<![\w.]){re.escape(local)}\b', clean[a:b])) for a, b, _, _ in sites)
-        pairs_used = sum(len(re.findall(rf'(?<![\w.]){re.escape(local)}\b', pair[0])) for pair in mine)
-        used = 1 + pairs_used + inside  # (the declaration, the pairs' own mentions, each access)
+        pairs_used = sum(len(re.findall(rf'(?<![\w.]){re.escape(local)}\b', pair['head'] + pair['tail'])) for pair in mine)
+        rest = list(clean)
+        for a, b, _, _ in sites:
+            rest[a:b] = ' ' * (b - a)
+        arguments = len(re.findall(rf'(?:(?<!M2C_FIELD)\(|,)\s*{re.escape(local)}\s*(?=[,)])', ''.join(rest)[lo:hi]))  # (handed to a call as it is)
+        used = 1 + pairs_used + inside + arguments  # (the declaration, the pairs' own mentions, each access, each argument)
         if not sites or total != used or any(pair.start() < part.opening for pair in mine):
             return None
         for a, b, offset, kind_ in sites:
@@ -187,8 +206,10 @@ def variants(source, name, header=''):
         out += [(a, b, text.replace('@RECORD@', record)) for a, b, text in edits]
         for pair in pairs:
             local = pair['p']
-            text = (f'{local} = {g}++;' if postfix else f'{local} = {g};{pair["gap"]}{g} += 1;')
-            out.append((pair.start(), pair.end(), text))
+            if postfix:
+                out += [(pair.start('head'), pair.end('head'), f'{local} = {g}++;'), (pair.start('tail'), pair.end('tail'), '')]
+            else:
+                out.append((pair.start('tail'), pair.end('tail'), re.match(r'\s*', pair['tail'])[0] + f'{g} += 1;'))
         return out
 
     children = []
