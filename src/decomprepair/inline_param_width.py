@@ -12,7 +12,10 @@ which a width the callers' expressions are already masked or loaded at is.
 Offers, for each scalar integer parameter of each `static inline` function in the source, each other width of
 `u8 u16 s16 u32 s32`, one parameter at a time, and a narrower one only when every call passes a value that fits it
 (a literal, a `& 0xFF`/`& 0xFFFF` mask, a `(u8)`/`(u16)` cast or a `u8`/`u16` read): a mask parameter narrowed below
-its callers' constants is another program. Bounded to `LIMIT` children.
+its callers' constants is another program. Also each other width of a helper's integer return type, a narrower one
+only when every `return` gives a literal that fits: the same interpreter's slot test (`return 1;` / `return 0;`)
+returning `s32` instead of `u8` kept the caller's `andi $v0, $v0, 0xff` after the join and the registers around it,
+2960 -> 2700. Bounded to `LIMIT` children.
 """
 import re
 
@@ -20,9 +23,9 @@ from .integer_repair_support import IDENT
 
 FAMILY = 'inline_param_width'
 FAMILIES = (FAMILY,)
-LIMIT = 16
+LIMIT = 24
 WIDTHS = ('u16', 'u8', 's16', 'u32', 's32')
-_HEAD = re.compile(rf'(?m)^[ \t]*(?:static\s+inline|inline\s+static)\s+[^;{{()]*?\b(?P<fn>{IDENT})\s*\((?P<params>[^)]*)\)\s*\{{')
+_HEAD = re.compile(rf'(?m)^[ \t]*(?:static\s+inline|inline\s+static)\s+(?P<ret>[^;{{()]*?)\b(?P<fn>{IDENT})\s*\((?P<params>[^)]*)\)\s*\{{')
 
 
 _BITS = {'u8': 8, 'u16': 16, 's16': 15, 'u32': 32, 's32': 32}
@@ -94,6 +97,16 @@ def variants(source, name, header=''):
                     if width != found.group(2) and _BITS[width] >= need:
                         out.append((FAMILY, source[:start] + width + source[end:]))
             offset += len(piece) + 1
+        ret = re.fullmatch(r'\s*(u8|u16|s16|u32|s32|int)\s*', head['ret'] or '')
+        if ret:
+            shut = _close(source.replace('{', '(').replace('}', ')'), head.end() - 1)
+            body = source[head.end():shut] if shut else ''
+            values = re.findall(r'\breturn\b\s*([^;]*);', body)
+            need = max((_bits(v) for v in values), default=32)
+            start, end = head.start('ret') + ret.start(1), head.start('ret') + ret.end(1)
+            for width in WIDTHS:
+                if width != ret.group(1) and _BITS[width] >= need:
+                    out.append((FAMILY, source[:start] + width + source[end:]))
     return out[:LIMIT]
 
 
