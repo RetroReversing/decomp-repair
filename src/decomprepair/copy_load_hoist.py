@@ -41,7 +41,7 @@ from .integer_repair_support import IDENT, edit, view
 FAMILY = 'copy_load_hoist'
 FAMILIES = (FAMILY,)
 POSITIONS = 6
-LIMIT = 24
+LIMIT = 48
 SIZES = {'s8': 1, 'u8': 1, 's16': 2, 'u16': 2, 's32': 4, 'u32': 4, 'f32': 4, 's64': 8, 'u64': 8, 'f64': 8}
 NUMBER = r'(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*'
 _FIELD = rf'M2C_FIELD\(\s*(?P<base>{IDENT})\s*,\s*(?P<type>{IDENT})\s*\*\s*,\s*(?P<off>{NUMBER})\s*\)'
@@ -116,6 +116,8 @@ class _Plain:
     def __init__(self, text):
         self.stores = []  # lhs texts
         self.ok = self._read(text.strip())
+        # a call statement: not crossable, but a position right after it is
+        self.call = not self.ok and bool(re.fullmatch(rf'{IDENT}\s*\([^;{{}}]*\)\s*;', text.strip()))
 
     def _read(self, text):
         wrapped = _WRAPPER.fullmatch(text)
@@ -212,6 +214,43 @@ def _site(clean, span):
     return core, f'{lhs} = {rhs[:len(rhs) - len(body)]}{new};', first.group(0), store, wrapped, True
 
 
+def _swaps(source, clean, spans, plains, index, site):
+    """The statement at `index` moved above the plain statements before it, one position per child, while it
+    commutes with each: they neither touch its stored cell nor write the cell, the base or the names it reads."""
+    core = site[0]
+    text = clean[spans[index][0]:spans[index][1]]
+    found = _ASSIGN.fullmatch(clean[core[0]:core[1]])
+    store = _cell(found['lhs'])
+    reads = [_cell(hit.group(0)) for hit in CELL.finditer(found['rhs'])]
+    words = set(re.findall(IDENT, text))
+    begin = source.rfind('\n', 0, spans[index][0]) + 1
+    if source[begin:spans[index][0]].strip():
+        return []
+    finish = spans[index][1] + (1 if source[spans[index][1]:spans[index][1] + 1] == '\n' else 0)
+    result = []
+    for position in range(index - 1, -1, -1):
+        crossed = plains[position:index]
+        if not all(p.ok for p in crossed):
+            break
+        stores = [lhs for p in crossed for lhs in p.stores]
+        if any(re.fullmatch(IDENT, lhs) and lhs in words or not re.fullmatch(IDENT, lhs) and _cell(lhs) is None
+               for lhs in stores):
+            break
+        if any(_blocked(crossed, cell[0], cell[2], cell[2] + SIZES[cell[1]]) for cell in reads if cell):
+            break
+        mentioned = [_cell(hit.group(0)) for a, b in spans[position:index] for hit in CELL.finditer(clean[a:b])]
+        if any(cell and cell[0] == store[0] and cell[2] < store[2] + SIZES[store[1]]
+               and store[2] < cell[2] + SIZES[cell[1]] for cell in mentioned):
+            break
+        line = source.rfind('\n', 0, spans[position][0]) + 1
+        if source[line:spans[position][0]].strip():
+            break
+        result.append((FAMILY, edit(source, [(begin, finish, ''), (line, line, source[begin:finish].rstrip('\n') + '\n')])))
+        if len(result) >= POSITIONS:
+            break
+    return result
+
+
 def variants(source, name):
     part = view(source, name)
     if not part or re.search(r'\b(?:volatile|asm|__asm__)\b', part.clean[part.opening:part.end]):
@@ -225,7 +264,7 @@ def variants(source, name):
     for low, high in _blocks(clean, part.opening + 1, part.end - 1):
         spans = _statements(clean, low, high)
         plains = [_Plain(clean[a:b]) for a, b in spans]
-        for index in range(len(spans) - 1, 1, -1):
+        for index in range(len(spans) - 1, 0, -1):
             if not plains[index].ok:
                 continue
             site = _site(clean, spans[index])
@@ -237,7 +276,7 @@ def variants(source, name):
                 crossed = plains[anchor + 1:index]
                 if not all(p.ok for p in crossed) or _blocked(crossed, load[0], load[2], load[2] + SIZES[load[1]]):
                     break
-                if not plains[anchor].ok or not plains[anchor].stores:
+                if not (plains[anchor].ok and plains[anchor].stores or plains[anchor].call):
                     continue
                 start = spans[anchor][1]
                 indent = _line_indent(source, spans[anchor][0])
@@ -252,6 +291,7 @@ def variants(source, name):
                 offered += 1
                 if offered >= POSITIONS:
                     break
+            result.extend(_swaps(source, clean, spans, plains, index, site))
     return result[:LIMIT]
 
 

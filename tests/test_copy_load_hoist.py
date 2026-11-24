@@ -58,7 +58,8 @@ def test_a_store_over_the_loaded_bytes_stops_the_hoist():
 
 
 def test_a_call_or_a_rewritten_base_stops_the_hoist():
-    assert _texts(COPY.replace('M2C_FIELD(a, s32 *, 0x80) = 0x14;', 'poke(a);'), 'init') == []
+    [after_call] = _texts(COPY.replace('M2C_FIELD(a, s32 *, 0x80) = 0x14;', 'poke(a);'), 'init')
+    assert 'poke(a);\n    temp_copy = ' in after_call  # right after the call, not above it
     [only] = _texts(COPY.replace('M2C_FIELD(a, s32 *, 0x80) = 0x14;', 'b = a;'), 'init')
     assert 'b = a;\n    temp_copy = ' in only
 
@@ -86,3 +87,47 @@ def test_a_compound_update_and_an_unfenced_write_are_fenced_as_well():
 
 def test_a_name_in_use_is_not_reused():
     assert all('temp_copy1' in t for t in _texts(COPY.replace('s16 *p;', 's16 *p;\n    s32 temp_copy;'), 'init'))
+
+
+TAIL = '''void arm(void *a, s32 x, s32 y) {
+    void *s;
+
+    s = *(void **)((s8 *)a + 0xE0);
+    if (x != *(s32 *)((s8 *)a + 0xD0)) {
+        first(s);
+        second(s, y);
+        *(s32 *)((s8 *)a + 0xD0) = x;
+        *(f32 *)((s8 *)a + 0xDC) = *(f32 *)((s8 *)s + 0x1C);
+    }
+}
+'''
+
+
+def test_a_copy_swaps_with_the_independent_store_before_it():
+    texts = _texts(TAIL, 'arm')
+    swapped = ('        *(f32 *)((s8 *)a + 0xDC) = *(f32 *)((s8 *)s + 0x1C);\n'
+               '        *(s32 *)((s8 *)a + 0xD0) = x;\n    }')
+    assert any(swapped in t and 'temp_copy' not in t for t in texts)
+
+
+def test_the_load_is_also_read_right_after_a_call_but_never_above_it():
+    texts = _texts(TAIL, 'arm')
+    held = '        second(s, y);\n        temp_copy = *(f32 *)((s8 *)s + 0x1C);\n        *(s32 *)((s8 *)a + 0xD0) = x;'
+    assert any(held in t for t in texts)
+    assert not any('first(s);\n        temp_copy' in t for t in texts)
+
+
+def test_a_swap_never_passes_a_store_to_the_stored_bytes():
+    clash = TAIL.replace('+ 0xD0) = x;', '+ 0xDC) = x;')
+    for text in _texts(clash, 'arm'):
+        if 'temp_copy' in text:
+            continue
+        assert text.index('0xDC) = x;') < text.index('0xDC) = *(f32 *)((s8 *)s')
+
+
+def test_a_swap_never_passes_a_store_to_the_loaded_bytes():
+    reads = TAIL.replace('*(s32 *)((s8 *)a + 0xD0) = x;', '*(s32 *)((s8 *)s + 0x1C) = x;')
+    for text in _texts(reads, 'arm'):
+        if 'temp_copy' in text:
+            continue
+        assert text.index('(s8 *)s + 0x1C) = x;') < text.index('0xDC) = ')
