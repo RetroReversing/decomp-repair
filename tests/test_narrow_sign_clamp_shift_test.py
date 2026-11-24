@@ -49,20 +49,26 @@ def _children(text):
 
 
 def test_the_sum_is_tested_by_a_shift_and_the_positive_arm_falls_through():
-    assert _children(ARM) == [WANT]
+    kids = _children(ARM)
+    assert len(kids) == 3 and kids[2] == WANT
+    assert kids[1] == WANT.replace('  s32 sum;', '  s16 sum;')
+    assert kids[0] == WANT.replace('  s32 sum;\n  sum = (*((u8 *) (((char *) voice) + 0xC1))) + (((s32) (cmd << 0x10)) >> 0x18);\n'
+                                   '  *((u16 *) (((char *) voice) + 0x50)) = sum;\n',
+                                   '  s16 sum;\n  *((u16 *) (((char *) voice) + 0x50)) = (*((u8 *) (((char *) voice) + 0xC1))) + '
+                                   '(((s32) (cmd << 0x10)) >> 0x18);\n  sum = *((u16 *) (((char *) voice) + 0x50));\n')
 
 
 def test_without_the_store_of_the_raw_sum():
     text = ARM.replace("  *((u16 *) (((char *) voice) + 0x50)) = level;\n  if", "  if", 1)
     kids = _children(text)
-    assert len(kids) == 1
+    assert len(kids) == 2
     assert '= sum;\n  if ((sum << 16) >= 0)' not in kids[0] and 'sum = (*((u8' in kids[0]
 
 
 def test_a_used_name_is_not_reused():
     text = ARM.replace('u16 level;', 'u16 level;\n  s32 sum = 0;')
     kids = _children(text)
-    assert len(kids) == 1 and 's32 sum2;' in kids[0]
+    assert len(kids) == 3 and 's32 sum2;' in kids[2]
 
 
 def test_a_wide_sign_test_is_left_alone():

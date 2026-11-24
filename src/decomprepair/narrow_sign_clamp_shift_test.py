@@ -9,7 +9,10 @@ KMC GCC 2.7.2 (`-O2`, N64) folds a `(s16) v < 0` test of a sum whose operands it
 matches that, so the shift and the `bltz` stay. The clamped value is a second variable copied from the sum (`move
 $v0, $v1` before the store, the copy back in the branch's delay slot), and the positive arm falls through: written as
 `if ((sum << 16) >= 0) { v = sum; ... } else { v = 0; }`. On a 1315-instruction sound-sequence interpreter's
-pan-offset command, 6125 -> 5910 with the two together (the shift test with the old polarity alone was 6215).
+pan-offset command, 6125 -> 5910 with the two together (the shift test with the old polarity alone was 6215). With
+the sum an `s16` (a halfword pseudo: MIPS has no PROMOTE_MODE, so the shift reads the SImode sum and the `s16` is its
+copy, the target's `move $v0, $v1`) read back from its halfword store, the store takes the raw sum as the target has
+it: 5910 -> 5640 from the same start (3230 -> 2960 later in that function's chain). That child comes first.
 
 Rewrites `V = E; [F = V;] if (((s16) V) < 0) { V = 0; } else if (V >= K) { V = M; }` (braces optional, `>`/`>=`).
 The sum is declared in a block of its own so no declaration moves. The sum is named `sum` (`sum2`, ... when the
@@ -21,7 +24,7 @@ from .integer_repair_support import IDENT, view
 
 FAMILY = 'narrow_sign_clamp_shift_test'
 FAMILIES = (FAMILY,)
-LIMIT = 4
+LIMIT = 6
 
 _STMT = r'\s*\{?\s*%s\s*=\s*([^;{}]+);\s*\}?'
 
@@ -62,16 +65,24 @@ def variants(source, name, header=''):
         if store and not re.match(r'\s*\*\s*\(\s*\(\s*[us]16\s*\*', store):
             continue  # the raw sum stored into a wider cell would keep bits the halfword drops
         inner = indent + '  '
-        lines = [f'{indent}{{', f'{indent}s32 {sum_name};', f'{indent}{sum_name} = {expr};']
+        tail = [f'{indent}if (({sum_name} << 16) >= 0)', f'{indent}{{', f'{inner}{var} = {sum_name};',
+                f'{inner}if ({var} {compare} {bound})', f'{inner}{{', f'{inner}  {var} = {cap};', f'{inner}}}',
+                f'{indent}}}', f'{indent}else', f'{indent}{{', f'{inner}{var} = {zero};', f'{indent}}}', f'{indent}}}']
+        forms = []
         if store:
-            lines.append(f'{indent}{store.strip()} = {sum_name};')
-        lines += [f'{indent}if (({sum_name} << 16) >= 0)', f'{indent}{{', f'{inner}{var} = {sum_name};',
-                  f'{inner}if ({var} {compare} {bound})', f'{inner}{{', f'{inner}  {var} = {cap};', f'{inner}}}',
-                  f'{indent}}}', f'{indent}else', f'{indent}{{', f'{inner}{var} = {zero};', f'{indent}}}', f'{indent}}}']
+            # the halfword sum read back from its store (s16: a halfword pseudo, copied before the shift)
+            forms.append([f'{indent}{{', f'{indent}s16 {sum_name};', f'{indent}{store.strip()} = {expr};',
+                          f'{indent}{sum_name} = {store.strip()};'])
+        for kind in ('s16', 's32'):
+            lines = [f'{indent}{{', f'{indent}{kind} {sum_name};', f'{indent}{sum_name} = {expr};']
+            if store:
+                lines.append(f'{indent}{store.strip()} = {sum_name};')
+            forms.append(lines)
         start, end = lo + found.start(), lo + found.end()
         if source[start:end] != clean[start:end]:
             continue  # a comment or string inside the match: leave it alone
-        out.append((FAMILY, source[:start] + '\n'.join(lines) + '\n' + source[end:].lstrip('\n')))
+        for lines in forms:
+            out.append((FAMILY, source[:start] + '\n'.join(lines + tail) + '\n' + source[end:].lstrip('\n')))
         if len(out) >= LIMIT:
             break
     return out
