@@ -388,8 +388,13 @@ def _entry_a0_reaches(asm, callee, *, first_only=False, indirect=None):
     return _entry_arguments_reach(asm, callee, (0,), first_only=first_only, indirect=indirect)
 
 
-def _entry_arguments_reach(asm, callee, slots, *, first_only=False, indirect=None):
-    if (set(slots) <= _incoming_calls(asm).get(callee, set())
+def _entry_arguments_reach(asm, callee, slots, *, first_only=False, indirect=None, site=None):
+    """Every route from the entry to the callee's call keeps the caller's own `slots` registers.
+
+    `site` selects the callee's n-th `jal` (0 = the first), so a callee called from several places is proved one call
+    at a time; the other calls are ordinary calls on the way (they end a route's proof, as any call does)."""
+    if site is None and (
+            set(slots) <= _incoming_calls(asm).get(callee, set())
             and not any(op in mips_regions.CONDITIONAL | {'b', 'j'} for op, _ in _instructions(asm))):
         return True
     decoded = mips_return_paths.graph(asm, indirect=indirect)
@@ -397,9 +402,12 @@ def _entry_arguments_reach(asm, callee, slots, *, first_only=False, indirect=Non
         return False
     rows, destinations = decoded
     sites = [i for i, row in enumerate(rows) if row.split() == ['jal', callee]]
-    if not sites or (not first_only and len(sites) != 1):
+    if site is not None:
+        if not 0 <= site < len(sites):
+            return False
+    elif not sites or (not first_only and len(sites) != 1):
         return False
-    call = sites[0]
+    call = sites[site or 0]
     pending = [(0, True)]
     seen = set()
     reached = False
