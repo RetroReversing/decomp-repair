@@ -47,7 +47,7 @@ def variants(source, name, header=''):
         rf'(?:([ \t]*)([^;{{}}\n]+?)\s*=\s*\2\s*;[ \t]*\n)?'
         rf'[ \t]*if\s*\(\s*\(?\s*\(\s*s16\s*\)\s*\2\s*\)?\s*<\s*0\s*\)'
         + (_STMT % r'\2') +
-        rf'\s*else\s+if\s*\(\s*\2\s*(>=|>)\s*([^)]+?)\s*\)'
+        r'\s*else\s+if\s*\(\s*\2\s*(>=|>)\s*([^)]+?)\s*\)'
         + (_STMT % r'\2'))
     out = []
     for found in pattern.finditer(body):
