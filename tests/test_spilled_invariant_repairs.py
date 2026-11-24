@@ -120,7 +120,42 @@ def test_mask_tests_run_in_ascending_mask_order_with_a_spilled_local_counting_as
 
 def test_the_combined_child_applies_them_all_and_variants_names_every_family():
     out = families(spilled.variants(SOURCE, 'f'))
-    assert set(out) == set(spilled.FAMILIES) - {spilled.MASKS}  # a mask test needs the spilled local first
+    # a mask test needs the spilled local first; that source has no two-mask tests
+    assert set(out) == set(spilled.FAMILIES) - {spilled.MASKS, spilled.NEST_MASKS}
     whole = out[spilled.COMBINED]
     assert 'late_zero' in whole and '((f32 *) base)[i + 3]' in whole and 'spill_C74' in whole and '&&' not in whole
     assert whole.index('if (spill_C7C)') < whole.index('if (flags & 2)')
+
+
+MASKS = """void g(int);
+void f(int *p, int n, int m)
+{
+  int a;
+  int b;
+  if ((n > 0) && (m > 0)) { g(1); }
+  if ((n > 1) && (m > 1)) { g(2); }
+  if ((n > 2) && (m > 2)) { g(3); }
+  if ((n > 3) && (m > 3)) { g(4); }
+  if ((n > 4) && (m > 4)) { g(5); }
+  a = p[0] >> 23;
+  if ((!(a & 0x80)) && (!(a & 0x20)))
+  {
+    g(a);
+  }
+  b = p[1] >> 23;
+  if ((!(b & 0x80)) && (!(b & 0x20)))
+  {
+    g(b);
+  }
+}
+"""
+
+
+def test_two_mask_tests_past_the_first_four_ifs_are_offered_and_nested_together():
+    children = spilled.variants(MASKS, 'f')
+    every = dict(children)[spilled.NEST_MASKS]
+    assert 'if (!(a & 0x80))' in every and 'if (!(a & 0x20))' in every
+    assert 'if (!(b & 0x80))' in every and 'if (!(b & 0x20))' in every
+    singles = [text for family, text in children if family == spilled.NEST]
+    assert any('if (!(a & 0x80))' in t and '(!(b & 0x80)) &&' in t for t in singles)
+    assert any('if (!(b & 0x80))' in t and '(!(a & 0x80)) &&' in t for t in singles)
