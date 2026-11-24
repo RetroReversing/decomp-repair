@@ -143,7 +143,7 @@ _DECLARATION = re.compile(r'(?:(?:register|static|const|volatile|unsigned|signed
                           r'(?:\s*\*+\s*|\s+)[A-Za-z_]\w*(?:\s*\[[^\]]*\])?')
 
 
-def _runs(clean, start, end):
+def _runs(clean, start, end, minimum=3):
     """Maximal runs of consecutive simple `...;` statements, as `[(from, to, [(s, e), ...])]` at one block level."""
     runs = []
     stack = [[]]
@@ -181,7 +181,7 @@ def _runs(clean, start, end):
                 stack[-1] = []
                 i = stop if stop > i else i + 1
     runs.append(stack[0])
-    return [run for run in runs if len(run) >= 3]
+    return [run for run in runs if len(run) >= minimum]
 
 
 def variants(source, name, header=''):
