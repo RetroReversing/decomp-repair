@@ -29,3 +29,10 @@ def test_a_biased_call_compared_with_a_literal_loses_its_bias():
 def test_a_bias_as_large_as_the_bound_or_an_expression_with_a_condition_is_left_alone():
     assert not folded(SOURCE.replace('+ 1) <= 0x21U', '+ 0x40) <= 0x21U').replace('+ 2) < 10', '+ 20) < 10'))
     assert not folded(SOURCE.replace('(rand(0x64) + 1)', '(a ? 1 : 2) + 1').replace('(get(p) + 2) < 10', 'x < 10'))
+
+
+def test_a_parenthesised_bound_loses_the_bias_too():
+    src = ('typedef unsigned short u16;\nvoid g(void);\nvoid f(int i, u16 *n)\n{\n'
+           '  if ((i + 1) <= ((u16) n[2]))\n  {\n    g();\n  }\n}\n')
+    texts = [t for _, t in variants(src, "f")]
+    assert any('if (i < ((u16) n[2]))' in t for t in texts)
