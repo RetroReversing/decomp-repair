@@ -9,9 +9,15 @@ A 681-instruction N64 bit-stream decoder (KMC GCC 2.7.2 `-O2`): `(ent >> 7) & 0x
 `ent` a `u16`, lengthened a loop-made pointer copy's life by one instruction with no change in code; one of the
 spellings that move such a copy below a competitor in global.c's order.
 
-Child, for each `(V >> K)` (or `V >> K` as a whole operand) where `V` is declared `u8`/`u16`/`unsigned char`/
-`unsigned short` in the function and `0 < K < width`: that shift written `((V >> K) & M)`. Mask already present: left.
-The candidate is never a verdict: the judge decides.
+The same decoder's match also needed the modulo spelling: `(ent >> 7) % 512` and a subtable shift count written
+`((ent & 0x7FFF) >> 4) % 8` instead of `& 7`. An unsigned `% 2^n` expands to its own and-insn chain before combine, so
+it lengthens the values live across it by a different count than `& M`, still with no change in code; which spelling
+lands a copy in the right place in global.c's order is the judge's call, so both are offered.
+
+Children, for each `(V >> K)` (or `V >> K` as a whole operand) where `V` is declared `u8`/`u16`/`unsigned char`/
+`unsigned short` in the function and `0 < K < width`: that shift written `((V >> K) & M)` and `((V >> K) % 2^n)`.
+A shift already masked with `& M` (`M` = 2^n - 1, any `M`): the mask respelled `% (M + 1)`. The candidate is never a
+verdict: the judge decides.
 """
 import re
 
@@ -21,6 +27,9 @@ FAMILY = 'narrow_shift_mask'
 FAMILIES = (FAMILY,)
 LIMIT = 8
 _WIDTH = {'u8': 8, 'unsigned char': 8, 'u16': 16, 'unsigned short': 16}
+_MASK = re.compile(r'\s*&\s*(0[xX][0-9a-fA-F]+|\d+)\b')
+_OPEN = re.compile(r'[(=,]\s*$')
+_CLOSE = re.compile(r'\s*[);,\]]')
 _DECL = re.compile(r'\b(u8|u16|unsigned\s+char|unsigned\s+short)\s+([^;()]+);')
 
 
@@ -42,10 +51,20 @@ def variants(source, name):
             if m.start() < part.opening:
                 continue
             k = int(m.group(1))
-            if not 0 < k < width or re.match(r'\s*&', clean[m.end():]):
+            if not 0 < k < width:
+                continue
+            shift = source[m.start():m.end()]
+            masked = _MASK.match(clean, m.end())
+            if masked:
+                bits = int(masked.group(1), 0)
+                # `% n` binds tighter than `&`: only a mask that is a whole operand keeps its meaning respelled
+                whole = _OPEN.search(clean[:m.start()]) and _CLOSE.match(clean, masked.end())
+                if whole and bits & (bits + 1) == 0:
+                    out.append((FAMILY, edit(source, [(m.start(), masked.end(), f'{shift} % {bits + 1}')])))
                 continue
             mask = (1 << (width - k)) - 1
-            out.append((FAMILY, edit(source, [(m.start(), m.end(), f'({source[m.start():m.end()]} & 0x{mask:X})')])))
+            out.append((FAMILY, edit(source, [(m.start(), m.end(), f'({shift} & 0x{mask:X})')])))
+            out.append((FAMILY, edit(source, [(m.start(), m.end(), f'({shift} % {mask + 1})')])))
     return out[:LIMIT]
 
 
