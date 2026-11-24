@@ -4,9 +4,11 @@ from decomprepair import registry
 from decomprepair.flag_exit_repairs import (
     ARM_SCOPE,
     BREAK_RETURN,
+    FLAG_READ,
     INDEX_SPLIT,
     SIGNED_FLAG,
     STEP_LAST,
+    TAIL_SCOPE,
     variants,
 )
 
@@ -100,3 +102,48 @@ def test_a_reused_temporary_copied_as_an_index_gets_its_own_local():
 
 def test_the_module_declares_itself():
     assert 'flag_exit_repairs' in {repair.module.rsplit('.', 1)[-1] for repair in registry.declared()}
+
+
+LOOP = '''typedef unsigned char u8;
+typedef unsigned short u16;
+typedef int s32;
+typedef struct Mesh { u8 pad[0x40]; u16 count; u8 pad2[6]; u8 flags; } Mesh;
+void use(u16 *);
+
+void walk(Mesh *m, u16 *tris)
+{
+  u16 i;
+  s32 temp_v1;
+  u16 *p;
+  i = m->flags; temp_v1 = i & 4;
+  if (temp_v1 != 0)
+  {
+    i = 0;
+    p = tris;
+    rows:
+    {
+      use(p);
+      p += 3;
+      i += 1;
+    }
+
+    if (i < m->count)
+    {
+      goto rows;
+    }
+  }
+}
+'''
+
+
+def test_a_flags_byte_read_into_a_counter_is_masked_directly():
+    (text,) = [t for name, t in variants(LOOP, 'walk') if name == FLAG_READ]
+    assert 'temp_v1 = m->flags & 4;' in text and 'i = m->flags;' not in text
+
+
+def test_the_goto_loops_last_steps_and_test_get_a_loop_scope():
+    texts = [t for name, t in variants(LOOP, 'walk') if name == TAIL_SCOPE]
+    assert len(texts) == 2
+    assert any('p += 3;\n    }\n\n    do { i += 1; if (i < m->count)' in t for t in texts)
+    assert any('    }\n\n    do { p += 3; i += 1; if (i < m->count)' in t and t.rstrip().count('} while (0);') == 1
+               for t in texts)

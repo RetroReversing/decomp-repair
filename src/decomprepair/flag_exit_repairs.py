@@ -23,6 +23,15 @@ Measured on a 1337-instruction collision sweep with the exact judge, each from t
   temporary reused from another loop, given a local of its own (`t_idx`, `u16`), as the source had one per loop
   (475 -> 450 with the base staging of `pointer_base_stage`).
 
+- `flag_read_split`: m2c's `i = p->flags; t = i & 4;`, a flags byte read into a loop counter only to be masked,
+  read straight into the mask (`t = p->flags & 4;`) (10 -> 90 alone, the step the next one needs): the counter then
+  holds no byte the target reads into `$v0`.
+- `loop_tail_scope`: the last steps of a goto loop's body and its test, `i += 1; } if (c) { goto L; }`, as
+  `} do { i += 1; if (c) { goto L; } } while (0);` (90 -> 0 with the pointer step `p += 3;` inside as well). The
+  counter's references weigh one loop deeper in flow's counts, so global.c (`floor_log2 (refs) * refs / live`) ranks
+  it above the sibling loop's pointer base, as the target has them, and the loop notes keep sched1 from moving the
+  bound's load past the step. Scaffolding; report it when it decides a match.
+
 Candidate rewrites; the exact judge decides each.
 """
 import re
@@ -34,7 +43,9 @@ BREAK_RETURN = 'loop_break_return'
 ARM_SCOPE = 'call_arm_scope'
 STEP_LAST = 'counter_step_last'
 INDEX_SPLIT = 'index_local_split'
-FAMILIES = (SIGNED_FLAG, BREAK_RETURN, ARM_SCOPE, STEP_LAST, INDEX_SPLIT)
+FLAG_READ = 'flag_read_split'
+TAIL_SCOPE = 'loop_tail_scope'
+FAMILIES = (SIGNED_FLAG, BREAK_RETURN, ARM_SCOPE, STEP_LAST, INDEX_SPLIT, FLAG_READ, TAIL_SCOPE)
 LIMIT = 4
 
 
@@ -153,7 +164,44 @@ def _index_split(source, part):
     return out
 
 
-_STEPS = (_signed_flag, _break_return, _arm_scope, _step_last, _index_split)
+def _flag_read(source, part):
+    clean = part.clean
+    out = []
+    pattern = re.compile(rf'\b({IDENT}) = ([^;=]+);(\s*)({IDENT}) = \1 & (\w+);')
+    for hit in pattern.finditer(clean, part.opening, part.end):
+        counter, value = hit[1], hit[2].strip()
+        if not re.search(r'->|\*', value) or re.search(rf'\b{counter}\b', value):
+            continue
+        # A counter: incremented somewhere, so the byte was only m2c's reuse of its register.
+        if not re.search(rf'\b{counter}\s*(?:\+=\s*1|\+\+)', clean[part.opening:part.end]):
+            continue
+        text = f'{hit[4]} = {source[hit.start(2):hit.end(2)].strip()} & {hit[5]};'
+        out.append((FLAG_READ, edit(source, [(hit.start(), hit.end(), text)])))
+        if len(out) >= LIMIT:
+            break
+    return out
+
+
+def _tail_scope(source, part):
+    clean = part.clean
+    out = []
+    step = rf'[ \t]*{IDENT}\s*\+=\s*\w+\s*;[ \t]*\n'
+    pattern = re.compile(rf'((?:{step})+)([ \t]*}}\s*)(if\s*\([^{{}};]*\)\s*{{\s*goto\s+({IDENT})\s*;\s*}})')
+    for hit in pattern.finditer(clean, part.opening, part.end):
+        if not re.search(rf'\b{hit[4]}\s*:', clean[part.opening:hit.start()]):
+            continue
+        steps = re.findall(step, source[hit.start(1):hit.end(1)])
+        test = source[hit.start(3):hit.end(3)]
+        for keep in range(len(steps) - 1, -1, -1):
+            moved = ' '.join(s.strip() for s in steps[keep:])
+            text = ''.join(steps[:keep]) + source[hit.start(2):hit.end(2)] + f'do {{ {moved} {test} }} while (0);'
+            out.append((TAIL_SCOPE, edit(source, [(hit.start(), hit.end(), text)])))
+            if len(out) >= LIMIT:
+                return out
+    return out
+
+
+_STEPS = (_signed_flag, _break_return, _arm_scope, _step_last, _index_split, _flag_read, _tail_scope)
 
 
 def variants(source, name):
