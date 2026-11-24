@@ -50,3 +50,54 @@ def test_the_module_declares_itself_to_the_registry():
     for repair in registry.declared():
         if repair.module == 'goto_arm_tail_inline':
             assert registry.problems(repair) == []
+
+
+ARM_LEVEL = '''typedef int s32;
+typedef unsigned char u8;
+extern u8 gGroup;
+extern s32 gKey;
+void link(s32 *, u8);
+
+void run(s32 *voice, s32 op)
+{
+  s32 result;
+  s32 group;
+  switch (op)
+  {
+    case 0x36:
+      group = gGroup;
+      block_144:
+      link(voice, group);
+      result = 0;
+      break;
+
+    case 0x37:
+      group = voice[2] + gKey;
+      if (group >= 0x100)
+      {
+        group = 0xFF;
+      }
+      group = group & 0xFF;
+      goto block_144;
+
+    case 0x38:
+      result = 1;
+      break;
+  }
+}
+'''
+
+
+def test_a_label_at_its_arm_level_is_copied_over_the_goto_that_ends_another_arm():
+    # a sound-sequence interpreter's two group commands (KMC GCC 2.7.2): 10360 -> 9595 with the copy
+    found = variants(ARM_LEVEL, 'run')
+    assert len(found) == 1
+    text = found[0][1]
+    assert 'goto' not in text and 'block_144' not in text
+    assert '''      group = group & 0xFF;
+      link(voice, group);
+      result = 0;
+      break;
+
+    case 0x38:''' in text
+    assert text.count('link(voice, group);') == 2
