@@ -4,6 +4,11 @@
 might change `G` itself. A source that read `G` once into a local didn't: an N64 function was 94.3% with m2c's
 repeated `D_800BD554`, and exact with `p = D_800BD554;` before its test and `p` after it. The meaning changes only if
 a store through the pointer can reach the global itself, which the judge's byte comparison settles.
+
+A global the function also sets elsewhere (cleared at entry, stored in a loop) is held in the local only inside the
+block its test guards, when nothing there writes it: a KMC-compiled collision routine tested its result pointer at
+the end, `if ((G) != NULL) { switch (G->kind) ...; *out = G; G->flags |= f; }`, and the target read it once
+(15070 -> 13685). The `(G)` spelling of the test and a `switch` in the block don't stop the child.
 """
 import re
 
@@ -30,19 +35,31 @@ def variants(source, name):
     params = set(re.findall(r'(' + IDENT + r')\s*(?:,|\))', signature))
     locals_ = set(re.findall(r'(?m)^[ \t]*(?:[\w ]+?)[\s*]+(' + IDENT + r')\s*(?:\[[^]]*\])?\s*;', body))
     result = []
-    for test in re.finditer(r'(?m)^(?P<indent>[ \t]*)if\s*\(\s*(?P<g>' + IDENT + r')\s*!=\s*(?:NULL|0)\s*\)\s*\{', body):
-        g = test['g']
+    for test in re.finditer(r'(?m)^(?P<indent>[ \t]*)if\s*\(\s*(?:\(\s*(?P<p>' + IDENT + r')\s*\)|(?P<g>' + IDENT
+                            + r'))\s*!=\s*(?:NULL|0)\s*\)\s*\{', body):
+        g = test['g'] or test['p']
         if g in params or g in locals_ or g.startswith('__repair'):
             continue
+        written = re.compile(r'(?<![\w.>])' + g + r'\s*=(?!=)|&\s*' + g + r'\b')
         rest = body[test.start():]
+        if written.search(body):
+            # the global is set elsewhere (cleared at entry, stored in a loop): only its own block may read the local,
+            # and nothing in that block may write it
+            block = close(body, body.index('{', test.end() - 1), '{', '}')
+            if not block:
+                continue
+            rest = body[test.start():block]
+            if written.search(rest):
+                continue
         uses = [m.start() for m in re.finditer(r'(?<![\w.>])' + g + r'\b', rest)]
         # tested, then used through or passed on at least twice more; never assigned or its address taken
-        if len(uses) < 3 or re.search(r'(?<![\w.>])' + g + r'\s*=(?!=)|&\s*' + g + r'\b', body):
+        if len(uses) < 3:
             continue
         # a call between the test and the last use could change the global: only calls that take it are allowed
         last = test.start() + uses[-1]
         between = body[test.start():last]
-        calls = [c for c in re.finditer(r'\b(' + IDENT + r')\s*\(', between) if c[1] not in ('M2C_FIELD', 'if')]
+        calls = [c for c in re.finditer(r'\b(' + IDENT + r')\s*\(', between)
+                 if c[1] not in ('M2C_FIELD', 'if', 'switch', 'while', 'for', 'return', 'sizeof')]
         start = test.start()
         if any(g not in body[start + c.end():close(body, start + c.end() - 1) or len(body)] for c in calls):
             continue
