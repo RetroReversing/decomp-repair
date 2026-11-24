@@ -28,6 +28,22 @@ def _frame(asm):
     return int(opened[1], 0)
 
 
+def _masked_past_sign(body, local, sign):
+    """Every assignment to `local` is `<expr> & K` with K's top bit at the narrow type's sign bit or above: the value
+    the source meant is unsigned. A collision routine (KMC GCC 2.7.2, 2,267 instructions) kept `s16 m = w & 0xFF00;`
+    from m2c; the target masks with `andi` and stores the halfword, and as a `u16` it went 13655 -> 12757 (a large
+    function's `lh` elsewhere had kept the family from offering it)."""
+    sets = re.findall(r'(?<![\w.>])' + local + r'\s*(=(?!=)|\+=|-=|\|=|\^=|<<=|>>=|\+\+|--)\s*([^;]*);', body)
+    sets += [('pre', '') for _ in re.findall(r'(?:\+\+|--)\s*' + local + r'\b', body)]
+    if not sets:
+        return False
+    for op, value in sets:
+        mask = re.fullmatch(r'.*&\s*\(?\s*(0[xX][0-9A-Fa-f]+|\d+)[uUlL]*\s*\)?\s*', value)
+        if op != '=' or not mask or int(mask[1], 0) < sign or int(mask[1], 0) >= sign * 2:
+            return False
+    return True
+
+
 def variants(source, name, asm):
     span = find(source, name)
     if not span or not asm:
@@ -44,10 +60,11 @@ def variants(source, name, asm):
         at = opening + 1
         result.append((FRAME, source[:at] + f'\n    u8 __repair_frame[{size}];' + source[at:]))
     for kind, wide, shift, load in (('s8', 'u8', 0x18, 'lb'), ('s16', 'u16', 0x10, 'lh')):
-        # (the target sign-extends values of that width somewhere, by shifts or a signed load: leave them signed)
+        locals_ = list(re.finditer(r'(?m)^([ \t]*)' + kind + r'\s+(' + IDENT + r')\s*;', body))
+        # (the target sign-extends values of that width somewhere, by shifts or a signed load: leave them signed,
+        # unless every value the local holds is a mask past the sign bit, `x & 0xFF00` in an `s16`)
         if re.search(r'\bsra\s+\$\w+\s*,\s*\$\w+\s*,\s*' + hex(shift) + r'\b', asm) or re.search(r'\b' + load + r'\s', asm):
-            continue
-        locals_ = list(re.finditer(r'(?m)^([ \t]*)' + kind + r'(\s+' + IDENT + r'\s*;)', body))
+            locals_ = [m for m in locals_ if _masked_past_sign(body, m[2], 0x80 if kind == 's8' else 0x8000)]
         edits = []
         for m in locals_:
             at = opening + m.start() + len(m[1])
