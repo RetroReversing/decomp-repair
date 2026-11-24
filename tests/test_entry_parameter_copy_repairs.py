@@ -59,3 +59,34 @@ def test_a_function_pointer_local_is_a_declaration_and_the_copy_goes_below_it():
     found = [c for family, c in variants(source, 'act') if family == 'entry_parameter_copy' and 'c_in)' in c]
     assert found
     assert all(c.index('s32 (*fn)(void *);') < c.index('c = c_in;') for c in found)
+
+
+FIVE = """void gather(const void *a, const void *b, const void *c, void *d, void *e) {
+  *(f32 *)((s8 *)d + 0) = *(const f32 *)((s8 *)a + 0);
+  *(f32 *)((s8 *)d + 4) = *(const f32 *)((s8 *)a + 4);
+  *(f32 *)((s8 *)d + 8) = *(const f32 *)((s8 *)a + 8);
+  *(f32 *)((s8 *)e + 0) = *(const f32 *)((s8 *)a + 0);
+  *(f32 *)((s8 *)e + 4) = *(const f32 *)((s8 *)b + 4);
+}
+"""
+
+
+def test_the_fifth_parameter_is_offered_though_four_others_come_first():
+    for family in ('entry_parameter_copy', 'entry_parameter_clobber'):
+        found = [c for f, c in variants(FIVE, 'gather') if f == family and 'void *e_in' in c]
+        # the copy after the three stores to `d`, where the target loads the stack-passed argument
+        assert any(c.index('e = e_in;') > c.index('(s8 *)d + 8)') and c.index('e = e_in;') < c.index('(s8 *)e + 0)')
+                   for c in found), family
+
+
+def test_the_children_stay_bounded_and_every_parameter_keeps_its_first_places():
+    found = variants(FIVE, 'gather')
+    assert len(found) <= 48
+    # b is read once and c never, so only a, d and e are offered
+    assert {param for param in 'abcde' if any(f'{param} = {param}_in;' in c for f, c in found)} == set('ade')
+
+
+def test_a_read_ahead_of_the_copy_keeps_the_parameters_own_name():
+    found = [c for f, c in variants(FIVE, 'gather') if f == 'entry_parameter_copy' and 'void *d_in' in c]
+    late = [c for c in found if '(s8 *)d_in + 0)' in c]
+    assert late and all('(s8 *)d + 0)' not in c.split('d = d_in;')[0] for c in late)
