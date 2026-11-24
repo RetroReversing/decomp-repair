@@ -55,7 +55,7 @@ def _local_type(body, name):
     m = re.search(rf'(?m)^[ \t]*(?:volatile\s+)?({IDENT}(?:\s+{IDENT})?)\s*(\**)\s*(?<!\w){name}\s*(\[[^\]]*\])?\s*;', body)
     if not m:
         return None
-    base, stars, array = m[1], m[2], m[3]
+    base, stars = m[1], m[2]
     if base in ('return', 'goto', 'else'):
         return None
     return f'{base} {stars}*'
