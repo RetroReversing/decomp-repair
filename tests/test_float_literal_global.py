@@ -99,7 +99,7 @@ def test_a_global_the_function_writes_or_takes_the_address_of_is_left_alone():
 
 def test_only_a_plain_float_declaration_and_a_float_load_through_at():
     words = {'D_8000930C': FIVE_HUNDRED}
-    for declaration in ('extern f64 D_8000930C;', 'extern double D_8000930C;', 'extern s32 D_8000930C;',
+    for declaration in ('extern f64 D_8000930C;', 'extern double D_8000930C;', 'extern s32 *D_8000930C;', 'extern s32 D_8000930C[2];',
                         'extern f32 *D_8000930C;', 'extern f32 D_8000930C[2];', 'extern volatile f32 D_8000930C;'):
         source = COMPARE.replace('extern f32 D_8000930C;', declaration)
         assert flg.variants(source, 'f', asm=COMPARE_ASM, words=words) == [], declaration
@@ -114,6 +114,19 @@ def test_only_a_plain_float_declaration_and_a_float_load_through_at():
     assert flg.variants(COMPARE, 'f', asm=gp, words=words)
     assert flg.variants(COMPARE, 'f', asm='', words=words) == []
     assert flg.variants(COMPARE, 'f', asm=COMPARE_ASM) == []
+
+
+def test_an_integer_word_the_target_loads_with_lwc1_is_a_float_literal_too():
+    """m2c types a pool word by its uses: `temp_f = D_x;` into a float local leaves `extern s32 D_x;`."""
+    words = {'D_8000930C': FIVE_HUNDRED}
+    for declaration in ('extern s32 D_8000930C;', 'extern u32 D_8000930C;', 'extern M2C_UNK D_8000930C;'):
+        source = COMPARE.replace('extern f32 D_8000930C;', declaration)
+        [(family, child)] = flg.variants(source, 'f', asm=COMPARE_ASM, words=words)
+        assert family == 'float_literal_global' and '(temp_fs0 < 500.0f)' in child, declaration
+    # the integer load of an integer word is a real integer global
+    integer_load = COMPARE_ASM.replace('lwc1       $fv0, %lo(D_8000930C)($at)', 'lw         $v0, %lo(D_8000930C)($at)')
+    source = COMPARE.replace('extern f32 D_8000930C;', 'extern s32 D_8000930C;')
+    assert flg.variants(source, 'f', asm=integer_load, words=words) == []
 
 
 def test_another_function_in_the_source_that_names_it_keeps_it():
