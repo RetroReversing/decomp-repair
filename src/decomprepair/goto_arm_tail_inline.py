@@ -13,7 +13,9 @@ handler had 14 references and ranked below its three masks; the target's order w
 Offered once for the function (every such `goto` in one child, and the labels it leaves unused removed): a label whose
 statements run to the end of their block, with the block followed only by skipped `else` arms and `break;`, and `goto`s
 whose block is followed only by closing braces, skipped `else` arms and `break;`. Labels with labels or `goto`s of their
-own inside are left alone. A candidate rewrite; the exact judge decides.
+own inside are left alone. A second child does the same for a label at its arm's own level (`case A: v = x; L: f(v);
+r = 0; break;`): its run up to the arm's `break;` is copied over each `goto L;` that ends another arm (`_arm_level`).
+A candidate rewrite; the exact judge decides.
 """
 import re
 
@@ -92,13 +94,65 @@ def variants(source, name):
             continue
         edits.append((hit.start(), hit.end(), statements))
         gone[hit['l']] = gone.get(hit['l'], 0) + 1
-    if not edits:
-        return []
-    for text, count in gone.items():
-        if len(re.findall(rf'\bgoto\s+{text}\s*;', clean[part.opening:part.end])) == count:
-            label = inlined[text][0]
+    results = []
+    if edits:
+        for text, count in gone.items():
+            if len(re.findall(rf'\bgoto\s+{text}\s*;', clean[part.opening:part.end])) == count:
+                label = inlined[text][0]
+                edits.append((label.start(), label.end(), ' '))
+        results.append((FAMILY, edit(source, edits)))
+    arm_level = _arm_level(source, clean, part)
+    if arm_level and all(arm_level != text for _, text in results):
+        results.append((FAMILY, arm_level))
+    return results
+
+
+def _arm_level(source, clean, part):
+    """Labels at an arm's own level whose run ends in the arm's `break;`, copied over each `goto` that ends its arm.
+
+        case 0x36: v = g; block_144: link(voice, v); r = 0; break;
+        case 0x37: ...; v = w & 0xFF; goto block_144;
+     -> case 0x37: ...; v = w & 0xFF; link(voice, v); r = 0; break;
+
+    The arm that jumps had its own call; the compiler's cross-jumping merged the two calls into the second arm's copy
+    (KMC GCC 2.7.2: on a 1315-instruction sound-sequence interpreter the copy took 10360 -> 9595, where the jump kept
+    the first arm's copy and the target the second's)."""
+    edits = []
+    for label in _LABEL.finditer(clean, part.opening + 1, part.end):
+        name = label['l']
+        if name in ('default', 'case'):
+            continue
+        run = re.compile(r'[^{}]*?\bbreak\s*;').match(clean, label.end())
+        if not run or re.search(rf'\bgoto\b|\b(?:case|default|return|continue)\b|^\s*{IDENT}\s*:(?!:)',
+                                clean[label.end():run.end()], re.M):
+            continue
+        before = clean[part.opening:label.start()]
+        if before.count('{') - before.count('}') < 1:
+            continue
+        # the label must sit at its arm's level: the innermost open brace before it is the switch's
+        depth = 0
+        opener = None
+        for pos in range(label.start() - 1, part.opening, -1):
+            if clean[pos] == '}':
+                depth += 1
+            elif clean[pos] == '{':
+                if depth == 0:
+                    opener = pos
+                    break
+                depth -= 1
+        if opener is None or not re.search(r'\bswitch\s*\([^{}]*\)\s*$', clean[part.opening:opener]):
+            continue
+        statements = source[label.end():run.end()].strip()
+        gotos = list(re.finditer(rf'\bgoto\s+{re.escape(name)}\s*;', clean[part.opening:part.end]))
+        replaced = 0
+        for goto in gotos:
+            at = part.opening + goto.end()
+            if re.compile(r'\s*(?:case\b|default\b|\})').match(clean, at):
+                edits.append((part.opening + goto.start(), at, statements))
+                replaced += 1
+        if replaced and replaced == len(gotos):
             edits.append((label.start(), label.end(), ' '))
-    return [(FAMILY, edit(source, edits))]
+    return edit(source, edits) if edits else None
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}
