@@ -73,3 +73,59 @@ def test_propose_finds_both():
     from decomprepair.propose import propose
     assert any(p.module == 'carried_store_arms_repairs' for p in propose(CARRIED, 'f').proposals)
     assert any(p.module == 'compared_load_inline_repairs' for p in propose(COMPARED, 'f').proposals)
+
+
+CLAMP = '''void f(void *arg0, void *arg1, void *arg2) {
+    s32 temp_v1;
+    s32 temp_v1_2;
+    s32 temp_v1_3;
+    s32 temp_v1_4;
+
+    temp_v1 = M2C_FIELD(arg2, s32 *, 0);
+    if (temp_v1 < M2C_FIELD(arg0, s32 *, 0)) {
+        M2C_FIELD(arg0, s32 *, 0) = temp_v1;
+    }
+    temp_v1_2 = M2C_FIELD(arg2, s32 *, 4);
+    if (temp_v1_2 < M2C_FIELD(arg0, s32 *, 4)) {
+        M2C_FIELD(arg0, s32 *, 4) = temp_v1_2;
+    }
+    temp_v1_3 = M2C_FIELD(arg2, s32 *, 8);
+    if (M2C_FIELD(arg0, s32 *, 8) < temp_v1_3) {
+        M2C_FIELD(arg0, s32 *, 8) = temp_v1_3;
+    }
+    temp_v1_4 = M2C_FIELD(arg2, s32 *, 0xC);
+    if (M2C_FIELD(arg0, s32 *, 0xC) < temp_v1_4) {
+        M2C_FIELD(arg0, s32 *, 0xC) = temp_v1_4;
+    }
+}
+'''
+
+
+def test_a_clamp_guard_that_stores_its_temporary_is_inlined_and_mirrored_as_a_subset():
+    # A six-guard clamp function (KMC GCC 2.7.2): the guards that named the temporary first, mirrored as
+    # `a[k] > b[k]`, and the others as they were, was exact (30 -> 0); all or none mirrored is another program.
+    out = [text for _, text in compared.variants(CLAMP, 'f')]
+    assert len(out) == len(set(out)) <= compared.LIMIT
+    assert all('temp_v1' not in text for text in out)
+    both = ('if (M2C_FIELD(arg0, s32 *, 0) > M2C_FIELD(arg2, s32 *, 0)) {\n        M2C_FIELD(arg0, s32 *, 0) = M2C_FIELD(arg2, s32 *, 0);')
+    tail = 'if (M2C_FIELD(arg0, s32 *, 8) < M2C_FIELD(arg2, s32 *, 8)) {\n        M2C_FIELD(arg0, s32 *, 8) = M2C_FIELD(arg2, s32 *, 8);'
+    # the inlined-only child keeps every comparison as written; the mirrored ones do the left-hand guards
+    assert any('if (M2C_FIELD(arg2, s32 *, 0) < M2C_FIELD(arg0, s32 *, 0)) {' in t for t in out)
+    # every guard that named the temporary first is mirrored, the right-hand ones stay
+    assert any(both in t and 'M2C_FIELD(arg0, s32 *, 4) > M2C_FIELD(arg2, s32 *, 4)' in t and tail in t for t in out)
+    # the first guard alone, and the first guard left out
+    assert any(both in t and 'if (M2C_FIELD(arg2, s32 *, 4) < M2C_FIELD(arg0, s32 *, 4)) {' in t for t in out)
+    assert any(both not in t and 'M2C_FIELD(arg0, s32 *, 4) > M2C_FIELD(arg2, s32 *, 4)' in t for t in out)
+
+
+def test_a_stored_temporary_is_left_alone_when_memory_is_written_before_the_store():
+    stale = CLAMP.replace('    if (temp_v1 < M2C_FIELD(arg0, s32 *, 0)) {\n',
+                          '    M2C_FIELD(arg2, s32 *, 0) = 5;\n    if (temp_v1 < M2C_FIELD(arg0, s32 *, 0)) {\n')
+    assert all('temp_v1 = M2C_FIELD(arg2, s32 *, 0);' in t for _, t in compared.variants(stale, 'f'))  # that one stays
+    only_stored = CLAMP.replace('    if (temp_v1 < M2C_FIELD(arg0, s32 *, 0)) {\n        M2C_FIELD(arg0, s32 *, 0) = temp_v1;\n    }\n', '    M2C_FIELD(arg0, s32 *, 0) = temp_v1;\n')
+    assert all('temp_v1 =' in t for _, t in compared.variants(only_stored, 'f'))  # no comparison: that one stays
+
+
+def test_propose_finds_the_clamp_inline():
+    from decomprepair.propose import propose
+    assert any(p.module == 'compared_load_inline_repairs' for p in propose(CLAMP, 'f').proposals)

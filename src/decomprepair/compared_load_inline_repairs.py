@@ -12,6 +12,13 @@ each comparison naming the other operand first (`b > a` for `a < b`) it was exac
 no better or worse, so a search that takes one step at a time never reaches it: both forms are offered here, once each
 for all such temporaries in the function. Only for a temporary assigned a plain load once and read only as one side of
 `<`, `>`, `<=`, `>=`, `==`, `!=`, with nothing written in between that the load could read.
+
+A clamp guard also stores the temporary it compared (`t = b[k]; if (t < a[k]) { a[k] = t; }`): that read is the whole
+value of a plain store statement, so it takes the load too (inlined, never flipped). A clamp function of six such guards
+(KMC GCC 2.7.2, `-G0 -mips3 -mgp32 -mfp32 -O2`) was exact with the temporary written into the three guards that named
+it first as `a[k] > b[k]` and the other three as they were, 30 -> 0; flipping all of them, or none, is a different
+program, so the temporaries are flipped as a subset too: each one alone, and every prefix and suffix of the ones that
+have a left-hand site (at most `LIMIT` children in all).
 """
 import re
 
@@ -23,6 +30,7 @@ FAMILIES = (FAMILY,)
 
 IDENT = r'[A-Za-z_]\w*'
 FLIP = {'<': '>', '>': '<', '<=': '>=', '>=': '<=', '==': '==', '!=': '!='}
+LIMIT = 24
 OPERAND = r'(?:M2C_FIELD\s*\([^;]*?\)|' + IDENT + r'(?:\s*->\s*' + IDENT + r')*)'
 
 
@@ -37,6 +45,29 @@ def _load(text):
     if re.fullmatch(IDENT + r'(?:\s*->\s*' + IDENT + r')+', text):
         return text
     return None
+
+
+def _stored_value(body, use):
+    """True when the read is the whole right-hand side of a plain store statement (`a[k] = t;`)."""
+    line = body.rfind('\n', 0, use.start()) + 1
+    head = body[line:use.start()]
+    return bool(re.fullmatch(r'[ \t]*[^;={}\n(][^;={}\n]*?\s*=\s*', head)
+                and not re.search(r'[<>!=+*/%&|^-]\s*=\s*$', head)
+                and re.match(r'\s*;', body[use.end():]))
+
+
+def _flip_sets(plans):
+    """Which temporaries get their left-hand comparisons mirrored: none, all, each alone, prefixes and suffixes."""
+    live = [i for i, (_, sites, _, _) in enumerate(plans) if any(side == 'left' for side, _, _ in sites)]
+    sets = [frozenset(), frozenset(live)]
+    sets += [frozenset([i]) for i in live]
+    for n in range(2, len(live)):
+        sets += [frozenset(live[:n]), frozenset(live[-n:])]
+    out = []
+    for each in sets:
+        if each not in out:
+            out.append(each)
+    return out[:LIMIT]
 
 
 def variants(source, name):
@@ -71,14 +102,19 @@ def variants(source, name):
                 sites.append(('left', use, after))
             elif before and not re.match(r'\s*[<>=]', body[use.end():]):
                 sites.append(('right', use, before))
+            elif _stored_value(body, use):
+                sites.append(('value', use, None))
             else:
                 sites = None
                 break
-        if not sites:
+        if not sites or all(side == 'value' for side, _, _ in sites):
             continue
         # nothing between the assignment and the last use may write what the load reads, or call anything
         # (a local assigned meanwhile is fine; a store through memory or a call could change what the load reads)
-        region = body[assign.end():uses[-1].start()]
+        last = uses[-1].start()
+        if _stored_value(body, uses[-1]):  # the store's own address is written after its value is read
+            last = body.rfind('\n', 0, last) + 1
+        region = body[assign.end():last]
         calls = [c for c in re.findall(r'\b(' + IDENT + r')\s*\(', region) if c not in ('M2C_FIELD', 'if', 'while', 'for', 'switch', 'return', 'sizeof')]
         stores = [m for m in re.finditer(r'(?m)^[ \t]*(?P<lhs>[^;={}\n]+?)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)', region)
                   if not re.fullmatch(IDENT, m['lhs'].strip())]
@@ -89,14 +125,15 @@ def variants(source, name):
     if not plans:
         return []
     result = []
-    for flip in (False, True):
+    for flipped in _flip_sets(plans):
         edits = []
-        for assign, sites, load, declared in plans:
+        for number, (assign, sites, load, declared) in enumerate(plans):
+            flip = number in flipped
             edits.append((opening + assign.start(), opening + assign.end(), ''))
             if declared:
                 edits.append((opening + declared.start(), opening + body.find('\n', declared.start()) + 1, ''))
             for side, use, op in sites:
-                if not flip or side == 'right':
+                if not flip or side != 'left':
                     edits.append((opening + use.start(), opening + use.end(), load))
                     continue
                 # `load OP other` → `other FLIP(OP) load`: find the other operand after the operator
