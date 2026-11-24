@@ -10,8 +10,12 @@ precedes the `lui 8` pair, 295 -> 255), and the halfword reload that stores the 
 once something offers the slide.
 
 A child is offered only when the moved statement commutes with every statement it passes: no call, no store through a
-pointer other than an `M2C_FIELD(base, type *, offset)` (compared by base, byte interval), no shared local that one writes
-and the other touches. The move is a hypothesis for the scheduler; the judge decides. Bounded to `LIMIT` children,
+pointer other than an `M2C_FIELD(base, type *, offset)` (compared by base, byte interval; the cast spelling
+`*((u8 *) (((char *) base) + 0x4A))` and a global's `*((u16 *) (&G))` count as cells too, a global's cell clashing with
+any pointer's), no shared local that one writes and the other touches. A byte field read into a local moved below the
+next statement's byte store to another field of the same record (`t = *((u8 *) (p + 0x4A)); *((u8 *) (p + 0xC0)) = ..;`
+the other way round) put the load where a 1315-instruction sound-sequence interpreter has it, after the store, and left
+no `andi` of the local (KMC GCC 2.7.2 `-O2`, 5475 -> 5025). The move is a hypothesis for the scheduler; the judge decides. Bounded to `LIMIT` children,
 shortest slides first.
 
 A statement that only works on a plain local no call can reach (declared, never address-taken, not `volatile`) also
@@ -44,9 +48,24 @@ DEREF = re.compile(r'(?:^|[-+*/&|^<>=?:(,!~])\s*\*')
 OTHER = re.compile(r'\[|->|\.|\+\+|--|\bvolatile\b')
 
 
+# The saved bests' spelling of a field, `*((u8 *) (((char *) voice) + 0x4A))`, and of a global read as another width,
+# `*((u16 *) (&G))`: written as `M2C_FIELD` cells so they compare by base and byte interval like m2c's own. A global's
+# base is `__global_G`, which can never be a local's name; `_clash` keeps it apart from pointers it may alias.
+CAST_FIELD = re.compile(rf'\*\s*\(\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(\s*\(\s*\(\s*char\s*\*\s*\)\s*'
+                        rf'(?P<base>{IDENT})\s*\)\s*\+\s*(?P<off>0[xX][0-9a-fA-F]+|\d+)\s*\)\s*\)')
+CAST_GLOBAL = re.compile(rf'\*\s*\(\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(?\s*&\s*(?P<sym>{IDENT})\s*\)?\s*\)')
+GLOBAL = '__global_'
+
+
+def _cells(text):
+    text = CAST_FIELD.sub(lambda m: f'M2C_FIELD({m["base"]}, {m["type"]} *, {m["off"]})', text)
+    return CAST_GLOBAL.sub(lambda m: f'M2C_FIELD({GLOBAL}{m["sym"]}, {m["type"]} *, 0)', text)
+
+
 def _effects(text):
     """`(writes, reads)` as sets of ('v', name) and ('f', base, lo, hi) keys, or None when the statement is no plain
     assignment of locals and `M2C_FIELD` cells."""
+    text = _cells(text)
     depth, split = 0, None
     for pos, char in enumerate(text):
         depth += (char in '([') - (char in ')]')
@@ -86,6 +105,8 @@ def _clash(a, b):
                 return True
             if x[0] == 'f' and y[0] == 'f' and x[1] == y[1] and x[2] < y[3] and y[2] < x[3]:
                 return True
+            if x[0] == 'f' and y[0] == 'f' and x[1] != y[1] and (x[1].startswith(GLOBAL) != y[1].startswith(GLOBAL)):
+                return True  # a global and a pointer's cell may be the same memory
     return False
 
 
