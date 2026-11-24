@@ -26,7 +26,15 @@ steps, 0 with them).
   * counter: `q` is never stepped, the uses are `q[i * M + c]` before the loop's one `p += M;`, `i` is set to 0 before
     `q = p + K;` and stepped by one in the same block as that `p += M;`: `q[i * M + c]` is `p[K + c]`.
 Every rule keeps the program's meaning (the first one is a hypothesis for a helper applied to a wider type: the
-step the helper stood for); the exact judge decides."""
+step the helper stood for); the exact judge decides.
+
+A long search's spelling of the same cursor goes through bytes: `void *q;`, `q = ((char *) p) + 4;`, reads
+`*((u16 *) (((char *) q) + (-2)))` and `((Field_u16 *) (((char *) q) + 0))->v`, and `q += 6;` beside `p += 3;` in
+either order. `_typed` writes such a cursor in elements first (`u16 *q; q = p + 2; q[-1]; q[0]; p += 3; q += 3;`) when
+every offset and step is a multiple of the element and `p` points to that element, and the rules above fold it. On a
+1928-instruction collision sweep two such cursors of a ray walk with a plane fallback (four reads each) folded into
+`tri[1]`, `tri[2]`: 4687 -> 4192. loop.c combines the givs `tri + 2` and `tri + 4` into one register with the offsets
+-2 and 0 (`combine_givs_p`); a cursor of its own is a biv, and its second address became a third register."""
 import re
 
 from .csource import _blank
@@ -165,7 +173,7 @@ def _statement_span(clean, start, stop):
     return start, after
 
 
-def _fold(clean, base, end, helpers, pointer):
+def _fold(clean, base, end, helpers, pointer, keep=False):
     """The edits that fold the cursor `pointer` (a dict from `_cursors`) into the pointer it was cut from, or None."""
     q, init = pointer['name'], pointer['init']
     uses, steps = [], []
@@ -194,7 +202,7 @@ def _fold(clean, base, end, helpers, pointer):
             return None
     blocks = _blocks(clean, base, end)
     if steps:
-        return _lockstep(clean, base, helpers, pointer, uses, steps, region)
+        return _lockstep(clean, base, helpers, pointer, uses, steps, region, keep)
     return _counter(clean, base, end, helpers, pointer, uses, blocks)
 
 
@@ -217,7 +225,7 @@ def _writes(clean, name, lo, hi):
     return found
 
 
-def _lockstep(clean, base, helpers, pointer, uses, steps, region):
+def _lockstep(clean, base, helpers, pointer, uses, steps, region, keep=False):
     p, K = pointer['base'], pointer['offset']
     # q's own writes are only the steps; p's writes inside the region are exactly the paired increments
     paired = []
@@ -238,6 +246,11 @@ def _lockstep(clean, base, helpers, pointer, uses, steps, region):
     for (write, step) in paired:
         n = write[2]
         window = clean[write[1]:step[0]]
+        if keep:
+            # the pointer's own step stays where it is and the cursor's goes: `p += 3; i++; q += 3;` -> `p += 3; i++;`
+            # (reads of `p` between them already see the advanced pointer)
+            new.append(_statement_span(clean, step[0], step[1]) + ('',))
+            continue
         # reads of p between the two statements see the advanced p; they move by n
         for m in re.finditer(rf'(?<![\w.>]){re.escape(p)}\b', window):
             at = write[1] + m.start()
@@ -258,9 +271,12 @@ def _lockstep(clean, base, helpers, pointer, uses, steps, region):
         low, high = _statement_span(clean, write[0], write[1])
         new.append((low, high, ''))
         new.append((step[0], step[1], f'{p} += {n};' if n != 1 else f'{p}++;'))
+    windows = [(write[1], step[0]) for write, step in paired]
     for at, stop, text in uses:
-        owner = next((step for step in steps if step[0] >= stop and not CONTROL.search(clean[stop:step[0]])), None)
-        if owner is None:
+        # every paired write sits next to its step (checked above), so outside those windows `q` is `p + K`, also
+        # in a branch nested before the step (a ray walk's plane fallback); inside one, `p` is `p + K` only when its
+        # step moves down to the cursor's
+        if keep and any(lo <= at < hi for lo, hi in windows):
             return None
         value = _index_value(text, helpers, ())
         if value is None or set(value) != {''}:
@@ -342,7 +358,82 @@ def _cursors(clean, base, end, helpers, parameters=()):
     return out
 
 
+SIZES = {'u8': 1, 's8': 1, 'u16': 2, 's16': 2, 'u32': 4, 's32': 4, 'f32': 4}
+OFFSET = r'(\(\s*-?\s*(?:0[xX][0-9a-fA-F]+|[0-9]+)\s*\)|-?\s*(?:0[xX][0-9a-fA-F]+|[0-9]+))'
+
+
+def _byte_reads(q):
+    char = rf'\(\s*\(\s*\(\s*char\s*\*\s*\)\s*{re.escape(q)}\s*\)\s*\+\s*{OFFSET}\s*\)'
+    return re.compile(rf'\*\s*\(\s*\(\s*({IDENT})\s*\*\s*\)\s*{char}\s*\)|\(\s*\(\s*Field_({IDENT})\s*\*\s*\)\s*{char}\s*\)\s*->\s*v')
+
+
+def _signed(text):
+    text = text.replace(' ', '').strip('()')
+    return -_number(text[1:]) if text.startswith('-') else _number(text)
+
+
+def _typed(source, name):
+    """The function with each byte-addressed cursor written in elements, or None when there is none (docstring)."""
+    part = view(source, name)
+    if not part:
+        return None
+    clean = part.clean
+    base, end = part.opening + 1, part.end - 1
+    body = clean[base:end]
+    changes = []
+    for decl in re.finditer(rf'(?m)^[ \t]*(?:void|char)[ \t]*\*[ \t]*({IDENT})[ \t]*;[ \t]*\n', body):
+        q = decl[1]
+        init = list(re.finditer(rf'(?<![\w.>*]){q}\s*=\s*\(\s*\(\s*char\s*\*\s*\)\s*({IDENT})\s*\)\s*\+\s*({NUMBER})\s*;', body))
+        if len(init) != 1:
+            continue
+        p, K = init[0][1], _number(init[0][2])
+        ptype = re.search(rf'(?m)^[ \t]*({IDENT})[ \t]*\*[ \t]*{re.escape(p)}[ \t]*;', body)
+        if not ptype or ptype[1] not in SIZES:
+            continue
+        T, size = ptype[1], SIZES[ptype[1]]
+        mentions = {base + m.start() for m in re.finditer(rf'(?<![\w.>]){re.escape(q)}\b', body)}
+        covered = {base + init[0].start(), base + decl.start(1)}
+        edits, ok = [], K % size == 0
+        for m in _byte_reads(q).finditer(body):
+            kind, offset = (m[1], m[2]) if m[1] else (m[3], m[4])
+            value = _signed(offset)
+            if kind != T or value % size:
+                ok = False
+                break
+            edits.append((base + m.start(), base + m.end(), f'{q}[{value // size}]'))
+            covered |= {at for at in mentions if base + m.start() <= at < base + m.end()}
+        for m in re.finditer(rf'(?<![\w.>*]){re.escape(q)}\s*\+=\s*({NUMBER})\s*;', body):
+            n = _number(m[1])
+            if n % size:
+                ok = False
+                break
+            covered.add(base + m.start())
+            # `q += 6; p += 3;` side by side becomes `p += 3; q += 3;`: the order the lockstep rule reads
+            after = re.match(rf'(\s*){re.escape(p)}\s*\+=\s*({NUMBER})\s*;', body[m.end():])
+            if after and _number(after[2]) == n // size:
+                edits.append((base + m.start(), base + m.end() + after.end(), f'{p} += {n // size};{after[1]}{q} += {n // size};'))
+            else:
+                edits.append((base + m.start(), base + m.end(), f'{q} += {n // size};'))
+        if not ok or not edits or mentions - covered:
+            continue
+        edits.append((base + init[0].start(), base + init[0].end(), f'{q} = {p} + {K // size};'))
+        edits.append((base + decl.start(), base + decl.end(), re.sub(r'(?:void|char)(?=[ \t]*\*)', T, decl[0], count=1)))
+        changes.extend(edits)
+    if not changes or not _consistent(changes):
+        return None
+    return edit(source, changes)
+
+
 def variants(source, name):
+    found = _variants(source, name)
+    typed = _typed(source, name)
+    if typed is not None:
+        seen = {text for _, text in found}
+        found += [(family, text) for family, text in _variants(typed, name) if text not in seen and text != source]
+    return found
+
+
+def _variants(source, name):
     part = view(source, name)
     if not part:
         return []
@@ -355,18 +446,21 @@ def variants(source, name):
     for pointer in _cursors(clean, base, end, helpers, parameters):
         if re.search(rf'&\s*{re.escape(pointer["name"])}\b|&\s*{re.escape(pointer["base"])}\b', clean[base:end]):
             continue
-        new = _fold(clean, base, end, helpers, pointer)
-        if new is not None:
-            drop = [_statement_span(clean, *pointer['init']) + ('',), pointer['declaration'][:2] + ('',)]
-            folds.append(new + drop)
+        drop = [_statement_span(clean, *pointer['init']) + ('',), pointer['declaration'][:2] + ('',)]
+        moved = _fold(clean, base, end, helpers, pointer)
+        kept = _fold(clean, base, end, helpers, pointer, keep=True)
+        options = [fold + drop for fold in (moved, kept) if fold is not None]
+        if options:
+            folds.append(options)
     if not folds:
         return []
     out = []
     if len(folds) > 1:
-        together = [change for fold in folds for change in fold]
-        if _consistent(together):
-            out.append(edit(source, together))
-    out.extend(edit(source, fold) for fold in folds)
+        for choice in (0, -1):
+            together = [change for options in folds for change in options[choice]]
+            if _consistent(together):
+                out.append(edit(source, together))
+    out.extend(edit(source, fold) for options in folds for fold in options)
     seen, result = set(), []
     for text in out:
         if text not in seen and text != source:
