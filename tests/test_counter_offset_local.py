@@ -42,3 +42,33 @@ def test_the_module_declares_itself_to_the_registry():
     for repair in registry.declared():
         if repair.module == 'counter_offset_local':
             assert registry.problems(repair) == []
+
+
+# A sound-sequence interpreter's voice scan (KMC GCC 2.7.2, N64): the zero before the `for`, the name reused later.
+SCAN = '''void f(u32 key)
+{
+  long i;
+  s32 off;
+  s32 h;
+  off = 0;
+  for (i = 0; i < n; i++, off += 0x1A0)
+  {
+    h = *((s32 *) (((char *) (&table)) + off));
+    if (h == (key | i))
+    {
+      mark(h);
+    }
+  }
+  off = key * 0xC;
+  use(off);
+}
+'''
+
+
+def test_a_zero_before_the_loop_and_a_reused_name():
+    kids = [src for fam, src in variants(SCAN, 'f')]
+    assert kids == [SCAN.replace('  off = 0;\n', '').replace('i++, off += 0x1A0)\n  {\n', 'i++)\n  {\n    off = i * 0x1A0;\n')]
+
+
+def test_a_reused_name_read_after_the_loop_is_left_alone():
+    assert [src for fam, src in variants(SCAN.replace('  off = key * 0xC;\n', ''), 'f')] == []

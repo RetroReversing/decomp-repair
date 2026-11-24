@@ -12,6 +12,13 @@ target has: 340 -> 120 on a 529-instruction function, the other loop of it was t
 
 Offered when the offset is read only inside the loop's body, never assigned there, and both start at 0 in the `for`'s
 head. A candidate rewrite; the exact judge decides.
+
+m2c also writes the offset's zero as the statement just before the `for` (`off = 0; for (i = 0; i < n; i++, off += K)`)
+and reuses the offset's name in other arms of a switch. Both are read the same way: the zero before the loop goes, and a
+name that other code still uses becomes an assignment at the top of the body (`off = i * K;`), offered only when the next
+mention of the name after the loop assigns it (no read sees the old stepped value). On a 1315-instruction sound-sequence
+interpreter's voice scan (KMC GCC 2.7.2 `-O2`, N64) that put the zero after the guard and the symbol at each use, as the
+target has: 4645 -> 4000.
 """
 import re
 
@@ -50,6 +57,17 @@ def variants(source, name):
         if len(pieces) != 3:
             continue
         inits, cond, steps = (_split(p) for p in pieces)
+        before = None  # an `offset = 0;` written as the statement just before the `for`
+        if len(inits) == 1 and len(steps) == 2:
+            line = clean.rfind('\n', part.opening, hit.start())
+            prev = clean.rfind('\n', part.opening, line)
+            if line < 0 or prev < 0 or clean[line:hit.start()].strip():
+                continue
+            found_zero = re.fullmatch(rf'[ \t]*(?P<v>{IDENT})\s*=\s*0\s*;[ \t]*', clean[prev + 1:line])
+            if not found_zero:
+                continue
+            before = (prev + 1, line + 1, found_zero['v'])
+            inits = inits + [f'{found_zero["v"]} = 0']
         if len(inits) != 2 or len(steps) != 2:
             continue
         zero = [re.fullmatch(rf'(?P<v>{IDENT})\s*=\s*0', i) for i in inits]
@@ -80,18 +98,29 @@ def variants(source, name):
         counter_write = re.compile(rf'(?<![\w.>]){re.escape(counter)}\s*(?:=(?!=)|[-+*/|&^%]=|<<=|>>=|\+\+|--)|(?:\+\+|--)\s*{re.escape(counter)}\b')
         if not mention.search(body) or write.search(body) or counter_write.search(body) or re.search(r'\b(?:goto|case|default)\b', body):
             continue
-        declaration = re.search(rf'(?m)^(?P<lead>[ \t]*)(?P<type>s32|int|u32|unsigned int)[ \t]+{re.escape(offset)}[ \t]*;[ \t]*\n', clean[part.opening + 1:hit.start()])
+        if before and before[2] != offset:
+            continue  # the zero before the loop is the counter's, not the offset's
+        declaration = re.search(rf'(?m)^(?P<lead>[ \t]*)(?P<type>s32|int|u32|unsigned int|long)[ \t]+{re.escape(offset)}[ \t]*;[ \t]*\n', clean[part.opening + 1:hit.start()])
         if not declaration:
             continue
         gone = part.opening + 1 + declaration.start(), part.opening + 1 + declaration.end()
-        rest = clean[part.opening + 1:gone[0]] + clean[gone[1]:hit.start()] + clean[end:part.end]
-        if mention.search(rest):
-            continue
+        start_cut = before[0] if before else hit.start()
+        rest = clean[part.opening + 1:gone[0]] + clean[gone[1]:start_cut] + clean[end:part.end]
         k = step['k']
         indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, open_at) + 1:])[0]
-        header = f'for ({counter} = 0; {source[hit.end() + len(pieces[0]) + 1:shut - 1 - len(pieces[2]) - 1].strip()}; {counter}++)'
-        local = f'\n{indent}  {declaration["type"]} {offset} = {counter} * {k};'
-        text = edit(source, [(gone[0], gone[1], ''), (hit.start(), shut, header), (open_at + 1, open_at + 1, local)])
+        init = counter + ' = 0' if before else f'{counter} = 0'
+        header = f'for ({init}; {source[hit.end() + len(pieces[0]) + 1:shut - 1 - len(pieces[2]) - 1].strip()}; {counter}++)'
+        edits = [(hit.start(), shut, header)]
+        if before:
+            edits.append((before[0], before[1], ''))
+        if mention.search(rest):
+            after = mention.search(clean, end, part.end)
+            if after and not re.match(rf'{re.escape(offset)}\s*=(?!=)', clean[after.start():]):
+                continue  # code after the loop may read the stepped value
+            edits.append((open_at + 1, open_at + 1, f'\n{indent}  {offset} = {counter} * {k};'))
+        else:
+            edits += [(gone[0], gone[1], ''), (open_at + 1, open_at + 1, f'\n{indent}  {declaration["type"]} {offset} = {counter} * {k};')]
+        text = edit(source, edits)
         out.append((FAMILY, text))
     return out
 
