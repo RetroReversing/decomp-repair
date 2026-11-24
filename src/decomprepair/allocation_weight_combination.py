@@ -15,7 +15,7 @@ triples in between 115 to 1675), so the permuter's one-edit-at-a-time search cou
   lie inside it (and with no break/continue or declaration) becomes a plain block. U is the wrapper around the whole
   body, I every inner wrapper around one call.
 - `init_sink_into_guard` (S): `v = K;` right before `if (c) {` moves to the start of that block when `c` does not
-  read `v` (the first scheduler region and the delay slot choice follow it).
+  read `v` (the first scheduler region and the delay slot choice follow it); each site is a child, and all at once.
 - `weight_combination`: every non-empty subset of the edits that apply, so the search sees them as one variant.
 These are hypotheses for the exact judge, never equivalence claims."""
 import itertools
@@ -118,6 +118,12 @@ def _sink_edits(part):
         if not brace or re.search(rf'\b{hit[1]}\b', clean[opening:stop]):
             continue
         block = stop+brace.end()
+        block_end = close(clean, block - 1, '{', '}')
+        # the init must stay a program: the block may not assign it (m2c's `v = 1; if (!c) { v = 0; }` flag) and
+        # nothing after the block may read it
+        if block_end is None or re.search(rf'(?<![\w.>]){hit[1]}\s*=(?!=)', clean[block:block_end]) \
+                or re.search(rf'\b{hit[1]}\b', clean[block_end:part.end]):
+            continue
         statement = clean[base+hit.start():base+hit.start(3)]
         out.append([(base+hit.start(), base+hit.start(3)+len(hit[3]), ''), (block, block, '\n      '+statement)])
     return out
@@ -141,6 +147,11 @@ def variants(source, name):
         groups['S'] = sink[0]
     names = {'U': 'weight_scope_unwrap', 'I': 'weight_scope_unwrap', 'D': 'spill_slot_copy_collapse', 'S': 'init_sink_into_guard'}
     result = [(names[k], edit(source, v)) for k, v in groups.items()]
+    # every guard's own init, and all of them: the first site alone was all a 1928-instruction collision sweep was
+    # offered, where the third and fourth loops' counters were the ones that paid (8400 -> 8215)
+    result += [('init_sink_into_guard', edit(source, site)) for site in sink[1:8]]
+    if len(sink) > 1:
+        result.append(('init_sink_into_guard', edit(source, [e for site in sink for e in site])))
     subsets = [c for n in range(len(groups), 1, -1) for c in itertools.combinations(sorted(groups), n)]
     for combo in subsets[:LIMIT]:
         result.append(('weight_combination', edit(source, [e for k in combo for e in groups[k]])))
@@ -149,4 +160,4 @@ def variants(source, name):
         if text != source and text not in seen:
             seen.add(text)
             out.append((family, text))
-    return out[:LIMIT+4]
+    return out[:LIMIT + 12]

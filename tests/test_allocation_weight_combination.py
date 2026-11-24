@@ -64,3 +64,37 @@ def test_wrapper_with_a_goto_leaving_it_stays():
     for family, text in m.variants(outside, 'f'):
         if family in ('weight_scope_unwrap', 'weight_combination'):
             assert text.count('while (0)') >= 1 and text.count('do\n') >= 1 and text.index('do\n') < text.index('res = NULL')
+
+
+SINKS = """void g(int);
+void f(int n, int m, int c)
+{
+  int i;
+  int j;
+  int v;
+  v = 1;
+  if (!(c > 0))
+  {
+    v = 0;
+  }
+  i = 0;
+  if (n > 0)
+  {
+    do { g(i); i++; } while (i < n);
+  }
+  j = 0;
+  if (m > 0)
+  {
+    do { g(j); j++; } while (j < m);
+  }
+  g(v);
+}
+"""
+
+
+def test_every_guarded_counter_init_is_a_child_and_a_flag_is_never_sunk():
+    from decomprepair import allocation_weight_combination as awc
+    texts = [t for fam, t in awc.variants(SINKS, 'f') if fam == 'init_sink_into_guard']
+    assert any('if (n > 0)\n  {\n      i = 0;' in t and '  j = 0;\n  if (m > 0)' in t for t in texts)
+    assert any('if (m > 0)\n  {\n      j = 0;' in t and '  i = 0;\n  if (n > 0)' in t for t in texts)
+    assert all('  v = 1;\n  if (!(c > 0))' in t for t in texts)
