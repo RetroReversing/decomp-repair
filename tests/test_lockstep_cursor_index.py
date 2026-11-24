@@ -74,3 +74,43 @@ def test_cursor_and_counter_that_step_by_the_same_amount_are_folded():
 
 def test_different_strides_are_left_alone():
     assert not r.variants(STRIDE.replace('w += step;', 'w += 2;'), 'f')
+
+
+# A byte table's walk beside its counter, started at the table and at 0 (a code-table builder, KMC GCC 2.7.2, N64).
+ZERO_START = '''void f(u16 *tab, u32 tb)
+{
+  u32 a;
+  u32 i;
+  {
+    u8 *bp;
+    u16 *tp;
+    a = 0;
+    i = 0;
+    bp = D_80108FA0;
+    tp = tab;
+    do {
+      u8 b = *bp;
+      if (b != 0) {
+        *tp = (a << 7) + b;
+        a += 1 << (*bp - tb);
+      }
+      bp++;
+      i++;
+      tp++;
+    } while ((i >> tb) == 0);
+  }
+}
+'''
+
+
+def test_cursors_started_at_the_table_beside_a_zeroed_counter_become_the_index():
+    kids = [src for fam, src in r.variants(ZERO_START, 'f')]
+    want = (ZERO_START.replace('    u8 *bp;\n    u16 *tp;\n', '').replace('    bp = D_80108FA0;\n    tp = tab;\n', '')
+            .replace('u8 b = *bp;', 'u8 b = D_80108FA0[i];').replace('*tp = (a << 7)', 'tab[i] = (a << 7)')
+            .replace('(*bp - tb)', '(D_80108FA0[i] - tb)').replace('      bp++;\n', '').replace('      tp++;\n', ''))
+    assert want in kids
+
+
+def test_a_counter_not_zeroed_before_the_loop_is_not_used():
+    text = ZERO_START.replace('    i = 0;\n', '')
+    assert not any('D_80108FA0[i]' in k for _, k in r.variants(text, "f"))

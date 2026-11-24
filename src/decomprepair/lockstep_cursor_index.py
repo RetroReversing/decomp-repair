@@ -94,9 +94,13 @@ def variants(source, name):
             for hit in re.finditer(rf'(?:\b[\w ]+\*\s*)?\b{pointer}\s*=\s*(?:(?P<base>{IDENT})\s*\+\s*(?P<k1>{IDENT})'
                                    rf'|&\s*(?P<base2>{IDENT})\s*\[\s*(?P<k2>{IDENT})\s*\])\s*;', clean[block:start]):
                 init = hit
-            if not init:
-                continue
-            base, counter = (init['base'], init['k1']) if init['base'] else (init['base2'], init['k2'])
+            if init:
+                base, counter = (init['base'], init['k1']) if init['base'] else (init['base2'], init['k2'])
+            else:
+                init, counter = _zero_start(clean, block, start, body, pointer)
+                if not init:
+                    continue
+                base = init['base']
             ksteps = _steps(clean, *body, counter)
             if len(ksteps) != 1 or ksteps[0][2] != steps[0][2] or _assigned(clean[block + init.end():start], counter) \
                     or re.search(rf'\b{pointer}\b', clean[block + init.end():start]):
@@ -121,6 +125,9 @@ def variants(source, name):
                     continue
                 if block + init.start() <= at < block + init.end() or steps[0][0] <= at < steps[0][1]:
                     continue
+                line = clean.rfind('\n', 0, at) + 1
+                if re.match(rf'[ \t]*(?:\w+\s+)+\*\s*{pointer}\s*;', clean[line:]) and at < start:
+                    continue  # the block's own declaration of the pointer
                 if not (start <= at < stop) or not re.match(rf'\b{pointer}\b', clean[at:]):
                     ok = False
                     break
@@ -146,7 +153,10 @@ def variants(source, name):
                           block + init.end(), ''))
             edits.append((_statement_start(clean, steps[0][0], opening), steps[0][1], ''))
             declaration = re.search(rf'(?m)^[ \t]*(?:\w+\s+)+\*\s*{pointer}\s*;[ \t]*\n', clean[part.opening:part.end])
-            if declaration and not re.search(rf'\b{pointer}\b', clean[part.opening + declaration.end():part.end]
+            mentions = len(re.findall(rf'\b{pointer}\b', clean[part.opening:part.end]))
+            if declaration and mentions == 3 + len(uses):
+                edits.append((part.opening + declaration.start(), part.opening + declaration.end(), ''))
+            elif declaration and not re.search(rf'\b{pointer}\b', clean[part.opening + declaration.end():part.end]
                                              .replace(clean[part.opening + declaration.start():part.opening + declaration.end()], '')):
                 edits.append((part.opening + declaration.start(), part.opening + declaration.end(), ''))
             candidates.append((pointer, edits))
@@ -158,6 +168,32 @@ def variants(source, name):
             for _, edits in candidates:
                 out.append((FAMILY, edit(source, _unique(edits))))
     return out
+
+
+def _zero_start(clean, block, start, body, pointer):
+    """`p = BASE;` before the loop beside a counter set to 0 there: (the init's match, the counter) or (None, None).
+
+    The loop's other once-stepped local whose last assignment before the loop, in the same block, is `k = 0;` is the
+    counter `p` keeps pace with, so `*p` is `BASE[k]` (a byte table's walk in a code-table builder: `bp = T; tp = tab;
+    i = 0; do { .. *bp .. *tp = ..; bp++; i++; tp++; } while ((i >> tb) == 0);`, 410 -> 350 with both written as the
+    index, 681-instruction bit-stream decoder, KMC GCC 2.7.2)."""
+    init = None
+    for hit in re.finditer(rf'(?:\b[\w ]+\*\s*)?\b{pointer}\s*=\s*(?P<base>{IDENT})\s*;', clean[block:start]):
+        init = hit
+    if not init:
+        return None, None
+    steps = _steps(clean, *body, pointer)
+    for zero in re.finditer(rf'(?<![\w.>])({IDENT})\s*=\s*0\s*;', clean[block:start]):
+        counter = zero.group(1)
+        if counter == pointer:
+            continue
+        ksteps = _steps(clean, *body, counter)
+        if len(ksteps) != 1 or ksteps[0][2] != steps[0][2]:
+            continue
+        if _assigned(clean[block + zero.end():start], counter):
+            continue
+        return init, counter
+    return None, None
 
 
 def _unique(edits):
