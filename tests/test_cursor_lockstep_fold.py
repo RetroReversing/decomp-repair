@@ -97,3 +97,53 @@ def test_a_counter_with_another_stride_stays():
 
 def test_a_loop_that_can_leave_early_stays():
     assert not folded(COUNTER.replace('p += 3;', 'if (n == 7) { return; }\n        p += 3;'), 'g')
+
+
+BYTES = '''
+typedef struct { u16 v; } Field_u16;
+
+void h(u16 *tris, u8 *verts, s32 n, s32 *mask)
+{
+    u16 *tri;
+    void *cursor;
+    s32 i;
+    tri = tris;
+    cursor = ((char *) tri) + 2;
+    i = 0;
+    do {
+        if (mask[i]) {
+            use(verts + (*tri) * 12, verts + (*((u16 *) (((char *) cursor) + 0))) * 12,
+                verts + ((Field_u16 *) (((char *) cursor) + 2))->v * 12);
+            if (mask[i] & 2) {
+                use(verts + (*((u16 *) (((char *) cursor) + 0))) * 12, verts, verts);
+            }
+        }
+        cursor += 6;
+        tri += 3;
+        i += 1;
+    } while (i < n);
+}
+'''
+
+
+def test_byte_addressed_cursor_folds_into_the_record_pointer():
+    out = folded(BYTES, 'h')
+    whole = [text for text in out if 'cursor' not in text]
+    assert whole, out
+    text = whole[0]
+    assert 'tri[1] * 12' in text.replace('(tri[1])', 'tri[1]')
+    assert 'tri[2] * 12' in text
+    assert text.count('tri += 3;') == 1
+
+
+def test_byte_addressed_cursor_keeps_the_pointer_step_when_asked():
+    source = BYTES.replace('        cursor += 6;\n        tri += 3;\n        i += 1;\n',
+                           '        tri += 3;\n        i += 1;\n        cursor += 6;\n')
+    out = folded(source, 'h')
+    kept = [text for text in out if 'cursor' not in text and text.index('tri += 3;') < text.index('i += 1;')]
+    assert kept, out
+
+
+def test_byte_addressed_cursor_with_an_odd_offset_is_left_alone():
+    source = BYTES.replace('(((char *) cursor) + 2))->v', '(((char *) cursor) + 3))->v')
+    assert not [text for text in folded(source, 'h') if 'cursor' not in text]
