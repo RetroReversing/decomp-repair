@@ -30,13 +30,24 @@ _TYPE = r'(?:unsigned\s+(?:int|short|char)|s32|u32|s16|u16|s8|u8|int|short|f32)'
 _DECL = re.compile(rf'\s*({_TYPE})\s*(\*?)\s*({IDENT})\s*=\s*([^;]+);')
 
 
-def _close(text, at, left, right):
+def _python_close(text, at, left, right):
     depth = 0
     for i in range(at, len(text)):
         depth += (text[i] == left) - (text[i] == right)
         if depth == 0:
             return i
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, at, left, right):
+        found = _scan.close_every(text, at, left, right, False, None)
+        return _python_close(text, at, left, right) if found is NotImplemented else found
 
 
 def _norm(text):

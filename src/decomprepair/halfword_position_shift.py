@@ -69,13 +69,24 @@ def _positions(part, decls, counters):
     return found
 
 
-def _group_start(text, shut):
+def _python_group_start(text, shut):
     depth = 0
     for at in range(shut, -1, -1):
         depth += (text[at] == ')') - (text[at] == '(')
         if depth == 0:
             return at
     return -1
+
+
+_group_start = _python_group_start
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _group_start(text, shut):
+        found = _scan.open_every(text, shut, '(', ')', -1)
+        return _python_group_start(text, shut) if found is NotImplemented else found
 
 
 def _shifted(source, clean, start, end, names):

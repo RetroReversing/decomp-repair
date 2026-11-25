@@ -35,13 +35,24 @@ _WORD = r'(?:s32|int|u32|unsigned(?:\s+int)?|signed(?:\s+int)?)'
 _HALF = r'(?:s16|short|signed\s+short)'
 
 
-def _close(clean, start, left='(', right=')'):
+def _python_close(clean, start, left='(', right=')'):
     depth = 0
     for pos in range(start, len(clean)):
         depth += (clean[pos] == left) - (clean[pos] == right)
         if depth == 0:
             return pos + 1
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(clean, start, left='(', right=')'):
+        found = _scan.close_every(clean, start, left, right, True, None)
+        return _python_close(clean, start, left, right) if found is NotImplemented else found
 
 
 # (E + 1) <= F is E < F, and (E + 1) > F is E >= F, for an unsigned E that cannot wrap

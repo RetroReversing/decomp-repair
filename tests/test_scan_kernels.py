@@ -222,3 +222,34 @@ def test_the_fourth_batch_of_own_scans_match_their_plain_loops_on_random_text():
             where = rng.randint(-3, len(text) + 2)
             for args in build(text, where, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+FIFTH_BATCH = [
+    ("guard_counter_compare", "_close", _params),
+    ("guarded_do_while_loop", "_close", _params),
+    ("halfword_countdown_shapes", "_close", lambda t, a, r: _params(t, a, r) + [(t, a)]),
+    ("last_use_shift_in_place", "_close", lambda t, a, r: _params(t, a, r) + [(t, a)]),
+    ("inline_param_width", "_close", lambda t, a, r: [(t, a)]),
+    ("guarded_do_to_for", "_call_end", lambda t, a, r: [(t, a)]),
+    ("halfword_position_shift", "_group_start", lambda t, a, r: [(t, a)]),
+    ("join_initializer_sink_repairs", "_enclosing", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 2))]),
+    ("label_entry_initializer_repairs", "_block_start", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 2))]),
+    ("dead_pointer_address_reuse", "_enclosing", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 2))]),
+]
+
+
+def test_the_fifth_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(66)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\n", ";", "é", "𝄞", "((", "}}"]
+    for module_name, function, build in FIFTH_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
