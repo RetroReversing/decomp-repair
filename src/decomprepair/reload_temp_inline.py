@@ -302,8 +302,10 @@ def _drop_name(source, name, t):
     return re.sub(rf'(?m)^((?:[ \t]*(?:[A-Za-z_]\w*[ \t]+)+\**[ \t]*(?:\w+[ \t]*,[ \t]*)*\w+)),[ \t]*\**{re.escape(t)};', r'\1;', out)
 
 
-def _inline_one(source, name, t):
-    fn = _Function(source, name)
+def _inline_one(source, name, t, fn=None):
+    """`source` with the temporary `t` inlined, or None. `fn`: the `_Function` of that same source when the caller has it
+    (its analysis is built once and only read afterwards, and a pass asks about every temporary of one source)."""
+    fn = fn or _Function(source, name)
     if not fn.ok:
         return None
     edits = fn.plan(t)
@@ -329,14 +331,15 @@ def _variants(source, name):
         return []
     out, text, taken = [], source, []
     for t in fn.temps():
-        child = _inline_one(source, name, t)
+        child = _inline_one(source, name, t, fn)
         if child and child != source and len(out) < LIMIT:
             out.append((FAMILY, child))
     # every local the checks accept, one after another (a chain's members before the local that reads them)
     for _ in range(12):
         progress = False
-        for t in _Function(text, name).temps():
-            child = _inline_one(text, name, t)
+        current = _Function(text, name)
+        for t in current.temps():
+            child = _inline_one(text, name, t, current)
             if child and child != text:
                 text, progress = child, True
                 taken.append(t)
