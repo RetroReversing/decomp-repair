@@ -222,7 +222,7 @@ def _site_edits(clean, opening, span, site, helper_name):
     return edits
 
 
-def _enclosing(clean, at, floor):
+def _python_enclosing(clean, at, floor):
     """(open, close) of the innermost `{ }` around `at`, or None at function level."""
     depth, pos = 0, at
     while pos > floor:
@@ -235,6 +235,22 @@ def _enclosing(clean, at, floor):
                 return (pos, end) if end else None
             depth -= 1
     return None
+
+
+_enclosing = _python_enclosing
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing(clean, at, floor):
+        found = _scan.enclosing_open(clean, at, floor, -1)
+        if found is not NotImplemented:
+            if found < 0:
+                return None
+            end = close(clean, found, '{', '}')
+            return (found, end) if end else None
+        return _python_enclosing(clean, at, floor)
 
 
 def _statement_end(clean, pos):

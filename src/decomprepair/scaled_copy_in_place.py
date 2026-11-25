@@ -63,13 +63,26 @@ def _loops(clean, opening, position):
     return found
 
 
-def _directly_in(clean, block, at):
+def _python_directly_in(clean, block, at):
     """True when `at` is in the block's own statements, not in a block nested in it."""
     depth = 0
     for index in range(block[0] + 1, at):
         depth += clean[index] == '{'
         depth -= clean[index] == '}'
     return depth == 0
+
+
+_directly_in = _python_directly_in
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _directly_in(clean, block, at):
+        found = _scan.brace_balance(clean, block[0] + 1, at)
+        if found is not NotImplemented:
+            return found == 0
+        return _python_directly_in(clean, block, at)
 
 
 def variants(source, name, header=''):

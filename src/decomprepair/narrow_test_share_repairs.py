@@ -36,7 +36,7 @@ def _leading_declarations_end(clean, opening, end):
         cursor = match.end()
 
 
-def _statement_start(clean, position, floor):
+def _python_statement_start(clean, position, floor):
     depth = 0
     for index in range(position - 1, floor, -1):
         char = clean[index]
@@ -47,6 +47,17 @@ def _statement_start(clean, position, floor):
         elif depth <= 0 and char in ';{}':
             return index + 1
     return floor + 1
+
+
+_statement_start = _python_statement_start
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_start(clean, position, floor):
+        found = _scan.statement_start_before(clean, position, floor)
+        return _python_statement_start(clean, position, floor) if found is NotImplemented else found
 
 
 def _same_block(clean, first, second):

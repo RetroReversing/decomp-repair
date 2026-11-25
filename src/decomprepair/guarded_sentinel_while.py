@@ -47,7 +47,7 @@ _IMPURE = re.compile(r'\+\+|--|(?<![=!<>])=(?!=)|[A-Za-z_]\w*\s*\(|\bvolatile\b'
 _BLOCKED = re.compile(r'\bgoto\b|\bcase\b|\bdefault\b|^\s*[A-Za-z_]\w*\s*:(?!:)', re.M)
 
 
-def _conjuncts(clean, low, high):
+def _python_conjuncts(clean, low, high):
     """The (start, end) offsets of the top-level `&&` operands of clean[low:high]."""
     spans, depth, start, i = [], 0, low, low
     while i < high:
@@ -62,6 +62,17 @@ def _conjuncts(clean, low, high):
         i += 1
     spans.append((start, high))
     return spans
+
+
+_conjuncts = _python_conjuncts
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _conjuncts(clean, low, high):
+        found = _scan.conjuncts(clean, low, high)
+        return _python_conjuncts(clean, low, high) if found is NotImplemented else found
 
 
 def _prefix(clean, low, high, test):

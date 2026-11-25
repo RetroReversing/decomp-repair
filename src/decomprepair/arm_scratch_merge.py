@@ -51,7 +51,7 @@ def _locals_ok(part, *names):
     return True
 
 
-def _top_statements(clean, lo, hi):
+def _python_top_statements(clean, lo, hi):
     """(start, end) of each statement at the block's own depth between `lo` (just after its `{`) and `hi`."""
     out, depth, start = [], 0, lo
     for index in range(lo, hi):
@@ -66,6 +66,17 @@ def _top_statements(clean, lo, hi):
         elif char == '}' and depth == 0:
             start = index + 1
     return out
+
+
+_top_statements = _python_top_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_statements(clean, lo, hi):
+        found = _scan.statements_mixed(clean, lo, hi)
+        return _python_top_statements(clean, lo, hi) if found is NotImplemented else found
 
 
 def _innermost_block(blocks, first, last):

@@ -65,13 +65,24 @@ def _blank(text):
     return ''.join(out)
 
 
-def _close(clean, at, a='{', b='}'):
+def _python_close(clean, at, a='{', b='}'):
     depth = 0
     for i in range(at, len(clean)):
         depth += (clean[i] == a) - (clean[i] == b)
         if depth == 0:
             return i
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(clean, at, a='{', b='}'):
+        found = _scan.close_every(clean, at, a, b, False, None)
+        return _python_close(clean, at, a, b) if found is NotImplemented else found
 
 
 def _body(source, name):

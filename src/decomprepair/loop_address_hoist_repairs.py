@@ -24,7 +24,7 @@ SYMBOLS = 3  # the most repeated addresses of a function are tried, not every gl
 PREFIX = 'hoist_'
 
 
-def _match(text, at, open_, close):
+def _python_match(text, at, open_, close):
     """Index of the bracket closing the one at `at`, or -1."""
     depth = 0
     for index in range(at, len(text)):
@@ -32,6 +32,17 @@ def _match(text, at, open_, close):
         if depth == 0:
             return index
     return -1
+
+
+_match = _python_match
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _match(text, at, open_, close):
+        found = _scan.close_every(text, at, open_, close, False, -1)
+        return _python_match(text, at, open_, close) if found is NotImplemented else found
 
 
 def _next(text, at):

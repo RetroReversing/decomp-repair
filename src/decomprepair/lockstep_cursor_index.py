@@ -205,7 +205,7 @@ def _unique(edits):
     return kept
 
 
-def _block_end(clean, block, ceiling):
+def _python_block_end(clean, block, ceiling):
     """The position just past the `}` that closes the block whose body starts at `block`."""
     depth = 0
     for pos in range(block, ceiling):
@@ -218,7 +218,20 @@ def _block_end(clean, block, ceiling):
     return ceiling
 
 
-def _block_start(clean, at, floor):
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, block, ceiling):
+        found = _scan.enclosing_end(clean, block, ceiling, -1)
+        if found is not NotImplemented:
+            return ceiling if found < 0 else found + 1
+        return _python_block_end(clean, block, ceiling)
+
+
+def _python_block_start(clean, at, floor):
     """The `{` that opens the block holding `at`, plus one."""
     depth = 0
     for pos in range(at - 1, floor - 1, -1):
@@ -229,6 +242,19 @@ def _block_start(clean, at, floor):
                 return pos + 1
             depth -= 1
     return None
+
+
+_block_start = _python_block_start
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_start(clean, at, floor):
+        found = _scan.enclosing_open(clean, at, floor, -1)
+        if found is not NotImplemented:
+            return None if found < 0 else found + 1
+        return _python_block_start(clean, at, floor)
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}

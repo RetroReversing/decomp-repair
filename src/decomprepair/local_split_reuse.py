@@ -325,7 +325,7 @@ def _cursor_children(source, part, name, declared):
     return out
 
 
-def _balanced(clean, start):
+def _python_balanced(clean, start):
     """The index just past the `)` that closes the `(` at `start`, or -1."""
     depth = 0
     for at in range(start, len(clean)):
@@ -333,6 +333,17 @@ def _balanced(clean, start):
         if depth == 0:
             return at + 1
     return -1
+
+
+_balanced = _python_balanced
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _balanced(clean, start):
+        found = _scan.close_every(clean, start, '(', ')', True, -1)
+        return _python_balanced(clean, start) if found is NotImplemented else found
 
 
 def _return_type(header, callee):

@@ -35,7 +35,7 @@ _DECL = re.compile(r'\s*(?:(?:unsigned|signed|const|struct|union)\s+)*[A-Za-z_]\
 _KEYWORDS = {'return', 'goto', 'break', 'continue', 'if', 'else', 'do', 'while', 'for', 'switch', 'case', 'default'}
 
 
-def _close(clean, at, left='{', right='}'):
+def _python_close(clean, at, left='{', right='}'):
     depth = 0
     for i in range(at, len(clean)):
         depth += (clean[i] == left) - (clean[i] == right)
@@ -44,7 +44,18 @@ def _close(clean, at, left='{', right='}'):
     return None
 
 
-def _open_of(clean, at, lo):
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(clean, at, left='{', right='}'):
+        found = _scan.close_every(clean, at, left, right, False, None)
+        return _python_close(clean, at, left, right) if found is NotImplemented else found
+
+
+def _python_open_of(clean, at, lo):
     depth = 0
     for i in range(at - 1, lo - 1, -1):
         if clean[i] == '}':
@@ -54,6 +65,17 @@ def _open_of(clean, at, lo):
                 return i
             depth -= 1
     return None
+
+
+_open_of = _python_open_of
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _open_of(clean, at, lo):
+        found = _scan.enclosing_open(clean, at, lo, None)
+        return _python_open_of(clean, at, lo) if found is NotImplemented else found
 
 
 def _loops(clean, lo, hi):

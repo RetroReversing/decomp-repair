@@ -68,7 +68,7 @@ def _unguarded(clean, source, before):
     return start, stop, source[if_open + 1:len(if_close) - 1]
 
 
-def _opener(clean, closing):
+def _python_opener(clean, closing):
     depth = 0
     for i in range(closing, -1, -1):
         if clean[i] == '}':
@@ -78,6 +78,17 @@ def _opener(clean, closing):
             if depth == 0:
                 return i
     return -1
+
+
+_opener = _python_opener
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _opener(clean, closing):
+        found = _scan.open_if(clean, closing, '{', '}', -1)
+        return _python_opener(clean, closing) if found is NotImplemented else found
 
 
 def _proved(clean, loop_start, lo, v, expr):
