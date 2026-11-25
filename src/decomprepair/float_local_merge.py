@@ -57,8 +57,15 @@ def _loops(clean, lo, hi):
 
 
 def _declarations(source, clean, lo, hi):
+    """The function's own float declarations, at the top level of its body.
+
+    A declaration inside an inner block (a `f32 sign;` at the start of a loop's block) is left out: its name is not in
+    scope elsewhere, so it can be neither side of a merge, and taking its end as the end of the declarations hid every
+    mention above it (a 1292-instruction function's edge ratio `r` was never seen)."""
     found = {}
     for decl in DECL.finditer(clean, lo, hi):
+        if clean.count('{', lo, decl.start()) != clean.count('}', lo, decl.start()):
+            continue
         names = [n.strip() for n in decl['names'].split(',')]
         for name in names:
             found[name] = (decl['type'], decl, names)

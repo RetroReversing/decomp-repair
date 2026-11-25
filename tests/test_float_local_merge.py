@@ -54,3 +54,37 @@ def test_address_taken_and_logical_and():
     assert not any("e1" not in t.split('{', 1)[1] for t in _children(taken))
     # `x && e1` is not an address
     assert _children()
+
+
+SCOPED = '''f32 f(f32 *p, s32 n) {
+    s32 i;
+    s32 k;
+    f32 r;
+    f32 t;
+    f32 out;
+
+    out = 0.0f;
+    for (i = 0; i < n; i++) {
+        r = p[i] * 2.0f;
+        out += r;
+        for (k = 0; k < 4; k++) {
+            f32 sign;
+
+            sign = p[k];
+            t = p[k + 1] / sign;
+            out += t * sign;
+        }
+    }
+    return out;
+}
+'''
+
+
+def test_a_block_declaration_neither_hides_the_locals_above_it_nor_takes_a_merge():
+    # 145 -> 0 on a 1292-instruction SN GCC 2.8.1 function: an edge ratio `r` written as the later `t`. The
+    # `f32 sign;` declared in an inner block had been read as the end of the declarations, so `r` was never seen,
+    # and merges into `sign` produced children that don't compile (its name is out of scope elsewhere).
+    found = [text for family, text in merge.variants(SCOPED, 'f') if family == merge.FAMILY]
+    assert any('f32 t;' not in text and 't = p[i] * 2.0f;' not in text and 'r = p[k + 1] / sign;' in text
+               or 'f32 r;' not in text and 't = p[i] * 2.0f;' in text for text in found)
+    assert all(text.count('f32 sign;') == 1 and 'sign = p[i]' not in text and 'sign = 0.0f' not in text for text in found)
