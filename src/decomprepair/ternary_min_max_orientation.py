@@ -64,7 +64,7 @@ def _simple(operand):
     return bool(operand) and not BAD.search(operand) and not FLOAT.search(operand)
 
 
-def _arm_end(text, at):
+def _python_arm_end(text, at):
     """The end of the arm that starts at `at`: the first `:`, `)`, `;` or `,` outside any brackets."""
     depth = 0
     for index in range(at, len(text)):
@@ -78,6 +78,17 @@ def _arm_end(text, at):
         elif depth == 0 and char in ':;,':
             return index
     return len(text)
+
+
+_arm_end = _python_arm_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arm_end(text, at):
+        found = _scan.arm_end(text, at)
+        return _python_arm_end(text, at) if found is NotImplemented else found
 
 
 def _sites(clean, start, end):

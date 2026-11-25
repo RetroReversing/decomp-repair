@@ -49,7 +49,7 @@ def _assigned_in(name, text):
     return re.search(r'(?<![\w.>])'+name+r'\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|(?:\+\+|--)\s*'+name+r'\b|\b'+name+r'\s*(?:\+\+|--)|&\s*'+name+r'\b',text)
 
 
-def _sum_operands(text, start, end):
+def _python_sum_operands(text, start, end):
     """(start, end) of each top-level operand of a sum in text[start:end]; [] when it isn't a sum at top level."""
     parts, depth, begin = [], 0, start
     for i in range(start, end):
@@ -61,6 +61,17 @@ def _sum_operands(text, start, end):
     if not parts or depth:
         return []
     return parts + [(begin, end)]
+
+
+_sum_operands = _python_sum_operands
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _sum_operands(text, start, end):
+        found = _scan.sum_operands(text, start, end)
+        return _python_sum_operands(text, start, end) if found is NotImplemented else found
 
 
 def variants(source, name):

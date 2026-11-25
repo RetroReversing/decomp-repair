@@ -58,7 +58,7 @@ def _invert(condition):
     return f'{text[:hit.start()].rstrip()} {swap[hit[0]]} {text[hit.end():].lstrip()}'
 
 
-def _enclosing_end(clean, start, limit):
+def _python_enclosing_end(clean, start, limit):
     depth = 0
     for at in range(start, limit):
         if clean[at] == '{':
@@ -68,6 +68,17 @@ def _enclosing_end(clean, start, limit):
                 return at
             depth -= 1
     return None
+
+
+_enclosing_end = _python_enclosing_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing_end(clean, start, limit):
+        found = _scan.enclosing_end(clean, start, limit, None)
+        return _python_enclosing_end(clean, start, limit) if found is NotImplemented else found
 
 
 def variants(source, name, arch='mips'):

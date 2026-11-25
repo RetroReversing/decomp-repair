@@ -54,7 +54,7 @@ else:
         return _python_close(text, start) if found is NotImplemented else found
 
 
-def _split_args(text, start, end):
+def _python_split_args(text, start, end):
     """(start, end) spans of the top-level arguments between the call's parentheses."""
     spans, depth, at = [], 0, start
     for i in range(start, end):
@@ -68,6 +68,17 @@ def _split_args(text, start, end):
             at = i + 1
     spans.append((at, end))
     return spans
+
+
+_split_args = _python_split_args
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split_args(text, start, end):
+        found = _scan.split_args_paren(text, start, end)
+        return _python_split_args(text, start, end) if found is NotImplemented else found
 
 
 def _strip_parens(expr):

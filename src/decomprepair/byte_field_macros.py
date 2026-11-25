@@ -74,7 +74,7 @@ def expand(source, header=''):
     return source
 
 
-def _arguments(clean, start):
+def _python_arguments(clean, start):
     """cpp separates arguments at parenthesis depth zero, even inside [] or {}."""
     depth, first, parts = 0, start, []
     for pos in range(start, len(clean)):
@@ -90,3 +90,14 @@ def _arguments(clean, start):
             parts.append((first, pos))
             first = pos+1
     return None, []
+
+
+_arguments = _python_arguments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arguments(clean, start):
+        found = _scan.macro_arguments(clean, start)
+        return _python_arguments(clean, start) if found is NotImplemented else found

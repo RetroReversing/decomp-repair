@@ -65,7 +65,7 @@ def _dereference(before):
     return not before or before[-1] in '=(,;{}!&|<>+-*/%?:' and not before.endswith(('++', '--'))
 
 
-def _arguments(clean, opening):
+def _python_arguments(clean, opening):
     """[(start, end)] of the top-level comma-separated arguments of the call whose `(` is at `opening`; the closing index."""
     end = close(clean, opening, '(', ')')
     if end < 0:
@@ -80,6 +80,22 @@ def _arguments(clean, opening):
             start = i + 1
     spans.append((start, end))
     return spans, end
+
+
+_arguments = _python_arguments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arguments(clean, opening):
+        end = close(clean, opening, '(', ')')
+        if end < 0:
+            return None, -1
+        spans = _scan.argument_spans_all(clean, opening + 1, end)
+        if spans is NotImplemented:
+            return _python_arguments(clean, opening)
+        return spans, end
 
 
 def _loop_body(clean, opening, lo):

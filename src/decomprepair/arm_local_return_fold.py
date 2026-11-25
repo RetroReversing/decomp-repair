@@ -59,7 +59,7 @@ def chain_variants(source, name):
     return [(CHAIN, text)]
 
 
-def _blocks(clean, opening, end):
+def _python_blocks(clean, opening, end):
     """Brace blocks directly inside the function body, and one level down (an if/else arm): (start, end)."""
     out, depth, starts = [], 0, []
     for pos in range(opening, end):
@@ -73,6 +73,17 @@ def _blocks(clean, opening, end):
                 out.append((start, pos + 1))
             depth -= 1
     return sorted(out)
+
+
+_blocks = _python_blocks
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _blocks(clean, opening, end):
+        found = _scan.blocks_two_deep(clean, opening, end)
+        return _python_blocks(clean, opening, end) if found is NotImplemented else found
 
 
 def _split_arm(source, name, var):
