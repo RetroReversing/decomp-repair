@@ -25,7 +25,7 @@ IDENT = r'[A-Za-z_]\w*'
 _SIZE = {'u8': 1, 's8': 1, 'u16': 2, 's16': 2, 'u32': 4, 's32': 4, 'f32': 4}
 
 
-def _expression_end(text, start):
+def _python_expression_end(text, start):
     """End of the balanced parenthesised expression starting at `start` (which is '(')."""
     depth = 0
     for index in range(start, len(text)):
@@ -33,6 +33,17 @@ def _expression_end(text, start):
         if depth == 0:
             return index + 1
     return None
+
+
+_expression_end = _python_expression_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _expression_end(text, start):
+        found = _scan.close_every(text, start, '(', ')', True, None)
+        return _python_expression_end(text, start) if found is NotImplemented else found
 
 
 def _sites(source, name):

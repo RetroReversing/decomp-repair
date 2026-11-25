@@ -21,13 +21,24 @@ LIMIT = 4
 SITE = re.compile(r'&\s*(?P<mask>0[xX][0-9A-Fa-f]+|\d+)\s*\)\s*(?P<op><=|>=|<|>)(?![<>=])\s*(?:0[xX][0-9A-Fa-f]+|\d+)[uU]?\b')
 
 
-def _open_of(clean, close):
+def _python_open_of(clean, close):
     depth = 0
     for index in range(close, -1, -1):
         depth += (clean[index] == ')') - (clean[index] == '(')
         if depth == 0:
             return index
     return None
+
+
+_open_of = _python_open_of
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _open_of(clean, close):
+        found = _scan.open_every(clean, close, '(', ')', None)
+        return _python_open_of(clean, close) if found is NotImplemented else found
 
 
 def variants(source, name):

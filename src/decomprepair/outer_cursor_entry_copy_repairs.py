@@ -38,7 +38,7 @@ def _kind(clean, opening, x):
     return kind
 
 
-def _block_head(clean, at):
+def _python_block_head(clean, at):
     """Offset just after the `{` of the innermost block that holds offset `at`, or None."""
     depth = 0
     for pos in range(at-1, -1, -1):
@@ -49,6 +49,19 @@ def _block_head(clean, at):
                 return pos+1
             depth -= 1
     return None
+
+
+_block_head = _python_block_head
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_head(clean, at):
+        found = _scan.enclosing_open(clean, at, 0, -1)
+        if found is not NotImplemented:
+            return None if found < 0 else found + 1
+        return _python_block_head(clean, at)
 
 
 def variants(source, name, header=''):

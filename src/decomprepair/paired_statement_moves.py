@@ -59,7 +59,7 @@ def _skip_space(text, at, stop):
     return at
 
 
-def _statement_end(text, at, stop):
+def _python_statement_end(text, at, stop):
     """The end of the plain statement starting at `at`: its terminating ';' at bracket depth 0."""
     depth = 0
     for pos in range(at, stop):
@@ -71,6 +71,17 @@ def _statement_end(text, at, stop):
         elif char == ';' and depth == 0:
             return pos + 1
     return None
+
+
+_statement_end = _python_statement_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_end(text, at, stop):
+        found = _scan.statement_end(text, at, stop, '([{', ')]}', True, False, None)
+        return _python_statement_end(text, at, stop) if found is NotImplemented else found
 
 
 def _barrier_end(text, at, stop, blocks):
