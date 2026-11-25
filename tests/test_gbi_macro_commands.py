@@ -184,3 +184,102 @@ def test_the_variants_write_the_same_display_list_as_the_draft(tmp_path, source,
     for k, (family, text) in enumerate(variants):
         assert run(text, f'variant{k}') == expected, family
     assert os.path.exists(tmp_path / 'draft')
+
+
+# m2c's shape when the cursor global is itself the base of the first words (`M2C_FIELD(sCursor, s32 *, 8) = ...`,
+# `temp_v1 = sCursor + 8;`), a word chosen by a branch printed as its store in both arms, and a one-argument callee
+# given the run's locals as 'arguments' from the registers that still held them (as in an N64 texture loader's draft)
+DIRECT = '''#ifndef M2C_DEFINES
+#define M2C_DEFINES
+typedef s32 M2C_UNK;
+#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))
+#endif
+
+M2C_UNK g3(M2C_UNK, void *, s32); /* extern */
+extern void *sCursor;
+void d(s32 w, s32 h, void *img)
+{
+    void *temp_v1;
+    void *temp_a3;
+    void *temp_a1;
+    s32 temp_a0;
+    s32 temp_a2;
+    temp_v1 = sCursor + 8;
+    M2C_FIELD(sCursor, s32 *, 0) = 0xFD500000;
+    M2C_FIELD(sCursor, s32 *, 4) = (s32) img;
+    temp_a3 = temp_v1 + 8;
+    M2C_FIELD(temp_v1, s32 *, 0) = 0xE6000000;
+    M2C_FIELD(temp_v1, s32 *, 4) = 0;
+    sCursor = temp_v1;
+    sCursor = temp_a3;
+    sCursor = temp_v1 + 0x10;
+    temp_a0 = w >> 4;
+    temp_a2 = (((w * h) & 0x7FF) << 0xC) | 0x07000000;
+    M2C_FIELD(temp_a3, s32 *, 0) = 0xF3000000;
+    if (temp_a0 > 0) {
+        M2C_FIELD(temp_a3, s32 *, 4) = (s32) (temp_a2 | ((0x800 / temp_a0) & 0xFFF));
+    } else {
+        M2C_FIELD(temp_a3, s32 *, 4) = (s32) (temp_a2 | 0x800);
+    }
+    temp_a1 = sCursor + 8;
+    M2C_FIELD(sCursor, s32 *, 0) = 0xE7000000;
+    M2C_FIELD(sCursor, s32 *, 4) = 0;
+    sCursor = temp_a1;
+    g3(0x60, temp_a1, temp_a2);
+}
+'''
+
+
+def test_a_run_through_the_cursor_global_itself_is_read_into_a_local_and_rewritten():
+    families = _by_family(DIRECT, 'd')
+    # the stray arguments keep the run's locals in use: only the trimmed child rewrites it
+    assert set(families) == {'gbi_macro_args_trim'}
+    out = families['gbi_macro_args_trim']
+    body = out[out.index('void d('):]
+    assert 'gDPSetTextureImage(sCursor++, 2, 2, 1, img);' in body
+    assert 'gDPLoadSync(sCursor++);' in body and 'gDPPipeSync(sCursor++);' in body
+    # the word stored in both arms is one store of the value the branch chose, written as the command's raw words
+    assert ('gRawWords(sCursor++, 0xF3000000, (temp_a0 > 0) ? (s32) (temp_a2 | ((0x800 / temp_a0) & 0xFFF)) '
+            ': (s32) (temp_a2 | 0x800));') in body
+    assert 'g3(0x60);' in body and 'M2C_UNK g3(M2C_UNK); /* extern */' in out
+    assert 'M2C_FIELD' not in body and 'sCursor + 8' not in body
+
+
+def test_a_callee_declared_only_in_the_header_keeps_its_arguments():
+    source = DIRECT.replace('M2C_UNK g3(M2C_UNK, void *, s32); /* extern */\n', '')
+    assert _by_family(source, 'd') == {}
+
+
+def test_a_call_between_two_uses_of_the_cursor_reads_it_again():
+    source = DIRECT.replace('    temp_a0 = w >> 4;', '    g2(w);\n    temp_a0 = w >> 4;')
+    read = g._explicit_reads(source, 'd', 'sCursor')
+    # one read before the first words, one after the advance; the call ends nothing here (no use of the global
+    # follows it before the next write), and the later run's read comes after the call
+    assert read.count(' = sCursor;') == 2
+    assert read.index('g2(w);') < read.rindex(' = sCursor;')
+
+
+@pytest.mark.skipif(not shutil.which('cc'), reason='no host C compiler')
+def test_the_trimmed_child_writes_the_same_display_list_as_the_draft(tmp_path):
+    """The draft and its child compiled for the host write the same words (g3's dropped arguments are unread)."""
+    host = HOST.replace('s32 *sCursor;', '').replace('s32 gTex = 0x12345678;', '') + 'typedef signed char s8;\n'
+
+    def run(text, label):
+        text = text.replace('extern void *sCursor;', 'void *sCursor;').replace('extern Gfx *sCursor;', 'Gfx *sCursor;')
+        text = re.sub(r'(?m)^M2C_UNK g3\([^;]*\); /\* extern \*/$', 'M2C_UNK g3(M2C_UNK, ...);', text)
+        main = 'M2C_UNK g3(M2C_UNK a, ...) { return a; }\nint main(void) {\n'
+        for call in ('d(5, 7, (void *) 0x1234)', 'd(32, 0x7F, (void *) 0x80001000)', 'd(-3, 1, 0)'):
+            main += f'    memset(buffer, 0, sizeof buffer); sCursor = (void *) buffer; {call};\n'
+            main += '    for (int i = 0; i < 64; i++) printf("%08x ", buffer[i]); printf("%ld\\n", (long) ((char *) sCursor - (char *) buffer));\n'
+        main += '    return 0;\n}\n'
+        path = tmp_path / f'{label}.c'
+        path.write_text(host + text + main)
+        binary = tmp_path / label
+        subprocess.run(['cc', '-w', '-Wno-error', '-Wno-incompatible-pointer-types', '-Wno-int-conversion',
+                        '-o', str(binary), str(path)], check=True)
+        return subprocess.run([str(binary)], check=True, capture_output=True, text=True).stdout
+    expected = run(DIRECT, 'draft')
+    variants = g.variants(DIRECT, 'd')
+    assert variants
+    for k, (family, text) in enumerate(variants):
+        assert run(text, f'variant{k}') == expected, family

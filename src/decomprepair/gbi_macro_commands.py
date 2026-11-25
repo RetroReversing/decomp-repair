@@ -23,7 +23,15 @@ source under `#ifndef` (a project whose header includes `gbi.h` keeps its own), 
 
 The RSP commands decoded are F3DEX2's (G_DL 0xDE, G_ENDDL 0xDF, G_TEXTURE 0xD7, G_SETOTHERMODE_H/L 0xE3/0xE2,
 G_RDPHALF_1/2 0xE1/0xF1 inside a texture rectangle); the RDP commands (0xE4-0xFF) are the same for every microcode.
-Runs that span branches (a command whose words are stored in both arms of an `if`) are not rewritten yet.
+Runs that span branches (a command whose words are stored in both arms of an `if`) are not rewritten yet, except one
+word stored in both arms of an `if`/`else` through the same pointer: that is one store of the value the branch chose
+(`_arm_stores`). m2c also uses the cursor global itself as the base of a run's first words (`M2C_FIELD(gCursor, s32 *,
+8) = ...`, `temp_v1 = gCursor + 8;`); those uses are read into a local of the global's type first (`_explicit_reads`),
+which is where the run finder starts. When m2c passed a run's locals to a callee as trailing 'arguments' (registers
+that still held them at the call), the locals stay in use and no run is private; `gbi_macro_args_trim` drops those
+arguments from every call of that callee and from its prototype in the source, and rewrites the runs. On a
+638-instruction N64 texture loader (SN gcc 2.8.1) whose draft had all three, the family wrote no child before and
+took the draft from 38349 to 30574 after.
 """
 import re
 
@@ -36,7 +44,8 @@ RAW_FAMILY = 'gbi_raw_commands'
 RUN_FAMILY = 'gbi_macro_run'
 LOCAL_FAMILY = 'gbi_macro_local'
 LOCAL_RUN_FAMILY = 'gbi_macro_local_run'
-FAMILIES = (FAMILY, LOCAL_FAMILY, RAW_FAMILY, RUN_FAMILY, LOCAL_RUN_FAMILY)
+TRIM_FAMILY = 'gbi_macro_args_trim'
+FAMILIES = (FAMILY, LOCAL_FAMILY, RAW_FAMILY, RUN_FAMILY, LOCAL_RUN_FAMILY, TRIM_FAMILY)
 LIMIT = 10
 NUMBER = r'0[xX][0-9a-fA-F]+|\d+'
 
@@ -729,12 +738,136 @@ def _distribute(source, name, cursor, records):
     return source
 
 
+ARM_PAIR = re.compile(r'\bif\s*\((?P<c>[^{};]*)\)\s*\{(?P<a>[^{};]*;)\s*\}\s*else\s*\{(?P<b>[^{};]*;)\s*\}')
+
+
+def _arm_stores(source, name, records):
+    """`if (c) { STORE = x; } else { STORE = y; }` (one word stored in both arms, through the same pointer at the same
+    offset) as one store, `STORE = (c) ? x : y;`: m2c prints a value the program chose by a branch (a texture load's
+    `dxt`, divided or not) as the word stored twice, and a run with its word in the arms is no run. The store happens
+    once on either path with the same address and value, so the program is the same."""
+    part = view(source, name)
+    if not part:
+        return source
+    clean, edits = part.clean, []
+    for m in ARM_PAIR.finditer(clean, part.opening, part.end):
+        first, second = _store(m['a'].strip(), records), _store(m['b'].strip(), records)
+        if not first or not second or first[:2] != second[:2]:
+            continue
+        a, b = m.start('a'), m.start('b')
+        lhs, rhs = source[a:m.end('a')].strip().split('=', 1), source[b:m.end('b')].strip().split('=', 1)
+        if lhs[0].strip() != rhs[0].strip():
+            continue
+        condition = source[m.start('c'):m.end('c')].strip()
+        edits.append((m.start(), m.end(), f'{lhs[0].strip()} = ({condition}) ? {lhs[1].strip().rstrip(";").strip()} '
+                                           f': {rhs[1].strip().rstrip(";").strip()};'))
+    return edit(source, edits) if edits else source
+
+
+def _explicit_reads(source, name, cursor, kind='void'):
+    """Each place m2c used the cursor global itself as a run's base (`M2C_FIELD(gCursor, s32 *, 8) = ...`,
+    `temp_v1 = gCursor + 8;`) read into a local first (`_cur1 = gCursor;`), as m2c writes it elsewhere: the run
+    finder starts a run at a read of the cursor into a local. A read stays valid until the cursor is written or a
+    brace (a branch) or a call comes between; the next use reads it again. The local has the global's own type and the
+    global is read at the same place, so the program is the same."""
+    part = view(source, name)
+    if not part:
+        return source
+    clean = part.clean
+    start, end = part.opening + 1, part.end - 1
+    mention = re.compile(rf'\b{re.escape(cursor)}\b')
+    write = re.compile(rf'{re.escape(cursor)}\s*=(?!=)')
+    edits, decls, current, previous = [], [], None, None
+    for a, b in _statements(clean, start, end):
+        text = clean[a:b]
+        if previous is not None and re.search(r'[{}]', clean[previous:a]):
+            current = None
+        previous = b
+        if write.match(text):
+            if mention.search(text[text.index('=') + 1:]):
+                return source  # `cursor = cursor + 8`: m2c's own advance, not this shape
+            current = None
+            continue
+        if CALL.search(text):
+            current = None  # the callee may move the cursor: what follows reads it again
+            continue
+        if not mention.search(text):
+            continue
+        if re.fullmatch(rf'{IDENT}\s*=\s*{re.escape(cursor)}\s*;', text):
+            current = None  # m2c's own read into a local: the run finder starts there already
+            continue
+        if current is None:
+            current = next(n for n in (f'_cur{k}' for k in range(1, 1000)) if n not in clean and n not in decls)
+            decls.append(current)
+            line = clean.rfind('\n', 0, a) + 1
+            edits.append((a, a, f'{current} = {cursor};\n{re.match(r"[ \t]*", clean[line:a])[0]}'))
+        edits += [(a + m.start(), a + m.end(), current) for m in mention.finditer(text)]
+    if not decls:
+        return source
+    edits.append((start, start, ''.join(f'\n    {kind} *{d};' for d in decls)))
+    return edit(source, edits)
+
+
+def _trim_arguments(source, name, cursor):
+    """Calls that pass a run's local (or anything after it) as a trailing argument, with those arguments dropped from
+    every call of that callee in the function and from its prototype in the source. m2c guesses a callee's arguments
+    from the registers that still hold a value at the call, so a display-list cursor's derived pointers turn up as a
+    one-argument callee's 'arguments'; they keep the run's locals in use and the run is never rewritten. A separate
+    child (`gbi_macro_args_trim`): the judge decides whether the callee really takes them."""
+    part = view(source, name)
+    if not part:
+        return source
+    clean = part.clean
+    start, end = part.opening + 1, part.end - 1
+    spans = _statements(clean, start, end)
+    names = {n for run in _plan(clean, spans, cursor, 1, _records(clean[:part.opening]), start) for n in run['locals']}
+    if not names:
+        return source
+    call = re.compile(rf'\b(?P<f>{IDENT})\s*\((?P<args>[^;{{}}]*)\)\s*;')
+    keep = {}
+    for m in call.finditer(clean, start, end):
+        if m['f'] in ('if', 'while', 'for', 'switch', 'return', 'sizeof', 'M2C_FIELD'):
+            continue
+        args = _split(m['args'], ',')
+        cut = next((k for k, x in enumerate(args) if set(re.findall(IDENT, x)) & names), None)
+        if cut is not None:
+            keep[m['f']] = min(keep.get(m['f'], cut), cut)
+    keep = {f: k for f, k in keep.items() if k > 0}
+    if not keep:
+        return source
+    edits = []
+    for m in call.finditer(clean, start, end):
+        if m['f'] in keep:
+            args = _split(source[m.start('args'):m.end('args')], ',')
+            edits.append((m.start('args'), m.end('args'), ', '.join(args[:keep[m['f']]])))
+    for f, k in keep.items():
+        proto = re.compile(rf'(?m)^(?P<head>[^\n;{{}}()]*\b{re.escape(f)}\s*\()(?P<params>[^;(){{}}]*)\)\s*;')
+        found = proto.search(clean, 0, part.opening)
+        if not found:
+            return source  # declared only in a header: a call with fewer arguments would not compile against it
+        params = _split(source[found.start('params'):found.end('params')], ',')
+        edits.append((found.start('params'), found.end('params'), ', '.join(params[:k])))
+    return edit(source, edits)
+
+
 def variants(source, name, header=''):
     part = view(source, name)
     if not part:
         return []
+    records = _records(part.clean[:part.opening])
     for pointer in POINTER.finditer(part.clean[:part.opening]):
-        source = _distribute(source, name, pointer['name'], _records(part.clean[:part.opening]))
+        source = _distribute(source, name, pointer['name'], records)
+        source = _explicit_reads(_arm_stores(source, name, records), name, pointer['name'], pointer['type'])
+    result = _variants(source, name, header)
+    for pointer in POINTER.finditer(part.clean[:part.opening]):
+        trimmed = _trim_arguments(source, name, pointer['name'])
+        if trimmed != source:
+            result += [(TRIM_FAMILY, text) for family, text in _variants(trimmed, name, header)
+                       if family == FAMILY][:max(0, LIMIT - len(result))]
+    return result
+
+
+def _variants(source, name, header=''):
     part = view(source, name)
     if not part:
         return []
