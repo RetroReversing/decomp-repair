@@ -25,7 +25,7 @@ CHAIN = re.compile(rf'if\s*\(\s*(?P<c>{IDENT})\s*\)\s*{{?\s*(?P<v>{IDENT})\s*=\s
                    rf'else\s*{{?\s*(?P=v)\s*=\s*{NUMBER}\s*;\s*}}?')
 
 
-def _block_start(clean, at, opening):
+def _python_block_start(clean, at, opening):
     """The index just after the `{` of the block that holds `at` directly, or None."""
     depth = 0
     for index in range(at - 1, opening, -1):
@@ -37,6 +37,19 @@ def _block_start(clean, at, opening):
                 return index + 1
             depth -= 1
     return None
+
+
+_block_start = _python_block_start
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_start(clean, at, opening):
+        found = _scan.enclosing_open(clean, at, opening + 1, -1)
+        if found is not NotImplemented:
+            return None if found < 0 else found + 1
+        return _python_block_start(clean, at, opening)
 
 
 def _first_statement_with_if(clean, start, stop):

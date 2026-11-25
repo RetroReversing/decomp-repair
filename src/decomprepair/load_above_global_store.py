@@ -33,7 +33,7 @@ def _externs(source):
     return set(re.findall(rf'(?m)^\s*extern\s+[^;(]*?\b({_ID})\s*(?:\[[^\]]*\])?\s*;', source))
 
 
-def _statement_end(clean, at):
+def _python_statement_end(clean, at):
     depth = 0
     for position in range(at, len(clean)):
         depth += clean[position] in '([{'
@@ -43,6 +43,17 @@ def _statement_end(clean, at):
         if depth < 0:
             return None
     return None
+
+
+_statement_end = _python_statement_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_end(clean, at):
+        found = _scan.statement_end(clean, at, len(clean), '([{', ')]}', True, True, None)
+        return _python_statement_end(clean, at) if found is NotImplemented else found
 
 
 def variants(source, name):

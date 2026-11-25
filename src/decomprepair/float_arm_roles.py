@@ -70,13 +70,24 @@ def _body(source, name):
     return (clean, opening, end) if end else None
 
 
-def _opening_brace(text, closing):
+def _python_opening_brace(text, closing):
     depth = 0
     for pos in range(closing, -1, -1):
         depth += (text[pos] == '}') - (text[pos] == '{')
         if depth == 0:
             return pos
     return None
+
+
+_opening_brace = _python_opening_brace
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _opening_brace(text, closing):
+        found = _scan.open_every(text, closing, '{', '}', None)
+        return _python_opening_brace(text, closing) if found is NotImplemented else found
 
 
 def _arms(clean, closing):

@@ -23,7 +23,7 @@ _ARRAY = re.compile(rf'(?m)^[ \t]*(?:(?:const|unsigned|signed|struct|union)\s+)*
 _SCALAR = re.compile(rf'(?m)^[ \t]*(?:(?:const|unsigned|signed)\s+)*{IDENT}\s+({IDENT})\s*;')
 
 
-def _depth_one(clean, opening, end):
+def _python_depth_one(clean, opening, end):
     """The function body's own top level: positions whose brace depth (counting from the body's `{`) is 1."""
     depth, flat = 0, []
     for position in range(opening, end):
@@ -34,6 +34,17 @@ def _depth_one(clean, opening, end):
             depth -= 1
         flat.append(depth)
     return flat
+
+
+_depth_one = _python_depth_one
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _depth_one(clean, opening, end):
+        found = _scan.brace_depths(clean, opening, end)
+        return _python_depth_one(clean, opening, end) if found is NotImplemented else found
 
 
 def _statement_start(clean, block, first):

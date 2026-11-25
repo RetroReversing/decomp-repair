@@ -26,7 +26,7 @@ ASSIGN = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<p>{IDENT})\s*=\s*{LOAD}\s*;[ \
 EMBEDDED = re.compile(rf'\(\s*{LOAD}\s*\)')
 
 
-def _block(clean, at):
+def _python_block(clean, at):
     depth = 0
     for pos in range(at-1, -1, -1):
         if clean[pos] == '}':
@@ -36,6 +36,17 @@ def _block(clean, at):
                 return pos
             depth -= 1
     return -1
+
+
+_block = _python_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block(clean, at):
+        found = _scan.enclosing_open(clean, at, 0, -1)
+        return _python_block(clean, at) if found is NotImplemented else found
 
 
 def _safe(clean, p, sites, opening, end):

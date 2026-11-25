@@ -298,3 +298,165 @@ def enclosing_open(str text, Py_ssize_t at, Py_ssize_t low, object miss):
             depth -= 1
         i -= 1
     return miss
+
+
+# Statement and list scans: the end of a statement, the brace depth at each position, top-level splits and boundaries.
+
+def statement_end(str text, Py_ssize_t start, Py_ssize_t limit, str opens, str closes, bint past, bint stop_negative,
+                  object miss):
+    """The `;` at bracket depth 0 that ends the statement starting at `start` (one past it when `past`), looking before
+    `limit`; with `stop_negative`, `miss` as soon as a closer has no opener; else `miss`. At most three opening and three
+    closing characters (the set is compared as C integers)."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef long o0 = -1, o1 = -1, o2 = -1, c0 = -1, c1 = -1, c2 = -1, ci
+    cdef Py_UCS4 c
+    if start < 0 or limit < 0 or limit > len(text) or len(opens) > 3 or len(closes) > 3:
+        return NotImplemented
+    if len(opens) > 0:
+        o0 = <long>opens[0]
+    if len(opens) > 1:
+        o1 = <long>opens[1]
+    if len(opens) > 2:
+        o2 = <long>opens[2]
+    if len(closes) > 0:
+        c0 = <long>closes[0]
+    if len(closes) > 1:
+        c1 = <long>closes[1]
+    if len(closes) > 2:
+        c2 = <long>closes[2]
+    for i in range(start, limit):
+        c = text[i]
+        ci = <long>c
+        if ci == o0 or ci == o1 or ci == o2:
+            depth += 1
+        elif ci == c0 or ci == c1 or ci == c2:
+            depth -= 1
+            if stop_negative and depth < 0:
+                return miss
+        elif c == u';' and depth == 0:
+            return i + 1 if past else i
+    return miss
+
+
+def brace_depths(str text, Py_ssize_t start, Py_ssize_t end):
+    """The brace depth after each character of text[start:end], as a list."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list flat = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'{':
+            depth += 1
+        elif c == u'}':
+            depth -= 1
+        flat.append(depth)
+    return flat
+
+
+def top_split(str text, Py_ssize_t begin, Py_ssize_t end, str separator):
+    """The offsets of the top-level `separator` in text[begin:end] (brackets `([{` balanced)."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, sep
+    cdef list found = []
+    if begin < 0 or end > len(text) or len(separator) != 1:
+        return NotImplemented
+    sep = separator[0]
+    for i in range(begin, end):
+        c = text[i]
+        if c == u'(' or c == u'[' or c == u'{':
+            depth += 1
+        elif c == u')' or c == u']' or c == u'}':
+            depth -= 1
+        if depth == 0 and c == sep:
+            found.append(i)
+    return found
+
+
+def boundaries(str text):
+    """The offsets just after each top-level `;` (parentheses and brackets balanced), past any spaces and tabs."""
+    cdef Py_ssize_t i, end, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list ends = []
+    for i in range(length):
+        c = text[i]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        if c == u';' and depth == 0:
+            end = i + 1
+            while end < length and (text[end] == u' ' or text[end] == u'\t'):
+                end += 1
+            ends.append(end)
+    return ends
+
+
+def last_statement_start(str text, Py_ssize_t at, Py_ssize_t opening):
+    """The offset after the last `;`, `{` or `}` at parenthesis depth 0 between `opening` and `at`."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_ssize_t start = opening + 1
+    cdef Py_UCS4 c
+    if opening + 1 < 0 or at > len(text):
+        return NotImplemented
+    for i in range(opening + 1, at):
+        c = text[i]
+        if c == u'(':
+            depth += 1
+        elif c == u')':
+            depth -= 1
+        if depth == 0 and (c == u';' or c == u'{' or c == u'}'):
+            start = i + 1
+    return start
+
+
+def split_statements(str text, Py_ssize_t lo, Py_ssize_t hi):
+    """[(start, end)] of the `;`-terminated statements of text[lo:hi], leading whitespace left out of each start."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_ssize_t at = lo
+    cdef Py_UCS4 c
+    cdef list out = []
+    if lo < 0 or hi > len(text):
+        return NotImplemented
+    for i in range(lo, hi):
+        c = text[i]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        if c == u';' and depth == 0:
+            while at < i and text[at].isspace():
+                at += 1
+            out.append((at, i + 1))
+            at = i + 1
+    return out
+
+
+def segments(str text, Py_ssize_t start, Py_ssize_t end):
+    """[(begin, stop, terminator)] of the text between `;`, `{` and `}` at parenthesis depth 0 (begin past leading space)."""
+    cdef Py_ssize_t i, begin = start, lead
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list found = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        elif depth == 0 and (c == u';' or c == u'{' or c == u'}'):
+            lead = begin
+            while lead < i and text[lead].isspace():
+                lead += 1
+            found.append((lead, i, text[i]))
+            begin = i + 1
+    return found

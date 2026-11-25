@@ -54,7 +54,7 @@ def _skip(text, i, end):
     return i
 
 
-def _simple_end(text, i, end):
+def _python_simple_end(text, i, end):
     depth = 0
     while i < end:
         ch = text[i]
@@ -68,6 +68,17 @@ def _simple_end(text, i, end):
             return i + 1
         i += 1
     return None
+
+
+_simple_end = _python_simple_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _simple_end(text, i, end):
+        found = _scan.statement_end(text, i, end, '([{', ')]}', True, True, None)
+        return _python_simple_end(text, i, end) if found is NotImplemented else found
 
 
 def _body(text, i, end):

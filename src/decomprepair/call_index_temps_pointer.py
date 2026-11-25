@@ -24,7 +24,7 @@ I = r'[A-Za-z_]\w*'
 SIZE = {'u8': 1, 's8': 1, 'u16': 2, 's16': 2, 'u32': 4, 's32': 4}
 
 
-def _expr_end(text, start):
+def _python_expr_end(text, start):
     """Index of the `;` ending the expression that starts at `start` (top level)."""
     depth = 0
     for k in range(start, len(text)):
@@ -36,6 +36,17 @@ def _expr_end(text, start):
         elif c == ';' and depth == 0:
             return k
     return -1
+
+
+_expr_end = _python_expr_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _expr_end(text, start):
+        found = _scan.statement_end(text, start, len(text), '([', ')]', False, False, -1)
+        return _python_expr_end(text, start) if found is NotImplemented else found
 
 
 def _assignments(line):

@@ -47,7 +47,7 @@ CAST = re.compile(rf'\(\s*{WIDE}\s*\)\s*')
 LABEL = re.compile(rf'(?m)^[ \t]*(?!(?:case|default)\b){IDENT}[ \t]*:(?!:)')
 
 
-def _segments(clean, start, end):
+def _python_segments(clean, start, end):
     """[(begin, stop, terminator)] of the text between `;`, `{` and `}` at parenthesis depth 0."""
     found, depth, begin = [], 0, start
     for at in range(start, end):
@@ -60,6 +60,17 @@ def _segments(clean, start, end):
             found.append((begin + len(clean[begin:at]) - len(clean[begin:at].lstrip()), at, char))
             begin = at + 1
     return found
+
+
+_segments = _python_segments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _segments(clean, start, end):
+        found = _scan.segments(clean, start, end)
+        return _python_segments(clean, start, end) if found is NotImplemented else found
 
 
 def _assignment(text):
