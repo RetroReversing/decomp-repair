@@ -43,3 +43,12 @@ def test_left_alone_when_the_counts_differ_or_nothing_is_missing():
         .replace('0x40U', '0xC0U')
     assert t.variants(same, 'f', ASM) == []
     assert t.variants(SOURCE, 'f', '') == []
+
+
+def test_a_float_literal_with_an_exponent_is_not_an_integer_constant():
+    # `0.0000958f` written as 9.587e-05 once raised ValueError (int('05', 0)): the exponent's digits matched as a literal.
+    source = SOURCE.replace('i = 0;', 'i = 0;\n    k = x * 9.587379760742188e-05;\n    j = y * 1.5E+10;')
+    (family, ranked), _ = t.variants(source, 'f', ASM)
+    assert family == 'target_constant'
+    assert '9.587379760742188e-05' in ranked and '1.5E+10' in ranked
+    assert 'g(0x2C00, 0xD);' in ranked
