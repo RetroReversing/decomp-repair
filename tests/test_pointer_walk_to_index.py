@@ -133,3 +133,9 @@ def test_no_cursor_when_the_index_is_used_otherwise_or_a_global_changes_under_a_
 def test_it_is_registered():
     repair = {r.module: r for r in registry.declared()}['pointer_walk_to_index']
     assert not registry.problems(repair) and repair.families == pwi.FAMILIES
+
+
+def test_a_pointer_set_again_after_the_loop_is_another_walks():
+    second = WALK.replace('    return var_a1;', '    var_v1 = table;\n    var_a2 = 0;\n    do {\n        var_a2 += 1;\n        '
+                          'M2C_FIELD(var_v1, s32 *, 4) = 0;\n        var_v1 += 8;\n    } while (var_a2 < count);\n    return var_a1;')
+    assert len(forward(second)) == 4  # each walk, the counter's step in place and moved

@@ -168,8 +168,9 @@ def _plan(source, part, macros, step, counters, move=False):
     if not chosen:
         return None
     n, c_start, c_end = chosen
-    if re.search(rf'(?<![\w.>]){re.escape(p)}\b', clean[ending + 1:part.end]):
-        return None  # the pointer's last value is read after the loop
+    later = re.search(rf'(?<![\w.>]){re.escape(p)}\b(?P<set>\s*=(?!=))?', clean[ending + 1:part.end])
+    if later and not later['set']:
+        return None  # the pointer's last value is read after the loop (a set before any read is another walk's)
     edits = [(*_line(source, s_start, s_end), '')]
     if move:
         elsewhere = clean[opening + 1:c_start] + ' ' + clean[c_end:ending]
