@@ -65,3 +65,24 @@ def test_a_compound_assignment_holds_its_constant_too():
     source = "void st(Obj *o) {\n    o->a += (f(1) * 0x1B4) >> 15;\n}\n"
     child = [c for f, c in variants(source, 'st') if f == FAMILY_MULTIPLIER][0]
     assert 'k_0x1B4 = 0x1B4;\n    o->a += (f(1) * k_0x1B4)' in child
+
+
+ARGUMENT = """void aim(Obj *o, Obj *t, s32 done) {
+    f32 tgt;
+
+    if (done == 0) {
+        if (o->speed > 7.0f) {
+            o->z = turn(180.0f, o->z, 29.0f);
+        }
+    }
+}
+"""
+
+
+def test_a_float_argument_is_held_in_a_local_on_the_line_before_and_before_the_if_that_holds_it():
+    from decomprepair.constant_in_local import FAMILY_ARGUMENT
+    out = [c for f, c in variants(ARGUMENT, 'aim') if f == FAMILY_ARGUMENT and 'k_180p0 =' in c]
+    assert any('k_180p0 = 180.0f;\n            o->z = turn(k_180p0, o->z, 29.0f);' in c for c in out)
+    assert any('k_180p0 = 180.0f;\n        if (o->speed > 7.0f) {' in c and 'turn(k_180p0' in c for c in out)
+    assert all('f32 k_180p0;' in c for c in out)
+    assert not [c for f, c in variants(ARGUMENT.replace('180.0f', '1.0f'), 'aim') if f == FAMILY_ARGUMENT and 'k_1p0' in c]

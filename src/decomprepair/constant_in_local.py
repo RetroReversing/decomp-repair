@@ -21,6 +21,10 @@ before bounds):
 Gates: when the target's assembly is given, a bound is offered only when the target compares with a register
 (`slt`/`sltu`, and no `slti`/`sltiu` against N) and a multiplier only when the target multiplies (`mul.s`, `mult`,
 `mul`); the assembly is optional (a caller without it gets the children without that gate, since the judge decides).
+- `constant_in_local_argument`: a float literal passed as an argument of a call (`z = f(180.0f, z, k);`, not 0.0 and 1.0)
+  becomes `k_180p0 = 180.0f;` set on the line before the statement, or, in a second child, on the line before the
+  `if`/loop statement that holds it (a constant a block earlier than its use: a hand match needed `tgt = 180.0f;` set
+  before the `if` whose body passes it, which holds it in a register across the test), and the call reads `k_180p0`.
 A function with `volatile`, `asm` or a preprocessor line is left alone. Proposals only; the compiler and the byte judge
 decide."""
 import re
@@ -30,7 +34,8 @@ from .store_run_order import _insert_declaration
 
 FAMILY_MULTIPLIER = 'constant_in_local_multiplier'
 FAMILY_BOUND = 'constant_in_local_bound'
-FAMILIES = (FAMILY_MULTIPLIER, FAMILY_BOUND)
+FAMILY_ARGUMENT = 'constant_in_local_argument'
+FAMILIES = (FAMILY_MULTIPLIER, FAMILY_BOUND, FAMILY_ARGUMENT)
 LIMIT = 8
 _FLOAT = r'\d+\.\d*[fF]?|\.\d+[fF]?'
 _INT = r'0[xX][0-9a-fA-F]+|\d+'
@@ -180,6 +185,76 @@ def _bound_children(source, part, name, asm):
     return out
 
 
+_CALL_ARGUMENT = re.compile(rf'(?<![\w.>])(?P<callee>{IDENT})\s*\((?P<args>[^()]*)\)')
+
+
+def _argument_children(source, part, name):
+    out = []
+    body = part.clean
+    used = set(re.findall(IDENT, body[part.opening:part.end]))
+    for hit in _STATEMENT.finditer(body, part.opening + 1, part.end):
+        text = hit[2]
+        first = re.match(r'\s*(\w+)', text)
+        if not first or first[1] in _NOT_STATEMENT and first[1] != 'return':
+            continue
+        previous = body[:hit.start(1)].rstrip()[-1:]
+        if previous not in ('', ';', '{', '}'):
+            continue
+        for call in _CALL_ARGUMENT.finditer(text):
+            if call['callee'] in _NOT_STATEMENT or call['callee'] == 'sizeof':
+                continue
+            for argument in re.finditer(rf'(?:^|,)\s*(?P<k>{_FLOAT})\s*(?=,|$)', call['args']):
+                literal = argument['k']
+                if not _float_text(literal) or float(literal.rstrip('fF')) in (0.0, 1.0):
+                    continue
+                local = _name('k', literal)
+                if local in used:
+                    continue
+                at = hit.start(2) + call.start('args') + argument.start('k')
+                indent = hit[1]
+                # one line above the statement, then above the compound statement round it
+                spots = [(hit.start(2), indent)]
+                outer = _enclosing_statement(body, hit.start(1), part.opening)
+                if outer is not None:
+                    line = source.rfind('\n', 0, outer) + 1
+                    lead = source[line:outer]
+                    if not lead.strip():
+                        spots.append((outer, lead))
+                for where, lead in spots:
+                    child = edit(source, [(at, at + len(literal), local), (where, where, f'{local} = {literal};\n{lead}')])
+                    moved = view(child, name)
+                    if moved:
+                        out.append((FAMILY_ARGUMENT, _insert_declaration(child, moved, f'f32 {local};')))
+                used.add(local)
+    return out
+
+
+def _enclosing_statement(clean, at, opening):
+    """The start of the `if`/`for`/`while` statement whose block holds `at`, when that statement starts a line of its own
+    directly in a block (a constant set one block earlier goes above it), else None."""
+    depth = 0
+    for cursor in range(at - 1, opening, -1):
+        depth += {'}': 1, '{': -1}.get(clean[cursor], 0)
+        if depth < 0:
+            head = clean[:cursor].rstrip()
+            if not head.endswith(')'):
+                return None
+            level, back = 0, len(head)
+            while back > 0:
+                back -= 1
+                level += (head[back] == ')') - (head[back] == '(')
+                if level == 0:
+                    break
+            keyword = re.search(r'\b(?:if|for|while)\s*$', head[:back])
+            if not keyword:
+                return None
+            start = keyword.start()
+            if clean[:start].rstrip()[-1:] not in (';', '{', '}') or clean[:start].rstrip().endswith('else'):
+                return None
+            return start
+    return None
+
+
 def variants(source, name, asm=''):
     part = view(source, name)
     if not part:
@@ -191,6 +266,7 @@ def variants(source, name, asm=''):
     if not asm or _target_multiplies(asm):
         out += _multiplier_children(source, part, name)
     out += _bound_children(source, part, name, asm)
+    out += _argument_children(source, part, name)
     return list(dict.fromkeys(out))[:LIMIT]
 
 
