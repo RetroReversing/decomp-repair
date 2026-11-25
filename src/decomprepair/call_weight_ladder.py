@@ -99,28 +99,35 @@ def units(source, name):
     return result
 
 
-def vectors(found):
-    """[(wrappers, {unit index: depth}, delta)] by the fewest wrappers, one for each distinct delta of the names."""
+def vectors(found, limit=None):
+    """[(wrappers, {unit index: depth}, delta)] by the fewest wrappers, one for each distinct delta of the names.
+
+    With `limit`, only the first `limit` of that list are promised (the callers keep no more): a choice of more units
+    sorts after every choice of fewer units with no more wrappers, so once the shorter choices already fill `limit`
+    places in front of the next size, it can't enter and is not enumerated (a real function with 200 calls spent 17 s
+    listing three-call choices it threw away)."""
     seen, out = set(), []
+    spans = [(unit[0], unit[1]) for unit in found]
     for count in range(1, MAX_UNITS + 1):
+        if limit is not None and sum(1 for item in out if (item[0], len(item[1])) < (count, count)) >= limit:
+            break
+        depth_choices = [depths for depths in itertools.product(range(1, MAX_DEPTH + 1), repeat=count)
+                         if sum(depths) <= MAX_WRAPPERS]
         for chosen in itertools.combinations(range(len(found)), count):
-            for depths in itertools.product(range(1, MAX_DEPTH + 1), repeat=count):
-                total = sum(depths)
-                if total > MAX_WRAPPERS:
-                    continue
-                # a run and one of its own calls overlap: one scope per statement
-                spans = [(found[i][0], found[i][1]) for i in chosen]
-                if any(s[0] < t[1] and t[0] < s[1] for s, t in itertools.combinations(spans, 2)):
-                    continue
+            # a run and one of its own calls overlap: one scope per statement (the same for every depth)
+            if any(spans[i][0] < spans[j][1] and spans[j][0] < spans[i][1] for i, j in itertools.combinations(chosen, 2)):
+                continue
+            arms = tuple(sorted({found[i][4] for i in chosen}))
+            for depths in depth_choices:
                 delta = {}
                 for i, depth in zip(chosen, depths):
                     for n, c in found[i][3].items():
                         delta[n] = delta.get(n, 0) + c * depth
-                key = (tuple(sorted(delta.items())), tuple(sorted({found[i][4] for i in chosen})))
+                key = (tuple(sorted(delta.items())), arms)
                 if key in seen:
                     continue
                 seen.add(key)
-                out.append((total, dict(zip(chosen, depths)), delta))
+                out.append((sum(depths), dict(zip(chosen, depths)), delta))
     out.sort(key=lambda item: (item[0], len(item[1]), sorted(item[1].items())))
     return out
 
@@ -130,7 +137,7 @@ def variants(source, name):
     if len(found) < 2:
         return []
     result = []
-    for total, picks, delta in vectors(found)[:LIMIT]:
+    for total, picks, delta in vectors(found, LIMIT)[:LIMIT]:
         if len(delta) < 2:
             continue
         result.append((FAMILY, edit(source, [(found[i][0], found[i][1], _wrap(found[i][2], depth))
