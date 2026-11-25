@@ -42,7 +42,7 @@ def _pointers(text):
     return found
 
 
-def _block_of(clean, at, opening, end):
+def _python_block_of(clean, at, opening, end):
     """The innermost `{` before `at` whose block contains it."""
     depth, i = 0, at - 1
     while i > opening:
@@ -54,6 +54,17 @@ def _block_of(clean, at, opening, end):
             depth -= 1
         i -= 1
     return opening
+
+
+_block_of = _python_block_of
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_of(clean, at, opening, end):
+        found = _scan.enclosing_open(clean, at, opening + 1, opening)
+        return _python_block_of(clean, at, opening, end) if found is NotImplemented else found
 
 
 def _statement_ends(clean, start, stop):

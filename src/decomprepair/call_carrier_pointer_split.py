@@ -96,7 +96,7 @@ def _statements(part, local):
     return found
 
 
-def _enclosing_block(clean, part, position):
+def _python_enclosing_block(clean, part, position):
     depth, index = 0, position
     while index > part.opening:
         index -= 1
@@ -107,6 +107,19 @@ def _enclosing_block(clean, part, position):
                 return index, close(clean, index, '{', '}')
             depth -= 1
     return part.opening, part.end
+
+
+_enclosing_block = _python_enclosing_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing_block(clean, part, position):
+        found = _scan.enclosing_open(clean, position, part.opening, -1)
+        if found is not NotImplemented:
+            return (part.opening, part.end) if found < 0 else (found, close(clean, found, '{', '}'))
+        return _python_enclosing_block(clean, part, position)
 
 
 def _splits(source, part, pointers, declarations):

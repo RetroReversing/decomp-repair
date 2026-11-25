@@ -23,13 +23,24 @@ BOUNDED = re.compile(r'\+\s*1\s*\)\s*<=\s*\(')
 SITE = re.compile(r'\+\s*(?P<c>0[xX][0-9A-Fa-f]+|\d+)\s*\)\s*(?P<op><=|>=|<|>)(?![<>=])\s*(?P<k>0[xX][0-9A-Fa-f]+|\d+)(?P<u>[uU]?)\b')
 
 
-def _open_of(clean, close):
+def _python_open_of(clean, close):
     depth = 0
     for index in range(close, -1, -1):
         depth += (clean[index] == ')') - (clean[index] == '(')
         if depth == 0:
             return index
     return None
+
+
+_open_of = _python_open_of
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _open_of(clean, close):
+        found = _scan.open_every(clean, close, '(', ')', None)
+        return _python_open_of(clean, close) if found is NotImplemented else found
 
 
 def _number(value, like):

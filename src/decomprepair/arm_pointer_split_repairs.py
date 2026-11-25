@@ -24,7 +24,7 @@ FAMILY = 'arm_pointer_split'
 FAMILIES = (FAMILY,)
 
 
-def _open_of(clean, closing):
+def _python_open_of(clean, closing):
     """Index of the `{` matching the `}` at `closing`."""
     depth = 0
     for i in range(closing, -1, -1):
@@ -35,6 +35,17 @@ def _open_of(clean, closing):
             if depth == 0:
                 return i
     return -1
+
+
+_open_of = _python_open_of
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _open_of(clean, closing):
+        found = _scan.open_if(clean, closing, '{', '}', -1)
+        return _python_open_of(clean, closing) if found is NotImplemented else found
 
 
 def _top_assignments(clean, lo, hi, name):

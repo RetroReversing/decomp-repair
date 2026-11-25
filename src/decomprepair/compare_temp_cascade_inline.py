@@ -37,7 +37,7 @@ TERM = rf'\(\s*{ID}\s*(?:{OP})\s*{NUM}\s*\)'
 CONJ = re.compile(rf'\b(?P<kw>if)\s*\(\s*(?P<a>{TERM})\s*(?P<j>&&|&)\s*(?P<b>{TERM})\s*\)')
 
 
-def _block_end(clean, at, limit):
+def _python_block_end(clean, at, limit):
     depth = 0
     for k in range(at, limit):
         c = clean[k]
@@ -48,6 +48,17 @@ def _block_end(clean, at, limit):
                 return k
             depth -= 1
     return limit
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, at, limit):
+        found = _scan.enclosing_end(clean, at, limit, limit)
+        return _python_block_end(clean, at, limit) if found is NotImplemented else found
 
 
 def _inline(part, source):

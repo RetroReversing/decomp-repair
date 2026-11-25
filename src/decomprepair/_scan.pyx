@@ -232,3 +232,69 @@ def enclosing_end(str text, Py_ssize_t start, Py_ssize_t limit, object miss):
                 return i
             depth -= 1
     return miss
+
+
+# Scans that run backwards, from a closing bracket or a position to the bracket that opens its block.
+
+def open_if(str text, Py_ssize_t closing, str left, str right, object miss):
+    """The index of the bracket opening the one closed at `closing`, the depth tested only after an opener; `miss` if none."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 open_char, close_char, c
+    if closing >= len(text) or len(left) != 1 or len(right) != 1 or left == right:
+        return NotImplemented
+    open_char = left[0]
+    close_char = right[0]
+    i = closing
+    while i >= 0:
+        c = text[i]
+        if c == close_char:
+            depth += 1
+        elif c == open_char:
+            depth -= 1
+            if depth == 0:
+                return i
+        i -= 1
+    return miss
+
+
+def open_every(str text, Py_ssize_t closing, str left, str right, object miss):
+    """open_if, the depth tested at every character (so a `closing` that is no bracket answers itself)."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 open_char, close_char, c
+    if closing >= len(text) or len(left) != 1 or len(right) != 1 or left == right:
+        return NotImplemented
+    open_char = left[0]
+    close_char = right[0]
+    i = closing
+    while i >= 0:
+        c = text[i]
+        if c == close_char:
+            depth += 1
+        elif c == open_char:
+            depth -= 1
+        if depth == 0:
+            return i
+        i -= 1
+    return miss
+
+
+def enclosing_open(str text, Py_ssize_t at, Py_ssize_t low, object miss):
+    """The `{` of the innermost block around `at`, looking back from `at - 1` to `low` (inclusive); `miss` if none."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if low < 0 or at - 1 >= len(text):
+        return NotImplemented
+    i = at - 1
+    while i >= low:
+        c = text[i]
+        if c == u'}':
+            depth += 1
+        elif c == u'{':
+            if depth == 0:
+                return i
+            depth -= 1
+        i -= 1
+    return miss

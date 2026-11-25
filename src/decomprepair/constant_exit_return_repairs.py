@@ -167,13 +167,24 @@ def variants(source, name):
     return result
 
 
-def _opening(text, closing):
+def _python_opening(text, closing):
     depth = 0
     for pos in range(closing, -1, -1):
         depth += (text[pos] == ')') - (text[pos] == '(')
         if depth == 0:
             return pos
     return None
+
+
+_opening = _python_opening
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _opening(text, closing):
+        found = _scan.open_every(text, closing, '(', ')', None)
+        return _python_opening(text, closing) if found is NotImplemented else found
 
 
 def _indent(source, at):

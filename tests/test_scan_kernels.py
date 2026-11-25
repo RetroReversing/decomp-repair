@@ -148,3 +148,41 @@ def test_the_second_batch_of_own_matchers_match_their_plain_loops_on_random_text
             start = rng.randint(-3, len(text) + 2)
             for args in _arguments(kind, text, start, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+# The third batch: scans that run backwards to an opening bracket, and the block-end scans, each with its own arguments.
+def _part(rng, text):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(opening=rng.randint(-1, len(text) + 1), end=rng.randint(0, len(text) + 1))
+
+
+THIRD_BATCH = [
+    ("arm_pointer_split_repairs", "_open_of", lambda t, a, r: [(t, a)]),
+    ("carried_store_arms_repairs", "_opening_brace", lambda t, a, r: [(t, a)]),
+    ("compare_bias_fold", "_open_of", lambda t, a, r: [(t, a)]),
+    ("constant_exit_return_repairs", "_opening", lambda t, a, r: [(t, a)]),
+    ("call_pointer_dead_temp", "_block_of", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 2), r.randint(0, len(t)))]),
+    ("arm_scratch_block_locals", "_enclosing", lambda t, a, r: [(t, a)]),
+    ("collapsed_guard_inplace_step", "_enclosing", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 2))]),
+    ("call_carrier_pointer_split", "_enclosing_block", lambda t, a, r: [(t, _part(r, t), a)]),
+    ("compare_temp_cascade_inline", "_block_end", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 3))]),
+    ("else_tail_into_arms", "_block_end", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 3))]),
+]
+
+
+def test_the_third_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(44)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\n", ";", "é", "𝄞", "((", "}}"]
+    for module_name, function, build in THIRD_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
