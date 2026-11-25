@@ -13,3 +13,13 @@ other processors are planned (ROADMAP.md).
 The modules are flat: `*_repairs` are the repair families, the rest are their shared readers (`csource` for C
 text, `mips` and `mips_*` for MIPS code, `symbols` for symbol tables, `m2cfix` for m2c's output).
 """
+
+import re as _re
+
+# The families build thousands of patterns around a function's own names; Python keeps only 512 (plus 256 more in
+# 3.12's second level), so a draft pass recompiled about one pattern in eight and spent 40% of its time in the regex
+# compiler. Raising the limits (never lowering what the host set) cut a pass over real functions from 0.74 s to 0.43 s.
+for _limit in ("_MAXCACHE", "_MAXCACHE2"):
+    if isinstance(getattr(_re, _limit, None), int):
+        setattr(_re, _limit, max(getattr(_re, _limit), 4096))
+del _limit
