@@ -84,7 +84,14 @@ def incoming_calls(asm):
         if op in ('j', 'b') or _CONDITIONAL.match(op):
             if target not in labels:
                 return {}
-            # the branch's delay slot runs on both paths (a likely branch's only when taken: one more path is safe)
+            if _CONDITIONAL.match(op) and op.endswith('l') and index + 2 < count:
+                # a likely branch annuls its delay slot when it falls through: the slot runs on the taken path only,
+                # so an argument register the slot writes (`bnel $v0, $zero, L` / `addiu $a0, $zero, -0x14`) is still
+                # the caller's value on the path that continues past it
+                successors[index] = [index + 1, index + 2]
+                successors[index + 1] = [labels[target]]
+                continue
+            # the branch's delay slot runs on both paths
             successors[index + 1] = [labels[target]] + ([index + 2] if op not in ('j', 'b') and index + 2 < count else [])
         elif op == 'jr':
             if operands.strip() != '$ra':

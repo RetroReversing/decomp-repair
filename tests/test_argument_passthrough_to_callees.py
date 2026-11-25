@@ -111,3 +111,23 @@ def test_an_indirect_jump_ends_the_proof():
 def test_the_family_declares_itself_to_the_registry():
     [repair] = [item for item in registry.declared() if FAMILY in item.families]
     assert registry.problems(repair) == []
+
+
+def test_a_likely_branchs_slot_runs_on_the_taken_path_only():
+    """`bnel` annuls its delay slot on the fall-through: the `$a0` it writes there is still the caller's on the other path."""
+    asm = '''glabel f
+/* 0 80001000 27BDFFE8 */  addiu      $sp, $sp, -0x18
+/* 4 80001004 AFBF0010 */  sw         $ra, 0x10($sp)
+/* 8 80001008 8C82007C */  lw         $v0, 0x7C($a0)
+/* C 8000100C 5440FFFD */  bnel       $v0, $zero, .L80001024
+/* 10 80001010 2404FFEC */  addiu      $a0, $zero, -0x14
+/* 14 80001014 0C00B588 */  jal        g
+/* 18 80001018 00000000 */  nop
+.L80001024:
+/* 1C 8000101C 8FBF0010 */  lw         $ra, 0x10($sp)
+/* 20 80001020 03E00008 */  jr         $ra
+/* 24 80001024 27BD0018 */  addiu      $sp, $sp, 0x18
+endlabel f
+'''
+    assert incoming_calls(asm) == {'g': {0, 1, 2, 3}}
+    assert incoming_calls(asm.replace('bnel       $v0', 'bnez       $v0')) == {'g': {1, 2, 3}}
