@@ -176,7 +176,9 @@ def variants(source, name):
             if text not in seen:
                 seen.add(text)
                 result.append((FAMILY, text))
-    return result[:LIMIT]
+                if len(result) >= LIMIT:  # the rest were thrown away: stop building them
+                    return result
+    return result
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 91,

@@ -102,15 +102,46 @@ def locals_for(part):
     return found
 
 
+_LABEL_AFTER = re.compile(r'\s*:(?!:)')
+
+
+def _member_or_goto_before(text, position):
+    """`text[:position]` ends (past any whitespace) in `.`, `->` or a `goto`: what the old regex for that said, without
+    slicing and rescanning the whole prefix for every reference."""
+    while position > 0 and text[position - 1].isspace():
+        position -= 1
+    if text.startswith('.', position - 1) and position > 0:
+        return True
+    if position >= 2 and text[position - 2:position] == '->':
+        return True
+    return (position >= 4 and text[position - 4:position] == 'goto'
+            and (position == 4 or not (text[position - 5].isalnum() or text[position - 5] == '_')))
+
+
 def refs(part, decl):
-    return [hit for hit in re.finditer(rf'\b{re.escape(decl["name"])}\b', part.clean)
+    clean = part.clean
+    return [hit for hit in re.finditer(rf'\b{re.escape(decl["name"])}\b', clean)
             if part.opening < hit.start() < part.end and not decl.start() <= hit.start() < decl.end()
-            and not re.search(r'(?:\.|->|\bgoto)\s*$', part.clean[:hit.start()])
-            and not re.match(r'\s*:(?!:)', part.clean[hit.end():])]
+            and not _member_or_goto_before(clean, hit.start())
+            and not _LABEL_AFTER.match(clean, hit.end())]
 
 
 def edit(source, edits):
-    for start, end, replacement in sorted(edits, reverse=True):
+    ordered = sorted(edits)
+    # Edits that don't overlap and lie inside the source (nearly always) are joined in one pass; rebuilding the whole
+    # source once per edit made a repair with hundreds of edits quadratic. Anything else keeps the old
+    # last-edit-first replacement, so its result is what it was.
+    position, pieces = 0, []
+    for start, end, replacement in ordered:
+        if start < position or end < start or end > len(source):
+            break
+        pieces.append(source[position:start])
+        pieces.append(replacement)
+        position = end
+    else:
+        pieces.append(source[position:])
+        return ''.join(pieces)
+    for start, end, replacement in reversed(ordered):
         source = source[:start]+replacement+source[end:]
     return source
 
