@@ -34,7 +34,7 @@ ID = r'[A-Za-z_]\w*'
 NUM = r'(?:0[xX][\da-fA-F]+|[1-9]\d*)'
 
 
-def _close(text, start):
+def _python_close(text, start):
     """Index of the brace closing the one at `start`, or None."""
     depth = 0
     for i in range(start, len(text)):
@@ -45,6 +45,17 @@ def _close(text, start):
             if depth == 0:
                 return i
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, start):
+        found = _scan.close_if(text, start, '{', '}', None)
+        return _python_close(text, start) if found is NotImplemented else found
 
 
 def _guard_condition(cond, bound):
@@ -59,13 +70,20 @@ def _guard_condition(cond, bound):
     return norm(hit['value']) == norm(bound)
 
 
-def _paren_close(text, start):
+def _python_paren_close(text, start):
     depth = 0
     for i in range(start, len(text)):
         depth += {'(': 1, ')': -1}.get(text[i], 0)
         if depth == 0:
             return i
     return None
+
+
+_paren_close = _python_paren_close
+if _scan is not None:
+    def _paren_close(text, start):
+        found = _scan.close_every(text, start, '(', ')', False, None)
+        return _python_paren_close(text, start) if found is NotImplemented else found
 
 
 def _indexed(src_block, count, offset, body):

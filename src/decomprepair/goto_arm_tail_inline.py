@@ -28,7 +28,7 @@ _LABEL = re.compile(rf'(?m)(?:^|(?<=[;{{}}]))\s*(?P<l>{IDENT})\s*:(?!:)')
 _GOTO = re.compile(rf'\bgoto\s+(?P<l>{IDENT})\s*;')
 
 
-def _end_of_block(clean, at, limit):
+def _python_end_of_block(clean, at, limit):
     depth = 0
     for pos in range(at, limit):
         if clean[pos] == '{':
@@ -38,6 +38,17 @@ def _end_of_block(clean, at, limit):
                 return pos
             depth -= 1
     return None
+
+
+_end_of_block = _python_end_of_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _end_of_block(clean, at, limit):
+        found = _scan.enclosing_end(clean, at, limit, None)
+        return _python_end_of_block(clean, at, limit) if found is NotImplemented else found
 
 
 def _only_exit_follows(clean, at, limit):

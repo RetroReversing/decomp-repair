@@ -37,7 +37,7 @@ def _span(source, name):
     return (span[0] + head.end() - 1, span[1]) if head else None
 
 
-def _condition_end(text, start):
+def _python_condition_end(text, start):
     depth = 0
     for j in range(start, len(text)):
         if text[j] == '(':
@@ -47,6 +47,17 @@ def _condition_end(text, start):
             if depth == 0:
                 return j + 1
     return None
+
+
+_condition_end = _python_condition_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _condition_end(text, start):
+        found = _scan.close_if_past(text, start, '(', ')', None)
+        return _python_condition_end(text, start) if found is NotImplemented else found
 
 
 def _sites(source, name):

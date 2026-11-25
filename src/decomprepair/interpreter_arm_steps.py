@@ -21,7 +21,7 @@ from .csource import find
 FAMILIES = ('sum_accumulate_steps', 'arm_tail_share', 'compare_into_arms', 'operand_preload_temp')
 
 
-def _balanced(text, at):
+def _python_balanced(text, at):
     """End (exclusive) of the parenthesised group starting at text[at] == '('."""
     depth = 0
     for i in range(at, len(text)):
@@ -32,6 +32,17 @@ def _balanced(text, at):
             if depth == 0:
                 return i + 1
     return -1
+
+
+_balanced = _python_balanced
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _balanced(text, at):
+        found = _scan.close_if_past(text, at, '(', ')', -1)
+        return _python_balanced(text, at) if found is NotImplemented else found
 
 
 def _split_top(expr, op):
