@@ -30,6 +30,39 @@ def _assigns(text, name):
     return re.match(rf'\s*{re.escape(name)}\s*(?:[-+*/&|^]|<<|>>)?=(?!=)', text) is not None
 
 
+def _leaves_block(region):
+    """The range closes the block its assignment is in: the value then meets another path's value at a join."""
+    depth = 0
+    for line in region[1:]:
+        for char in line.stripped:
+            depth += {'{': 1, '}': -1}.get(char, 0)
+            if depth < 0:
+                return True
+    return False
+
+
+def _dead_after(body, start, stop, var):
+    """The range's value is not read after it. A plain assignment at the depth of the range's own one ends the search; one
+    nested deeper (inside an `if` or a loop opened since) covers only the reads inside its block, so a read after that
+    block closes may still see the range's value (a clamp's `if (x < 0) { x = 0; }` and the `if (x >= 0x100)` after it)."""
+    depth, kill = 0, None
+    for at, line in enumerate(body[start + 1:], start + 1):
+        text = line.stripped
+        if at > stop and mentions(text, var):
+            plain = re.match(rf'{re.escape(var)}\s*=(?!=)', text) is not None and not mentions(text.split('=', 1)[1], var)
+            if plain and depth <= 0:
+                return True
+            if plain:
+                kill = depth if kill is None else min(kill, depth)
+            elif kill is None or depth < kill:
+                return False
+        for char in text:
+            depth += {'{': 1, '}': -1}.get(char, 0)
+            if kill is not None and depth < kill:
+                kill = None
+    return True
+
+
 def variants(source, name):
     from .integer_repair_support import view
     part = view(source, name)
@@ -59,6 +92,8 @@ def variants(source, name):
                 continue
             region = body[i:stop + 1]
             if any(re.match(r'(?:while|do)\b', line.stripped) for line in region):
+                continue
+            if _leaves_block(region) or not _dead_after(body, i, stop, var):
                 continue
             for other in decls:
                 if other == var or any(mentions(line.stripped, other) for line in region):
