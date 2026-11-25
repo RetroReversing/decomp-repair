@@ -38,13 +38,24 @@ _CASTS = {'u8', 'u16', 'u32', 's8', 's16', 's32', 'int', 'char', 'short', 'long'
 _ASSIGN = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<x>{IDENT})[ \t]*=(?!=)[ \t]*(?P<e>[^;{{}}=]+);[ \t]*\n')
 
 
-def _close(clean, opening):
+def _python_close(clean, opening):
     depth = 0
     for index in range(opening, len(clean)):
         depth += (clean[index] == '{') - (clean[index] == '}')
         if depth == 0:
             return index
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    pass
+else:
+    def _close(clean, opening):
+        found = _scan.close_every(clean, opening, '{', '}', False, -1)
+        return _python_close(clean, opening) if found is NotImplemented else found
 
 
 def _two_arm_if(clean, at, limit):

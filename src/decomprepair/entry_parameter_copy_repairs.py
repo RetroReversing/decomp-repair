@@ -54,7 +54,7 @@ def _parameters(part):
     return found
 
 
-def _matching(clean, opening):
+def _python_matching(clean, opening):
     depth = 0
     for index in range(opening, len(clean)):
         if clean[index] == '{':
@@ -64,6 +64,17 @@ def _matching(clean, opening):
             if depth == 0:
                 return index
     return None
+
+
+_matching = _python_matching
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    pass
+else:
+    def _matching(clean, opening):
+        found = _scan.close_if(clean, opening, '{', '}', None)
+        return _python_matching(clean, opening) if found is NotImplemented else found
 
 
 def _after_declarations(clean, cursor, end):

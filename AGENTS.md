@@ -16,6 +16,10 @@ Every kernel follows the pattern the existing ones use:
 1. **A plain-Python twin stays.** The Python function keeps its name with a leading underscore (`_close`) and is the
    fallback: the module imports the kernel when it is built (`try: from . import _scan`) and rebinds the public name, and
    hands the twin back to the kernel (`_scan.python_close = _close`) for what the kernel doesn't take.
+   A module's *own* private matcher (`_close` in a repair module) keeps its loop as `_python_close`, binds `_close =
+   _python_close`, and replaces `_close` with a small wrapper over the shared kernel when `_scan` imports
+   (`_scan.close_if` / `_scan.close_every`, which answer `NotImplemented` for arguments the loop reads its own way). New
+   modules need no matcher of their own: use `c_scan` or `pattern_repairs.close`.
 2. **Odd arguments go back to the twin.** A negative offset, an offset past the text, brackets longer than one character,
    an empty word: whatever the Python version treats in its own way (indexing from the end, raising `IndexError`) is
    delegated to it, so every answer and every exception stays the twin's.

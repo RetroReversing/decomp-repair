@@ -30,7 +30,7 @@ _BAD_EXPR = re.compile(r'(?<![=!<>])=(?!=)|\+\+|--|\bvolatile\b')
 _KEYWORDS = {'if', 'while', 'for', 'switch', 'return', 'sizeof'}
 
 
-def _close(text, start):
+def _python_close(text, start):
     """Index of the parenthesis closing the one at `start`, or -1."""
     depth = 0
     for i in range(start, len(text)):
@@ -41,6 +41,17 @@ def _close(text, start):
             if depth == 0:
                 return i
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    pass
+else:
+    def _close(text, start):
+        found = _scan.close_if(text, start, '(', ')', -1)
+        return _python_close(text, start) if found is NotImplemented else found
 
 
 def _split_args(text, start, end):

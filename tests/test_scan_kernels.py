@@ -66,3 +66,41 @@ def test_own_loop_statements_matches_the_plain_scan_on_random_text():
         for word in ("continue", "break", ""):
             assert _outcome(scan.c_own_loop_statements, text, lo, hi, word) == _outcome(
                 c_scan._own_loop_statements, text, lo, hi, word), (text, lo, hi, word)
+
+
+# Modules that wrote their own bracket matcher and now answer with the typed kernel (_scan.close_if / close_every).
+# (module, function, fixed brackets or None when left/right are parameters)
+OWN_MATCHERS = [
+    ("arm_invariant_sink", "_close", ("{", "}")),
+    ("entry_guard_sink", "_close", ("{", "}")),
+    ("flag_exit_repairs", "_close", ("{", "}")),
+    ("arm_label_share_repairs", "_match", ("{", "}")),
+    ("entry_parameter_copy_repairs", "_matching", ("{", "}")),
+    ("call_test_argument_stage", "_close", ("(", ")")),
+    ("arm_shared_arg_inline", "_close", ("{", "}")),
+    ("block_temp_role_merge", "_close", None),
+    ("chain_load_scope", "_close", None),
+    ("debris", "_close", None),
+]
+
+
+def test_each_modules_own_bracket_matcher_matches_its_plain_loop_on_random_text():
+    import importlib
+
+    rng = random.Random(21)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\n", ";", "é", "𝄞", "((", "}}"]
+    for module_name, function, brackets in OWN_MATCHERS:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            start = rng.randint(-3, len(text) + 2)
+            arguments = [(text, start)]
+            if brackets is None:
+                arguments = [(text, start, left, right)
+                             for left, right in (("{", "}"), ("(", ")"), ("{", "{"), ("{}", "}"))]
+                arguments.append((text, start))  # the module's own default brackets
+            for args in arguments:
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, args)

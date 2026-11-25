@@ -148,3 +148,48 @@ def c_own_loop_statements(str clean, Py_ssize_t lo, Py_ssize_t hi, str word):
             if loops_open == 0:
                 out.append(i)
     return out
+
+
+# The bracket matchers many modules wrote for themselves: two shapes, here once, typed. A module keeps its own loop as
+# `_python_<name>` and answers with the kernel when it is built; arguments the loop reads in its own way (a negative start,
+# brackets of more than one character, two equal brackets) come back as NotImplemented and go to that twin.
+
+def close_if(str text, Py_ssize_t start, str left, str right, object miss):
+    """The index of the bracket closing the one at `start`, the depth tested only after a closing bracket; `miss` if none."""
+    cdef Py_ssize_t length = len(text), i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 open_char, close_char, c
+    if start < 0 or len(left) != 1 or len(right) != 1 or left == right:
+        return NotImplemented
+    open_char = left[0]
+    close_char = right[0]
+    for i in range(start, length):
+        c = text[i]
+        if c == open_char:
+            depth += 1
+        elif c == close_char:
+            depth -= 1
+            if depth == 0:
+                return i
+    return miss
+
+
+def close_every(str text, Py_ssize_t start, str left, str right, bint past, object miss):
+    """The index of the bracket closing the one at `start` (`past`: one past it), the depth tested at every character, so a
+    start that is no bracket answers itself; `miss` if none."""
+    cdef Py_ssize_t length = len(text), i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 open_char, close_char, c
+    if start < 0 or len(left) != 1 or len(right) != 1 or left == right:
+        return NotImplemented
+    open_char = left[0]
+    close_char = right[0]
+    for i in range(start, length):
+        c = text[i]
+        if c == open_char:
+            depth += 1
+        elif c == close_char:
+            depth -= 1
+        if depth == 0:
+            return i + 1 if past else i
+    return miss
