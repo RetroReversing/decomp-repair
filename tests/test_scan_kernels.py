@@ -49,5 +49,20 @@ def test_the_c_scan_walkers_match_the_plain_ones_on_random_text():
 def test_the_library_uses_the_typed_c_scan_walkers_when_they_are_built():
     from decomprepair import c_scan
 
-    assert (c_scan.close, c_scan.enclosing_block, c_scan.header_before) == (
-        scan.c_close, scan.c_enclosing_block, scan.c_header_before)
+    assert (c_scan.close, c_scan.enclosing_block, c_scan.header_before, c_scan.own_loop_statements) == (
+        scan.c_close, scan.c_enclosing_block, scan.c_header_before, scan.c_own_loop_statements)
+
+
+def test_own_loop_statements_matches_the_plain_scan_on_random_text():
+    from decomprepair import c_scan
+
+    rng = random.Random(12)
+    pieces = ["(", ")", "{", "}", ";", "continue;", "break;", " ", "\n", "for (;;) {", "while (a) {", "do {", "switch (a) {",
+              "if (b) {", "x", "_continue", "continue_", "é", "}"]
+    for _ in range(20000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 24)))
+        n = len(text)
+        lo, hi = rng.randint(-2, n + 2), rng.randint(-2, n + 2)
+        for word in ("continue", "break", ""):
+            assert _outcome(scan.c_own_loop_statements, text, lo, hi, word) == _outcome(
+                c_scan._own_loop_statements, text, lo, hi, word), (text, lo, hi, word)

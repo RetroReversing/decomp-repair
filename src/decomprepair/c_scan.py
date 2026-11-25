@@ -61,7 +61,7 @@ else:
     close, enclosing_block, header_before = _scan.c_close, _scan.c_enclosing_block, _scan.c_header_before
 
 
-def own_loop_statements(clean, lo, hi, word):
+def _own_loop_statements(clean, lo, hi, word):
     """Offsets in clean[lo:hi] of `word` (`continue`/`break`) that belong to the loop whose body is that range, not
     to a loop nested inside it (a `break` in a `switch` counts as nested, as it leaves the switch)."""
     stack, out, depth_paren, boundary = [], [], 0, lo - 1
@@ -91,3 +91,13 @@ def own_loop_statements(clean, lo, hi, word):
 def normal(text):
     """`text` with every run of whitespace one space, to compare two statements."""
     return ' '.join(text.split())
+
+
+def _header_opens_loop(header, word):
+    return bool(LOOP_HEADER.search(header)) or (word == 'break' and bool(re.search(r'\bswitch\s*\(.*\)$', header, re.S)))
+
+
+own_loop_statements = _own_loop_statements
+if close is not _close:  # the typed walkers loaded above: the loop scan comes from the same kernel
+    _scan.python_own_loop_statements, _scan.header_opens_loop = _own_loop_statements, _header_opens_loop
+    own_loop_statements = _scan.c_own_loop_statements
