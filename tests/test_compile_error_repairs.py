@@ -134,3 +134,8 @@ def test_an_ido_pointer_compare_is_read_as_integers():
 def test_an_ido_compound_assignment_casts_its_amount():
     assert one('    var_v1 += 8;', 'invalid operands to binary +=') == '    var_v1 += (s32)8;'
     assert one('    var_v1 -= p;', 'invalid operands to binary +=') == '    var_v1 -= (s32)p;'
+
+
+def test_sn64_names_its_preprocessed_file():
+    log = "func.sn.i: In function `f':\nfunc.sn.i:257: pointer value used where a floating point value was expected\nfunc.sn.i:9: warning: x\n"
+    assert diagnostics(log) == [(257, 'pointer value used where a floating point value was expected')]
