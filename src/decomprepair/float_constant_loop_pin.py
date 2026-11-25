@@ -25,8 +25,17 @@ Needs two occurrences of a value in loops (one local reaching two blocks). A val
 form with an initialiser (`f32 __repair_pin_0 = 0.0f;` at the top: its set outside the loop plays the same part;
 cse can then take that value for other literal stores of the function, so it is offered second).
 
-Offered as: every repeated value pinned; every value pinned with initialisers; each repeated value alone. A
-literal is pinned only as an operand of a comparison or arithmetic operator inside a loop, the places where the
+The same holds for a literal that is a loop's *step* (`for (; t < end; t += 0.005f)`, GCC 2.8.1 `-mfp32`, an N64 path
+search): loop.c hoists the pool load (`lui $at; lwc1`) of a step that no call in the loop can change, global.c finds no
+saved FP register for it across the calls, and reload rematerialises it into a scratch register of its own choosing
+(`$f8`) where the target had it in `$f0`, loaded where it is added. One local set before the loop and set again in the
+step (`t += (pin = 0.005f)`) is two sets in two blocks, so loop.c leaves it and the compiler loads it at the add: 10 -> 0.
+The step is a compound assignment, which the operand scan did not treat as an operator, and its bound's `1.0` was
+the only literal pinned.
+
+Offered as: every repeated value pinned; every value pinned with initialisers; each repeated value alone; each
+value seen once alone with its initialiser. A
+literal is pinned only as an operand of a comparison, arithmetic or compound assignment operator inside a loop, the places where the
 compiler builds the constant in a register (a stored `0.0f` is an integer store and is left alone).
 """
 import re
@@ -43,6 +52,7 @@ PREFIX = '__repair_pin_'
 _FLOAT = re.compile(r'(?<![\w.])(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?[fF]?(?![\w.])')
 _RELATIONAL = ('<=', '>=', '==', '!=', '<', '>')
 _ARITHMETIC = ('+', '-', '*', '/')
+_COMPOUND = ('+=', '-=', '*=', '/=')
 
 
 def _left_operator(clean, at):
@@ -50,6 +60,8 @@ def _left_operator(clean, at):
     i = at
     while i > 0 and clean[i - 1].isspace():
         i -= 1
+    if clean[:i].endswith(_COMPOUND):
+        return clean[i - 2:i]  # `t += 0.005f`: the step of a loop is built in a register like any other operand
     for op in _RELATIONAL:
         if clean[:i].endswith(op) and not (op in '<>' and clean[:i].endswith(('<<', '>>', '->'))):
             return op
@@ -143,4 +155,11 @@ def variants(source, name, asm=None):
     if len(repeated) > 1:
         for text, places in repeated.items():
             add({text: places}, False)
+    if len(found) > 1:
+        # a value seen once in a loop that has other literals (the step of a `for`, `t += 0.005f`, beside its bound
+        # `t < b + 1.0`): pinning every literal changes more than the one loop.c hoisted, so each is offered alone
+        # with the initialiser (a one-block local: the set before the loop and the set at the use are the two sets)
+        for text, places in found.items():
+            if text not in repeated:
+                add({text: places}, True)
     return results[:LIMIT]
