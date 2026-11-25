@@ -15,7 +15,8 @@ from .pattern_repairs import close
 FAMILY = 'target_constant'
 FAMILIES = (FAMILY,)
 
-LITERAL = re.compile(r'(?<![\w.])(0[xX][0-9a-fA-F]+|\d+)([uUlL]*)(?![\w.])')
+# (the exponent of a float literal, `9.58e-05`, is not an integer constant of the C: `-05` after an `e` is skipped)
+LITERAL = re.compile(r'(?<![\w.])(?<![eE][-+])(0[xX][0-9a-fA-F]+|\d+)([uUlL]*)(?![\w.])')
 # arithmetic with an immediate operand; stack-pointer adjustments and memory offsets aren't the C's constants
 IMMEDIATE = re.compile(r'\b(addiu|addi|ori|andi|xori|slti|sltiu|daddiu)\s+\$(\w+)\s*,\s*\$(\w+)\s*,\s*(-?(?:0x[0-9a-fA-F]+|\d+))\s*$',
                        re.M)
