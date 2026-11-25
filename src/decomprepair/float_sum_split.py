@@ -49,7 +49,7 @@ def _top_level(text, ch):
     return out
 
 
-def _strip_parens(text):
+def _python_strip_parens(text):
     text = text.strip()
     while text.startswith('(') and text.endswith(')'):
         depth = 0
@@ -59,6 +59,17 @@ def _strip_parens(text):
                 return text
         text = text[1:-1].strip()
     return text
+
+
+_strip_parens = _python_strip_parens
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _strip_parens(text):
+        found = _scan.unwrap_parens(text)
+        return _python_strip_parens(text) if found is NotImplemented else found
 
 
 def _product(term):

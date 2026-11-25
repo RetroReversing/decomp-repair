@@ -668,3 +668,205 @@ def next_argument(str text, Py_ssize_t start):
         if depth == 0 and c == u',':
             return i + 1
     return length
+
+
+# The harder tail: a group closed by an unmatched bracket, redundant outer parentheses, mixed bracket pairs, brace groups, the last
+# operand, and a few statement ends with their own stop rules.
+
+def unmatched_close(str text, Py_ssize_t start, str left, str right, object miss):
+    """The first `right` at or after `start` that no `left` in text[start:] opened (an opener already open before `start`)."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 open_char, close_char, c
+    if start < 0 or len(left) != 1 or len(right) != 1 or left == right:
+        return NotImplemented
+    open_char = left[0]
+    close_char = right[0]
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == open_char:
+            depth += 1
+        elif c == close_char:
+            if depth == 0:
+                return i
+            depth -= 1
+    return miss
+
+
+def unwrap_parens(str text):
+    """`text`, stripped, without parentheses that enclose all of it (repeatedly)."""
+    cdef Py_ssize_t i, n
+    cdef Py_ssize_t depth
+    cdef Py_UCS4 c
+    text = text.strip()
+    while text.startswith('(') and text.endswith(')'):
+        depth = 0
+        n = len(text)
+        for i in range(n):
+            c = text[i]
+            if c == u'(':
+                depth += 1
+            elif c == u')':
+                depth -= 1
+            if depth == 0 and i < n - 1:
+                return text
+        text = text[1:-1].strip()
+    return text
+
+
+def close_pairs(str text, Py_ssize_t start, str opens, str closes, bint past, bint every, object miss):
+    """The index of the bracket closing the one at `start`, brackets being any of `opens` against any of `closes` (at most
+    three each, mixed freely); depth tested at every character when `every`, else only after a closer; one past it if `past`."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef long o0 = -1, o1 = -1, o2 = -1, c0 = -1, c1 = -1, c2 = -1, ci
+    cdef Py_UCS4 c
+    cdef bint is_closer
+    if start < 0 or len(opens) > 3 or len(closes) > 3:
+        return NotImplemented
+    if len(opens) > 0:
+        o0 = <long>opens[0]
+    if len(opens) > 1:
+        o1 = <long>opens[1]
+    if len(opens) > 2:
+        o2 = <long>opens[2]
+    if len(closes) > 0:
+        c0 = <long>closes[0]
+    if len(closes) > 1:
+        c1 = <long>closes[1]
+    if len(closes) > 2:
+        c2 = <long>closes[2]
+    for i in range(start, len(text)):
+        c = text[i]
+        ci = <long>c
+        is_closer = False
+        if ci == o0 or ci == o1 or ci == o2:
+            depth += 1
+        elif ci == c0 or ci == c1 or ci == c2:
+            depth -= 1
+            is_closer = True
+        if depth == 0 and (every or is_closer):
+            return i + 1 if past else i
+    return miss
+
+
+def brace_groups(str text, Py_ssize_t start, Py_ssize_t end):
+    """[(open, close)] of each outermost `{ }` group inside text[start:end]."""
+    cdef Py_ssize_t i, opening = -1
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list groups = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'{':
+            if depth == 0:
+                opening = i
+            depth += 1
+        elif c == u'}':
+            depth -= 1
+            if depth == 0 and opening >= 0:
+                groups.append((opening, i))
+    return groups
+
+
+def last_operand(str text, str operator):
+    """text after the last top-level `operator` (brackets `([{` balanced), or all of it."""
+    cdef Py_ssize_t pos = 0, last = 0, length = len(text), op_length = len(operator)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, first
+    if op_length == 0:
+        return NotImplemented
+    first = operator[0]
+    while pos < length:
+        c = text[pos]
+        if c == u'(' or c == u'[' or c == u'{':
+            depth += 1
+        elif c == u')' or c == u']' or c == u'}':
+            depth -= 1
+        elif depth == 0 and c == first and text.startswith(operator, pos):
+            last = pos + op_length
+            pos += op_length - 1
+        pos += 1
+    return text[last:]
+
+
+def open_if_floor(str text, Py_ssize_t closing, Py_ssize_t floor, str left, str right, object miss):
+    """open_if, looking back no further than `floor` (inclusive)."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 open_char, close_char, c
+    if closing >= len(text) or floor < 0 or len(left) != 1 or len(right) != 1 or left == right:
+        return NotImplemented
+    open_char = left[0]
+    close_char = right[0]
+    i = closing
+    while i >= floor:
+        c = text[i]
+        if c == close_char:
+            depth += 1
+        elif c == open_char:
+            depth -= 1
+            if depth == 0:
+                return i
+        i -= 1
+    return miss
+
+
+def simple_statement_end(str text, Py_ssize_t at):
+    """One past the `;` ending the simple statement starting at `at`; None at a `{` or `}` outside brackets `([`."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if at < 0:
+        return NotImplemented
+    for i in range(at, len(text)):
+        c = text[i]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        elif depth == 0 and (c == u'{' or c == u'}'):
+            return None
+        elif depth == 0 and c == u';':
+            return i + 1
+    return None
+
+
+def statement_end_nonpositive(str text, Py_ssize_t start, Py_ssize_t end):
+    """One past the first `;` before `end` whose bracket depth (`([{` against `)]}`) is zero or below; None otherwise."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'(' or c == u'[' or c == u'{':
+            depth += 1
+        elif c == u')' or c == u']' or c == u'}':
+            depth -= 1
+        if c == u';' and depth <= 0:
+            return i + 1
+    return None
+
+
+def index_end(str text, Py_ssize_t at):
+    """The `)` that closes a group of depth 1 opened before `at`; None at a `;`, `{` or `}` first."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 1
+    cdef Py_UCS4 c
+    if at < 0:
+        return NotImplemented
+    for i in range(at, len(text)):
+        c = text[i]
+        if c == u'(':
+            depth += 1
+        elif c == u')':
+            depth -= 1
+            if depth == 0:
+                return i
+        elif c == u';' or c == u'{' or c == u'}':
+            return None
+    return None

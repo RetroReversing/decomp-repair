@@ -430,3 +430,56 @@ def test_the_ninth_batch_of_own_scans_match_their_plain_loops_on_random_text():
             where = rng.randint(-3, len(text) + 2)
             for args in build(text, where, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+TENTH_BATCH = [
+    ("array_index_from_one", "_index_end", lambda t, a, r: [(t, a)]),
+    ("m2cfix", "_closing", lambda t, a, r: [(t, a)]),
+    ("float_chain_stage", "_unwrap", lambda t, a, r: [(t,)]),
+    ("float_prefix_stage", "_unwrap", lambda t, a, r: [(t,)]),
+    ("float_sum_split", "_strip_parens", lambda t, a, r: [(t,)]),
+    ("disjoint_scalar_merge", "_match", lambda t, a, r: [(t, a)]),
+    ("reassigned_local_inline", "_match", lambda t, a, r: [(t, a)]),
+    ("ternary_min_max_orientation", "_balanced", lambda t, a, r: [(t, a)]),
+    ("loop_depth_tie_repairs", "_close", lambda t, a, r: [(t, a)]),
+    ("nested_goto_loop", "_matching", _three),
+    ("copy_load_hoist", "_brace_groups", _three),
+    ("guarded_call_repairs", "_last", lambda t, a, r: [(t, "&&"), (t, "||"), (t, ","), (t, "&")]),
+    ("switch_arm_store_repairs", "_encloses_plainly", _three),
+    ("override_store_split", "_statement_end", lambda t, a, r: [(t, a)]),
+    ("operand_access_helpers", "_simple_end", _three),
+    ("loop_table_index_local", "_index_end", lambda t, a, r: [(t, a)]),
+    ("dead_counter_cast_copy", "_statement_bounds", _three),
+]
+
+
+def test_the_tenth_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(123)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\t", "\n", ";", ",", "&&", "||", "&", "é", "𝄞", "((", "))", "}}", "; "]
+    for module_name, function, build in TENTH_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+def test_the_three_source_body_scans_match_their_plain_loops_on_random_c():
+    import importlib
+
+    rng = random.Random(321)
+    pieces = ["void f(void) {", "void g(int a) {", "}", "{", "a = (b + c);", "if (x) {", "/* } */", '"}"', "\n", " ", "int x;", "f(", ")", ";"]
+    for module_name in ("arm_store_sink", "global_copy_forward", "global_store_forward"):
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin, kernel_backed = module._python_body, module._body
+        assert kernel_backed is not twin
+        for _ in range(3000):
+            source = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 14)))
+            for name in ("f", "g", "h"):
+                assert _outcome(kernel_backed, source, name) == _outcome(twin, source, name), (module_name, source, name)

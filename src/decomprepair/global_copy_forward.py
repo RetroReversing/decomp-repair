@@ -25,7 +25,7 @@ ID = r'[A-Za-z_]\w*'
 CALL = re.compile(rf'(?<![\w.>])(?!sizeof\b|if\b|while\b|for\b|switch\b|return\b){ID}\s*\(')
 
 
-def _body(source, name):
+def _python_body(source, name):
     span = find(source, name)
     if not span:
         return None
@@ -39,6 +39,26 @@ def _body(source, name):
         if depth == 0:
             return opening, i + 1, clean
     return None
+
+
+_body = _python_body
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _body(source, name):
+        span = find(source, name)
+        if not span:
+            return None
+        clean = _blank(source)
+        opening = clean.find('{', span[0], span[1])
+        if opening < 0:
+            return None
+        found = _scan.close_every(clean, opening, '{', '}', True, None)
+        if found is NotImplemented or span[1] > len(clean):
+            return _python_body(source, name)
+        return (opening, found, clean) if found is not None and found <= span[1] else None
 
 
 def _writes(line, name):

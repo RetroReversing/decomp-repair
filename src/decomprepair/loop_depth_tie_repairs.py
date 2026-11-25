@@ -28,7 +28,7 @@ FAMILIES = (GOTO_LOOP, PARAM_SCOPE)
 LIMIT = 12
 
 
-def _close(text, opening):
+def _python_close(text, opening):
     depth = 0
     for i in range(opening, len(text)):
         if text[i] in '({[':
@@ -38,6 +38,17 @@ def _close(text, opening):
             if depth == 0:
                 return i
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, opening):
+        found = _scan.close_pairs(text, opening, '({[', ')}]', False, False, -1)
+        return _python_close(text, opening) if found is NotImplemented else found
 
 
 def _goto_loops(source, part):

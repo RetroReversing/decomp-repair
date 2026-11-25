@@ -50,13 +50,26 @@ def _split_top_level(text: str) -> list[str]:
     return parts + [cur]
 
 
-def _closing(text: str, start: int) -> int:
+def _python_closing(text: str, start: int) -> int:
     """The index just past the bracket that closes the one before `start`."""
     depth, i = 1, start
     while i < len(text) and depth:
         depth += (text[i] == "(") - (text[i] == ")")
         i += 1
     return i
+
+
+_closing = _python_closing
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _closing(text: str, start: int) -> int:
+        found = _scan.unmatched_close(text, start, '(', ')', -1)
+        if found is not NotImplemented:
+            return found + 1 if found >= 0 else max(start, len(text))
+        return _python_closing(text, start)
 
 
 def expand_macros(source: str, header: str = '') -> str:

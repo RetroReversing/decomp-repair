@@ -54,7 +54,7 @@ def _statement_start(body, at):
     return start
 
 
-def _index_end(clean, at):
+def _python_index_end(clean, at):
     """The end of EXPR in `(((char *) (&D)) + EXPR)`: where the group opened before `((char *)` closes."""
     depth = 1
     for i in range(at, len(clean)):
@@ -67,6 +67,17 @@ def _index_end(clean, at):
         elif clean[i] in ';{}':
             return None
     return None
+
+
+_index_end = _python_index_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _index_end(clean, at):
+        found = _scan.index_end(clean, at)
+        return _python_index_end(clean, at) if found is NotImplemented else found
 
 
 def variants(source, name):

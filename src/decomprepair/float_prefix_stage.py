@@ -50,7 +50,7 @@ LIMIT = 6
 FOLD_USES = 2   # a loaded temporary read once or twice; the opening factors read by four sums stay locals
 
 
-def _unwrap(text):
+def _python_unwrap(text):
     """`text` without parentheses that enclose all of it."""
     text = text.strip()
     while text.startswith('(') and text.endswith(')'):
@@ -61,6 +61,17 @@ def _unwrap(text):
                 return text
         text = text[1:-1].strip()
     return text
+
+
+_unwrap = _python_unwrap
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _unwrap(text):
+        found = _scan.unwrap_parens(text)
+        return _python_unwrap(text) if found is NotImplemented else found
 
 
 def _is_load(expression):

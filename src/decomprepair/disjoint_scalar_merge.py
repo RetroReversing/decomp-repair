@@ -25,7 +25,7 @@ _DECL = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<type>{INTEGER})\s+(?P<names>{_I
 _LOOP = re.compile(r'\b(?P<kind>for|while|do)\b')
 
 
-def _match(text, at):
+def _python_match(text, at):
     """The index of the bracket closing the one at `at`."""
     pairs = {'(': ')', '{': '}'}
     depth = 0
@@ -35,6 +35,17 @@ def _match(text, at):
         if depth == 0:
             return position
     return None
+
+
+_match = _python_match
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _match(text, at):
+        found = _scan.close_pairs(text, at, '({', ')}', False, True, None)
+        return _python_match(text, at) if found is NotImplemented else found
 
 
 def _loops(clean, opening, end):

@@ -58,7 +58,7 @@ def _negated(cond):
     return f'!({cond})' if re.fullmatch(rf'{IDENT}|\({IDENT}\)', cond) else None
 
 
-def _statement_end(clean, at):
+def _python_statement_end(clean, at):
     """The position past the `;` that ends the simple statement starting at `at`, or None for a block or label."""
     depth = 0
     for pos in range(at, len(clean)):
@@ -72,6 +72,17 @@ def _statement_end(clean, at):
         elif depth == 0 and ch == ';':
             return pos + 1
     return None
+
+
+_statement_end = _python_statement_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_end(clean, at):
+        found = _scan.simple_statement_end(clean, at)
+        return _python_statement_end(clean, at) if found is NotImplemented else found
 
 
 def _arm(clean, at):

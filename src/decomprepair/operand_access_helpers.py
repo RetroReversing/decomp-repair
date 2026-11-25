@@ -57,7 +57,7 @@ def _skip(clean, i):
     return i
 
 
-def _simple_end(clean, i, end):
+def _python_simple_end(clean, i, end):
     depth = 0
     while i < end:
         ch = clean[i]
@@ -67,6 +67,17 @@ def _simple_end(clean, i, end):
             return i + 1
         i += 1
     return None
+
+
+_simple_end = _python_simple_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _simple_end(clean, i, end):
+        found = _scan.statement_end_nonpositive(clean, i, end)
+        return _python_simple_end(clean, i, end) if found is NotImplemented else found
 
 
 def _statement(clean, i, end):

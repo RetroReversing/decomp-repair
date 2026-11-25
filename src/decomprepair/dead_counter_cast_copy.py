@@ -27,7 +27,7 @@ INTEGERS = r'(?:u8|s8|u16|s16|u32|s32|int|short|char|unsigned(?:\s+(?:int|short|
 CAST = rf'\(\s*\(\s*(?:u8|s8|u16|s16)\s*\)\s*{IDENT}\s*\)|\(\s*(?:u8|s8|u16|s16)\s*\)\s*{IDENT}'
 
 
-def _statement_bounds(clean, position, opening):
+def _python_statement_bounds(clean, position, opening):
     """The `;`-terminated statement holding `position`, as (begin, end) with end after the `;`."""
     begin = max(clean.rfind(';', opening, position), clean.rfind('{', opening, position), clean.rfind('}', opening, position)) + 1
     depth = 0
@@ -39,6 +39,22 @@ def _statement_bounds(clean, position, opening):
         if clean[index] == ';' and depth == 0:
             return begin, index + 1
     return None
+
+
+_statement_bounds = _python_statement_bounds
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_bounds(clean, position, opening):
+        found = _scan.statement_end(clean, position, len(clean), '([{', ')]}', True, True, None)
+        if found is not NotImplemented:
+            if found is None:
+                return None
+            begin = max(clean.rfind(';', opening, position), clean.rfind('{', opening, position), clean.rfind('}', opening, position)) + 1
+            return begin, found
+        return _python_statement_bounds(clean, position, opening)
 
 
 def variants(source, name):
