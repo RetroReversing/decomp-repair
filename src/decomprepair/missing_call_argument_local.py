@@ -72,7 +72,7 @@ def _offset(setup):
     return int(load['offset'] or '0', 0) if load else None
 
 
-def _blocks(clean, opening, end):
+def _python_blocks(clean, opening, end):
     """Every `{...}` in the function, the body included: [(open, close)]."""
     out, stack = [], []
     for pos in range(opening, end):
@@ -81,6 +81,17 @@ def _blocks(clean, opening, end):
         elif clean[pos] == '}' and stack:
             out.append((stack.pop(), pos))
     return out
+
+
+_blocks = _python_blocks
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _blocks(clean, opening, end):
+        found = _scan.block_pairs(clean, opening, end)
+        return _python_blocks(clean, opening, end) if found is NotImplemented else found
 
 
 def _variables(part, signature):

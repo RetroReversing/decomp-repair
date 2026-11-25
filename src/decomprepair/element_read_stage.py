@@ -47,7 +47,7 @@ def _element_type(source, part, table):
     return None
 
 
-def _enclosing(clean, part, position):
+def _python_enclosing(clean, part, position):
     depth = 0
     for index in range(position - 1, part.opening - 1, -1):
         char = clean[index]
@@ -58,6 +58,17 @@ def _enclosing(clean, part, position):
                 return index
             depth -= 1
     return None
+
+
+_enclosing = _python_enclosing
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing(clean, part, position):
+        found = _scan.enclosing_open(clean, position, part.opening, None)
+        return _python_enclosing(clean, part, position) if found is NotImplemented else found
 
 
 def variants(source, name):

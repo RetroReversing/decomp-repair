@@ -11,7 +11,7 @@ KEYWORDS = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'do', 'else', 'c
             'continue'}
 
 
-def brace_pairs(clean, lo, hi):
+def _python_brace_pairs(clean, lo, hi):
     """{index of `{`: index of its `}`} for the braces in clean[lo:hi]; None when they do not pair."""
     stack, found = [], {}
     for at in range(lo, hi):
@@ -23,6 +23,17 @@ def brace_pairs(clean, lo, hi):
                 return None
             found[stack.pop()] = at
     return None if stack else found
+
+
+brace_pairs = _python_brace_pairs
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def brace_pairs(clean, lo, hi):
+        found = _scan.brace_pairs_strict(clean, lo, hi)
+        return _python_brace_pairs(clean, lo, hi) if found is NotImplemented else found
 
 
 def statements(clean, lo, hi):

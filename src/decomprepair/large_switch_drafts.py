@@ -10,7 +10,7 @@ import re
 _EXTERN = re.compile(r'^(?P<ret>[^\n;()]*?\b)(?P<name>\w+)\((?P<params>[^()\n]*)\);(?P<tail>[ \t]*/\* extern \*/)$', re.M)
 
 
-def _arguments(source, start):
+def _python_arguments(source, start):
     """Argument count of the call whose `(` is at `start`, and the index after its `)`; None if unbalanced."""
     depth, count, saw = 0, 0, False
     for i in range(start, len(source)):
@@ -28,6 +28,17 @@ def _arguments(source, start):
         if depth >= 1 and not c.isspace():
             saw = True
     return None
+
+
+_arguments = _python_arguments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arguments(source, start):
+        found = _scan.call_argument_count(source, start)
+        return _python_arguments(source, start) if found is NotImplemented else found
 
 
 def unprototyped_externs(source):

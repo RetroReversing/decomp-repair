@@ -92,7 +92,7 @@ def _assigned_first(part, name, start):
     return (not before or before[-1] in ';{}:') and re.match(rf'{re.escape(name)}\s*=(?!=)', part.clean[at:at + len(name) + 6]) is not None
 
 
-def _block(clean, at, opening):
+def _python_block(clean, at, opening):
     """(open, close) offsets of the innermost brace block around `at`, the function body at the outside."""
     depth, index = 0, at
     while index > opening:
@@ -109,6 +109,23 @@ def _block(clean, at, opening):
         if level == 0:
             return index, close
     return index, len(clean)
+
+
+_block = _python_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block(clean, at, opening):
+        found = _scan.enclosing_open(clean, at, opening, -1)
+        if found is NotImplemented:
+            return _python_block(clean, at, opening)
+        index = at if at <= opening else (opening if found < 0 else found)
+        closing = _scan.close_every(clean, index, '{', '}', False, None)
+        if closing is NotImplemented:
+            return _python_block(clean, at, opening)
+        return index, (len(clean) if closing is None else closing)
 
 
 def _tie_operand(part, name):

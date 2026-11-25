@@ -1173,3 +1173,157 @@ def macro_arguments(str text, Py_ssize_t start):
             parts.append((first, pos))
             first = pos + 1
     return None, []
+
+
+# Block pairing and a few splitters that the first sweeps missed (they keep a stack rather than a depth).
+
+def brace_pairs_strict(str text, Py_ssize_t lo, Py_ssize_t hi):
+    """{index of `{`: index of its `}`} for the braces in text[lo:hi]; None when they do not pair."""
+    cdef Py_ssize_t at
+    cdef Py_UCS4 c
+    cdef list stack = []
+    cdef dict found = {}
+    if lo < 0 or hi > len(text):
+        return NotImplemented
+    for at in range(lo, hi):
+        c = text[at]
+        if c == u'{':
+            stack.append(at)
+        elif c == u'}':
+            if not stack:
+                return None
+            found[stack.pop()] = at
+    return None if stack else found
+
+
+def block_pairs(str text, Py_ssize_t start, Py_ssize_t end):
+    """[(open, close)] of every `{ }` pair in text[start:end], in the order they close (a stray `}` is ignored)."""
+    cdef Py_ssize_t i
+    cdef Py_UCS4 c
+    cdef list stack = []
+    cdef list found = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'{':
+            stack.append(i)
+        elif c == u'}' and stack:
+            found.append((stack.pop(), i))
+    return found
+
+
+def open_stack(str text, Py_ssize_t start, Py_ssize_t at):
+    """The offsets of the `{` still open at `at`, counted from `start` (a stray `}` is ignored)."""
+    cdef Py_ssize_t i
+    cdef Py_UCS4 c
+    cdef list stack = []
+    if start < 0 or at > len(text):
+        return NotImplemented
+    for i in range(start, at):
+        c = text[i]
+        if c == u'{':
+            stack.append(i)
+        elif c == u'}' and stack:
+            stack.pop()
+    return stack
+
+
+def top_plus_index(str text):
+    """The offset of the first `+` outside parentheses that is not part of `++`, else -1."""
+    cdef Py_ssize_t index, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, prev
+    for index in range(length):
+        c = text[index]
+        if c == u'(':
+            depth += 1
+        elif c == u')':
+            depth -= 1
+        if depth == 0 and c == u'+':
+            prev = text[length - 1] if index == 0 else text[index - 1]  # the plain scan's text[index - 1] wraps at 0
+            if prev != u'+' and (index + 1 >= length or text[index + 1] != u'+'):
+                return index
+    return -1
+
+
+def line_starts_at_depth_one(str text):
+    """The set of offsets that begin a line (or the text) while the brace depth is 1 and are not themselves a brace."""
+    cdef Py_ssize_t index
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef set offsets = set()
+    for index in range(len(text)):
+        c = text[index]
+        if c == u'{':
+            depth += 1
+        elif c == u'}':
+            depth -= 1
+        elif depth == 1 and (index == 0 or text[index - 1] == u'\n'):
+            offsets.add(index)
+    return offsets
+
+
+def statements_brace_reset(str text, Py_ssize_t start, Py_ssize_t end):
+    """[(start, end)] of each `;`-ended statement in text[start:end] (start past leading space); a brace ends a run."""
+    cdef Py_ssize_t i, begin = start, lead
+    cdef Py_UCS4 c
+    cdef list out = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'{' or c == u'}':
+            begin = i + 1
+        elif c == u';':
+            lead = begin
+            while lead < i + 1 and text[lead].isspace():
+                lead += 1
+            out.append((lead, i + 1))
+            begin = i + 1
+    return out
+
+
+def split_spaced_operator(str expr, str op):
+    """The offset of the first `op` outside parentheses with a space on each side, else -1. A match at offset 0 or at the
+    very end is left to the plain scan (it reads a character it has no right to there)."""
+    cdef Py_ssize_t i, length = len(expr), op_length = len(op)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    for i in range(length):
+        c = expr[i]
+        if c == u'(':
+            depth += 1
+        elif c == u')':
+            depth -= 1
+        elif depth == 0 and expr.startswith(op, i):
+            if i == 0 or i + op_length >= length:
+                return NotImplemented
+            if expr[i - 1] == u' ' and expr[i + op_length] == u' ':
+                return i
+    return -1
+
+
+def call_argument_count(str text, Py_ssize_t start):
+    """(the argument count of the call whose `(` is at or after `start`, the offset after its `)`); None if unbalanced."""
+    cdef Py_ssize_t i, count = 0
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef bint saw = False
+    if start < 0:
+        return NotImplemented
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == u'(':
+            depth += 1
+            if depth == 1:
+                continue
+        elif c == u')':
+            depth -= 1
+            if depth == 0:
+                return (count + 1 if saw else 0), i + 1
+        elif c == u',' and depth == 1:
+            count += 1
+        if depth >= 1 and not c.isspace():
+            saw = True
+    return None

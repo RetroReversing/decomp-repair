@@ -54,7 +54,7 @@ def _copy_locals(body, depth_one, pointers):
     return found
 
 
-def _top_level(clean_body):
+def _python_top_level(clean_body):
     """Offsets in the body that sit directly inside the function's braces (not in a nested block)."""
     depth, offsets = 0, set()
     for index, char in enumerate(clean_body):
@@ -65,6 +65,17 @@ def _top_level(clean_body):
         elif depth == 1 and (index == 0 or clean_body[index - 1] == '\n'):
             offsets.add(index)
     return offsets
+
+
+_top_level = _python_top_level
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_level(clean_body):
+        found = _scan.line_starts_at_depth_one(clean_body)
+        return _python_top_level(clean_body) if found is NotImplemented else found
 
 
 def _substitute(expr, values):

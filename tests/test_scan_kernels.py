@@ -524,3 +524,71 @@ def test_the_last_batch_of_own_scans_match_their_plain_loops_on_random_text():
             where = rng.randint(-3, len(text) + 2)
             for args in build(text, where, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+def _blockargs(t, a, r):
+    return [(t, a, r.randint(-2, len(t) + 3), r.randint(-1, len(t) + 3))]
+
+
+def _partobj(t, a, r):
+    from types import SimpleNamespace
+
+    return [(t, SimpleNamespace(opening=r.randint(-1, len(t) + 1), end=r.randint(0, len(t) + 1)), a)]
+
+
+BLOCKS_BATCH = [
+    ("arm_block_support", "brace_pairs", _three),
+    ("case_temporary_nested_split", "_enclosing_block", _three),
+    ("counted_loop_shapes", "_pointer_sum", lambda t, a, r: [(t,)]),
+    ("const_read_inline", "_top_level", lambda t, a, r: [(t,)]),
+    ("display_cursor_record_repairs", "_statements", _three),
+    ("element_read_stage", "_enclosing", lambda t, a, r: [(t, _partobj(t, a, r)[0][1], a)]),
+    ("interpreter_arm_steps", "_split_top", lambda t, a, r: [(t, "+"), (t, "||"), (t, "<<"), (t, "")]),
+    ("member_slot_pointer_local", "_blocks", _three),
+    ("missing_call_argument_local", "_blocks", _three),
+    ("loop_table_index_local", "_blocks", _three),
+    ("statement_across_call", "_blocks", _three),
+    ("walk_shape_repairs", "_enclosing_block", lambda t, a, r: [(t, a, _partobj(t, a, r)[0][1])]),
+    ("add_helper_operand_swap", "_arguments", lambda t, a, r: [(t, a)]),
+    ("statement_macro_expand", "_arguments", lambda t, a, r: [(t, a)]),
+    ("large_switch_drafts", "_arguments", lambda t, a, r: [(t, a)]),
+    ("last_use_double_in_place", "_block", _blockargs),
+    ("result_register_named_local", "_block", _blockargs),
+    ("call_arg_register_locals", "_block", _blockargs),
+    ("disjoint_local_merge_repairs", "_block", _three),
+    ("nested_goto_loop", "_enclosing", _three),
+]
+
+
+def test_the_block_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(555)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\t", "\n", ";", ",", "+", "++", "||", "<<", "é", "𝄞", "((", "}}", "{{", "; "]
+    for module_name, function, build in BLOCKS_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+def test_no_module_that_takes_the_kernel_shadows_it_with_a_scan_of_its_own():
+    """`from . import _scan` binds the kernel module to `_scan`; a module that defines a `_scan` of its own must import it under another name."""
+    import ast
+    from pathlib import Path
+
+    package = Path(pattern_repairs.__file__).parent
+    clashes = []
+    for path in sorted(package.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports_kernel = any(isinstance(node, ast.ImportFrom) and node.level == 1 and any(
+            alias.name == "_scan" and alias.asname is None for alias in node.names) for node in ast.walk(tree))
+        defines_scan = any(isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name == "_scan" for node in tree.body)
+        if imports_kernel and defines_scan:
+            clashes.append(path.stem)
+    assert clashes == []

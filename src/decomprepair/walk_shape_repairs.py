@@ -62,7 +62,7 @@ def _block_end(clean, opening):
     return close(clean, opening, '{', '}')
 
 
-def _enclosing_block(clean, position, part):
+def _python_enclosing_block(clean, position, part):
     """(opening, end) of the innermost brace block around `position` inside the function."""
     depth = 0
     for pos in range(position - 1, part.opening, -1):
@@ -73,6 +73,21 @@ def _enclosing_block(clean, position, part):
                 return pos, _block_end(clean, pos)
             depth -= 1
     return part.opening, part.end
+
+
+_enclosing_block = _python_enclosing_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing_block(clean, position, part):
+        found = _scan.enclosing_open(clean, position, part.opening + 1, -1)
+        if found is not NotImplemented:
+            if found < 0:
+                return part.opening, part.end
+            return found, _block_end(clean, found)
+        return _python_enclosing_block(clean, position, part)
 
 
 def _locals(part):
