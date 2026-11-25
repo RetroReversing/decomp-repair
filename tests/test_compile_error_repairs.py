@@ -100,3 +100,37 @@ def test_compact_drops_comments_and_indentation_only():
     source = 'void f(void) {\n    case 1:   /* switch 1 */\n        x = a  + b; \n\n\n\n}\n'
     assert compact(source) == 'void f(void) {\ncase 1:\nx = a  + b;\n\n}\n'
     assert compact('x;\n') is None
+
+
+IDO_LOG = """cfe: Warning 709: func.c, line 5: Incompatible pointer type assignment
+ x = y;
+ ----^
+cfe: Error: func.c, line 69: Unacceptable operand of == or !=
+     } while (var_s1 != &arg0);
+ -------------------^
+cfe: Error: func.c, line 21: Unacceptable operand of '+'.
+     g(arg0 + 4);
+ ---------^
+cfe: Error: func.c, line 26: Bad operand type for += or -=
+         var_v1 += 8;
+ ---------------^
+cfe: Error: func.c, line 24: Dereferenced a non-pointer.
+     *(arg0 | 4) = 1;
+ -----------^
+cfe: Error: func.c, line 9: Syntax Error
+"""
+
+
+def test_ido_errors_are_read_as_the_repairs_words():
+    assert diagnostics(IDO_LOG) == [(69, 'invalid operands to binary =='), (21, 'invalid operands to binary +'),
+                                    (26, 'invalid operands to binary +='), (24, "invalid type argument of `unary *'")]
+
+
+def test_an_ido_pointer_compare_is_read_as_integers():
+    assert one('    } while (var_s1 != &arg0);', 'invalid operands to binary ==') == '    } while ((s32)var_s1 != (s32)&arg0);'
+    assert one('    if (a == b) {}', 'invalid operands to binary ==') == '    if ((s32)a == (s32)b) {}'
+
+
+def test_an_ido_compound_assignment_casts_its_amount():
+    assert one('    var_v1 += 8;', 'invalid operands to binary +=') == '    var_v1 += (s32)8;'
+    assert one('    var_v1 -= p;', 'invalid operands to binary +=') == '    var_v1 -= (s32)p;'
