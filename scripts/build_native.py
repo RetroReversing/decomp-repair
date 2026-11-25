@@ -12,8 +12,10 @@ Without Cython or a C compiler nothing is built and nothing changes. `DECOMPREPA
     build_native.py            build every module in NATIVE into src/decomprepair/
     build_native.py --clean    remove the compiled modules
 """
+import os
 import sys
 import tempfile
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "decomprepair"
@@ -70,6 +72,106 @@ NATIVE = [
     "balanced_float_predicate_return",
     "display_cursor_record_repairs",
     "float_bit_argument_repairs",
+    "repair_source_view",
+    "local_web_split",
+    "register_repairs",
+    "increment_old_value_copy",
+    "mips_return_paths",
+    "call_global_stage",
+    "allocation_weight_combination",
+    "balanced_signed_selector_increment",
+    "natural_pointer_spill",
+    "inferred_layout_repairs",
+    "join_tail_arm_split_repairs",
+    "target_constant_repairs",
+    "measured_control_repairs",
+    "int_global_array_read",
+    "frame_slot_alias_split",
+    "run_weight_scope",
+    "scaffold_strip",
+    "call_carrier_pointer_split",
+    "local_weight_ladder",
+    "stack_call_output_repairs",
+    "allocation_repairs",
+    "float_arm_roles",
+    "quadratic_sign_holder",
+    "leaf_frame_repairs",
+    "if_tree_switch_repairs",
+    "integer_lifetime_repairs",
+    "guarded_loop_for",
+    "expression_terms",
+    "hoisted_invariant_inline",
+    "repair_tokens",
+    "unaligned_stack_drafts",
+    "loop_liveness",
+    "target_edge_repairs",
+    "invariant_shift_local",
+    "target_guard_width_repairs",
+    "loop_weight_set_repairs",
+    "symbols",
+    "indexed_record_support",
+    "extern_size_widen",
+    "store_run_order",
+    "wide_update_before_flags",
+    "returned_register_local",
+    "vector_output_capture",
+    "global_pointer_run_repairs",
+    "symbol_base_repairs",
+    "branch_tail_distribution",
+    "mips_live_return_address",
+    "bit_predicate_repairs",
+    "entry_parameter_copy_repairs",
+    "call_weight_ladder",
+    "mips_materializations",
+    "ido_stack_iterators",
+    "target_call_constant_repairs",
+    "symbol_width_repairs",
+    "field_load_repairs",
+    "byte_field_macros",
+    "halfword_store_repairs",
+    "measured_staged_float_order",
+    "inode_cache_drafts",
+    "byte_increment_repairs",
+    "shared_product_repairs",
+    "measured_address_repairs",
+    "repair_preflight",
+    "early_return_guard_block",
+    "saved_register_cascade",
+    "narrow_chains",
+    "byte_index_local",
+    "measured_storage_repairs",
+    "missing_call_argument_local",
+    "field_struct_view_repairs",
+    "hardware_operation_repairs",
+    "loop_weight_repairs",
+    "kmc_operand_repairs",
+    "product_split_sum",
+    "ido_cursor_drafts",
+    "arm_argument_copy_join",
+    "clamp_saved_argument_lifetime",
+    "structured_loop_repairs",
+    "call_result_join_copy",
+    "normalization_repairs",
+    "balanced_clamp_argument_stage",
+    "loop_invariant_key_copy",
+    "macro_scope_weight",
+    "argument_mask_repairs",
+    "constant_initializer_staging",
+    "constant_store_scope",
+    "switch_case_order_repairs",
+    "balanced_selector_zero",
+    "loop_counter_roles_repairs",
+    "operand_focus",
+    "loop_guard_counter_compare",
+    "dispatch_specialization",
+    "compound_operand_split",
+    "lockstep_cursor_index",
+    "chain_weight_scope",
+    "volatile_cast_unpin",
+    "paired_statement_moves",
+    "branch_layout_repairs",
+    "phase_projection_holders",
+    "debris",
 ]
 
 
@@ -80,6 +182,32 @@ def compiled() -> list[Path]:
 def clean() -> None:
     for path in compiled():
         path.unlink()
+
+
+def build_one(name: str) -> int:
+    """Compile one module; a module Cython can't translate stays interpreted without blocking the others."""
+    from Cython.Build import cythonize
+    from setuptools import Extension
+    from setuptools.dist import Distribution
+    with tempfile.TemporaryDirectory(prefix="decomprepair-native-") as work:
+        try:
+            extensions = cythonize([Extension(f"decomprepair.{name}", [str(PACKAGE / f"{name}.py")])],
+                                   build_dir=work, quiet=True, compiler_directives={"language_level": "3"})
+            dist = Distribution({"ext_modules": extensions, "package_dir": {"": "src"}, "packages": ["decomprepair"]})
+            command = dist.get_command_obj("build_ext")
+            command.build_lib = work
+            command.build_temp = str(Path(work) / "tmp")
+            command.ensure_finalized()
+            command.run()
+        except (Exception, SystemExit) as error:  # no C compiler or headers, or code Cython can't translate
+            print(f"{name}: not built, stays interpreted ({str(error)[:200]})")
+            return 0
+        count = 0
+        for path in Path(work).rglob("decomprepair/*"):
+            if path.suffix in (".so", ".pyd"):
+                (PACKAGE / path.name).write_bytes(path.read_bytes())
+                count += 1
+        return count
 
 
 def main(argv: list[str]) -> int:
@@ -93,27 +221,9 @@ def main(argv: list[str]) -> int:
     except ImportError:
         print("Cython or setuptools is unavailable: the library stays interpreted.")
         return 0
-    built = 0
-    for name in NATIVE:
-        # one module at a time: a module Cython can't translate stays interpreted without blocking the others
-        with tempfile.TemporaryDirectory(prefix="decomprepair-native-") as work:
-            try:
-                extensions = cythonize([Extension(f"decomprepair.{name}", [str(PACKAGE / f"{name}.py")])],
-                                       build_dir=work, quiet=True, compiler_directives={"language_level": "3"})
-                dist = Distribution({"ext_modules": extensions, "package_dir": {"": "src"},
-                                     "packages": ["decomprepair"]})
-                command = dist.get_command_obj("build_ext")
-                command.build_lib = work
-                command.build_temp = str(Path(work) / "tmp")
-                command.ensure_finalized()
-                command.run()
-            except (Exception, SystemExit) as error:  # no C compiler or headers, or code Cython can't translate
-                print(f"{name}: not built, stays interpreted ({str(error)[:200]})")
-                continue
-            for path in Path(work).rglob("decomprepair/*"):
-                if path.suffix in (".so", ".pyd"):
-                    (PACKAGE / path.name).write_bytes(path.read_bytes())
-                    built += 1
+    jobs = int(os.environ.get("DECOMPREPAIR_NATIVE_JOBS", "4"))
+    with ProcessPoolExecutor(jobs) as pool:
+        built = sum(pool.map(build_one, NATIVE))
     print(f"Built {built} native modules into {PACKAGE}.")
     return 0
 
