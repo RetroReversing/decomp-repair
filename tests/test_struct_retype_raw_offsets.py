@@ -26,9 +26,24 @@ def test_the_record_comes_before_the_function():
     assert child.index('typedef struct') < child.index('void upd')
 
 
-def test_overlapping_or_unaligned_accesses_leave_it_alone():
-    assert not kids(SOURCE.replace('f32 *, 0x14', 'f32 *, 0x12'))
-    assert not kids(SOURCE.replace('f32 *, 0x14', 's16 *, 0x11'))
+def test_an_overlapping_or_unaligned_access_stays_raw_and_the_rest_are_members():
+    child = kids(SOURCE.replace('f32 *, 0x14', 'u16 *, 0x12'))[0]
+    assert 'typedef struct { u8 pad_0[0x10]; s32 f10; u8 pad_14[0x8]; void * f1C; } PtrRec_arg0;' in child
+    assert 'D_80001234 = M2C_FIELD(arg0, u16 *, 0x12);' in child and '((PtrRec_arg0 *) arg0)->f10 = 3;' in child
+    child = kids(SOURCE.replace('f32 *, 0x14', 's16 *, 0x11'))[0]
+    assert 'M2C_FIELD(arg0, s16 *, 0x11)' in child and '((PtrRec_arg0 *) arg0)->f1C = other;' in child
+
+
+def test_the_more_used_of_two_overlapping_accesses_is_the_member():
+    source = SOURCE.replace('D_80001234 = M2C_FIELD(arg0, f32 *, 0x14);',
+                            'D_80001234 = M2C_FIELD(arg0, u16 *, 0x12) + M2C_FIELD(arg0, u16 *, 0x12) + M2C_FIELD(arg0, u16 *, 0x12);')
+    child = kids(source)[0]
+    assert 'u16 f12;' in child and 'M2C_FIELD(arg0, s32 *, 0x10) = 3;' in child
+
+
+def test_two_members_must_remain():
+    source = SOURCE.replace('f32 *, 0x14', 'u16 *, 0x12').replace('M2C_FIELD(arg0, void **, 0x1C) = other;', '')
+    assert not kids(source)
 
 
 def test_one_offset_alone_or_nothing_to_order_against_is_not_offered():
