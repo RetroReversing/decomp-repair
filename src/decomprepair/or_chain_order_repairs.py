@@ -143,7 +143,7 @@ if _scan is not None:
         return _python_close(text, start) if found is NotImplemented else found
 
 
-def _chains(clean, start, end):
+def _python_chains(clean, start, end):
     """(first, last) offsets of each maximal or-chain expression in the span: the text between its delimiters."""
     found = []
     depth_stack = []
@@ -167,6 +167,17 @@ def _chains(clean, start, end):
             begin = i + 1
         i += 1
     return found
+
+
+_chains = _python_chains
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _chains(clean, start, end):
+        found = _scan.bracket_chains(clean, start, end)
+        return _python_chains(clean, start, end) if found is NotImplemented else found
 
 
 def variants(source, name, header=''):

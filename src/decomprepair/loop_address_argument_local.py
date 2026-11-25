@@ -38,7 +38,7 @@ FAMILIES = (FAMILY, COMBINED, OUTER)
 I = r'[A-Za-z_]\w*'
 
 
-def _loops(clean, start, end):
+def _python_loops(clean, start, end):
     """(do-open, body-start, body-end) of each `do { ... } while` in [start, end)."""
     out = []
     for m in re.finditer(r'\bdo\s*\{', clean[start:end]):
@@ -53,6 +53,26 @@ def _loops(clean, start, end):
                     out.append((start + m.start(), opening + 1, k))
                     break
     return out
+
+
+_loops = _python_loops
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _loops(clean, start, end):
+        if end > len(clean):
+            return _python_loops(clean, start, end)
+        out = []
+        for m in re.finditer(r'\bdo\s*\{', clean[start:end]):
+            opening = start + m.end() - 1
+            k = _scan.close_if(clean, opening, '{', '}', None)
+            if k is NotImplemented:
+                return _python_loops(clean, start, end)
+            if k is not None and k < end:
+                out.append((start + m.start(), opening + 1, k))
+        return out
 
 
 def _enclosing_loops(clean, start, end):

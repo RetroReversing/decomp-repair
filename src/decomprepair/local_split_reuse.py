@@ -46,7 +46,7 @@ _PLAIN = {'if', 'else', 'while', 'for', 'do', 'switch', 'return', 'goto', 'break
 _CALL = re.compile(rf'(?<![\w.>])(?P<callee>{IDENT})\s*\(')
 
 
-def _matches(clean, lo, hi):
+def _python_matches(clean, lo, hi):
     """{opening brace: its closing brace} of every block in [lo, hi)."""
     stack, out = [], {}
     for at in range(lo, hi):
@@ -55,6 +55,19 @@ def _matches(clean, lo, hi):
         elif clean[at] == '}' and stack:
             out[stack.pop()] = at
     return out
+
+
+_matches = _python_matches
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _matches(clean, lo, hi):
+        found = _scan.block_pairs(clean, lo, hi)
+        if found is not NotImplemented:
+            return dict(found)
+        return _python_matches(clean, lo, hi)
 
 
 def _enclosing(blocks, at):

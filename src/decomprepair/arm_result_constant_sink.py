@@ -47,7 +47,7 @@ def _arms(clean, opening, end):
     return [(body, labels[n + 1][0] if n + 1 < len(labels) else end - 1) for n, (_, body) in enumerate(labels)]
 
 
-def _top_statements(clean, start, stop):
+def _python_top_statements(clean, start, stop):
     """Start offsets of the statements at the top level of `clean[start:stop]`."""
     starts = []
     depth = 0
@@ -69,6 +69,17 @@ def _top_statements(clean, start, stop):
             fresh = True
         at += 1
     return starts
+
+
+_top_statements = _python_top_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_statements(clean, start, stop):
+        found = _scan.top_statement_starts(clean, start, stop)
+        return _python_top_statements(clean, start, stop) if found is NotImplemented else found
 
 
 def _moves(clean, part, opening, end):

@@ -105,7 +105,7 @@ def _arms(clean, closing):
     return (if_open + 1, if_close - 1), (else_open + 1, closing)
 
 
-def _statements(clean, start, end):
+def _python_statements(clean, start, end):
     """The arm's top-level statements as `(start, end)`, `end` past the `;`; None for a nested block's place."""
     result = []
     depth = 0
@@ -125,6 +125,17 @@ def _statements(clean, start, end):
             result.append((at, pos + 1))
             at = None
     return result if at is None and depth == 0 else None
+
+
+_statements = _python_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statements(clean, start, end):
+        found = _scan.statements_arm_roles(clean, start, end)
+        return _python_statements(clean, start, end) if found is NotImplemented else found
 
 
 def _spaces(text):

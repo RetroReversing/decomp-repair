@@ -34,7 +34,7 @@ ASSIGNMENT = re.compile(r'^[^;{}=!<>]*[\w\]\)]\s*=(?!=)[^;{}]*;\s*$')
 COMPOUND = re.compile(r'^\s*(?:if|else|for|while|do|switch|case|default|return|goto|break|continue|asm|__asm__)\b|^\s*\w+\s*:(?!:)|[{}]')
 
 
-def _parameters(clean, part, name):
+def _python_parameters(clean, part, name):
     opening = clean.find('(', clean.rfind(name, 0, part.opening))
     depth, start, found = 0, opening + 1, []
     for index in range(opening, part.opening):
@@ -47,6 +47,20 @@ def _parameters(clean, part, name):
             if depth == 0:
                 break
     return found
+
+
+_parameters = _python_parameters
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _parameters(clean, part, name):
+        opening = clean.find('(', clean.rfind(name, 0, part.opening))
+        found = _scan.parameter_texts(clean, opening, part.opening)
+        if found is NotImplemented:
+            return _python_parameters(clean, part, name)
+        return found
 
 
 def _run(body):

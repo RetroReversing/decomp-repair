@@ -36,7 +36,7 @@ def _assigned(body, name):
                       rf'(?<![\w.>]){re.escape(name)}\s*(?:\+\+|--)', body)
 
 
-def _loops(clean, start, end):
+def _python_loops(clean, start, end):
     """(start of the body brace, its closing brace) of every do/while/for loop."""
     out = []
     for hit in LOOP.finditer(clean, start, end):
@@ -54,6 +54,29 @@ def _loops(clean, start, end):
             i += 1
         out.append((brace, i))
     return out
+
+
+_loops = _python_loops
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _loops(clean, start, end):
+        if end > len(clean):
+            return _python_loops(clean, start, end)
+        out = []
+        for hit in LOOP.finditer(clean, start, end):
+            if hit.group() == 'while' and re.match(r'\s*\([^;{}]*\)\s*;', clean[hit.end():hit.end() + 200]):
+                continue  # the `while (...);` that ends a do loop
+            brace = clean.find('{', hit.end(), end)
+            if brace < 0 or clean[hit.end():brace].count(';') > 0 and hit.group() != 'for':
+                continue
+            found = _scan.close_every(clean, brace, '{', '}', False, None)
+            if found is NotImplemented:
+                return _python_loops(clean, start, end)
+            out.append((brace, found if found is not None and found < end else end))
+        return out
 
 
 def variants(source, name, header=''):

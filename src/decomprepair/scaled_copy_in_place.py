@@ -36,7 +36,7 @@ def _plain_assignment(clean, start, end, at, name):
     return re.match(r'\s*=(?!=)', clean[at + len(name):end]) is not None and not re.search(r'(?:->|\.|&|\*)\s*$', clean[start:at])
 
 
-def _loops(clean, opening, position):
+def _python_loops(clean, opening, position):
     """(open, close) of every loop body that holds `position`, innermost last."""
     found = []
     depth_stack = []
@@ -61,6 +61,35 @@ def _loops(clean, opening, position):
             if ending:
                 found.append((brace, ending))
     return found
+
+
+_loops = _python_loops
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _loops(clean, opening, position):
+        depth_stack = _scan.open_stack(clean, opening, position)
+        if depth_stack is NotImplemented:
+            return _python_loops(clean, opening, position)
+        found = []
+        for brace in depth_stack:
+            head = clean[:brace].rstrip()
+            loop = head.endswith('do')
+            if head.endswith(')'):
+                depth = 0
+                for index in range(len(head) - 1, -1, -1):
+                    depth += head[index] == ')'
+                    depth -= head[index] == '('
+                    if depth == 0:
+                        loop = re.search(r'\b(?:while|for)\s*$', head[:index]) is not None
+                        break
+            if loop:
+                ending = close(clean, brace, '{', '}')
+                if ending:
+                    found.append((brace, ending))
+        return found
 
 
 def _python_directly_in(clean, block, at):

@@ -40,7 +40,7 @@ def _declaration(part, variable):
     return None
 
 
-def _statements(clean, start, end):
+def _python_statements(clean, start, end):
     """(start, end) of each top-level statement in clean[start:end]: a `;` ends one, a block ends at its brace."""
     out, at, depth, i = [], start, 0, start
     while i < end:
@@ -59,6 +59,19 @@ def _statements(clean, start, end):
             at = i + 1
         i += 1
     return [(s + len(clean[s:e]) - len(clean[s:e].lstrip()), e) for s, e in out]
+
+
+_statements = _python_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statements(clean, start, end):
+        found = _scan.statements_counter_split(clean, start, end)
+        if found is not NotImplemented:
+            return [(s + len(clean[s:e]) - len(clean[s:e].lstrip()), e) for s, e in found]
+        return _python_statements(clean, start, end)
 
 
 def variants(source, name):

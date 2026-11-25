@@ -47,7 +47,7 @@ KEYWORDS = {'return', 'case', 'else', 'goto', 'sizeof', 'do'}
 LOOP = re.compile(r'\b(?:for|while)\s*\([^{};]*\)\s*$|\bdo\s*$|\bswitch\s*\([^{};]*\)\s*$')
 
 
-def _blocks(clean, opening, end):
+def _python_blocks(clean, opening, end):
     """(open, close) of every `{ }` pair inside the function body, outermost first."""
     stack, found = [], []
     for index in range(opening, end):
@@ -56,6 +56,19 @@ def _blocks(clean, opening, end):
         elif clean[index] == '}' and stack:
             found.append((stack.pop(), index))
     return sorted(found)
+
+
+_blocks = _python_blocks
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _blocks(clean, opening, end):
+        found = _scan.block_pairs(clean, opening, end)
+        if found is not NotImplemented:
+            return sorted(found)
+        return _python_blocks(clean, opening, end)
 
 
 def _innermost(blocks, positions):

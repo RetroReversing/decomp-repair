@@ -37,7 +37,7 @@ def _params(clean, part):
     return set(re.findall(rf'({IDENT})\s*(?:,|\))', signature[start + 1:] + ')'))
 
 
-def _blocks(clean, part):
+def _python_blocks(clean, part):
     """Every `{ }` block inside the body as (open, close, depth-first enclosing chain of open positions)."""
     found, stack = [], []
     for index in range(part.opening, part.end):
@@ -48,6 +48,17 @@ def _blocks(clean, part):
             opening = stack.pop()
             found.append((opening, index, tuple(stack)))
     return found
+
+
+_blocks = _python_blocks
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _blocks(clean, part):
+        found = _scan.block_chains(clean, part.opening, part.end)
+        return _python_blocks(clean, part) if found is NotImplemented else found
 
 
 def _in_loop(clean, enclosing):

@@ -1327,3 +1327,388 @@ def call_argument_count(str text, Py_ssize_t start):
         if depth >= 1 and not c.isspace():
             saw = True
     return None
+
+
+# Statement splitters. They differ in small ways (which brackets count, what resets a statement, whether an `else`/`while` after a
+# closing brace continues it), so each is its own kernel, named for the module's own wording.
+
+cdef inline bint _word_char(Py_UCS4 c):
+    return c.isalnum() or c == u'_'
+
+
+cdef bint _continues(str text, Py_ssize_t pos, Py_ssize_t end, bint allow_while):
+    """`re.match(r'\\s*(?:else|while)\\b', text[pos:end])` (only `else` when not allow_while)."""
+    cdef Py_ssize_t p = pos, e
+    while p < end and text[p].isspace():
+        p += 1
+    if p + 4 <= end and text.startswith(u'else', p):
+        e = p + 4
+        return e >= end or not _word_char(text[e])
+    if allow_while and p + 5 <= end and text.startswith(u'while', p):
+        e = p + 5
+        return e >= end or not _word_char(text[e])
+    return False
+
+
+def statements_record_init(str text, Py_ssize_t start, Py_ssize_t end):
+    """record_init_shapes: [(begin, end)] of each top-level statement; a braced block is one statement unless `else`/`while` follows."""
+    cdef Py_ssize_t pos, begin = -1
+    cdef Py_ssize_t depth = 0, parens = 0
+    cdef Py_UCS4 ch
+    cdef list out = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for pos in range(start, end):
+        ch = text[pos]
+        if begin < 0 and not ch.isspace():
+            begin = pos
+        if ch == u'(':
+            parens += 1
+        elif ch == u')':
+            parens -= 1
+        elif ch == u'{':
+            depth += 1
+        elif ch == u'}':
+            depth -= 1
+            if depth == 0 and not _continues(text, pos + 1, end, True):
+                out.append((begin, pos + 1))
+                begin = -1
+        elif ch == u';' and depth == 0 and parens == 0:
+            out.append((begin, pos + 1))
+            begin = -1
+    return out
+
+
+def statements_scheduling(str text, Py_ssize_t start, Py_ssize_t closing):
+    """scheduling_scope: [(start, end)] of each top-level statement in text[start:closing], all brackets counted together."""
+    cdef Py_ssize_t i, begin = -1
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list out = []
+    if start < 0 or closing > len(text):
+        return NotImplemented
+    for i in range(start, closing):
+        c = text[i]
+        if begin < 0 and not c.isspace():
+            begin = i
+        if c == u'(' or c == u'{' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        elif c == u'}':
+            depth -= 1
+            if depth == 0 and begin >= 0:
+                if not _continues(text, i + 1, closing, True):
+                    out.append((begin, i + 1))
+                    begin = -1
+        elif c == u';' and depth == 0 and begin >= 0:
+            out.append((begin, i + 1))
+            begin = -1
+    return out
+
+
+def statements_skip_join(str text, Py_ssize_t start, Py_ssize_t end):
+    """skip_join_loop_wrapper: [(begin, end)] of each top-level statement; only `(` `{` against `)` `}` count."""
+    cdef Py_ssize_t i, begin = -1
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 ch
+    cdef list out = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        ch = text[i]
+        if begin < 0 and not ch.isspace():
+            begin = i
+        if ch == u'(' or ch == u'{':
+            depth += 1
+        elif ch == u')' or ch == u'}':
+            depth -= 1
+            if depth == 0 and ch == u'}':
+                if not _continues(text, i + 1, end, True):
+                    out.append((begin, i + 1))
+                    begin = -1
+        elif ch == u';' and depth == 0 and begin >= 0:
+            out.append((begin, i + 1))
+            begin = -1
+    return out
+
+
+def statements_counter_split(str text, Py_ssize_t start, Py_ssize_t end):
+    """loop_counter_value_split: [(start, end)] of each top-level statement, each starting where the last ended (spaces kept)."""
+    cdef Py_ssize_t i, at = start
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list out = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'(' or c == u'{' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u'}' or c == u']':
+            depth -= 1
+            if depth == 0 and c == u'}':
+                if not _continues(text, i + 1, end, True):
+                    out.append((at, i + 1))
+                    at = i + 1
+        elif c == u';' and depth == 0:
+            out.append((at, i + 1))
+            at = i + 1
+    return out
+
+
+def statements_pair_share(str text, Py_ssize_t lo, Py_ssize_t hi):
+    """call_pair_address_share: [(start, end)] of each simple statement ending in `;` at parenthesis depth 0, at any brace nesting."""
+    cdef Py_ssize_t i, start = -1
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list out = []
+    if lo < 0 or hi > len(text):
+        return NotImplemented
+    for i in range(lo, hi):
+        c = text[i]
+        if c == u'(':
+            depth += 1
+        elif c == u')':
+            depth -= 1
+        elif depth == 0 and (c == u'{' or c == u'}'):
+            start = -1
+        elif depth == 0 and c == u';':
+            if start >= 0:
+                out.append((start, i + 1))
+            start = -1
+        elif start < 0 and not c.isspace() and depth == 0:
+            start = i
+    return out
+
+
+def statements_arm_roles(str text, Py_ssize_t start, Py_ssize_t end):
+    """float_arm_roles: the arm's top-level statements as (start, end), None in a nested block's place; None when unbalanced."""
+    cdef Py_ssize_t pos, at = -1
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list result = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for pos in range(start, end):
+        c = text[pos]
+        if at < 0 and not c.isspace() and depth == 0 and c != u'{' and c != u'}':
+            at = pos
+        if c == u'(' or c == u'{' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u'}' or c == u']':
+            depth -= 1
+            if c == u'}' and depth == 0:
+                result.append(None)
+                at = -1
+        elif c == u';' and depth == 0 and at >= 0:
+            result.append((at, pos + 1))
+            at = -1
+    return result if at < 0 and depth == 0 else None
+
+
+def top_statement_starts(str text, Py_ssize_t start, Py_ssize_t stop):
+    """arm_result_constant_sink: the start offsets of the statements at the top level of text[start:stop]."""
+    cdef Py_ssize_t at
+    cdef Py_ssize_t depth = 0
+    cdef bint fresh = True
+    cdef Py_UCS4 c
+    cdef list starts = []
+    if start < 0 or stop > len(text):
+        return NotImplemented
+    for at in range(start, stop):
+        c = text[at]
+        if fresh and not c.isspace():
+            if depth == 0:
+                starts.append(at)
+            fresh = False
+        if c == u'(' or c == u'{' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']' or c == u'}':
+            depth -= 1
+            if c == u'}' and depth == 0:
+                fresh = True
+        elif c == u';' and depth == 0:
+            fresh = True
+    return starts
+
+
+def split_operator(str e, str op):
+    """`e` cut at each top-level binary `op` (not inside parentheses or brackets; a one-character `op` is not part of a doubled
+    one or `op=`), each part stripped."""
+    cdef Py_ssize_t i = 0, start = 0, length = len(e), op_length = len(op)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list parts = []
+    cdef str before, after
+    if op_length == 0:
+        return NotImplemented
+    while i < length:
+        c = e[i]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        elif depth == 0 and e.startswith(op, i):
+            before = e[i - 1:i] if i > 0 else ''
+            after = e[i + op_length:i + op_length + 1]
+            if op_length == 1 and (before == op or after == op or after == '='):
+                i += 1
+                continue
+            parts.append(e[start:i])
+            start = i + op_length
+            i = start
+            continue
+        i += 1
+    parts.append(e[start:])
+    return [p.strip() for p in parts]
+
+
+def parameter_texts(str text, Py_ssize_t opening, Py_ssize_t stop):
+    """The stripped text of each top-level parameter of the list opened at `opening` (read up to `stop`)."""
+    cdef Py_ssize_t index, begin = opening + 1
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list found = []
+    if opening < 0 or stop > len(text):
+        return NotImplemented
+    for index in range(opening, stop):
+        c = text[index]
+        if c == u'(':
+            depth += 1
+        elif c == u')':
+            depth -= 1
+        if (c == u',' and depth == 1) or (c == u')' and depth == 0):
+            found.append(text[begin:index].strip())
+            begin = index + 1
+            if depth == 0:
+                break
+    return found
+
+
+def block_chains(str text, Py_ssize_t start, Py_ssize_t end):
+    """[(open, close, (enclosing opens...))] of every `{ }` block in text[start:end], in the order they close."""
+    cdef Py_ssize_t index, opening
+    cdef Py_UCS4 c
+    cdef list stack = []
+    cdef list found = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for index in range(start, end):
+        c = text[index]
+        if c == u'{':
+            stack.append(index)
+        elif c == u'}' and stack:
+            opening = stack.pop()
+            found.append((opening, index, tuple(stack)))
+    return found
+
+
+def open_stack_strict(str text, Py_ssize_t start, Py_ssize_t at):
+    """open_stack, but a stray `}` is left to the plain scan (which raises IndexError there)."""
+    cdef Py_ssize_t i
+    cdef Py_UCS4 c
+    cdef list stack = []
+    if start < 0 or at > len(text):
+        return NotImplemented
+    for i in range(start, at):
+        c = text[i]
+        if c == u'{':
+            stack.append(i)
+        elif c == u'}':
+            if not stack:
+                return NotImplemented
+            stack.pop()
+    return stack
+
+
+def bracket_chains(str text, Py_ssize_t start, Py_ssize_t end):
+    """or_chain_order_repairs: (begin, end) of each maximal expression between delimiters that holds a single `|`."""
+    cdef Py_ssize_t i, begin = start
+    cdef Py_UCS4 ch
+    cdef list found = []
+    cdef list stack = []
+    cdef str span
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        ch = text[i]
+        if ch == u'(' or ch == u'[':
+            stack.append(begin)
+            begin = i + 1
+        elif ch == u')' or ch == u']':
+            if stack:
+                span = text[begin:i]
+                if '|' in span.replace('||', ''):
+                    found.append((begin, i))
+                begin = stack.pop()
+        elif (ch == u';' or ch == u'{' or ch == u'}' or ch == u'=' or ch == u',') and not stack:
+            span = text[begin:i]
+            if '|' in span.replace('||', ''):
+                found.append((begin, i))
+            begin = i + 1
+    return found
+
+
+def operator_cuts(str text, str operators):
+    """allocation_lever_repairs: [(offset, operator)] of each top-level commutative operator (not `&&`, `||`, `++`, `+=`, a
+    dereference or pointer cast `*`, or `op=`)."""
+    cdef Py_ssize_t i, j, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 ch, before, after
+    cdef bint has_before, has_after, ok
+    cdef list cuts = []
+    for i in range(length):
+        ch = text[i]
+        if ch == u'(' or ch == u'[':
+            depth += 1
+        elif ch == u')' or ch == u']':
+            depth -= 1
+        if depth == 0 and operators.find(ch) >= 0:
+            has_before = i > 0
+            has_after = i + 1 < length
+            before = text[i - 1] if has_before else u'\0'
+            after = text[i + 1] if has_after else u'\0'
+            if (ch == u'&' or ch == u'|') and ((has_after and after == ch) or (has_before and before == ch)):
+                continue
+            if ch == u'*':
+                j = i - 1
+                while j >= 0 and text[j].isspace():
+                    j -= 1
+                ok = j >= 0 and (_word_char(text[j]) or text[j] == u')' or text[j] == u']')
+                if not ok:
+                    continue
+            if (ch == u'+' or ch == u'-') and (not has_after or after == u'+' or after == u'=' or (has_before and before == ch)):
+                continue
+            if has_after and after == u'=':
+                continue
+            cuts.append((i, chr(ch)))
+    return cuts
+
+
+def statement_start_in_block(str text, Py_ssize_t block, Py_ssize_t first):
+    """late_aggregate_scope: where the statement holding `first` begins inside the block opened at `block`, before skipping spaces; -1 if
+    its braces do not balance."""
+    cdef Py_ssize_t position
+    cdef Py_ssize_t brace = 0, paren = 0
+    cdef Py_ssize_t start = block + 1
+    cdef Py_UCS4 c
+    if block + 1 < 0 or first > len(text):
+        return NotImplemented
+    for position in range(block + 1, first):
+        c = text[position]
+        if c == u'(' or c == u'[':
+            paren += 1
+        elif c == u')' or c == u']':
+            paren -= 1
+        elif c == u'{':
+            brace += 1
+        elif c == u'}':
+            brace -= 1
+            if brace == 0 and paren == 0:
+                start = position + 1
+        elif c == u';' and brace == 0 and paren == 0:
+            start = position + 1
+    if brace:
+        return -1
+    return start

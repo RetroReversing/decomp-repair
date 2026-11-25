@@ -80,7 +80,7 @@ def _stores(text, body):
     return False
 
 
-def _condition(text, at):
+def _python_condition(text, at):
     """(start, end) of the parenthesised condition of the first `if` at or after `at`, or None."""
     m = re.compile(r'\bif\s*\(').search(text, at)
     if not m:
@@ -94,6 +94,22 @@ def _condition(text, at):
             if depth == 0:
                 return m.end() - 1, j + 1
     return None
+
+
+_condition = _python_condition
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _condition(text, at):
+        m = re.compile(r'\bif\s*\(').search(text, at)
+        if not m:
+            return None
+        found = _scan.close_if_past(text, m.end() - 1, '(', ')', None)
+        if found is NotImplemented:
+            return _python_condition(text, at)
+        return None if found is None else (m.end() - 1, found)
 
 
 def _webs(source, name):

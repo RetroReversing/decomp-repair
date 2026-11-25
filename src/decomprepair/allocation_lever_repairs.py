@@ -36,7 +36,7 @@ FIELD_STORE = re.compile(
     r'|(?P<plain>' + IDENT + r')\s*(?:->|\.)\s*(?P<field>' + IDENT + r'))\s*=\s*(?P<value>[^=;]+);$')
 
 
-def _operands(text):
+def _python_operands(text):
     """(start, end) of each top-level operand around a single commutative operator in `text`, or None."""
     depth, cuts = 0, []
     for i, ch in enumerate(text):
@@ -54,6 +54,17 @@ def _operands(text):
                 continue
             cuts.append((i, ch))
     return cuts
+
+
+_operands = _python_operands
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _operands(text):
+        found = _scan.operator_cuts(text, COMMUTATIVE)
+        return _python_operands(text) if found is NotImplemented else found
 
 
 def _swaps(expr):
