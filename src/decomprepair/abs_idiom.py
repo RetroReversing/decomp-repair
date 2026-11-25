@@ -89,5 +89,6 @@ def variants(source, name, asm, header=''):
     return out
 
 
-REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'asm', 'header'),
-          'order': 63, 'archs': ('mips',)}
+# Not declared: the library runs this repair from its rule, rules/abs_idiom.json (rules.py), which tests/test_rules.py
+# checks gives this function's children for every case here. Kept as the hand-written reference until the rule has run
+# for a release; delete it with its test then.

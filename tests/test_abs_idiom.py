@@ -60,4 +60,4 @@ def test_no_child_without_a_negate_a_float_or_another_test():
 def test_subu_from_zero_counts_as_a_negate_and_it_is_registered():
     assert ab.negates('/* 0 80001000 00021023 */  subu       $v0, $zero, $v0\n')
     assert not ab.negates('/* 0 80001000 00021023 */  subu       $v0, $v1, $v0\n')
-    assert any(r.module == 'abs_idiom' for r in registry.declared())
+    assert [r.module for r in registry.declared() if r.module in ('abs_idiom', 'rule:abs_idiom')] == ['rule:abs_idiom']
