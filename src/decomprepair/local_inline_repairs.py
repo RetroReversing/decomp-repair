@@ -67,7 +67,7 @@ def _adjacent(source, part):
     return result
 
 
-def _block_end(clean, base, start, end):
+def _python_block_end(clean, base, start, end):
     """Where the block holding `start` closes: the function's end at top level, else its own `}` (None if unbalanced)."""
     depth = clean[base:start].count('{') - clean[base:start].count('}')
     if depth == 0:
@@ -83,6 +83,24 @@ def _block_end(clean, base, start, end):
             if level < 0:
                 return index
     return None
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, base, start, end):
+        depth = clean[base:start].count('{') - clean[base:start].count('}')
+        if depth == 0:
+            return end
+        if depth < 0:
+            return None
+        found = _scan.enclosing_end(clean, start, end, None)
+        if found is not NotImplemented:
+            return found
+        return _python_block_end(clean, base, start, end)
 
 
 def variants(source, name, limit=8):

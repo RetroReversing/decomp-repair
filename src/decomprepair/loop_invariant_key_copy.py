@@ -51,7 +51,7 @@ def _loop_end(clean, at, limit):
     return semi + 1 if 0 <= semi < limit else None
 
 
-def _block_end(clean, at, opening):
+def _python_block_end(clean, at, opening):
     """The `}` that closes the block holding position `at` (the function's own at the top level)."""
     depth, index = 0, at
     while index > opening:
@@ -64,6 +64,22 @@ def _block_end(clean, at, opening):
                 return end - 1 if end else None
             depth -= 1
     return None
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, at, opening):
+        found = _scan.enclosing_open(clean, at, opening, -1)
+        if found is not NotImplemented:
+            if found < 0:
+                return None
+            end = close(clean, found, '{', '}')
+            return end - 1 if end else None
+        return _python_block_end(clean, at, opening)
 
 
 def _statement_start(clean, at, floor):

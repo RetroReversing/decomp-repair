@@ -387,3 +387,46 @@ def test_the_eighth_batch_of_own_scans_match_their_plain_loops_on_random_text():
             where = rng.randint(-3, len(text) + 2)
             for args in build(text, where, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+NINTH_BATCH = [
+    ("local_split_reuse", "_balanced", lambda t, a, r: [(t, a)]),
+    ("lockstep_cursor_index", "_block_end", _three),
+    ("lockstep_cursor_index", "_block_start", _three),
+    ("lookup_loop_inline", "_enclosing", _three),
+    ("loop_address_hoist_repairs", "_match", _params),
+    ("loop_bound_pointer_local", "_close", _params),
+    ("loop_entry_reload", "_opener", lambda t, a, r: [(t, a)]),
+    ("loop_index_inline_guard", "_close", lambda t, a, r: [(t, a)]),
+    ("loop_index_inline_repairs", "_close", lambda t, a, r: [(t, a)]),
+    ("loop_invariant_key_copy", "_block_end", _three),
+    ("loop_preheader_role_reuse", "_close", lambda t, a, r: _params(t, a, r) + [(t, a)]),
+    ("loop_role_rename", "_close", _params),
+    ("loop_subscript_base_pointer", "_close", lambda t, a, r: _params(t, a, r) + [(t, a)]),
+    ("loop_subscript_base_pointer", "_open_of", _three),
+    ("local_inline_repairs", "_block_end", _four),
+    ("arm_scratch_merge", "_top_statements", _three),
+    ("local_web_split", "_depths", _three),
+    ("guarded_sentinel_while", "_conjuncts", _three),
+    ("narrow_test_share_repairs", "_statement_start", _three),
+    ("call_result_halfword_local", "_statement_start", _three),
+    ("scaled_copy_in_place", "_directly_in", lambda t, a, r: [(t, (r.randint(-2, len(t) + 2),), a)]),
+    ("passthrough_argument_repairs", "_next_argument", lambda t, a, r: [(t, a)]),
+]
+
+
+def test_the_ninth_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(111)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\t", "\n", ";", ",", "&&", "&", "é", "𝄞", "((", "}}", "; "]
+    for module_name, function, build in NINTH_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)

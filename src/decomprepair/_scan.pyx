@@ -550,3 +550,121 @@ def split_top(str text, str token, bint square):
         at += 1
     parts.append(text[last:])
     return parts
+
+
+# More shapes: mixed-bracket statements, depth tables, `&&` operands, a statement's start looking back, a net brace depth, the next argument.
+
+def statements_mixed(str text, Py_ssize_t lo, Py_ssize_t hi):
+    """[(start, end)] of the `;`-terminated statements of text[lo:hi] at bracket depth 0 (`({[` against `)}]`)."""
+    cdef Py_ssize_t i, start = lo
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list out = []
+    if lo < 0 or hi > len(text):
+        return NotImplemented
+    for i in range(lo, hi):
+        c = text[i]
+        if c == u'(' or c == u'{' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u'}' or c == u']':
+            depth -= 1
+        elif c == u';' and depth == 0:
+            out.append((start, i + 1))
+            start = i + 1
+    return out
+
+
+def paren_depth_table(str text, Py_ssize_t opening, Py_ssize_t end):
+    """{offset: the parenthesis depth in front of it} for each offset of text[opening:end]."""
+    cdef Py_ssize_t k
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef dict table = {}
+    if opening < 0 or end > len(text):
+        return NotImplemented
+    for k in range(opening, end):
+        table[k] = depth
+        c = text[k]
+        if c == u'(':
+            depth += 1
+        elif c == u')':
+            depth -= 1
+    return table
+
+
+def conjuncts(str text, Py_ssize_t low, Py_ssize_t high):
+    """The (start, end) offsets of the top-level `&&` operands of text[low:high] (parentheses and brackets balanced)."""
+    cdef Py_ssize_t i = low, start = low
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list spans = []
+    if low < 0 or high > len(text):
+        return NotImplemented
+    while i < high:
+        c = text[i]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        elif depth == 0 and text.startswith(u'&&', i):
+            spans.append((start, i))
+            start = i + 2
+            i += 1
+        i += 1
+    spans.append((start, high))
+    return spans
+
+
+def statement_start_before(str text, Py_ssize_t at, Py_ssize_t floor):
+    """Just after the `;`, `{` or `}` that ends the statement before the one containing `at` (outside parentheses),
+    looking back from `at - 1` to `floor + 1`; `floor + 1` if there is none."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if floor < -1 or at - 1 >= len(text):
+        return NotImplemented
+    i = at - 1
+    while i > floor:
+        c = text[i]
+        if c == u')':
+            depth += 1
+        elif c == u'(':
+            depth -= 1
+        elif depth <= 0 and (c == u';' or c == u'{' or c == u'}'):
+            return i + 1
+        i -= 1
+    return floor + 1
+
+
+def brace_balance(str text, Py_ssize_t start, Py_ssize_t end):
+    """The net brace depth of text[start:end] (`{` minus `}`)."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'{':
+            depth += 1
+        elif c == u'}':
+            depth -= 1
+    return depth
+
+
+def next_argument(str text, Py_ssize_t start):
+    """The offset after the first top-level comma at or after `start` (brackets `([{` balanced), else len(text)."""
+    cdef Py_ssize_t i, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if start < 0:
+        return NotImplemented
+    for i in range(start, length):
+        c = text[i]
+        if c == u'(' or c == u'[' or c == u'{':
+            depth += 1
+        elif c == u')' or c == u']' or c == u'}':
+            depth -= 1
+        if depth == 0 and c == u',':
+            return i + 1
+    return length

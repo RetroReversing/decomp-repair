@@ -35,7 +35,7 @@ _IF = re.compile(rf'if\s*\(\s*(?P<cond>{ID})\s*\)\s*\{{')
 _MASKED = re.compile(rf'(?P<idx>{ID})\s*=\s*\(?\s*(?P<counter>{ID})\s*&\s*(?P<mask>0[xX][0-9A-Fa-f]+|\d+)\s*\)?')
 
 
-def _close(text, open_index):
+def _python_close(text, open_index):
     depth = 0
     for i in range(open_index, len(text)):
         depth += text[i] == '{'
@@ -43,6 +43,17 @@ def _close(text, open_index):
         if not depth:
             return i
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, open_index):
+        found = _scan.close_every(text, open_index, '{', '}', False, None)
+        return _python_close(text, open_index) if found is NotImplemented else found
 
 
 def _statements(text):

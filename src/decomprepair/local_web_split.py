@@ -65,7 +65,7 @@ def _blocks(clean, opening, end):
     return sorted(out)
 
 
-def _depths(clean, opening, end):
+def _python_depths(clean, opening, end):
     """Parenthesis depth in front of every position of the function body."""
     depth, table = 0, {}
     for k in range(opening, end):
@@ -76,6 +76,17 @@ def _depths(clean, opening, end):
         elif ch == ')':
             depth -= 1
     return table
+
+
+_depths = _python_depths
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _depths(clean, opening, end):
+        found = _scan.paren_depth_table(clean, opening, end)
+        return _python_depths(clean, opening, end) if found is NotImplemented else found
 
 
 def _innermost(blocks, pos):

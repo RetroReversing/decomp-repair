@@ -136,7 +136,7 @@ def _absolute(clean, span, offset):
     return offset if offset < span[0] else offset + (span[1] - span[0])
 
 
-def _next_argument(text, start):
+def _python_next_argument(text, start):
     """Where the argument after the one starting at `start` begins."""
     depth = 0
     for i in range(start, len(text)):
@@ -145,6 +145,17 @@ def _next_argument(text, start):
         if depth == 0 and ch == ',':
             return i + 1
     return len(text)
+
+
+_next_argument = _python_next_argument
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _next_argument(text, start):
+        found = _scan.next_argument(text, start)
+        return _python_next_argument(text, start) if found is NotImplemented else found
 
 
 def _integer_parameter(kind, context):

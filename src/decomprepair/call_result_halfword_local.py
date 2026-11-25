@@ -31,7 +31,7 @@ CALL = re.compile(rf'(?<![\w.>])(?P<name>{IDENT})\s*\(')
 KEYWORDS = {'if', 'while', 'for', 'switch', 'return', 'sizeof'}
 
 
-def _statement_start(clean, at, floor):
+def _python_statement_start(clean, at, floor):
     """Just after the `;`, `{` or `}` that ends the statement before the one containing `at` (outside parentheses)."""
     depth = 0
     for pos in range(at - 1, floor, -1):
@@ -43,6 +43,17 @@ def _statement_start(clean, at, floor):
         elif depth <= 0 and c in ';{}':
             return pos + 1
     return floor + 1
+
+
+_statement_start = _python_statement_start
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_start(clean, at, floor):
+        found = _scan.statement_start_before(clean, at, floor)
+        return _python_statement_start(clean, at, floor) if found is NotImplemented else found
 
 
 def _outer_argument(clean, at, skip):

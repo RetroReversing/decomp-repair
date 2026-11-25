@@ -36,7 +36,7 @@ _ASSIGN = re.compile(r'(?m)^([ \t]*)([A-Za-z_]\w*)[ \t]*=[ \t]*([^;{}=][^;{}]*);
 _NUMERIC = re.compile(r'[0-9xXa-fA-F\s()+\-*&|^<>~]+\Z')
 
 
-def _close(clean, opening):
+def _python_close(clean, opening):
     depth = 0
     for index in range(opening, len(clean)):
         if clean[index] == '{':
@@ -46,6 +46,17 @@ def _close(clean, opening):
             if depth == 0:
                 return index
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(clean, opening):
+        found = _scan.close_if(clean, opening, '{', '}', -1)
+        return _python_close(clean, opening) if found is NotImplemented else found
 
 
 def _loops(clean, base, end):
