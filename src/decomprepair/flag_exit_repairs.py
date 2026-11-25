@@ -49,7 +49,7 @@ FAMILIES = (SIGNED_FLAG, BREAK_RETURN, ARM_SCOPE, STEP_LAST, INDEX_SPLIT, FLAG_R
 LIMIT = 4
 
 
-def _close(text, opening):
+def _python_close(text, opening):
     """Index of the brace closing the one at `opening`, or None."""
     depth = 0
     for i in range(opening, len(text)):
@@ -60,6 +60,17 @@ def _close(text, opening):
             if depth == 0:
                 return i
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    pass
+else:
+    def _close(text, opening):
+        found = _scan.close_if(text, opening, '{', '}', None)
+        return _python_close(text, opening) if found is NotImplemented else found
 
 
 def _signed_flag(source, part):

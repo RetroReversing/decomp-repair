@@ -47,13 +47,24 @@ DECLARATION = re.compile(r'\s*(?:(?:unsigned|signed|const|volatile|struct|union)
                          r'(?:\[[^]]*\])?\s*(?:=[^;]*)?;')
 
 
-def _close(text, start, left='{', right='}'):
+def _python_close(text, start, left='{', right='}'):
     depth = 0
     for i in range(start, len(text)):
         depth += (text[i] == left) - (text[i] == right)
         if depth == 0:
             return i + 1
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    pass
+else:
+    def _close(text, start, left='{', right='}'):
+        found = _scan.close_every(text, start, left, right, True, None)
+        return _python_close(text, start, left, right) if found is NotImplemented else found
 
 
 def _jumps_out(body):

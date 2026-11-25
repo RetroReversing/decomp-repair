@@ -32,7 +32,7 @@ _CALL = re.compile(r'\w\s*\(|\+\+|--')
 _PLAIN = re.compile(rf'\s*{_ID}\s*=(?!=)[^;{{}}]*;')
 
 
-def _close(clean, start, left='(', right=')'):
+def _python_close(clean, start, left='(', right=')'):
     """Index just past the bracket matching the one at `start`, or None."""
     depth = 0
     for pos in range(start, len(clean)):
@@ -40,6 +40,17 @@ def _close(clean, start, left='(', right=')'):
         if depth == 0:
             return pos + 1
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    pass
+else:
+    def _close(clean, start, left='(', right=')'):
+        found = _scan.close_every(clean, start, left, right, True, None)
+        return _python_close(clean, start, left, right) if found is NotImplemented else found
 
 
 def _body(clean):
