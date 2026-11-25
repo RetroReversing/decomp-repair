@@ -65,7 +65,7 @@ def _prefix(clean, start, stop):
     return stop
 
 
-def _enclosing(clean, pos):
+def _python_enclosing(clean, pos):
     """(start, end) of the innermost braces around `pos`, end None when they do not close."""
     depth = 0
     for at in range(pos - 1, -1, -1):
@@ -76,6 +76,19 @@ def _enclosing(clean, pos):
                 return at, close(clean, at, '{', '}')
             depth -= 1
     return 0, None
+
+
+_enclosing = _python_enclosing
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing(clean, pos):
+        found = _scan.enclosing_open(clean, pos, 0, -1)
+        if found is not NotImplemented:
+            return (0, None) if found < 0 else (found, close(clean, found, '{', '}'))
+        return _python_enclosing(clean, pos)
 
 
 def variants(source, name):

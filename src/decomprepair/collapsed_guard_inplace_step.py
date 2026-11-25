@@ -24,7 +24,7 @@ LIMIT = 4
 STEP = re.compile(rf'(?<![\w.])(?P<t>{IDENT})\s*=\s*(?P<v>{IDENT})\s*(?P<op>[+-])\s*(?P<c>{NUMBER})\s*;')
 
 
-def _enclosing(clean, at, floor):
+def _python_enclosing(clean, at, floor):
     """(start of `{`, end past `}`) of the innermost block around `at`, or None."""
     depth = 0
     for pos in range(at - 1, floor - 1, -1):
@@ -36,6 +36,22 @@ def _enclosing(clean, at, floor):
                 return (pos, end) if end and end > at else None
             depth -= 1
     return None
+
+
+_enclosing = _python_enclosing
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing(clean, at, floor):
+        found = _scan.enclosing_open(clean, at, floor, -1)
+        if found is not NotImplemented:
+            if found < 0:
+                return None
+            end = close(clean, found, '{', '}')
+            return (found, end) if end and end > at else None
+        return _python_enclosing(clean, at, floor)
 
 
 def _in_loop(clean, at, floor):

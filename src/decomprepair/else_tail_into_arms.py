@@ -44,7 +44,7 @@ def _open_of(clean, closing):
     return None
 
 
-def _block_end(clean, start, limit):
+def _python_block_end(clean, start, limit):
     """Position of the `}` that closes the block containing `start`."""
     depth = 0
     for hit in re.finditer(r'[{}]', clean[start:limit]):
@@ -55,6 +55,17 @@ def _block_end(clean, start, limit):
         else:
             depth -= 1
     return None
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, start, limit):
+        found = _scan.enclosing_end(clean, start, limit, None)
+        return _python_block_end(clean, start, limit) if found is NotImplemented else found
 
 
 def _last_statement(arm):
