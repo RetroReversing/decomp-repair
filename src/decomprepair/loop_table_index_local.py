@@ -30,7 +30,7 @@ READ = re.compile(r'\*\s*\(\(\s*[A-Za-z_][\w \t]*?\s*\*\s*\)\s*\(\(\(\s*(?:unsig
                   r'(?P<sym>[A-Za-z_]\w*)\s*\)\s*\)\s*\+\s*')
 
 
-def _blocks(clean, start, end):
+def _python_blocks(clean, start, end):
     stack, found = [], []
     for position in range(start, end):
         if clean[position] == '{':
@@ -38,6 +38,17 @@ def _blocks(clean, start, end):
         elif clean[position] == '}' and stack:
             found.append((stack.pop(), position))
     return found
+
+
+_blocks = _python_blocks
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _blocks(clean, start, end):
+        found = _scan.block_pairs(clean, start, end)
+        return _python_blocks(clean, start, end) if found is NotImplemented else found
 
 
 def _is_loop_body(clean, opening):

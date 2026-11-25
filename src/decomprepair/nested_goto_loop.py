@@ -25,7 +25,7 @@ _DECL = re.compile(r'\s*(?:(?:unsigned|signed|const|struct|union|register)\s+)*[
 _LOOP = re.compile(r'\b(?:for|while|do|switch)\b')
 
 
-def _enclosing(clean, begin, at):
+def _python_enclosing(clean, begin, at):
     """Openings of the braces still open at `at`, counted from `begin` (the label's block)."""
     stack = []
     for pos in range(begin, at):
@@ -34,6 +34,17 @@ def _enclosing(clean, begin, at):
         elif clean[pos] == '}' and stack:
             stack.pop()
     return stack
+
+
+_enclosing = _python_enclosing
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing(clean, begin, at):
+        found = _scan.open_stack(clean, begin, at)
+        return _python_enclosing(clean, begin, at) if found is NotImplemented else found
 
 
 def _head(clean, opening):

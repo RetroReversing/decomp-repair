@@ -456,7 +456,7 @@ def accumulate_variants(source, name):
     return out[:3]
 
 
-def _pointer_sum(text):
+def _python_pointer_sum(text):
     """`A + B` at the top level, as the two operands, or None."""
     depth = 0
     for index, char in enumerate(text):
@@ -465,6 +465,19 @@ def _pointer_sum(text):
         if depth == 0 and char == '+' and text[index - 1] != '+' and text[index + 1:index + 2] != '+':
             return text[:index].strip(), text[index + 1:].strip()
     return None
+
+
+_pointer_sum = _python_pointer_sum
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan as _typed  # (this module has a `_scan` of its own)
+except ImportError:
+    _typed = None
+if _typed is not None:
+    def _pointer_sum(text):
+        if isinstance(text, str):
+            found = _typed.top_plus_index(text)
+            return (text[:found].strip(), text[found + 1:].strip()) if found >= 0 else None
+        return _python_pointer_sum(text)
 
 
 def address_sum_variants(source, name):

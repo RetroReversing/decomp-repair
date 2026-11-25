@@ -75,7 +75,7 @@ def _statements(clean, lo, hi):
     return out
 
 
-def _blocks(clean, lo, hi):
+def _python_blocks(clean, lo, hi):
     """The (open+1, close) of the function body and of every block in it."""
     stack, found = [], [(lo, hi - 1)]
     for at in range(lo, hi):
@@ -84,6 +84,19 @@ def _blocks(clean, lo, hi):
         elif clean[at] == '}' and stack:
             found.append((stack.pop() + 1, at))
     return found
+
+
+_blocks = _python_blocks
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _blocks(clean, lo, hi):
+        found = _scan.block_pairs(clean, lo, hi)
+        if found is not NotImplemented:
+            return [(lo, hi - 1)] + [(opening + 1, closing) for opening, closing in found]
+        return _python_blocks(clean, lo, hi)
 
 
 def _line_span(source, start, end):

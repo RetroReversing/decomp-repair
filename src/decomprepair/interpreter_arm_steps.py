@@ -45,7 +45,7 @@ if _scan is not None:
         return _python_balanced(text, at) if found is NotImplemented else found
 
 
-def _split_top(expr, op):
+def _python_split_top(expr, op):
     depth = 0
     for i, ch in enumerate(expr):
         if ch == '(':
@@ -55,6 +55,19 @@ def _split_top(expr, op):
         elif depth == 0 and expr[i:i + len(op)] == op and expr[i - 1] == ' ' and expr[i + len(op)] == ' ':
             return expr[:i].strip(), expr[i + len(op):].strip()
     return None
+
+
+_split_top = _python_split_top
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split_top(expr, op):
+        found = _scan.split_spaced_operator(expr, op)
+        if found is not NotImplemented:
+            return None if found < 0 else (expr[:found].strip(), expr[found + len(op):].strip())
+        return _python_split_top(expr, op)
 
 
 def _strip(expr):

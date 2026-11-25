@@ -42,7 +42,7 @@ def _declared_off(body, name):
     return body[:found.start()] + body[found.end():] if found else body
 
 
-def _block(clean, pos, lo, hi):
+def _python_block(clean, pos, lo, hi):
     """The innermost braces around `pos` as (open, close)."""
     depth, i = 0, pos
     while i > lo:
@@ -63,6 +63,21 @@ def _block(clean, pos, lo, hi):
                 return start, j
             depth -= 1
     return None
+
+
+_block = _python_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block(clean, pos, lo, hi):
+        found = _scan.enclosing_open(clean, pos, lo, -1)
+        end = _scan.enclosing_end(clean, pos, hi, None)
+        if found is NotImplemented or end is NotImplemented:
+            return _python_block(clean, pos, lo, hi)
+        start = pos if pos <= lo else (lo if found < 0 else found)
+        return None if end is None else (start, end)
 
 
 def variants(source, name):

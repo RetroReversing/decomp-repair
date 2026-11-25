@@ -32,7 +32,7 @@ def _helpers(clean):
     return found
 
 
-def _arguments(clean, open_paren):
+def _python_arguments(clean, open_paren):
     """The (start, end) spans of the top-level arguments of the call whose `(` is at `open_paren`, or None."""
     end = close(clean, open_paren)
     if not end:
@@ -49,6 +49,22 @@ def _arguments(clean, open_paren):
             begin = at + 1
     spans.append((begin, end - 1))
     return spans, end
+
+
+_arguments = _python_arguments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arguments(clean, open_paren):
+        end = close(clean, open_paren)
+        if not end:
+            return None
+        spans = _scan.split_args_paren(clean, open_paren + 1, end - 1)
+        if spans is NotImplemented:
+            return _python_arguments(clean, open_paren)
+        return spans, end
 
 
 def variants(source, name, header=''):

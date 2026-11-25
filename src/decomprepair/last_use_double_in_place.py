@@ -24,7 +24,7 @@ _DOUBLE = re.compile(r'\(\s*([A-Za-z_]\w*)\s*(?:\*\s*2|<<\s*1)\s*\)')
 _STATEMENT = re.compile(r'(?m)^([ \t]*)([^;{}\n][^;{}]*;)')
 
 
-def _block(clean, pos, lo, hi):
+def _python_block(clean, pos, lo, hi):
     depth, i = 0, pos
     while i > lo:
         i -= 1
@@ -43,6 +43,21 @@ def _block(clean, pos, lo, hi):
                 return start, j
             depth -= 1
     return None
+
+
+_block = _python_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block(clean, pos, lo, hi):
+        found = _scan.enclosing_open(clean, pos, lo, -1)
+        end = _scan.enclosing_end(clean, pos, hi, None)
+        if found is NotImplemented or end is NotImplemented:
+            return _python_block(clean, pos, lo, hi)
+        start = pos if pos <= lo else (lo if found < 0 else found)
+        return None if end is None else (start, end)
 
 
 def variants(source, name):

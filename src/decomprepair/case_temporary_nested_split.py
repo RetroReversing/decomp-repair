@@ -48,7 +48,7 @@ def _cases(clean, body, nested):
     return groups
 
 
-def _enclosing_block(clean, group_start, pos):
+def _python_enclosing_block(clean, group_start, pos):
     """(open, close) of the innermost block holding `pos`, searching from the case's start; the case itself when none."""
     stack = []
     for k in range(group_start, pos):
@@ -57,6 +57,19 @@ def _enclosing_block(clean, group_start, pos):
         elif clean[k] == '}' and stack:
             stack.pop()
     return stack[-1] if stack else None
+
+
+_enclosing_block = _python_enclosing_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing_block(clean, group_start, pos):
+        found = _scan.open_stack(clean, group_start, pos)
+        if found is not NotImplemented:
+            return found[-1] if found else None
+        return _python_enclosing_block(clean, group_start, pos)
 
 
 def _dominated(clean, name, start, stop):

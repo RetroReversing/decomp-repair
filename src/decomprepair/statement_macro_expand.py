@@ -40,7 +40,7 @@ def _macros(source, upto):
     return found
 
 
-def _arguments(text, at):
+def _python_arguments(text, at):
     """The arguments of the call whose `(` is at `at` and the position after its `)`, or None."""
     end = close(text, at)
     if not end:
@@ -57,6 +57,22 @@ def _arguments(text, at):
             start = pos + 1
     args.append(text[start:end - 1].strip())
     return args, end
+
+
+_arguments = _python_arguments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arguments(text, at):
+        end = close(text, at)
+        if not end:
+            return None
+        spans = _scan.argument_spans_all(text, at + 1, end - 1)
+        if spans is NotImplemented:
+            return _python_arguments(text, at)
+        return [text[a:b].strip() for a, b in spans], end
 
 
 def _expand(text, macros, depth=0):

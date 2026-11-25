@@ -51,7 +51,7 @@ STORE = re.compile(rf'\*\s*\(\s*\(\s*(?:s32|u32)\s*\*\s*\)\s*\(\s*\(\s*\(\s*char
 DERIVED = re.compile(rf'(?P<y>{IDENT})\s*=\s*(?P<x>{IDENT})\s*\+\s*(?P<k>{NUMBER})\s*;\Z')
 
 
-def _statements(clean, start, end):
+def _python_statements(clean, start, end):
     """(start, end) of each `;`-ended statement in the body span; a brace or label ends a run and is not a statement."""
     out, begin = [], start
     for i in range(start, end):
@@ -63,6 +63,17 @@ def _statements(clean, start, end):
                 out.append((begin + len(clean[begin:i + 1]) - len(clean[begin:i + 1].lstrip()), i + 1))
             begin = i + 1
     return out
+
+
+_statements = _python_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statements(clean, start, end):
+        found = _scan.statements_brace_reset(clean, start, end)
+        return _python_statements(clean, start, end) if found is NotImplemented else found
 
 
 def _number(text):
