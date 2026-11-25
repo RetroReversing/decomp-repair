@@ -76,3 +76,8 @@ def test_it_is_registered_and_declares_what_it_needs():
     repair = {r.module: r for r in registry.declared()}['global_array_cast_form']
     assert not registry.problems(repair)
     assert repair.families == ('global_array_cast_form',) and set(repair.needs) >= {'asm', 'flags'}
+
+
+def test_the_address_of_a_member_through_the_pointer_is_still_a_read_of_the_pointer():
+    out = children(SOURCE.replace('arg0->x4 = 1;', 'func(&D_800B3960->x4);'))
+    assert out and '&(*(Obj **) D_800B3960)->x4' in out[0]

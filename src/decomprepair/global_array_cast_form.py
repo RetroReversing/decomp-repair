@@ -80,9 +80,12 @@ def _uses(part, symbol, pointer):
     for hit in re.finditer(r'(?<![\w.])' + re.escape(symbol) + r'\b', part.clean[part.opening:part.end]):
         start, end = part.opening + hit.start(), part.opening + hit.end()
         before, after = part.clean[:start].rstrip(), part.clean[end:].lstrip()
-        if (before.endswith('&') and not before.endswith('&&')) or before.endswith(('->', '.', '++', '--')):
+        if before.endswith(('->', '.', '++', '--')):
             return None
-        if after.startswith(('->', '[')):
+        member = after.startswith(('->', '['))
+        if before.endswith('&') and not before.endswith('&&') and not member:
+            return None  # its address (`&G->f` is the address of a field the pointer reaches)
+        if member:
             if not pointer:
                 return None
             out.append((start, end, True))
