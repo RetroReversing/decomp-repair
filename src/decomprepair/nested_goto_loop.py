@@ -55,7 +55,7 @@ def _head(clean, opening):
     return word[1] if word else ''
 
 
-def _matching(clean, opening, limit):
+def _python_matching(clean, opening, limit):
     """Index just past the `}` that closes the `{` at `opening`."""
     depth = 0
     for pos in range(opening, limit):
@@ -66,6 +66,19 @@ def _matching(clean, opening, limit):
             if depth == 0:
                 return pos + 1
     return None
+
+
+_matching = _python_matching
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _matching(clean, opening, limit):
+        found = _scan.close_if_past(clean, opening, '{', '}', None)
+        if found is NotImplemented or limit > len(clean):
+            return _python_matching(clean, opening, limit)
+        return found if found is not None and found <= limit else None
 
 
 def rewrite(source, name, label, part):

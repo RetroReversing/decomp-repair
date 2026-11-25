@@ -23,12 +23,23 @@ _DECL = re.compile(rf'(?m)^([ \t]*)((?:(?:unsigned|signed|struct|const)\s+)*{IDE
 _NOT_TYPE = {'return', 'goto', 'else', 'case', 'extern', 'typedef', 'static'}
 
 
-def _index_end(clean, at):
+def _python_index_end(clean, at):
     depth = 1
     while at < len(clean) and depth:
         depth += {'[': 1, ']': -1}.get(clean[at], 0)
         at += 1
     return at - 1 if not depth else -1
+
+
+_index_end = _python_index_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _index_end(clean, at):
+        found = _scan.unmatched_close(clean, at, '[', ']', -1)
+        return _python_index_end(clean, at) if found is NotImplemented else found
 
 
 def variants(source, name, asm=''):

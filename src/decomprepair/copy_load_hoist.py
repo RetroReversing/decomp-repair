@@ -67,7 +67,7 @@ def _cell(text):
     return found['base'] or found['base2'], kind, int(re.sub(r'[uUlL]+$', '', found['off'] or found['off2']), 0)
 
 
-def _brace_groups(clean, start, end):
+def _python_brace_groups(clean, start, end):
     """(open, close) of each brace group at parenthesis depth 0 inside clean[start:end], outermost only."""
     groups, depth, opening = [], 0, None
     for i in range(start, end):
@@ -81,6 +81,17 @@ def _brace_groups(clean, start, end):
             if depth == 0 and opening is not None:
                 groups.append((opening, i))
     return groups
+
+
+_brace_groups = _python_brace_groups
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _brace_groups(clean, start, end):
+        found = _scan.brace_groups(clean, start, end)
+        return _python_brace_groups(clean, start, end) if found is NotImplemented else found
 
 
 def _statements(clean, low, high):

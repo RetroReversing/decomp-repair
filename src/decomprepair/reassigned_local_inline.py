@@ -30,7 +30,7 @@ TYPES = {'u8', 's8', 'u16', 's16', 'u32', 's32', 'u64', 's64', 'char', 'short', 
          'f32', 'f64', 'float', 'double', 'void'}
 
 
-def _match(clean, open_at):
+def _python_match(clean, open_at):
     depth = 0
     for index in range(open_at, len(clean)):
         depth += clean[index] == '(' or clean[index] == '{'
@@ -38,6 +38,17 @@ def _match(clean, open_at):
         if depth == 0:
             return index
     return -1
+
+
+_match = _python_match
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _match(clean, open_at):
+        found = _scan.close_pairs(clean, open_at, '({', ')}', False, True, -1)
+        return _python_match(clean, open_at) if found is NotImplemented else found
 
 
 def _in_loop(clean, opening, position):

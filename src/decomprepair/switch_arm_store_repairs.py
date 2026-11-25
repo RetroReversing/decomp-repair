@@ -55,7 +55,7 @@ def _last_statement(text):
     return (pieces[-1].start(), pieces[-1][0]) if pieces else None
 
 
-def _encloses_plainly(clean, close, floor):
+def _python_encloses_plainly(clean, close, floor):
     """The `{` that the `}` at `close` ends, when it opens a bare block (not a loop, `if` or function body)."""
     depth, at = 0, close
     while at >= floor:
@@ -68,6 +68,22 @@ def _encloses_plainly(clean, close, floor):
                 return at if before and before[-1] in ';{}' else None
         at -= 1
     return None
+
+
+_encloses_plainly = _python_encloses_plainly
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _encloses_plainly(clean, close, floor):
+        found = _scan.open_if_floor(clean, close, floor, '{', '}', None)
+        if found is not NotImplemented:
+            if found is None:
+                return None
+            before = clean[:found].rstrip()
+            return found if before and before[-1] in ';{}' else None
+        return _python_encloses_plainly(clean, close, floor)
 
 
 def _switches(clean, opening, end):

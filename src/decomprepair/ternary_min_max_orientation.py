@@ -32,7 +32,7 @@ FLOAT = re.compile(r'\b(?:f32|f64|float|double)\b|\d\.\d|\d[fF]\b')
 BAD = re.compile(r'\+\+|--|[^=!<>]=[^=]|\w\s*\(|\?|:|&&|\|\|')
 
 
-def _balanced(text, at):
+def _python_balanced(text, at):
     """The index just past the group that opens at `at` ('(' or '[')."""
     depth = 0
     for index in range(at, len(text)):
@@ -40,6 +40,17 @@ def _balanced(text, at):
         if depth == 0:
             return index + 1
     return None
+
+
+_balanced = _python_balanced
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _balanced(text, at):
+        found = _scan.close_pairs(text, at, '([', ')]', True, True, None)
+        return _python_balanced(text, at) if found is NotImplemented else found
 
 
 def _strip(operand):

@@ -25,7 +25,7 @@ def _strip(text):
     return text
 
 
-def _last(text, operator):
+def _python_last(text, operator):
     """Only the final comma/conjunction operand supplies a fact; earlier writes stay intact."""
     depth, last, pos = 0, 0, 0
     while pos < len(text):
@@ -39,6 +39,17 @@ def _last(text, operator):
             pos += len(operator)-1
         pos += 1
     return text[last:]
+
+
+_last = _python_last
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _last(text, operator):
+        found = _scan.last_operand(text, operator)
+        return _python_last(text, operator) if found is NotImplemented else found
 
 
 def _fact(condition):
