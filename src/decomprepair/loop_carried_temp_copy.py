@@ -26,7 +26,7 @@ FAMILY = 'loop_carried_temp_copy'
 FAMILIES = (FAMILY,)
 _ID = r'[A-Za-z_]\w*'
 _PATTERN = re.compile(
-    rf'(?P<def>(?<![\w.>])(?P<t>{_ID})\s*=\s*(?P<e>[^;{{}}=]+?)\s*;)(?P<mid>(?:\s*[^;{{}}]*;)*?)(?P<ws>\s*)'
+    rf'(?P<def>(?<![\w.>])(?P<t>{_ID})\s*=\s*(?P<e>[^;{{}}=]+?)\s*;)(?P<mid>(?:[^;{{}}]*;)*?)(?P<ws>\s*)'
     rf'if\s*\(\s*(?:(?P=t)\s*==\s*0\s*\)\s*\{{\s*\}}\s*else\s*\{{\s*(?P<v>{_ID})\s*=\s*(?P=t)\s*;\s*continue\s*;\s*\}}'
     rf'|(?P=t)\s*(?:!=\s*0\s*)?\)\s*\{{\s*(?P<w>{_ID})\s*=\s*(?P=t)\s*;\s*continue\s*;\s*\}})')
 
