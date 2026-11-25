@@ -16,6 +16,7 @@ import os
 import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "decomprepair"
@@ -222,8 +223,12 @@ def main(argv: list[str]) -> int:
         print("Cython or setuptools is unavailable: the library stays interpreted.")
         return 0
     jobs = int(os.environ.get("DECOMPREPAIR_NATIVE_JOBS", "4"))
-    with ProcessPoolExecutor(jobs) as pool:
-        built = sum(pool.map(build_one, NATIVE))
+    try:
+        with ProcessPoolExecutor(jobs) as pool:
+            built = sum(pool.map(build_one, NATIVE))
+    except BrokenProcessPool:  # a compiler worker was killed (memory pressure): finish what is missing one at a time
+        built = len(compiled()) + sum(build_one(name) for name in NATIVE if not list(PACKAGE.glob(f"{name}.*.so"))
+                                      and not list(PACKAGE.glob(f"{name}.*.pyd")))
     print(f"Built {built} native modules into {PACKAGE}.")
     return 0
 
