@@ -39,7 +39,7 @@ NARROW = r'(?:u8|s8|u16|s16|char|short|unsigned\s+char|signed\s+char|unsigned\s+
 NOT_LABELS = {'case', 'default', 'public', 'private', 'protected'}
 
 
-def _block_start(clean, at, lo):
+def _python_block_start(clean, at, lo):
     """The `{` of the innermost block around `at`, no earlier than `lo`; None when there is none."""
     depth = 0
     for pos in range(at - 1, lo - 1, -1):
@@ -50,6 +50,17 @@ def _block_start(clean, at, lo):
                 return pos
             depth -= 1
     return None
+
+
+_block_start = _python_block_start
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_start(clean, at, lo):
+        found = _scan.enclosing_open(clean, at, lo, None)
+        return _python_block_start(clean, at, lo) if found is NotImplemented else found
 
 
 def variants(source, name):

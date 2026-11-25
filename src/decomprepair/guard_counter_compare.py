@@ -34,13 +34,24 @@ _INIT_INSIDE = re.compile(rf'\s*(?:((?:unsigned|signed|const|[us](?:8|16|32)|int
                           rf'\s*({_ID})\s*=\s*0\s*;')
 
 
-def _close(clean, start, left, right):
+def _python_close(clean, start, left, right):
     depth = 0
     for pos in range(start, len(clean)):
         depth += (clean[pos] == left) - (clean[pos] == right)
         if depth == 0:
             return pos + 1
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(clean, start, left, right):
+        found = _scan.close_every(clean, start, left, right, True, None)
+        return _python_close(clean, start, left, right) if found is NotImplemented else found
 
 
 def _squash(text):

@@ -57,7 +57,7 @@ def _statement(clean, at):
     return (then_start, then_end, else_start, else_end, else_end) if else_end else None
 
 
-def _enclosing(clean, at, lo):
+def _python_enclosing(clean, at, lo):
     """Start of the innermost `{` block around `at`, searching back no further than `lo`."""
     depth = 0
     for pos in range(at - 1, lo - 1, -1):
@@ -68,6 +68,17 @@ def _enclosing(clean, at, lo):
                 return pos
             depth -= 1
     return lo
+
+
+_enclosing = _python_enclosing
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing(clean, at, lo):
+        found = _scan.enclosing_open(clean, at, lo, lo)
+        return _python_enclosing(clean, at, lo) if found is NotImplemented else found
 
 
 def _assigned_before_goto(clean, var, region_start, goto_at):

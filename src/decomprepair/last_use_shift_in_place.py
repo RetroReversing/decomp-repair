@@ -27,13 +27,24 @@ _STATEMENT = re.compile(r'(?m)^([ \t]*)([^;{}\n][^;{}]*;)')
 _LOOP = re.compile(r'\b(?:for|while)\s*\(|\bdo\s*\{')
 
 
-def _close(clean, at, left='{', right='}'):
+def _python_close(clean, at, left='{', right='}'):
     depth = 0
     for i in range(at, len(clean)):
         depth += (clean[i] == left) - (clean[i] == right)
         if depth == 0:
             return i
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(clean, at, left='{', right='}'):
+        found = _scan.close_every(clean, at, left, right, False, None)
+        return _python_close(clean, at, left, right) if found is NotImplemented else found
 
 
 def _loops(clean, lo, hi):

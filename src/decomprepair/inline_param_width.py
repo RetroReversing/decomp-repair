@@ -31,13 +31,24 @@ _HEAD = re.compile(rf'(?m)^[ \t]*(?:static\s+inline|inline\s+static)\s+(?P<ret>[
 _BITS = {'u8': 8, 'u16': 16, 's16': 15, 'u32': 32, 's32': 32}
 
 
-def _close(text, at):
+def _python_close(text, at):
     depth = 0
     for i in range(at, len(text)):
         depth += (text[i] == '(') - (text[i] == ')')
         if depth == 0:
             return i
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, at):
+        found = _scan.close_every(text, at, '(', ')', False, None)
+        return _python_close(text, at) if found is NotImplemented else found
 
 
 def _arguments(text):

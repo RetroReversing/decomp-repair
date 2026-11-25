@@ -52,13 +52,24 @@ def _loose(text):
     return _plain(_WIDE_CAST.sub('', text))
 
 
-def _call_end(text, opening):
+def _python_call_end(text, opening):
     depth = 0
     for i in range(opening, len(text)):
         depth += {'(': 1, ')': -1}.get(text[i], 0)
         if depth == 0:
             return i
     return -1
+
+
+_call_end = _python_call_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _call_end(text, opening):
+        found = _scan.close_every(text, opening, '(', ')', False, -1)
+        return _python_call_end(text, opening) if found is NotImplemented else found
 
 
 def _expanded(bound, helpers):
