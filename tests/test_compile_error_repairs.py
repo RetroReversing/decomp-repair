@@ -138,4 +138,45 @@ def test_an_ido_compound_assignment_casts_its_amount():
 
 def test_sn64_names_its_preprocessed_file():
     log = "func.sn.i: In function `f':\nfunc.sn.i:257: pointer value used where a floating point value was expected\nfunc.sn.i:9: warning: x\n"
-    assert diagnostics(log) == [(257, 'pointer value used where a floating point value was expected')]
+    assert diagnostics(log) == [(0, 'pointer value used where a floating point value was expected')]
+
+
+def test_ido_float_and_pointer_casts_go_through_an_integer():
+    line = '    func_80000000(0.0f, ((f32)( &D_21B20)) , arg0 + 4, ((M2C_UNK *)( arg3)) , 0.0f);'
+    assert diagnostics('cfe: Error: func.c, line 3: Cast a pointer into a non-integral type.\n') == [(3, 'ido: pointer cast to a float')]
+    assert one(line, 'ido: pointer cast to a float') == \
+        '    func_80000000(0.0f, ((f32)(s32)( &D_21B20)) , arg0 + 4, ((M2C_UNK *)( arg3)) , 0.0f);'
+    assert one(line, 'ido: float cast to a pointer') == \
+        '    func_80000000(0.0f, ((f32)( &D_21B20)) , arg0 + 4, ((M2C_UNK *)(s32)( arg3)) , 0.0f);'
+    assert one(line, 'ido: pointer cast to a float', 1) is None
+
+
+def test_a_call_through_a_typed_table_read_keeps_its_cast():
+    out = one('    *(s32 *)((D_1 * 4) + &D_2)(arg0, v);', 'called object is not a function')
+    assert out == '    ((s32 (*)()) *(s32 *)((D_1 * 4) + &D_2))(arg0, v);'
+
+
+def test_a_call_that_disagrees_with_the_guessed_prototype_drops_its_parameters():
+    src = 'M2C_UNK g(void *, s32);\nvoid f(void) {\n    g(1);\n}\n'
+    out = repair(src, 3, 'too few arguments to function')
+    assert out.startswith('M2C_UNK g();')
+    assert repair(src, 3, 'too many arguments to function `g\'') == out
+    assert repair(src, 3, 'too few arguments to function', 1) is None
+
+
+def test_a_call_through_a_pointer_type_with_the_wrong_parameters_drops_them():
+    src = 'void f(void) {\n    M2C_FIELD(t, M2C_UNK (**)(void *, void *), 0x34)(a);\n}\n'
+    assert repair(src, 2, 'too few arguments to function') == \
+        'void f(void) {\n    M2C_FIELD(t, M2C_UNK (**)(), 0x34)(a);\n}\n'
+
+
+def test_an_sn64_diagnostic_is_applied_to_the_first_line_it_fits():
+    src = 'void f(void) {\n    x = 1;\n    *(s32 *)((a * 4) + &T)(b);\n}\n'
+    assert repair(src, 0, 'called object is not a function') == \
+        'void f(void) {\n    x = 1;\n    ((s32 (*)()) *(s32 *)((a * 4) + &T))(b);\n}\n'
+    assert repair('void f(void) {}\n', 0, 'called object is not a function') is None
+
+
+def test_an_sn64_line_search_skips_the_preprocessor_lines():
+    src = '#define F(e, t, o) (*(t)((s8 *)(e) + (o)))(x)\nvoid f(void) {\n    *(s32 *)((a * 4) + &T)(b);\n}\n'
+    assert '#define F(e, t, o) (*(t)((s8 *)(e) + (o)))(x)' in repair(src, 0, 'called object is not a function')
