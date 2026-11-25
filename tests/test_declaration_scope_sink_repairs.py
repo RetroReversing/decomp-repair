@@ -94,3 +94,56 @@ def test_an_array_used_outside_the_block_or_a_source_without_arrays_gets_no_arra
 def test_an_array_in_a_loop_body_stays():
     looped = ARRAYS.replace('  switch (kind)\n  {', '  while (kind--)\n  {').replace('    case 1:\n      break;\n    case 2:\n', '')
     assert not _arrays(looped)
+
+
+SEGMENT = """s32 segment(Vec3 *a, Vec3 *b, s32 n)
+{
+  Vec3 v0;
+  Vec3 v1;
+  Vec3 v2;
+  Vec3 v3;
+  Vec3 v4;
+  Vec3 v5;
+  Vec3 v6;
+  Vec3 v7;
+  Vec3 v8;
+  f32 t;
+  f32 sign;
+  s32 i;
+  for (i = 0; i < n; i++)
+  {
+    t = a[i].x;
+    if (t > 0.0f)
+    {
+      v0 = a[i]; v1 = v0; v2 = v1; v3 = v2; v4 = v3; v5 = v4; v6 = v5; v7 = v6; v8 = v7;
+      b[i] = v8;
+    }
+    else
+    {
+      sign = -1.0f;
+      if (b[i].y < 0.0f)
+      {
+        sign = 1.0f;
+      }
+      b[i].z = sign * t;
+    }
+  }
+  return i;
+}
+"""
+
+
+def test_scalars_come_before_struct_locals_and_a_for_body_is_a_loop():
+    # 7 -> 0 on a 920-instruction SN GCC 2.8.1 function: `sign` declared in its `else` block took its reload slot
+    # after the pseudos created before it. Nine struct temporaries filled LIMIT ahead of it.
+    found = _sunk_named(SEGMENT, 'segment')
+    assert found, 'no child'
+    first = found[0]
+    assert first.index('f32 sign;') > first.index('else')
+    assert first.index('f32 sign;') < first.index('sign = -1.0f;')
+    # `t` is used all over the `for` body: moving it into that body is a loop-body sink, never offered
+    assert not [text for text in found if 'f32 t;' in text.split('for (i')[1]]
+
+
+def _sunk_named(source, name):
+    return [text for family, text in variants(source, name) if family == FAMILY]
