@@ -25,6 +25,9 @@ _TOKEN = re.compile(r'''\s+|0[xX][0-9a-fA-F]+[uUlL]*|\d+(?:\.\d+)?[fFuUlL]*|[A-Z
                         |<<=|>>=|->|<<|>>|<=|>=|==|!=|&&|\|\||[-+*/%&|^]=|\+\+|--|.''', re.X)
 _BINARY = re.compile(r'invalid operands to binary (\S+)')
 _DIAGNOSTIC = re.compile(r'^func\.c:(\d+): (.*)$')
+# IDO's `cfe: Error: func.c, line 21: Unacceptable operand of '+'.`, said in the words the repairs below know
+_IDO = re.compile(r'^cfe: Error: func\.c, line (\d+): (.*)$')
+_IDO_OPERAND = re.compile(r"Unacceptable operand of '?([^'\s.]+)'?\.?$")
 _OPEN, _CLOSE = {'(': ')', '[': ']'}, {')': '(', ']': '['}
 _CAST_WORDS = {'s8', 's16', 's32', 's64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64', 'int', 'char', 'short', 'long',
                'unsigned', 'signed', 'float', 'double', 'void', 'const', 'volatile', 'struct'}
@@ -34,11 +37,33 @@ def diagnostics(log):
     """(line, message) of each error the compiler reported, in order, once per line and message."""
     seen, out = set(), []
     for text in str(log).splitlines():
-        found = _DIAGNOSTIC.match(text.strip())
-        if found and 'warning' not in found[2] and (found[1], found[2]) not in seen:
-            seen.add((found[1], found[2]))
-            out.append((int(found[1]), found[2]))
+        text = text.strip()
+        found = _DIAGNOSTIC.match(text)
+        if found and 'warning' not in found[2]:
+            line, message = found[1], found[2]
+        elif ido := _IDO.match(text):
+            line, message = ido[1], _ido_message(ido[2])
+            if message is None:
+                continue
+        else:
+            continue
+        if (line, message) not in seen:
+            seen.add((line, message))
+            out.append((int(line), message))
     return out
+
+
+def _ido_message(text):
+    """IDO's error as the message the repairs read, or None for one nothing here repairs."""
+    if text.startswith('Unacceptable operand of == or !='):
+        return 'invalid operands to binary =='
+    if text.startswith('Bad operand type for += or -='):
+        return 'invalid operands to binary +='
+    if text.startswith('Dereferenced a non-pointer'):
+        return "invalid type argument of `unary *'"
+    if found := _IDO_OPERAND.match(text):
+        return 'invalid operands to binary ' + found[1]
+    return None
 
 
 class _Tokens(list):
@@ -170,7 +195,21 @@ def _unary_operators(tokens, op):
             if token == op and not _operand_end(tokens, i) and not _in_type(tokens, i)]
 
 
+_SIBLINGS = {'==': ('!=',), '+=': ('-=',)}  # IDO words one message for both
+
+
 def _binary(tokens, op, attempt):
+    if op in _SIBLINGS:  # `+=` (IDO: "+= or -="): the compound assignments and their sibling
+        places = sorted(i for o in (op, *_SIBLINGS[op]) for i in _binary_operators(tokens, o))
+        if attempt >= len(places):
+            return None
+        at = places[attempt]
+        if tokens[at] in ('+=', '-='):
+            return None if _atom_after(tokens, at + 1) is None else [(tokens.starts[at + 1], '(s32)')]
+        left, right = _atom_before(tokens, at), _atom_after(tokens, at + 1)
+        if left is None or right is None:
+            return None
+        return [(tokens.starts[left], '(s32)'), (tokens.starts[at + 1], '(s32)')]
     places = _binary_operators(tokens, op) + [i for i in _binary_operators(tokens, op + '=')]
     places.sort()
     if attempt >= len(places):
