@@ -50,3 +50,36 @@ def test_the_declaration_stays_when_it_shares_a_line():
     shared = SOURCE.replace('    Rec *ent;\n', '    Rec *ent; Rec *other;\n')
     (_, text), = direct.variants(shared, 'f')
     assert 'Rec *ent; Rec *other;' in text and 'gRecs[gCount].kind = 1;' in text
+
+
+VERTS = '''typedef struct { s16 ob[3]; u16 flag; s16 tc[2]; u8 cn[4]; } Vtx;
+extern Vtx gVerts[][30];
+extern s32 gBuf;
+extern s32 gBase;
+void g(s16 *src, f32 *u) {
+    Vtx *vt;
+    s32 k;
+
+    for (k = 0; k < 3; k++) {
+        vt = &gVerts[gBuf][gBase + k];
+        vt->ob[0] = src[k];
+        vt->flag = 0;
+        vt->tc[0] = u[k] * 32.0f;
+        gVerts[gBuf][gBase + k].cn[3] = 0xFF;
+    }
+}
+'''
+
+
+def test_several_subscripts_with_sums_are_written_through_the_element():
+    (family, text), = direct.variants(VERTS, 'g')
+    assert family == direct.FAMILY
+    assert 'vt' not in text
+    assert ('        gVerts[gBuf][gBase + k].ob[0] = src[k];\n        gVerts[gBuf][gBase + k].flag = 0;\n'
+            '        gVerts[gBuf][gBase + k].tc[0] = u[k] * 32.0f;\n') in text
+
+
+def test_a_subscript_name_changed_in_between_or_a_call_in_a_subscript_keeps_the_pointer():
+    assert direct.variants(VERTS.replace('vt->flag = 0;', 'gBase++;\n        vt->flag = 0;'), 'g') == []
+    assert direct.variants(VERTS.replace('vt->flag = 0;', 'vt->flag = k++;'), 'g') == []
+    assert direct.variants(VERTS.replace('[gBase + k];', '[next(k)];'), 'g') == []

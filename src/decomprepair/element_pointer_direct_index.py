@@ -13,7 +13,13 @@ through `TABLE[count]` instead of a pointer local (measured with the app's judge
 `variants` finds every `P = &ARRAY[INDEX];` whose pointer is a local assigned nowhere else and read only as `P->member`
 within the same block, after the assignment, with no call and no change to INDEX (or to P) in between; one child per
 such pointer writes each `P->` as `ARRAY[INDEX].` and drops the assignment (the declaration stays when P is still named
-elsewhere, and goes when it is not). INDEX is an identifier or an integer literal."""
+elsewhere, and goes when it is not). INDEX is an identifier or an integer literal, or (since a vertex writer needed it)
+several subscripts of names, literals and `+ - *`, none of whose names change between the set and the last use:
+`vt = &VERTS[buf][base + k]; vt->ob[0] = ..; vt->flag = 0; ..` as `VERTS[buf][base + k].ob[0] = ..`. On a
+773-instruction N64 drop-shadow renderer (the same sn-n64-281 -mfp32 profile) the pointer was one long-lived address that
+kept the vertex buffer's `%hi` live over the whole outer loop (one spill more, frame 0xF8 against 0xF0); written through
+the indexed element every member store re-forms the address as the target does: 2566 -> 1080, then 60 -> 0 with the
+members stored in declaration order and the entry pointer of the same loop written the same way."""
 import re
 
 from .csource import _blank
@@ -22,7 +28,10 @@ from .integer_repair_support import IDENT, edit, view
 FAMILY = 'element_pointer_direct_index'
 FAMILIES = (FAMILY,)
 LIMIT = 8
-SET = re.compile(rf'(?<![\w.>])(?P<p>{IDENT})\s*=\s*&\s*(?P<a>{IDENT})\s*\[\s*(?P<i>{IDENT}|\d+)\s*\]\s*;')
+SET = re.compile(rf'(?<![\w.>])(?P<p>{IDENT})\s*=\s*&\s*(?P<a>{IDENT})(?P<i>(?:\s*\[[^\[\]();=?,]+\])+)\s*;')
+SUBSCRIPT = re.compile(r'\s*\[\s*([^\[\]]*?)\s*\]')
+PLAIN = re.compile(rf'(?:{IDENT}|0[xX][0-9A-Fa-f]+|\d+)(?:\s*[-+*]\s*(?:{IDENT}|0[xX][0-9A-Fa-f]+|\d+))*')
+NAMES = re.compile(rf'(?<![\w.]){IDENT}')
 KEYWORDS = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'do', 'else'}
 
 
@@ -57,8 +66,13 @@ def variants(source, name, header=''):
     body = clean[lo:hi]
     out = []
     for hit in SET.finditer(body):
-        pointer, array, index = hit['p'], hit['a'], hit['i']
-        if pointer in (array, index):
+        pointer, array = hit['p'], hit['a']
+        subscripts = SUBSCRIPT.findall(hit['i'])
+        if not all(PLAIN.fullmatch(sub) for sub in subscripts):
+            continue
+        index = ']['.join(subscripts)
+        names = set(NAMES.findall(index))
+        if pointer in names | {array}:
             continue
         start, after = lo + hit.start(), lo + hit.end()
         # a local of this function: declared as a pointer in its body
@@ -77,11 +91,11 @@ def variants(source, name, header=''):
         if end is None or others[-1] > end:
             continue
         region = clean[after:others[-1]]
-        if _calls(region) or (not index.isdigit() and _modifies(region, index)) or _modifies(region, pointer):
+        if _calls(region) or any(_modifies(region, n) for n in names) or _modifies(region, pointer):
             continue
         # a member store written through the pointer must not itself change the index (`p->n = count++`)
         tail = re.search(r'[^;]*;', clean[others[-1]:end])
-        if tail and not index.isdigit() and _modifies(tail.group(0), index):
+        if tail and any(_modifies(tail.group(0), n) for n in names):
             continue
         edits = [(start, after + (1 if source[after:after + 1] == '\n' else 0), '')]
         line = source.rfind('\n', 0, start) + 1
