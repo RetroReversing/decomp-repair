@@ -6,6 +6,13 @@ gcc deletes the arithmetic that fills them. An N64 function compiled to 112 of t
 whole weighted-sum block gone; another lost a 3×3 matrix fill and kept 51 of 251 (with the arrays back: 77%, then
 exact-shaped). The run is the locals of one size at consecutive offsets, typed as its first (`sp` + 4 per `f32`/`s32`), starting at a
 local whose address is taken, with no other address taken inside it.
+
+A run whose every element escapes, passed side by side to one call (`get(&sp68, &sp6C, &sp70)` then `p->x = sp68;
+p->y = sp6C; ...`), is offered as an array too. Nothing is dead there, but the kind of memory is a byte: SN GCC 2.8.1's
+alias.c holds that a scalar at a fixed address (`sp68`) cannot alias an in-struct reference through a varying address
+(`p->x`), so the scheduler hoists all three loads above the stores; as array elements both sides are in-struct and the
+game's alternating `lwc1; swc1` pairs come back (an N64 game's position update after a matrix-apply getter: 275 -> 0). The scalar spelling stays the right one elsewhere (a nine-pointer getter in the same
+game matched as scalars), so it is one child, judged.
 """
 import re
 
@@ -38,6 +45,30 @@ def _runs(decls, escaped):
     return runs
 
 
+OUT_ARGS = re.compile(r'&\s*sp[0-9A-Fa-f]+\b(?:\s*,\s*&\s*sp[0-9A-Fa-f]+\b)+')
+
+
+def _out_param_runs(body, decls, taken):
+    """Runs of escaped locals whose addresses are consecutive arguments of one call, at consecutive offsets."""
+    by_off = {off: typ for off, typ, _ in decls}
+    used = {off for _, run in taken for off in run}
+    runs = []
+    for hit in OUT_ARGS.finditer(body):
+        offs = [int(x, 16) for x in re.findall(r'sp([0-9A-Fa-f]+)', hit[0])]
+        stretch = []
+        for off in [*offs, None]:
+            if (stretch and off is not None and off in by_off and off not in used
+                    and SIZES[by_off[off]] == SIZES[by_off[stretch[0]]]
+                    and off == stretch[-1] + SIZES[by_off[stretch[0]]]):
+                stretch.append(off)
+                continue
+            if len(stretch) >= 2 and not any(o in used for o in stretch):
+                runs.append((by_off[stretch[0]], stretch))
+                used.update(stretch)
+            stretch = [off] if off is not None and off in by_off and off not in used else []
+    return runs
+
+
 def variants(source, name, asm=''):
     span = find(source, name)
     if not span:
@@ -61,6 +92,7 @@ def variants(source, name, asm=''):
                 escaped.add(off)
     result = []
     runs = _runs(decls, escaped)
+    runs += _out_param_runs(body, decls, runs)
     for chosen in ([*runs], *([r] for r in runs)) if len(runs) > 1 else ([*runs],):
         if not chosen:
             continue
