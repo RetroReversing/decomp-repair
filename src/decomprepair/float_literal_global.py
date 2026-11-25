@@ -22,6 +22,11 @@ one with all of them, only when everything says it is a constant read where it i
 - the word is a plausible literal: a normal finite float, not zero, with an exponent between 2**-32 and 2**32 (a
   pointer like 0x80123456 is a tiny float, small integers are denormals, both rejected), and printed with the fewest
   digits that give the same 32 bits back (`500.0f`, never a lossy decimal), a negative one in parentheses.
+The same word read through its address, `*(f32 *)0x80009BD0` (agents wrote that when a target lost the symbol's
+annotation and the extern could not be linked; an N64 game's boundary-adjusted functions, SN GCC 2.8.1, -mfp32), is the
+same literal: an automatic name `D_80009BD0` in `words` also replaces every `*(f32 *)` / `*(float *)` read of its
+address, under the same load and plausibility tests (the cast needs no declaration). Three such functions went to exact
+or to their last scheduling rows with the literal (2205 -> 0, 4565 -> 0 after one unrelated edit, 1240 -> 640).
 Doubles are left alone: one word cannot prove the other. Every proposal is judged; a word that is a real global's
 initial value only costs a compile. The explanation of the `$at` load (the literal pool goes through `l.s`) is read off
 the targets, not from the compiler's source, and is a hypothesis."""
@@ -118,6 +123,80 @@ def _reads(part, symbol):
     return spans or None
 
 
+_AUTO = re.compile(r'D_([0-9A-Fa-f]{8})')
+
+
+def _address_reads(part, symbol):
+    """The spans of `*(f32 *)0xADDR` reads of an automatic name's address in the function's body, when there are any
+    and none is written (an assignment, an increment) or has its address taken."""
+    auto = _AUTO.fullmatch(symbol)
+    if not auto:
+        return None
+    spans = []
+    body = part.clean
+    pattern = re.compile(r'\*\s*\(\s*(?:const\s+)?(?:f32|float)\s*\*\s*\)\s*\(?\s*0[xX]0*' + auto[1].lstrip('0')
+                         + r'\b[uU]?\s*\)?', re.IGNORECASE)
+    for match in pattern.finditer(body, part.opening, part.end):
+        text = match[0]
+        start, end = match.start(), match.end()
+        if text.count('(') != text.count(')'):  # an unbalanced `( 0x..` took a bracket that is not its own
+            if text.endswith(')'):
+                end -= 1
+                text = text[:-1]
+            if text.count('(') != text.count(')'):
+                continue
+        before = body[:start].rstrip()
+        after = body[end:].lstrip()
+        if before.endswith('&') and not before.endswith('&&'):
+            return None
+        if re.match(r'(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))', after) or before.endswith(('++', '--')):
+            return None
+        spans.append((start, end))
+    return spans or None
+
+
+def _holder(part, spans, text):
+    """Edits that write `text` at every read of a local whose one assignment is `k = <one of spans>;` and drop the
+    assignment and the local's own declaration line, or None. A saved best that kept the word in a local (`k =
+    *(f32 *)0x80008274;` then `o->x100 > k` five times) needs both: SN 2.8.1 emits each literal use as its own `li.s`
+    (one pool word per use) and schedules it as a macro insn, which a local's one load does not reproduce (a debug
+    printer, 2205 -> 500 with the local, 0 with the literal at each compare)."""
+    body = part.clean
+    for start, end in spans:
+        before = body[:start]
+        assign = re.search(r'(?:^|[;{}])\s*(' + _IDENT + r')\s*=\s*$', before)
+        stop = re.match(r'\s*;', body[end:])
+        if not assign or not stop:
+            continue
+        local = assign[1]
+        statement = (start - len(before) + assign.start(1), end + stop.end())
+        declaration = re.search(r'(?m)^[ \t]*(?:f32|float)[ \t]+' + re.escape(local) + r'[ \t]*;[ \t]*\n', body[part.opening:part.end])
+        if not declaration:
+            continue
+        uses = [m for m in re.finditer(r'(?<![\w.>])' + re.escape(local) + r'\b', body[part.opening:part.end])]
+        reads = []
+        for m in uses:
+            at = part.opening + m.start()
+            if at == statement[0]:
+                continue
+            if part.opening + declaration.start() <= at < part.opening + declaration.end():
+                continue
+            after = body[at + len(local):].lstrip()
+            prior = body[:at].rstrip()
+            if re.match(r'(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))', after) or prior.endswith(('&', '++', '--')):
+                return None  # assigned again, incremented or its address taken: a variable, not a holder
+            reads.append((at, at + len(local), text))
+        if not reads:
+            continue
+        line = part.source.rfind('\n', 0, statement[0]) + 1
+        tail = part.source.find('\n', statement[1])
+        cut = (line, tail + 1) if part.source[line:statement[0]].strip() == '' and part.source[statement[1]:tail].strip() == '' \
+            else (statement[0], statement[1])
+        return [*reads, (cut[0], cut[1], ''),
+                (part.opening + declaration.start(), part.opening + declaration.end(), '')]
+    return None
+
+
 def variants(source, name, header='', asm='', words=None):
     """Proposals: each float global the function only reads, whose word the caller supplied, as its literal; then all
     of them together."""
@@ -127,16 +206,26 @@ def variants(source, name, header='', asm='', words=None):
     if not part:
         return []
     outside = _blank(source[:part.opening]) + ' ' + _blank(source[part.end:])
-    edits = []
+    edits, holders = [], []
     for symbol in sorted(words)[:64]:
         if not re.fullmatch(_IDENT, str(symbol)) or symbol == name:
             continue
         text = literal(words[symbol])
-        if text is None or not _float_loads(symbol, asm) or not _declared_float(symbol, (header, source)):
+        if text is None or not _float_loads(symbol, asm):
             continue
-        spans = _reads(part, symbol)
+        cast = _address_reads(part, symbol)
+        spans = _reads(part, symbol) if _declared_float(symbol, (header, source)) else None
         if not spans:
+            if cast:
+                edits.append([(start, end, text) for start, end in cast])
+                held = _holder(part, cast, text)
+                if held:
+                    holders.append(held)
             continue
+        spans += cast or []
+        held = _holder(part, spans, text)
+        if held:
+            holders.append(held)
         # another function in this source naming it (a declaration is not a use)
         uses = [m for m in re.finditer(r'(?<![\w.])' + re.escape(symbol) + r'\b', outside)]
         declarations = re.findall(r'(?m)^[ \t]*(?:(?:extern|static|const)[ \t]+)*' + _IDENT + r'[ \t]+'
@@ -146,7 +235,7 @@ def variants(source, name, header='', asm='', words=None):
         edits.append([(start, end, text) for start, end in spans])
         if len(edits) >= LIMIT:
             break
-    out = [(FAMILY, edit(source, one)) for one in edits]
+    out = [(FAMILY, edit(source, one)) for one in edits] + [(FAMILY, edit(source, one)) for one in holders]
     if len(edits) > 1:
         out.append((FAMILY, edit(source, [item for one in edits for item in one])))
     return list(dict.fromkeys(out))

@@ -150,3 +150,76 @@ def test_an_optional_context_needs_a_default():
     repair = registry._make('float_literal_global', {'families': ('x',), 'variants': variants,
                                                      'needs': ('source', 'name', 'words')})
     assert any('give it a default' in problem for problem in registry.problems(repair))
+
+
+ABSOLUTE = '''typedef struct Cam { s32 x0; s32 x4; f32 x8; f32 xC; } Cam;
+extern Cam *D_800BD06C;
+
+void f(void) {
+    Cam *c;
+
+    c = D_800BD06C;
+    c->x8 = *(f32 *)0x80009BD0;
+    c->xC = *(f32 *)0x80009BD4;
+}
+'''
+ABSOLUTE_ASM = '''glabel f
+/* 0 80001000 3C03800C */  lui        $v1, %hi(D_800BD06C)
+/* 4 80001004 8C63D06C */  lw         $v1, %lo(D_800BD06C)($v1)
+/* 8 80001008 3C018001 */  lui        $at, %hi(D_80009BD0)
+/* C 8000100C C4209BD0 */  lwc1       $f0, %lo(D_80009BD0)($at)
+/* 10 80001010 3C018001 */  lui        $at, %hi(D_80009BD4)
+/* 14 80001014 C4229BD4 */  lwc1       $f2, %lo(D_80009BD4)($at)
+'''
+
+
+def test_a_read_through_the_constant_s_address_becomes_the_literal():
+    """`*(f32 *)0x80009BD0`: the pool word read by its address (an agent's spelling when the symbol could not link)."""
+    words = {'D_80009BD0': 0x43928000, 'D_80009BD4': 0xC40DC000}  # 293.0f, -567.0f
+    out = [s for _, s in flg.variants(ABSOLUTE, 'f', '', ABSOLUTE_ASM, words)]
+    assert any('c->x8 = 293.0f;' in s and '0x80009BD4' in s for s in out)
+    assert any('c->xC = (-567.0f);' in s and '0x80009BD0' in s for s in out)
+    assert any('293.0f' in s and '(-567.0f)' in s and '0x8000' not in s.split('void f')[1] for s in out)
+
+
+def test_an_address_the_function_writes_through_is_left_alone():
+    source = ABSOLUTE.replace('    c->xC = *(f32 *)0x80009BD4;\n', '    *(f32 *)0x80009BD4 = 1.0f;\n')
+    out = [s for _, s in flg.variants(source, 'f', '', ABSOLUTE_ASM, {'D_80009BD4': 0xC40DC000})]
+    assert out == []
+
+
+HELD = '''typedef struct Obj { f32 x100; f32 x104; } Obj;
+void show(s32);
+
+s32 f(Obj *o) {
+    s32 i;
+    f32 k;
+
+    k = *(f32 *)0x80008274;
+    if (o->x100 > k) {
+        show(1);
+    }
+    if (o->x104 > k) {
+        show(2);
+    }
+    return 0;
+}
+'''
+HELD_ASM = '''glabel f
+/* 0 80001000 C6000100 */  lwc1       $f0, 0x100($s0)
+/* 4 80001004 3C018001 */  lui        $at, %hi(D_80008274)
+/* 8 80001008 C4348274 */  lwc1       $f20, %lo(D_80008274)($at)
+'''
+
+
+def test_a_local_that_only_holds_the_word_is_written_as_the_literal_at_each_use():
+    out = [s for _, s in flg.variants(HELD, 'f', '', HELD_ASM, {'D_80008274': 0x3727C5AC})]
+    assert any('k = 1e-05f;' in s for s in out)  # the plain child stays
+    held = [s for s in out if 'o->x100 > 1e-05f' in s and 'o->x104 > 1e-05f' in s]
+    assert held and 'f32 k;' not in held[0] and 'k =' not in held[0] and '    s32 i;\n\n    if' in held[0]
+
+
+def test_a_local_assigned_again_is_not_a_holder():
+    source = HELD.replace('    return 0;', '    k = 2.0f;\n    return 0;')
+    out = [s for _, s in flg.variants(source, 'f', '', HELD_ASM, {'D_80008274': 0x3727C5AC})]
+    assert out and not any('o->x100 > 1e-05f' in s for s in out)
