@@ -49,3 +49,41 @@ def test_a_run_the_target_keeps_in_memory_counts_without_an_address():
     outs = [t for _, t in r.variants(source, 'f', asm)]
     assert any('    f32 sp40[3];\n' in t and 'sp40[2] = w;' in t for t in outs)
     assert not any('f32 sp40[3];' in t for _, t in r.variants(source, 'f'))  # no evidence without the asm
+
+
+def test_a_run_of_out_parameters_becomes_one_array():
+    # Every element escapes, side by side in one call: an N64 position update after a getter went 275 -> 0 once the
+    # three outputs were one array (scalars at fixed addresses do not alias in-struct stores, so the loads hoisted).
+    source = '''void f(Obj *p) {
+    f32 sp68;
+    f32 sp6C;
+    f32 sp70;
+    s32 sp74;
+
+    g(0, &sp68, &sp6C, &sp70);
+    h(&sp74);
+    p->x = sp68;
+    p->y = sp6C;
+    p->z = sp70;
+}
+'''
+    (family, out), = r.variants(source, 'f')
+    assert family == 'stack_run_array'
+    assert '    f32 sp68[3];\n' in out and 'f32 sp6C;' not in out and 'f32 sp70;' not in out
+    assert 'g(0, sp68, &sp68[1], &sp68[2]);' in out
+    assert 'p->x = sp68[0];' in out and 'p->z = sp70' not in out and 'p->z = sp68[2];' in out
+    assert '    s32 sp74;\n' in out and 'h(&sp74);' in out  # its own call: not part of the run
+
+
+def test_out_parameters_need_consecutive_slots_and_arguments():
+    source = '''void f(Obj *p) {
+    f32 sp68;
+    f32 sp6C;
+    f32 sp74;
+
+    g(&sp68, &sp74);
+    g(&sp6C, 0);
+    p->x = sp68 + sp6C + sp74;
+}
+'''
+    assert r.variants(source, 'f') == []
