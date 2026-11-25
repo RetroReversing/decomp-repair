@@ -15,7 +15,7 @@ def _brackets(left, right):
     return re.compile('[' + re.escape(left + right) + ']')
 
 
-def close(text, start, left='(', right=')'):
+def _close(text, start, left='(', right=')'):
     """The position just past the bracket that closes the one at `start` (or, when `start` is no bracket, `start + 1`:
     the depth is 0 there already). Only the brackets are visited: a C function is mostly not brackets, and a Python
     loop over every character of it was the cost of every family that reads loops."""
@@ -33,6 +33,16 @@ def close(text, start, left='(', right=')'):
         if depth == 0:
             return hit.end()
     return None
+
+
+close = _close
+try:  # the typed scan (native_build.py), when it is built: same answers, about eight times faster
+    from . import _scan
+except ImportError:
+    pass
+else:
+    _scan.python_close = _close
+    close = _scan.close
 
 
 def negate(condition):

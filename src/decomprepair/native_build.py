@@ -28,6 +28,7 @@ PACKAGE = Path(__file__).resolve().parent  # --package DIR builds into another c
 
 # Add a module here once its tests pass compiled. Keep to modules that don't read their own source or `__file__`.
 NATIVE = [
+    "_scan",  # typed kernels (_scan.pyx): not compiled Python but C-typed code, the one that is really faster
     "integer_repair_support",
     "pattern_repairs",
     "csource",
@@ -198,7 +199,7 @@ def build_one(name: str, package: Path | None = None) -> int:
     package = Path(package or PACKAGE)
     with tempfile.TemporaryDirectory(prefix="decomprepair-native-") as work:
         try:
-            extensions = cythonize([Extension(f"decomprepair.{name}", [str(package / f"{name}.py")])],
+            extensions = cythonize([Extension(f"decomprepair.{name}", [str(package / (f"{name}.pyx" if (package / f"{name}.pyx").is_file() else f"{name}.py"))])],
                                    build_dir=work, quiet=True, compiler_directives={"language_level": "3"})
             dist = Distribution({"ext_modules": extensions, "package_dir": {"": "src"}, "packages": ["decomprepair"]})
             command = dist.get_command_obj("build_ext")
