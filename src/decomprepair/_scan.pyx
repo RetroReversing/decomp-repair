@@ -105,3 +105,46 @@ def c_header_before(str clean, Py_ssize_t opening):
             break
         i -= 1
     return clean[i + 1:opening].strip()
+
+
+python_own_loop_statements = None
+header_opens_loop = None  # c_scan's regex test of a header: `header_opens_loop(header, word)` (regexes stay Python)
+
+
+def c_own_loop_statements(str clean, Py_ssize_t lo, Py_ssize_t hi, str word):
+    """c_scan.own_loop_statements: offsets of `word` in clean[lo:hi] that belong to the loop whose body is that range."""
+    cdef Py_ssize_t i, boundary = lo - 1, depth_paren = 0, loops_open = 0, wordlen = len(word)
+    cdef Py_ssize_t length = len(clean)
+    cdef Py_UCS4 c, first
+    cdef bint opens
+    cdef list stack = [], out = []
+    if lo < 0 or hi > length or wordlen == 0:
+        return python_own_loop_statements(clean, lo, hi, word)
+    first = word[0]
+    for i in range(lo, hi):
+        c = clean[i]
+        if c == u'(':
+            depth_paren += 1
+        elif c == u')':
+            depth_paren -= 1
+        elif c == u'{' and depth_paren == 0:
+            opens = header_opens_loop(clean[boundary + 1:i].strip(), word)
+            stack.append(opens)
+            if opens:
+                loops_open += 1
+            boundary = i
+        elif c == u'}' and depth_paren == 0:
+            if stack:
+                if stack.pop():
+                    loops_open -= 1
+            boundary = i
+        elif c == u';' and depth_paren == 0:
+            boundary = i
+        elif c == first and clean.startswith(word, i):
+            if i > 0 and (clean[i - 1].isalnum() or clean[i - 1] == u'_'):
+                continue
+            if i + wordlen < length and (clean[i + wordlen].isalnum() or clean[i + wordlen] == u'_'):
+                continue
+            if loops_open == 0:
+                out.append(i)
+    return out
