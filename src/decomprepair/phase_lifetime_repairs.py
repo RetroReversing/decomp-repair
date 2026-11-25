@@ -11,22 +11,30 @@ LIMIT = 16
 
 
 def reaching(flow, variable, reachable):
-    parents = {i:set() for i in reachable}
+    """The definitions of `variable` (node numbers, -1 for the function's entry) that reach each reachable node.
+
+    A worklist: a node is recomputed only when a predecessor's outgoing set changed, instead of sweeping every node again
+    until a whole sweep changes nothing (quadratic on a function with hundreds of blocks). The sets only grow, so the
+    result is the same least fixpoint whatever the order."""
+    parents = {i: set() for i in reachable}
+    children = {i: [] for i in reachable}
     for i in reachable:
         for child in flow.nodes[i].successors & reachable:
             parents[child].add(i)
-    incoming, outgoing = {i:set() for i in reachable}, {i:set() for i in reachable}
-    changed = True
-    while changed:
-        changed = False
-        for i in reachable:
-            value = set().union(*(outgoing[p] for p in parents[i]))
-            if i==flow.entry:
-                value.add(-1)
-            after = {i} if variable in flow.nodes[i].defines else value
-            if value!=incoming[i] or after!=outgoing[i]:
-                incoming[i],outgoing[i] = value,after
-                changed = True
+            children[i].append(child)
+    incoming, outgoing = {i: set() for i in reachable}, {i: set() for i in reachable}
+    pending = set(reachable)
+    while pending:
+        i = pending.pop()
+        value = set().union(*(outgoing[p] for p in parents[i]))
+        if i == flow.entry:
+            value.add(-1)
+        after = {i} if variable in flow.nodes[i].defines else value
+        if value != incoming[i] or after != outgoing[i]:
+            changed_out = after != outgoing[i]
+            incoming[i], outgoing[i] = value, after
+            if changed_out:
+                pending.update(children[i])
     return incoming
 
 
