@@ -25,7 +25,7 @@ FAMILIES = (FAMILY,)
 IDENT = r'[A-Za-z_]\w*'
 
 
-def _block_of(clean, at, opening, end):
+def _python_block_of(clean, at, opening, end):
     """The innermost `{...}` (as start, end) holding position `at`."""
     depth = 0
     for i in range(at, opening - 1, -1):
@@ -37,6 +37,19 @@ def _block_of(clean, at, opening, end):
                 return i, close(clean, i, '{', '}')
             depth -= 1
     return opening, end
+
+
+_block_of = _python_block_of
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_of(clean, at, opening, end):
+        found = _scan.enclosing_open(clean, at + 1, opening, -1)
+        if found is not NotImplemented:
+            return (opening, end) if found < 0 else (found, close(clean, found, '{', '}'))
+        return _python_block_of(clean, at, opening, end)
 
 
 def variants(source, name):

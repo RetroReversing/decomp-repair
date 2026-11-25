@@ -85,7 +85,7 @@ def _fresh(clean, stem):
     return name
 
 
-def _enclosing_end(clean, position, opening, end):
+def _python_enclosing_end(clean, position, opening, end):
     """The end (the closing brace's position) of the innermost block of the body that holds `position`."""
     depth, at = 0, position
     while at > opening:
@@ -98,6 +98,20 @@ def _enclosing_end(clean, position, opening, end):
             depth -= 1
     closing = close(clean, at, '{', '}') if at > opening else end
     return (closing or end) - 1
+
+
+_enclosing_end = _python_enclosing_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing_end(clean, position, opening, end):
+        found = _scan.enclosing_open(clean, position, opening, -1)
+        if found is not NotImplemented:
+            closing = close(clean, found, '{', '}') if found > opening else end
+            return (closing or end) - 1
+        return _python_enclosing_end(clean, position, opening, end)
 
 
 def _replace(clean, parameter, copy, start, end):

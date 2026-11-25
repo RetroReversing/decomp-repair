@@ -35,13 +35,24 @@ def _value(text):
     return int(re.sub(r'[uUlL]+$', '', text), 0)
 
 
-def _matching(text, opening):
+def _python_matching(text, opening):
     depth = 0
     for at in range(opening, len(text)):
         depth += (text[at] == '(') - (text[at] == ')')
         if depth == 0:
             return at
     return -1
+
+
+_matching = _python_matching
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _matching(text, opening):
+        found = _scan.close_every(text, opening, '(', ')', False, -1)
+        return _python_matching(text, opening) if found is NotImplemented else found
 
 
 def _split(text):

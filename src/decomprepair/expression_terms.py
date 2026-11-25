@@ -659,7 +659,7 @@ _LABEL = re.compile(r'(?:case\b[^:?;]*:(?!:)|default\s*:|' + IDENT + r'\s*:(?!:)
 _HEADER = re.compile(r'(if|while|for|switch)\s*\(')
 
 
-def _match(text, at):
+def _python_match(text, at):
     depth = 0
     for i in range(at, len(text)):
         depth += (text[i] == '(') - (text[i] == ')')
@@ -668,7 +668,18 @@ def _match(text, at):
     return None
 
 
-def _top_split(text, begin, end, separator):
+_match = _python_match
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _match(text, at):
+        found = _scan.close_every(text, at, '(', ')', False, None)
+        return _python_match(text, at) if found is NotImplemented else found
+
+
+def _python_top_split(text, begin, end, separator):
     """Offsets of the top-level `separator`s of text[begin:end]."""
     depth, found = 0, []
     for i in range(begin, end):
@@ -676,6 +687,13 @@ def _top_split(text, begin, end, separator):
         if depth == 0 and text[i] == separator:
             found.append(i)
     return found
+
+
+_top_split = _python_top_split
+if _scan is not None:
+    def _top_split(text, begin, end, separator):
+        found = _scan.top_split(text, begin, end, separator)
+        return _python_top_split(text, begin, end, separator) if found is NotImplemented else found
 
 
 def sites(source, types):

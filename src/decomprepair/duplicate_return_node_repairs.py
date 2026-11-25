@@ -26,7 +26,7 @@ FAMILY = 'duplicate_return_node'
 FAMILIES = (FAMILY,)
 
 
-def _opening(text, at):
+def _python_opening(text, at):
     """The `{` of the block that contains position `at`."""
     depth = 0
     for i in range(at, -1, -1):
@@ -37,6 +37,17 @@ def _opening(text, at):
                 return i
             depth -= 1
     return None
+
+
+_opening = _python_opening
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _opening(text, at):
+        found = _scan.enclosing_open(text, at + 1, 0, None)
+        return _python_opening(text, at) if found is NotImplemented else found
 
 
 def variants(source, name):

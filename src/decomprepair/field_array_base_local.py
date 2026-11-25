@@ -31,7 +31,7 @@ SIZE = {'s16': 2, 'u16': 2, 'short': 2, 's32': 4, 'u32': 4, 'f32': 4, 'int': 4}
 _HEAD = re.compile(rf'\*\s*\(\s*(?P<type>{"|".join(SIZE)})\s*\*\s*\)\s*\(')
 
 
-def _statement_start(clean, at, opening):
+def _python_statement_start(clean, at, opening):
     depth, start = 0, opening + 1
     for i in range(opening + 1, at):
         ch = clean[i]
@@ -39,6 +39,17 @@ def _statement_start(clean, at, opening):
         if depth == 0 and ch in ';{}':
             start = i + 1
     return start
+
+
+_statement_start = _python_statement_start
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_start(clean, at, opening):
+        found = _scan.last_statement_start(clean, at, opening)
+        return _python_statement_start(clean, at, opening) if found is NotImplemented else found
 
 
 def _parts(inner, size):

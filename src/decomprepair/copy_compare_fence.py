@@ -40,7 +40,7 @@ def _flag_name(body):
     return name
 
 
-def _boundaries(text):
+def _python_boundaries(text):
     """Offsets in `text` just after each top-level `;` (statement ends), followed by spaces."""
     depth, ends = 0, []
     for index, char in enumerate(text):
@@ -51,6 +51,17 @@ def _boundaries(text):
                 end += 1
             ends.append(end)
     return ends
+
+
+_boundaries = _python_boundaries
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _boundaries(text):
+        found = _scan.boundaries(text)
+        return _python_boundaries(text) if found is NotImplemented else found
 
 
 def variants(source, name):

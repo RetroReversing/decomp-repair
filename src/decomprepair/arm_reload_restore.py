@@ -49,7 +49,7 @@ def _reloaders(clean):
     return found
 
 
-def _split(clean, lo, hi):
+def _python_split(clean, lo, hi):
     """[(start, end)] of the `;`-terminated statements of clean[lo:hi] (no braces inside: the caller checked)."""
     out, at, depth = [], lo, 0
     for i in range(lo, hi):
@@ -60,6 +60,17 @@ def _split(clean, lo, hi):
             out.append((at, i + 1))
             at = i + 1
     return out
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(clean, lo, hi):
+        found = _scan.split_statements(clean, lo, hi)
+        return _python_split(clean, lo, hi) if found is NotImplemented else found
 
 
 def _norm(text):

@@ -253,3 +253,53 @@ def test_the_fifth_batch_of_own_scans_match_their_plain_loops_on_random_text():
             where = rng.randint(-3, len(text) + 2)
             for args in build(text, where, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+def _three(t, a, r):
+    return [(t, a, r.randint(-2, len(t) + 3))]
+
+
+def _four(t, a, r):
+    return [(t, a, r.randint(-2, len(t) + 3), r.randint(-1, len(t) + 2))]
+
+
+SIXTH_BATCH = [
+    ("address_param_copy_repairs", "_block_of", _four),
+    ("arm_pointer_parameter_copy", "_enclosing_end", _four),
+    ("constant_flag_hoist", "_block_start", _three),
+    ("duplicate_return_node_repairs", "_opening", lambda t, a, r: [(t, a)]),
+    ("loaded_pointer_reuse_repairs", "_block", lambda t, a, r: [(t, a)]),
+    ("float_arm_roles", "_opening_brace", lambda t, a, r: [(t, a)]),
+    ("float_clamp_reads", "_close", lambda t, a, r: [(t, a)]),
+    ("goto_label_else_arm", "_enclosing_close", _four),
+    ("literal_mask_conjunction", "_matching", lambda t, a, r: [(t, a)]),
+    ("expression_terms", "_match", lambda t, a, r: [(t, a)]),
+    ("expression_terms", "_top_split", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 3), sep) for sep in (",", ";", "(", ",,")]),
+    ("join_call_arm_copy", "_statement_end", lambda t, a, r: [(t, a)]),
+    ("goto_structure_repairs", "_simple_end", _three),
+    ("load_above_global_store", "_statement_end", lambda t, a, r: [(t, a)]),
+    ("call_index_temps_pointer", "_expr_end", lambda t, a, r: [(t, a)]),
+    ("late_aggregate_scope", "_depth_one", _three),
+    ("copy_compare_fence", "_boundaries", lambda t, a, r: [(t,)]),
+    ("deref_sum_locals", "_statement_start", _three),
+    ("field_array_base_local", "_statement_start", _three),
+    ("arm_reload_restore", "_split", _three),
+    ("increment_old_value_copy", "_segments", _three),
+]
+
+
+def test_the_sixth_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(77)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\t", "\n", ";", ",", "é", "𝄞", "((", "}}", "; "]
+    for module_name, function, build in SIXTH_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)

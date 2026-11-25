@@ -40,7 +40,7 @@ def _close(text, start, left='(', right=')'):
     return after - 1 if after else None
 
 
-def _enclosing_close(clean, pos, lo, hi):
+def _python_enclosing_close(clean, pos, lo, hi):
     """The `}` that closes the innermost block holding `pos` (within lo..hi), or None."""
     depth = 0
     i = pos
@@ -54,6 +54,17 @@ def _enclosing_close(clean, pos, lo, hi):
             depth -= 1
         i += 1
     return None
+
+
+_enclosing_close = _python_enclosing_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing_close(clean, pos, lo, hi):
+        found = _scan.enclosing_end(clean, pos, hi, None)
+        return _python_enclosing_close(clean, pos, lo, hi) if found is NotImplemented else found
 
 
 def _negate(cond):

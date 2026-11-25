@@ -46,7 +46,7 @@ def _floats(body):
     return set(re.findall(rf'^[ \t]*(?:f32|float)[ \t]+({IDENT})[ \t]*;', body, re.M))
 
 
-def _close(text, at):
+def _python_close(text, at):
     depth = 0
     for index in range(at, len(text)):
         if text[index] == '{':
@@ -56,6 +56,17 @@ def _close(text, at):
             if depth < 0:
                 return index
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, at):
+        found = _scan.enclosing_end(text, at, len(text), None)
+        return _python_close(text, at) if found is NotImplemented else found
 
 
 def _min_clamps(source, span):

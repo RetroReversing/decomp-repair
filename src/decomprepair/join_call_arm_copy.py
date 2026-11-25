@@ -36,7 +36,7 @@ KEYWORDS = {'switch', 'for', 'while', 'do', 'if', 'else', 'return', 'sizeof', 'c
 PLAIN = re.compile(r'^[\w\s,.+\-*/&|^~<>()\[\]]*$')
 
 
-def _statement_end(clean, at):
+def _python_statement_end(clean, at):
     """The position of the `;` that ends the statement starting at `at` (brackets balanced), or None."""
     depth = 0
     for pos in range(at, len(clean)):
@@ -50,6 +50,17 @@ def _statement_end(clean, at):
         elif ch == ';' and depth == 0:
             return pos
     return None
+
+
+_statement_end = _python_statement_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_end(clean, at):
+        found = _scan.statement_end(clean, at, len(clean), '([{', ')]}', False, True, None)
+        return _python_statement_end(clean, at) if found is NotImplemented else found
 
 
 def _switches(clean, start, stop):
