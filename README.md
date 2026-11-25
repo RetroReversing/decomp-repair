@@ -111,6 +111,20 @@ REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'
 with `variants` and no `REPAIR`. The modules from before the registry are listed in `tests/registry_legacy.txt` and are
 still wired by hand in the caller.
 
+## Adding a repair rule (a JSON file, no code)
+
+A repair that finds one C shape and writes another can be a file instead of a module. `src/decomprepair/rules/abs_idiom.json`
+is the worked example (the same repair as `abs_idiom.py`, which `tests/test_rules.py` checks it matches). A rule has a
+`gate` on the target's assembly, `sites` (a regular expression, `where` guards and a `replace` template), an optional
+prototype to add, and the children to make; `rules.py` documents every key and the limits.
+
+`registry.declared()` lists the rules beside the modules, so every caller runs them with no wiring. It reads the shipped
+`rules/` and every folder named in `DECOMP_REPAIR_RULES` (separated like `PATH`), and reads a file again when it
+changes, so a rule written while a process runs is used by its next call. The Deep Permuter's local lane calls
+`registry.run('rule:<id>', ...)` in a subprocess, which finds the same folder through the environment. A file that isn't
+a valid rule is skipped and listed by `rules.skipped()`; it never stops another rule. `rules.problems(parsed_json)` says
+what is wrong with a rule in sentences, before it is written.
+
 ## Develop
 
 ```bash

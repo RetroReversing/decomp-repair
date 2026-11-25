@@ -42,6 +42,8 @@ import sys
 from dataclasses import dataclass
 from functools import lru_cache
 
+from . import rules
+
 CONTEXT = ('source', 'name', 'header', 'arch', 'asm', 'flags', 'words', 'callees', 'tables')
 OPTIONAL = ('words', 'callees', 'tables')  # context a caller may not have yet: left out, the parameter's default is used
 LANES = ('draft', 'beam', 'local')
@@ -59,6 +61,7 @@ class Repair:
     lanes: tuple
     archs: tuple
     directives: bool = False
+    rule: bool = False     # a declarative rule (rules.py), not a module of this package
 
     def runs_in(self, lane, arch=None):
         return lane in self.lanes and (not self.archs or arch is None or arch in self.archs)
@@ -87,8 +90,8 @@ def _make(module_name, declared):
 
 
 @lru_cache(maxsize=1)
-def declared():
-    """Every declared repair, lowest `order` first, then by module name."""
+def _modules():
+    """The package's own declaring modules, lowest `order` first. Scanned once: the folder doesn't change while running."""
     folder = pathlib.Path(__file__).parent
     found = []
     for path in sorted(folder.glob('*.py')):
@@ -99,6 +102,24 @@ def declared():
         if isinstance(declared, dict):
             found.append(_make(path.stem, declared))
     return sorted(found, key=lambda item: (item.order, item.module))
+
+
+_merged = (None, None, [])
+
+
+def declared():
+    """Every declared repair, lowest `order` first, then by module name: the package's modules and the declarative
+    rules now on disk (rules.py). The same list comes back until a rule file is added, changed or removed, so a caller
+    that holds it sees a new rule on its next call and an unchanged registry costs one stat per rule file."""
+    global _merged
+    modules, signature = _modules(), rules.signature()
+    if _merged[0] is not modules or _merged[1] != signature:
+        merged = sorted([*modules, *rules.repairs()], key=lambda item: (item.order, item.module))
+        _merged = (modules, signature, merged)
+    return _merged[2]
+
+
+declared.cache_clear = _modules.cache_clear   # tests that add a module to the folder clear the scan
 
 
 _index = (None, {})
@@ -118,6 +139,8 @@ def problems(repair):
     out = []
     if not callable(repair.variants):
         return [f'{repair.module}: "variants" is not a function']
+    if repair.rule:
+        return _rule_problems(repair)
     if not repair.families or not all_strings(repair.families):
         out.append(f'{repair.module}: "families" must list the family names the children are labelled with')
     if getattr(repair.variants, '__module__', None) != f'{__package__}.{repair.module}':
@@ -144,6 +167,16 @@ def problems(repair):
     bad = [lane for lane in repair.lanes if lane not in LANES] or ([] if repair.lanes else ['(none)'])
     if bad:
         out.append(f'{repair.module}: lanes {bad} are not among {LANES}')
+    return out
+
+
+def _rule_problems(repair):
+    """A declarative rule is built from validated JSON, so only what the registry itself relies on is checked."""
+    out = []
+    if not repair.module.startswith(rules.PREFIX) or not repair.families:
+        out.append(f'{repair.module}: a rule needs an id and families')
+    if repair.needs[:2] != ('source', 'name') or [key for key in repair.needs if key not in CONTEXT]:
+        out.append(f'{repair.module}: needs {repair.needs} are not context a caller supplies (one of {CONTEXT})')
     return out
 
 

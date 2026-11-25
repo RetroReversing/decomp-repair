@@ -691,3 +691,4 @@ zero_conversion_scope
 word_byte_loop_carrier
 zero_chain_repairs
 zero_test_repairs
+abs_idiom
