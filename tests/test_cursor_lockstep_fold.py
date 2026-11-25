@@ -147,3 +147,11 @@ def test_byte_addressed_cursor_keeps_the_pointer_step_when_asked():
 def test_byte_addressed_cursor_with_an_odd_offset_is_left_alone():
     source = BYTES.replace('(((char *) cursor) + 2))->v', '(((char *) cursor) + 3))->v')
     assert not [text for text in folded(source, 'h') if 'cursor' not in text]
+
+
+def test_a_helper_returning_a_negative_hex_literal_is_read_not_a_crash():
+    from decomprepair.cursor_lockstep_fold import _helpers, _number
+    assert _number('-0xA0') == -0xA0 and _number('-0x34') == -0x34 and _number('- 7') == -7
+    assert _number('0x10') == 16 and _number('12') == 12
+    assert _helpers('static int back(void) { return -0xA0; }') == {'back': ('lit', -0xA0)}
+    assert variants(LOCKSTEP.replace('return -1;', 'return -0x1;'), 'f') is not None
