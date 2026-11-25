@@ -193,3 +193,42 @@ def close_every(str text, Py_ssize_t start, str left, str right, bint past, obje
         if depth == 0:
             return i + 1 if past else i
     return miss
+
+
+def close_if_past(str text, Py_ssize_t start, str left, str right, object miss):
+    """close_if, answering one past the closing bracket."""
+    cdef Py_ssize_t length = len(text), i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 open_char, close_char, c
+    if start < 0 or len(left) != 1 or len(right) != 1 or left == right:
+        return NotImplemented
+    open_char = left[0]
+    close_char = right[0]
+    for i in range(start, length):
+        c = text[i]
+        if c == open_char:
+            depth += 1
+        elif c == close_char:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return miss
+
+
+def enclosing_end(str text, Py_ssize_t start, Py_ssize_t limit, object miss):
+    """The `}` that closes the block around `start`, looking no further than `limit` (a `{` at or after `start` opens a
+    nested block, which is skipped); `miss` if there is none."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if start < 0 or limit < 0 or limit > len(text):
+        return NotImplemented
+    for i in range(start, limit):
+        c = text[i]
+        if c == u'{':
+            depth += 1
+        elif c == u'}':
+            if depth == 0:
+                return i
+            depth -= 1
+    return miss

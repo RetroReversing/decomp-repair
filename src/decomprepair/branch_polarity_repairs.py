@@ -44,7 +44,7 @@ def negate_any(condition):
     return f'!({text})'
 
 
-def _block_end(clean, at):
+def _python_block_end(clean, at):
     """Index of the `}` closing the innermost block around `at`, and its `{`."""
     depth = 0
     for pos in range(at, len(clean)):
@@ -55,6 +55,17 @@ def _block_end(clean, at):
                 return pos
             depth -= 1
     return None
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, at):
+        found = _scan.enclosing_end(clean, at, len(clean), None)
+        return _python_block_end(clean, at) if found is NotImplemented else found
 
 
 def _repeated_flag_variants(source, clean, opening, end):

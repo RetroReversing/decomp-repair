@@ -33,7 +33,7 @@ OFFSET = re.compile(r'([A-Za-z_]\w*)\s*\)*\s*\+\s*(0[xX][0-9a-fA-F]{2,})\b')
 FIELD = re.compile(r'M2C_FIELD\s*\(\s*([A-Za-z_]\w*)\s*,[^,()]*(?:\([^()]*\)[^,()]*)*,\s*(0[xX][0-9a-fA-F]{2,})\s*\)')
 
 
-def _block_end(clean, open_at):
+def _python_block_end(clean, open_at):
     depth = 0
     for at in range(open_at, len(clean)):
         if clean[at] == '{':
@@ -43,6 +43,17 @@ def _block_end(clean, open_at):
             if depth == 0:
                 return at
     return None
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, open_at):
+        found = _scan.close_if(clean, open_at, '{', '}', None)
+        return _python_block_end(clean, open_at) if found is NotImplemented else found
 
 
 def _arms(clean, start, end):

@@ -26,7 +26,7 @@ _COPY = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<y>{_ID})[ \t]*=[ \t]*(?P<x>{_ID
 _DECL = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<type>{INTEGER})\s+(?P<names>{_ID}(?:\s*,\s*{_ID})*)\s*;[ \t]*$')
 
 
-def _match(text, at, opener):
+def _python_match(text, at, opener):
     closer = {'{': '}', '(': ')'}[opener]
     depth = 0
     for position in range(at, len(text)):
@@ -35,6 +35,18 @@ def _match(text, at, opener):
         if depth == 0:
             return position
     return None
+
+
+_match = _python_match
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _match(text, at, opener):
+        closer = {'{': '}', '(': ')'}[opener]
+        found = _scan.close_every(text, at, opener, closer, False, None)
+        return _python_match(text, at, opener) if found is NotImplemented else found
 
 
 def _statement(clean, at):

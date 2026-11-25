@@ -10,13 +10,24 @@ from .csource import _blank, find
 IDENT = r'[A-Za-z_]\w*'
 
 
-def close(text, start):
+def _python_close(text, start):
     depth = 0
     for i in range(start,len(text)):
         depth += (text[i]=='(')-(text[i]==')')
         if not depth:
             return i+1
     return None
+
+
+close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def close(text, start):
+        found = _scan.close_every(text, start, '(', ')', True, None)
+        return _python_close(text, start) if found is NotImplemented else found
 
 
 def statement_start(body, end):

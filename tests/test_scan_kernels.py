@@ -104,3 +104,47 @@ def test_each_modules_own_bracket_matcher_matches_its_plain_loop_on_random_text(
                 arguments.append((text, start))  # the module's own default brackets
             for args in arguments:
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, args)
+
+
+# The second batch: the arguments differ by module, so each says which it takes.
+#   start: (text, start)   params: (text, start, left, right)   opener: (text, at, opener)   limit: (text, start, limit)
+MORE_MATCHERS = [
+    ("arm_index_offsets", "_block_end", "start"),
+    ("arm_input_result_merge", "_close", "params"),
+    ("arm_input_result_merge", "_block_end", "limit"),
+    ("branch_join_arm_rewrites", "_close", "params"),
+    ("condition_value_reuse", "_close", "params"),
+    ("branch_slot_scope", "_close", "params"),
+    ("expression_locals", "close", "start"),
+    ("else_if_arm_swap", "_close", "start"),
+    ("else_arm_copy_split", "_match", "opener"),
+    ("complement_late", "_block_end", "start"),
+    ("branch_polarity_repairs", "_block_end", "start"),
+]
+
+
+def _arguments(kind, text, start, rng):
+    if kind == "start":
+        return [(text, start)]
+    if kind == "params":
+        return [(text, start, left, right) for left, right in (("{", "}"), ("(", ")"), ("{", "{"), ("{}", "}"))]
+    if kind == "opener":
+        return [(text, start, opener) for opener in ("{", "(", "[")]  # "[" is the twin's KeyError
+    return [(text, start, rng.randint(-2, len(text) + 3))]
+
+
+def test_the_second_batch_of_own_matchers_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(33)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\n", ";", "é", "𝄞", "((", "}}"]
+    for module_name, function, kind in MORE_MATCHERS:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            start = rng.randint(-3, len(text) + 2)
+            for args in _arguments(kind, text, start, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)

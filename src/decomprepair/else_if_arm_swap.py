@@ -22,7 +22,7 @@ _MIRROR = {'<': '>', '<=': '>=', '>': '<', '>=': '<=', '==': '==', '!=': '!='}
 _TEST = re.compile(r'if[ \t]*\((?P<l>[^&|!()\n;{}=<>]*(?:\([^()\n]*\)[^&|!()\n;{}=<>]*)*?)[ \t]*(?P<op><=|>=|==|!=|<|>)[ \t]*(?P<r>[^&|!()\n;{}=<>]*(?:\([^()\n]*\)[^&|!()\n;{}=<>]*)*)\)[ \t]*\{')
 
 
-def _close(text, at):
+def _python_close(text, at):
     depth = 0
     for position in range(at, len(text)):
         depth += text[position] == '{'
@@ -30,6 +30,17 @@ def _close(text, at):
         if depth == 0:
             return position
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, at):
+        found = _scan.close_every(text, at, '{', '}', False, None)
+        return _python_close(text, at) if found is NotImplemented else found
 
 
 def variants(source, name):
