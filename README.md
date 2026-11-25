@@ -141,3 +141,8 @@ AGPL-3.0-only (`LICENSE`), like decompdecomp, which this code comes from. Some r
 helpers, the MIPS readers) with Cython, unchanged from their Python source, next to the `.py` files; Python then
 imports the compiled copy. Without Cython or a C compiler nothing is built and nothing changes;
 `build_native.py --clean` removes them. Add a module to `NATIVE` once the tests pass with it compiled.
+
+Compiling untyped Python as it is mostly removes interpreter dispatch, which helps little for code that spends its time
+in `str` methods, regexes and dataclass construction: `line_scan.lines` on a 300-block function took 0.35 ms
+interpreted and 0.38 ms compiled. The gain is in loops over numbers and indexes, so profile a loop and give its
+variables C types (`cython.int`, pure-Python annotations) before expecting a speed-up.
