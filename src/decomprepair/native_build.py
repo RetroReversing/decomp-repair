@@ -9,9 +9,10 @@ folder, so building is all it takes, and deleting the `.so` files (`--clean`) re
 Without Cython or a C compiler nothing is built and nothing changes. `DECOMPREPAIR_NATIVE=0` has no effect at import
 (the choice is which files exist), so tests run both ways by building and cleaning.
 
-    native_build.py                    build every module in NATIVE next to this file
+    native_build.py                    build the typed kernels (KERNELS: seconds) next to this file
+    native_build.py --all              also compile every module in NATIVE unchanged (about an hour, ~3% faster)
     native_build.py --clean            remove the compiled modules
-    native_build.py --only a,b         build just those modules of NATIVE
+    native_build.py --only a,b         build just those modules of KERNELS and NATIVE
     native_build.py --package DIR      work on the decomprepair folder DIR (an installed copy: it must hold the
                                        .py files; needs Cython and setuptools, run it with the file's path so the
                                        package's own imports are not needed)
@@ -27,8 +28,11 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parent  # --package DIR builds into another copy (an installed bundle)
 
 # Add a module here once its tests pass compiled. Keep to modules that don't read their own source or `__file__`.
+# Typed code (.pyx): faster per call by a large factor, and it compiles in seconds, so a bundle build always does it.
+KERNELS = ["_scan"]
+
+# Plain modules compiled unchanged: measured about 3% on a draft pass for an hour of compiling, so only `--all` does it.
 NATIVE = [
-    "_scan",  # typed kernels (_scan.pyx): not compiled Python but C-typed code, the one that is really faster
     "integer_repair_support",
     "pattern_repairs",
     "csource",
@@ -183,7 +187,7 @@ NATIVE = [
 
 
 def compiled() -> list[Path]:
-    return [p for name in NATIVE for p in PACKAGE.glob(f"{name}.*") if p.suffix in (".so", ".pyd")]
+    return [p for name in KERNELS + NATIVE for p in PACKAGE.glob(f"{name}.*") if p.suffix in (".so", ".pyd")]
 
 
 def clean() -> None:
@@ -223,7 +227,8 @@ def main(argv: list[str]) -> int:
     if "--package" in argv:
         PACKAGE = Path(argv[argv.index("--package") + 1]).resolve()
     only = argv[argv.index("--only") + 1].split(",") if "--only" in argv else None  # a few modules, to try it
-    names = [name for name in NATIVE if only is None or name in only]
+    wanted = KERNELS + NATIVE if "--all" in argv or only else KERNELS
+    names = [name for name in wanted if only is None or name in only]
     clean()
     if "--clean" in argv:
         return 0

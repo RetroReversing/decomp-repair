@@ -151,7 +151,7 @@ AGPL-3.0-only (`LICENSE`), like decompdecomp, which this code comes from. Some r
 
 ## Optional native modules
 
-`python src/decomprepair/native_build.py` compiles the hot shared modules listed in `NATIVE` (the statement scanner, the C source
+`python src/decomprepair/native_build.py` builds the typed kernels (`KERNELS`, `_scan.pyx`: a few seconds) and, with `--all`, compiles the hot shared modules listed in `NATIVE` (the statement scanner, the C source
 helpers, the MIPS readers) with Cython, unchanged from their Python source, next to the `.py` files; Python then
 imports the compiled copy. Without Cython or a C compiler nothing is built and nothing changes;
 `native_build.py --clean` removes them. Add a module to `NATIVE` once the tests pass with it compiled.
