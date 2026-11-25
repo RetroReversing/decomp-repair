@@ -132,7 +132,7 @@ def ladders(found):
     that name v and not w, each depth for all of them, with each one a step lighter or at depth one, and those lighter
     shapes with one of the next statements pinned once (the schedule moves with the scopes)."""
     names = {n for _, _, _, counts in found for n in counts}
-    out, seen = [], set()
+    out, seen = [], set()  # out: ((wrappers, units, the picks sorted), (wrappers, picks)), sorted on the first
     for v in sorted(names):
         for w in sorted(names - {v}):
             if not any(v in counts and w in counts for _, _, _, counts in found):
@@ -159,9 +159,10 @@ def ladders(found):
                         key = tuple(sorted(picks.items()))
                         if key not in seen:
                             seen.add(key)
-                            out.append((sum(picks.values()), picks))
-    out.sort(key=lambda item: (item[0], len(item[1]), sorted(item[1].items())))
-    return out
+                            total = sum(picks.values())
+                            out.append(((total, len(picks), key), (total, picks)))  # `key` is the sorted picks already
+    out.sort(key=lambda item: item[0])
+    return [item[1] for item in out]
 
 
 def variants(source, name):
