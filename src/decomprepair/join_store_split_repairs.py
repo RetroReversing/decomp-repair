@@ -40,7 +40,7 @@ def _locals(body):
     return names
 
 
-def _block_end(clean, at):
+def _python_block_end(clean, at):
     """Index of the `}` that closes the block `at` sits in."""
     depth = 0
     for i in range(at, len(clean)):
@@ -51,6 +51,17 @@ def _block_end(clean, at):
                 return i
             depth -= 1
     return len(clean)
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, at):
+        found = _scan.enclosing_end(clean, at, len(clean), len(clean))
+        return _python_block_end(clean, at) if found is NotImplemented else found
 
 
 class _Shifted:

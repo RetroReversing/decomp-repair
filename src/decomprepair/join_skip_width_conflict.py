@@ -52,7 +52,7 @@ def _decl(text, name):
     return m.start(2), m.end(2), m[2]
 
 
-def _close(text, at, open_='{', shut='}'):
+def _python_close(text, at, open_='{', shut='}'):
     depth = 0
     for i in range(at, len(text)):
         if text[i] == open_:
@@ -62,6 +62,17 @@ def _close(text, at, open_='{', shut='}'):
             if depth == 0:
                 return i
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, at, open_='{', shut='}'):
+        found = _scan.close_if(text, at, open_, shut, -1)
+        return _python_close(text, at, open_, shut) if found is NotImplemented else found
 
 
 def _arm_rewrites(text, result, flag, label, switch_at):

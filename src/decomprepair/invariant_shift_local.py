@@ -57,7 +57,7 @@ def _assigned(text, name):
                           rf'|(?<![&\w])&\s*{name}\b', text))
 
 
-def _block_open(clean, at, floor):
+def _python_block_open(clean, at, floor):
     """Position of the `{` of the block that contains `at`."""
     depth = 0
     for pos in range(at - 1, floor - 1, -1):
@@ -68,6 +68,17 @@ def _block_open(clean, at, floor):
                 return pos
             depth -= 1
     return None
+
+
+_block_open = _python_block_open
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_open(clean, at, floor):
+        found = _scan.enclosing_open(clean, at, floor, None)
+        return _python_block_open(clean, at, floor) if found is NotImplemented else found
 
 
 def variants(source, name):

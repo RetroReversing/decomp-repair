@@ -647,7 +647,7 @@ def _whole_line(source, start, end):
     return line, min(stop + 1, len(source))
 
 
-def _match_open(clean, close):
+def _python_match_open(clean, close):
     depth = 0
     for i in range(close, -1, -1):
         depth += clean[i] == '}'
@@ -655,6 +655,17 @@ def _match_open(clean, close):
         if depth == 0:
             return i
     return -1
+
+
+_match_open = _python_match_open
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _match_open(clean, close):
+        found = _scan.open_every(clean, close, '{', '}', -1)
+        return _python_match_open(clean, close) if found is NotImplemented else found
 
 
 def _distribute(source, name, cursor, records):

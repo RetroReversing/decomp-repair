@@ -186,3 +186,39 @@ def test_the_third_batch_of_own_scans_match_their_plain_loops_on_random_text():
             where = rng.randint(-3, len(text) + 2)
             for args in build(text, where, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+def _params(t, a, r):
+    return [(t, a, left, right) for left, right in (("{", "}"), ("(", ")"), ("{", "{"), ("{}", "}"))]
+
+
+FOURTH_BATCH = [
+    ("guard_compare_first", "_close", _params),
+    ("guard_symbol_pointer", "_close", _params),
+    ("guarded_offset_index", "_close", lambda t, a, r: [(t, a)]),
+    ("guarded_offset_index", "_paren_close", lambda t, a, r: [(t, a)]),
+    ("join_skip_width_conflict", "_close", lambda t, a, r: _params(t, a, r) + [(t, a)]),
+    ("guarded_constant_ternary", "_condition_end", lambda t, a, r: [(t, a)]),
+    ("interpreter_arm_steps", "_balanced", lambda t, a, r: [(t, a)]),
+    ("goto_arm_tail_inline", "_end_of_block", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 3))]),
+    ("join_store_split_repairs", "_block_end", lambda t, a, r: [(t, a)]),
+    ("gbi_macro_commands", "_match_open", lambda t, a, r: [(t, a)]),
+    ("invariant_shift_local", "_block_open", lambda t, a, r: [(t, a, r.randint(-2, len(t) + 2))]),
+]
+
+
+def test_the_fourth_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(55)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\n", ";", "é", "𝄞", "((", "}}"]
+    for module_name, function, build in FOURTH_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
