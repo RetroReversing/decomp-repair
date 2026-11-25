@@ -45,6 +45,7 @@ def _code_only(text: str) -> str:
     return clean
 
 
+_BRACES = re.compile(r"[{}]")
 _ATTRIBUTE = re.compile(r"\b(?:__attribute__\s*\(\([^()]*(?:\([^()]*\)[^()]*)*\)\)|__declspec\s*\([^()]*(?:\([^()]*\)[^()]*)*\))")
 
 
@@ -113,11 +114,11 @@ def find(text: str, name: str) -> tuple[int, int] | None:
                 prev_end = prev_start - 1
             else:
                 break
-        depth, k = 0, j
-        while k < len(clean):
-            depth += (clean[k] == "{") - (clean[k] == "}")
-            k += 1
+        depth, k = 0, len(clean)  # the matching brace, found by jumping from brace to brace (not char by char)
+        for brace in _BRACES.finditer(clean, j):
+            depth += 1 if brace.group() == "{" else -1
             if depth == 0:
+                k = brace.end()
                 break
         if k < len(text) and text[k] == "\n":
             k += 1
