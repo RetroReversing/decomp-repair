@@ -16,6 +16,7 @@ Without Cython or a C compiler nothing is built and nothing changes. `DECOMPREPA
                                        .py files; needs Cython and setuptools, run it with the file's path so the
                                        package's own imports are not needed)
 """
+import importlib.util
 import os
 import sys
 import tempfile
@@ -225,11 +226,7 @@ def main(argv: list[str]) -> int:
     clean()
     if "--clean" in argv:
         return 0
-    try:
-        from Cython.Build import cythonize
-        from setuptools import Extension
-        from setuptools.dist import Distribution
-    except ImportError:
+    if any(importlib.util.find_spec(module) is None for module in ("Cython", "setuptools")):
         print("Cython or setuptools is unavailable: the library stays interpreted.")
         return 0
     jobs = int(os.environ.get("DECOMPREPAIR_NATIVE_JOBS", "4"))
