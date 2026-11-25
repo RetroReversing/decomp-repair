@@ -101,8 +101,16 @@ def declared():
     return sorted(found, key=lambda item: (item.order, item.module))
 
 
+_index = (None, {})
+
+
 def get(module):
-    return next((item for item in declared() if item.module == module), None)
+    """The declared repair of `module`. The index follows `declared()` itself, so a cleared cache is not served stale."""
+    global _index
+    items = declared()
+    if _index[0] is not items:
+        _index = (items, {item.module: item for item in items})
+    return _index[1].get(module)
 
 
 def problems(repair):

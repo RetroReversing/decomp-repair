@@ -53,6 +53,7 @@ _BRACES = re.compile(r"[{}]")
 _ATTRIBUTE = re.compile(r"\b(?:__attribute__\s*\(\([^()]*(?:\([^()]*\)[^()]*)*\)\)|__declspec\s*\([^()]*(?:\([^()]*\)[^()]*)*\))")
 
 
+@lru_cache(maxsize=256)  # pure, and every family asks for the same few functions (a draft pass: ~500 times each)
 def find(text: str, name: str) -> tuple[int, int] | None:
     """(start, end) of the definition of `name`, or of its asm stub; None when absent."""
     clean = _code_only(text)
