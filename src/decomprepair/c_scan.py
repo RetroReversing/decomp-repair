@@ -8,7 +8,7 @@ import re
 LOOP_HEADER = re.compile(r'(?:\b(?:for|while)\s*\(.*\)|\bdo)\s*$', re.S)
 
 
-def close(clean, opening, left='{', right='}'):
+def _close(clean, opening, left='{', right='}'):
     """Index of the bracket closing the one at `opening`, or -1."""
     depth = 0
     for i in range(opening, len(clean)):
@@ -22,7 +22,7 @@ def close(clean, opening, left='{', right='}'):
     return -1
 
 
-def enclosing_block(clean, at, lo):
+def _enclosing_block(clean, at, lo):
     """Index of the `{` of the innermost block around position `at` (not before `lo`), or -1."""
     depth = 0
     for i in range(at - 1, lo - 1, -1):
@@ -36,7 +36,7 @@ def enclosing_block(clean, at, lo):
     return -1
 
 
-def header_before(clean, opening):
+def _header_before(clean, opening):
     """The text of the statement header just before the `{` at `opening` (`if (...)`, `for (;;)`, `do`, ...)."""
     depth, i = 0, opening - 1
     while i >= 0:
@@ -49,6 +49,16 @@ def header_before(clean, opening):
             break
         i -= 1
     return clean[i + 1:opening].strip()
+
+
+close, enclosing_block, header_before = _close, _enclosing_block, _header_before
+try:  # the typed walkers (native_build.py), when built: the same answers, several times faster
+    from . import _scan
+except ImportError:
+    pass
+else:
+    _scan.python_c_close, _scan.python_enclosing_block, _scan.python_header_before = _close, _enclosing_block, _header_before
+    close, enclosing_block, header_before = _scan.c_close, _scan.c_enclosing_block, _scan.c_header_before
 
 
 def own_loop_statements(clean, lo, hi, word):
