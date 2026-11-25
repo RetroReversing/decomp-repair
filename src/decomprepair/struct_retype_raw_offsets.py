@@ -12,15 +12,19 @@ GCC 2.8.1 N64 code moved their loads and stores to the target's places only with
 
 For each pointer variable `p` (a plain identifier) that the function reads or writes through `M2C_FIELD(p, T *, 0xOFF)`
 at two or more distinct offsets, with T a scalar of 1, 2 or 4 bytes (`s8`..`u32`, `f32`, `M2C_UNK*`) or any pointer type,
-every access at a naturally aligned offset that overlaps no other, the child writes
+every access at a naturally aligned offset that overlaps no other member, the child writes
 
     typedef struct { u8 pad_0[0x10]; s32 f10; f32 f14; } PtrRec_p;
 
 before the function (explicit padding between members, so the offsets are exact) and rewrites each access to
 `((PtrRec_p *) p)->f10`. Gates: the function also touches a global (a bare `D_`/`g`-style symbol of the file) and
 stores through `p`, since the rewrite is about ordering against fixed addresses; One child per pointer (at most `LIMIT`) and one with all of them.
-A function with `volatile`, `asm`, an unaligned or overlapping access, or whose `p` is also taken by address is
-skipped. The reverse for single stores that must not move is `struct_store_raw_offset`. Proposals only; the judge decides."""
+An access the record cannot hold (unaligned, two types at one offset, or overlapping a more used member: m2c's `u16`
+read of the low half at 0x12 of an `s32` at 0x10) keeps its raw `M2C_FIELD` and the others are still members, so long
+as two remain. Until 0.6.14 such an access skipped the pointer altogether: a 1,389-instruction SN N64 state machine whose
+`arg0` had one such halfword was offered nothing, and the hand-written record took it from 1695 to 1635 (and, with
+the scheduling it then allowed, to a match). A function with `volatile` or `asm`, or whose `p` is also taken by address,
+is skipped. The reverse for single stores that must not move is `struct_store_raw_offset`. Proposals only; the judge decides."""
 import re
 
 from .csource import find
@@ -46,19 +50,27 @@ def _member(kind, pointers=()):
 
 
 def _layout(accesses, pointers=()):
-    """[(offset, member type, width)] sorted, or None when two accesses clash or one is unaligned."""
-    found = {}
+    """([(offset, member type, width)] sorted, offsets kept raw), or None when fewer than two members remain.
+
+    An access the record cannot hold (unaligned, a second type at one offset, or one overlapping a member, like the
+    `u16` low half at 0x12 of the `s32` at 0x10) stays raw; members are chosen by how often each offset is accessed,
+    so the halfword read twice gives way to the word read five times."""
+    shapes, counts, raw = {}, {}, set()
     for offset, kind in accesses:
         shape = _member(kind, pointers)
-        if not shape or offset % shape[1]:
-            return None
-        if found.setdefault(offset, shape) != shape:
-            return None
-    ordered = sorted(found.items())
-    for (a, (_, wa)), (b, _) in zip(ordered, ordered[1:]):
-        if a + wa > b:
-            return None
-    return [(offset, *shape) for offset, shape in ordered]
+        if not shape or offset % shape[1] or shapes.setdefault(offset, shape) != shape:
+            raw.add(offset)
+        counts[offset] = counts.get(offset, 0) + 1
+    kept = {}
+    for offset in sorted((o for o in shapes if o not in raw), key=lambda o: (-counts[o], o)):
+        width = shapes[offset][1]
+        if all(offset + width <= other or other + kept[other][1] <= offset for other in kept):
+            kept[offset] = shapes[offset]
+        else:
+            raw.add(offset)
+    if len(kept) < 2:
+        return None
+    return [(offset, *kept[offset]) for offset in sorted(kept)], raw
 
 
 def _record(name, fields):
@@ -92,13 +104,14 @@ def variants(source, name):
             continue
         if not (touches_global and stores(base)):
             continue
-        layout = _layout([(o, k) for _, o, k in items], pointers)
-        if not layout:
+        shaped = _layout([(o, k) for _, o, k in items], pointers)
+        if not shaped:
             continue
+        layout, raw = shaped
         record = f'PtrRec_{base}'
         if re.search(rf'\b{record}\b', outside):
             continue
-        spans = [(h.start(), h.end(), f'(({record} *) {base})->f{o:X}') for h, o, _ in items]
+        spans = [(h.start(), h.end(), f'(({record} *) {base})->f{o:X}') for h, o, _ in items if o not in raw]
         found.append((base, record, layout, spans))
     start = source.rfind('\n', 0, find(source, name)[0]) + 1
     for base, record, layout, spans in found[:LIMIT]:
