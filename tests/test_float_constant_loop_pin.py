@@ -97,3 +97,40 @@ def test_asm_without_a_float_constant_load_declines():
 def test_a_second_run_does_not_pin_a_pinned_source():
     text = pin.variants(SOURCE, 'sweep')[0][1]
     assert pin.variants(text, 'sweep') == []
+
+
+STEP = """\
+f32 hit(void *, f32);
+f32 search(f32 *pos, f32 best, s32 n)
+{
+    f32 t;
+    f32 ret;
+    ret = best;
+    for (t = 0.0f; t < (f32)n + 1.0; t += 0.005f) {
+        if (hit(pos, t) <= best) {
+            ret = t;
+        }
+    }
+    return ret;
+}
+"""
+
+
+def test_a_loops_step_is_pinned_through_a_compound_assignment():
+    variants = pin.variants(STEP, 'search')
+    texts = [text for family, text in variants]
+    alone = [text for text in texts if 't += (__repair_pin_0 = 0.005f)' in text and '1.0)' not in text.split('{')[1]]
+    assert alone, 'the step alone, beside the bound literal that is left as it was'
+    assert 'f32 __repair_pin_0 = 0.005f;' in alone[0]
+    assert 't < (f32)n + 1.0;' in alone[0]
+
+
+def test_compound_assignment_outside_a_loop_is_left_alone():
+    straight = """\
+f32 bump(f32 x)
+{
+    x += 0.005f;
+    return x;
+}
+"""
+    assert pin.variants(straight, 'bump') == []
