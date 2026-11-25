@@ -34,9 +34,13 @@ def _code_only(text: str) -> str:
     clean = _blank(text)
     # Preprocessor logical lines can contain braces/loops that are not C function scopes.
     # Keep offsets and line breaks so extraction and __LINE__ context remain exact.
+    if '#' not in clean:  # no directive anywhere (a function body usually has none): nothing to blank
+        return clean
     lines = clean.splitlines(True)
     continuation = False
     for index, line in enumerate(lines):
+        if not continuation and '#' not in line:  # only a line with a `#` can start a directive
+            continue
         directive = continuation or bool(re.match(r'^[ \t]*#', line))
         continuation = directive and line.rstrip('\r\n').endswith('\\')
         if directive:
