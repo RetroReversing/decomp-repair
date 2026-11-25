@@ -35,7 +35,7 @@ def _blank(text):
                   lambda m: re.sub(r'[^\n]', ' ', m.group()), text, flags=re.S)
 
 
-def _arguments(clean, start, end):
+def _python_arguments(clean, start, end):
     """The top-level argument spans between `start` (just after `(`) and `end` (the `)`)."""
     spans, depth, begin = [], 0, start
     for index in range(start, end):
@@ -47,6 +47,17 @@ def _arguments(clean, start, end):
     if clean[begin:end].strip():
         spans.append((begin, end))
     return spans
+
+
+_arguments = _python_arguments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arguments(clean, start, end):
+        found = _scan.argument_spans(clean, start, end)
+        return _python_arguments(clean, start, end) if found is NotImplemented else found
 
 
 def _globals(text):

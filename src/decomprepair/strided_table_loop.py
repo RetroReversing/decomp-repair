@@ -266,7 +266,7 @@ class _Bail(Exception):
     pass
 
 
-def _close(clean, i):
+def _python_close(clean, i):
     """Index just past the brace block opening at clean[i]."""
     depth = 0
     for k in range(i, len(clean)):
@@ -276,13 +276,43 @@ def _close(clean, i):
     raise _Bail
 
 
-def _paren(clean, i):
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(clean, i):
+        found = _scan.close_every(clean, i, '{', '}', True, None)
+        if found is NotImplemented:
+            return _python_close(clean, i)
+        if found is None:
+            raise _Bail
+        return found
+
+
+def _python_paren(clean, i):
     depth = 0
     for k in range(i, len(clean)):
         depth += (clean[k] == '(') - (clean[k] == ')')
         if depth == 0:
             return k + 1
     raise _Bail
+
+
+_paren = _python_paren
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _paren(clean, i):
+        found = _scan.close_every(clean, i, '(', ')', True, None)
+        if found is NotImplemented:
+            return _python_paren(clean, i)
+        if found is None:
+            raise _Bail
+        return found
 
 
 class _Parser:

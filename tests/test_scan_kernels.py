@@ -345,3 +345,45 @@ def test_the_seventh_batch_of_own_scans_match_their_plain_loops_on_random_text()
             where = rng.randint(-3, len(text) + 2)
             for args in build(text, where, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+EIGHTH_BATCH = [
+    ("storage_scope_repairs", "_close", _params),
+    ("subtable_base_offset", "_close", _params),
+    ("switch_case_tail_goto", "_match", lambda t, a, r: [(t, a)]),
+    ("switch_default_join_skip", "_close", lambda t, a, r: [(t, a)]),
+    ("switch_goto_tail_arms", "_close", lambda t, a, r: [(t, a), (t, a, "{}"), (t, a, "()"), (t, a, "{"), (t, a, "{{")]),
+    ("strided_table_loop", "_close", lambda t, a, r: [(t, a)]),
+    ("strided_table_loop", "_paren", lambda t, a, r: [(t, a)]),
+    ("untouched_slot_passthrough", "_block", lambda t, a, r: [(t, a)]),
+    ("value_repairs", "close", lambda t, a, r: [(t, a)]),
+    ("volatile_pointer_reread", "_statement_end", _three),
+    ("wrapped_call_float_sum_local", "_closing", lambda t, a, r: [(t, a)]),
+    ("stray_global_call_argument", "_arguments", _three),
+    ("call_carrier_pointer_split", "_arguments", _three),
+    ("switch_arm_tail_calls", "_top_level", lambda t, a, r: [(t, a)]),
+    ("walk_counter_for", "_top_statements", _three),
+    ("switch_index_wide_copy", "_match", lambda t, a, r: [(t, a)]),
+    ("spilled_invariant_repairs", "_balanced", lambda t, a, r: _params(t, a, r) + [(t, a)]),
+    ("staged_sum_scope", "_close", lambda t, a, r: [(t, a)]),
+    ("or_guard_continue", "_split_or", lambda t, a, r: [(t,)]),
+    ("statement_tree_switch", "_split", lambda t, a, r: [(t, "||"), (t, "&&"), (t, "(")]),
+    ("comma_flag_condition_repairs", "_terms", lambda t, a, r: [(t,)]),
+]
+
+
+def test_the_eighth_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(99)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\t", "\n", ";", ",", "|", "||", "&&", "é", "𝄞", "((", "}}", "; "]
+    for module_name, function, build in EIGHTH_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)

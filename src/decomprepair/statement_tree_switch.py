@@ -50,7 +50,7 @@ def _test(cond):
     return None
 
 
-def _split(cond, token):
+def _python_split(cond, token):
     """`cond` cut at the top-level `token` (`||` or `&&`)."""
     parts, depth, last, at = [], 0, 0, 0
     while at < len(cond):
@@ -63,6 +63,17 @@ def _split(cond, token):
         at += 1
     parts.append(cond[last:])
     return parts
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(cond, token):
+        found = _scan.split_top(cond, token, False)
+        return _python_split(cond, token) if found is NotImplemented else found
 
 
 def _atoms(cond):

@@ -10,13 +10,24 @@ from .csource import _blank, find
 IDENT = r'[A-Za-z_]\w*'
 
 
-def _close(text, start, left, right):
+def _python_close(text, start, left, right):
     depth = 0
     for pos in range(start, len(text)):
         depth += (text[pos] == left) - (text[pos] == right)
         if depth == 0:
             return pos
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, start, left, right):
+        found = _scan.close_every(text, start, left, right, False, None)
+        return _python_close(text, start, left, right) if found is NotImplemented else found
 
 
 def variants(source, name, arch, flags):

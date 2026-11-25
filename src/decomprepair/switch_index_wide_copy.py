@@ -44,7 +44,7 @@ _NARROW = r'(?:s16|u16|s8|u8|short|unsigned\s+short|signed\s+short|char|signed\s
 _WRAP = re.compile(r'(?P<open>(?:do\s*\{\s*)+)(?P<body>[^{};]*;)(?P<close>(?:\s*\}\s*while\s*\(\s*0\s*\)\s*;)+)')
 
 
-def _match(clean, at):
+def _python_match(clean, at):
     """The index of the bracket that closes the one at `at`."""
     depth = 0
     pair = {'(': ')', '{': '}'}[clean[at]]
@@ -56,6 +56,19 @@ def _match(clean, at):
             if depth == 0:
                 return i
     return -1
+
+
+_match = _python_match
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _match(clean, at):
+        opener = clean[at]
+        closer = {'(': ')', '{': '}'}[opener]
+        found = _scan.close_if(clean, at, opener, closer, -1)
+        return _python_match(clean, at) if found is NotImplemented else found
 
 
 def _fresh(clean, base):

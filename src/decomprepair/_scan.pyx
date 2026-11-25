@@ -460,3 +460,93 @@ def segments(str text, Py_ssize_t start, Py_ssize_t end):
             found.append((lead, i, text[i]))
             begin = i + 1
     return found
+
+
+# More list-returning scans: call arguments, top-level flags and statements, and splits at a top-level token.
+
+def argument_spans(str text, Py_ssize_t start, Py_ssize_t end):
+    """[(begin, end)] of the top-level comma-separated arguments of text[start:end] (brackets `([{` balanced); the last
+    one only when it is not blank."""
+    cdef Py_ssize_t i, begin = start
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list spans = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'(' or c == u'[' or c == u'{':
+            depth += 1
+        elif c == u')' or c == u']' or c == u'}':
+            depth -= 1
+        if c == u',' and depth == 0:
+            spans.append((begin, i))
+            begin = i + 1
+    if text[begin:end].strip():
+        spans.append((begin, end))
+    return spans
+
+
+def top_level_flags(str text, Py_ssize_t start):
+    """For each offset of text[start:]: whether it lies outside every bracket (`([{`), as a list of bools."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list flags = []
+    if start < 0:
+        return NotImplemented
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == u'(' or c == u'[' or c == u'{':
+            depth += 1
+        elif c == u')' or c == u']' or c == u'}':
+            depth -= 1
+        flags.append(depth == 0)
+    return flags
+
+
+def top_statements(str text, Py_ssize_t lo, Py_ssize_t hi):
+    """[(start, end)] of the `;`-terminated statements of text[lo:hi] at its own level (nested blocks skipped)."""
+    cdef Py_ssize_t i, begin = lo
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list out = []
+    if lo < 0 or hi > len(text):
+        return NotImplemented
+    for i in range(lo, hi):
+        c = text[i]
+        if c == u'{':
+            depth += 1
+        elif c == u'}':
+            depth -= 1
+            if depth == 0:
+                begin = i + 1
+        elif c == u';' and depth == 0:
+            out.append((begin, i + 1))
+            begin = i + 1
+    return out
+
+
+def split_top(str text, str token, bint square):
+    """`text` cut at each `token` outside parentheses (and brackets, when `square`)."""
+    cdef Py_ssize_t at = 0, last = 0, length = len(text), token_length = len(token)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, first
+    cdef list parts = []
+    if token_length == 0:
+        return NotImplemented
+    first = token[0]
+    while at < length:
+        c = text[at]
+        if c == u'(' or (square and c == u'['):
+            depth += 1
+        elif c == u')' or (square and c == u']'):
+            depth -= 1
+        if depth == 0 and c == first and text.startswith(token, at):
+            parts.append(text[last:at])
+            at += token_length
+            last = at
+            continue
+        at += 1
+    parts.append(text[last:])
+    return parts

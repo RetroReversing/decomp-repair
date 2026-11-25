@@ -39,7 +39,7 @@ SCALARS = ('s32', 'u32', 'int', 'long')
 SIZES = {'f32': 4, 's32': 4, 'u32': 4, 'int': 4, 'float': 4, 's16': 2, 'u16': 2, 'short': 2, 's8': 1, 'u8': 1, 'char': 1}
 
 
-def _balanced(text, start, open_='{', close='}'):
+def _python_balanced(text, start, open_='{', close='}'):
     """Index just past the group opened at `start`, or -1."""
     depth = 0
     for index in range(start, len(text)):
@@ -50,6 +50,17 @@ def _balanced(text, start, open_='{', close='}'):
             if depth == 0:
                 return index + 1
     return -1
+
+
+_balanced = _python_balanced
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _balanced(text, start, open_='{', close='}'):
+        found = _scan.close_if_past(text, start, open_, close, -1)
+        return _python_balanced(text, start, open_, close) if found is NotImplemented else found
 
 
 def _body(source, name):

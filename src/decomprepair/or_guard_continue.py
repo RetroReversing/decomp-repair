@@ -41,7 +41,7 @@ def _flip(atom):
     return f'{hit[1].strip()} {OPPOSITE[hit[2]]} {hit[3].strip()}'
 
 
-def _split_or(cond):
+def _python_split_or(cond):
     parts, depth, last, at = [], 0, 0, 0
     while at < len(cond):
         char = cond[at]
@@ -53,6 +53,17 @@ def _split_or(cond):
         at += 1
     parts.append(cond[last:])
     return parts
+
+
+_split_or = _python_split_or
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split_or(cond):
+        found = _scan.split_top(cond, '||', False)
+        return _python_split_or(cond) if found is NotImplemented else found
 
 
 def _blocks(text, pattern):

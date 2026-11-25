@@ -28,7 +28,7 @@ SIMPLE_BAD = re.compile(r'\b(?:goto|return|break|continue|case|default|if|else|f
 PLAIN_LABEL = re.compile(rf'^\s*(?P<label>{IDENT})\s*:(?!:)\s*')
 
 
-def _match(clean, opening):
+def _python_match(clean, opening):
     depth = 0
     for index in range(opening, len(clean)):
         if clean[index] == '{':
@@ -38,6 +38,17 @@ def _match(clean, opening):
             if depth == 0:
                 return index
     return None
+
+
+_match = _python_match
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _match(clean, opening):
+        found = _scan.close_if(clean, opening, '{', '}', None)
+        return _python_match(clean, opening) if found is NotImplemented else found
 
 
 def _labels(clean, start, end):
