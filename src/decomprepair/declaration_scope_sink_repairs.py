@@ -30,7 +30,15 @@ function stayed at 10,000 for other reasons.
 `declaration_scope_sink` offers, for a scalar or pointer local declared without an initializer at the top of the
 function whose every reference lies inside one inner block (not a loop body, which would change what survives an
 iteration), the same function with the declaration moved to the first line of that block. Locals with a narrow type
-come first (the m2c stack temporaries `spXX` that are spilled). The judge decides.
+come first (the m2c stack temporaries `spXX` that are spilled), then the other scalars and pointers, then struct
+locals (a `Vec3`), so a function with a dozen struct temporaries still gets its scalars within LIMIT. The judge decides.
+
+A 920-instruction N64 segment-against-triangles test (SN GCC 2.8.1, `-G0 -mips3 -O2 -mfp32`) differed only in one
+float's spill slot: `sign` at `0x15c($sp)` where the target had `0x168($sp)`, after the hoisted address of a vertex
+array and an 8-byte double. Reload gives the pseudos that got no hard register their slots in pseudo-number order
+(reload1.c, the `alter_reg (i, -1)` loop), and `sign`, declared with the function's locals, had a lower number than
+both. Declaring it at the start of the `else` block that computes and reads it gave 0 (7 -> 0). The family had that
+child, but twelve `Vec3` locals and the loop body's locals (the `for` head check never matched) used up its eight.
 """
 import re
 
@@ -44,7 +52,12 @@ NARROW = re.compile(r'\b(?:u8|s8|u16|s16|char|short)\b')
 DECLARATION = re.compile(rf'\s*(?P<type>(?:(?:unsigned|signed|const|register)\s+)*{IDENT}(?:\s+{IDENT})?[\s*]*?)\b(?P<name>{IDENT})\s*;')
 CONTROL = re.compile(r'\b(?:return|goto|break|continue|case|default|else|typedef|extern|static)\b')
 KEYWORDS = {'return', 'case', 'else', 'goto', 'sizeof', 'do'}
-LOOP = re.compile(r'\b(?:for|while)\s*\([^{};]*\)\s*$|\bdo\s*$|\bswitch\s*\([^{};]*\)\s*$')
+# A loop or switch head right before a block's `{`: its parentheses may nest two deep and a `for` head holds `;`
+# (`[^{};]` never matched a `for`, so a loop body's locals were offered and filled LIMIT ahead of the real candidates).
+HEAD_ARGS = r'\((?:[^(){}]|\((?:[^(){}]|\([^(){}]*\))*\))*\)'
+LOOP = re.compile(rf'\b(?:for|while|switch)\s*{HEAD_ARGS}\s*$|\bdo\s*$')
+# Types that are one register wide; anything else declared without `*` is taken to be a struct typedef (a `Vec3`).
+SCALAR = re.compile(r'\*|^\s*(?:(?:unsigned|signed|const|register)\s+)*(?:u8|s8|u16|s16|u32|s32|u64|s64|f32|f64|int|char|short|long|float|double|unsigned|signed)\b')
 
 
 def _python_blocks(clean, opening, end):
@@ -114,7 +127,7 @@ def variants(source, name):
         indent = re.search(r'[ \t]*$', line[:len(line) - len(line.lstrip())])[0]
         insert_at = holder[0] + 1
         text = f'\n{indent}  {line.strip()}'
-        rank = 0 if NARROW.search(match['type']) else 1
+        rank = 0 if NARROW.search(match['type']) else 1 if SCALAR.search(match['type']) else 2
         result.append((rank, len(result), source_edit(source, match, insert_at, text)))
     result.sort(key=lambda item: item[:2])
     return array_variants(source, name) + [(FAMILY, text) for _, _, text in result[:LIMIT]]
@@ -122,7 +135,7 @@ def variants(source, name):
 
 ARRAY = re.compile(rf'(?P<type>(?:(?:unsigned|signed|const|register|volatile)\s+)*{IDENT}(?:\s+{IDENT})?[\s*]*?)\b(?P<name>{IDENT})\s*(?P<dims>(?:\[[^\]\n]*\])+)\s*;')
 SCRATCH = re.compile(rf'(?P<type>volatile\s+(?:{IDENT}\s+)*{IDENT}[\s*]*?)\b(?P<name>{IDENT})\s*;')
-BLOCK_HEAD = re.compile(r'\b(?:for|while)\s*\([^{};]*\)\s*$|\bdo\s*$')
+BLOCK_HEAD = re.compile(rf'\b(?:for|while)\s*{HEAD_ARGS}\s*$|\bdo\s*$')
 
 
 def array_variants(source, name):
