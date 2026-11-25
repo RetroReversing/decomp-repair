@@ -24,7 +24,7 @@ import re
 _TOKEN = re.compile(r'''\s+|0[xX][0-9a-fA-F]+[uUlL]*|\d+(?:\.\d+)?[fFuUlL]*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'
                         |<<=|>>=|->|<<|>>|<=|>=|==|!=|&&|\|\||[-+*/%&|^]=|\+\+|--|.''', re.X)
 _BINARY = re.compile(r'invalid operands to binary (\S+)')
-_DIAGNOSTIC = re.compile(r'^func\.c:(\d+): (.*)$')
+_DIAGNOSTIC = re.compile(r'^func\.(?:c|sn\.i):(\d+): (.*)$')  # (SN64's preprocessed file is func.sn.i)
 # IDO's `cfe: Error: func.c, line 21: Unacceptable operand of '+'.`, said in the words the repairs below know
 _IDO = re.compile(r'^cfe: Error: func\.c, line (\d+): (.*)$')
 _IDO_OPERAND = re.compile(r"Unacceptable operand of '?([^'\s.]+)'?\.?$")
