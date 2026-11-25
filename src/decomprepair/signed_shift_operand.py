@@ -20,7 +20,7 @@ _UNSIGNED = r'(?:u32|unsigned(?:\s+(?:int|long))?)'
 _SHIFT = re.compile(r'>>\s*(?:0[xX][0-9a-fA-F]+|\d+)\b')
 
 
-def _open_of(clean, end):
+def _python_open_of(clean, end):
     """The `(` that matches the `)` at `end`, or None."""
     depth = 0
     for index in range(end, -1, -1):
@@ -29,6 +29,17 @@ def _open_of(clean, end):
         if depth == 0:
             return index
     return None
+
+
+_open_of = _python_open_of
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _open_of(clean, end):
+        found = _scan.open_every(clean, end, '(', ')', None)
+        return _python_open_of(clean, end) if found is NotImplemented else found
 
 
 def variants(source, name, header='', asm=''):

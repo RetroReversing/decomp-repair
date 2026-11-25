@@ -303,3 +303,45 @@ def test_the_sixth_batch_of_own_scans_match_their_plain_loops_on_random_text():
             where = rng.randint(-3, len(text) + 2)
             for args in build(text, where, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+SEVENTH_BATCH = [
+    ("loop_vector_shapes", "_matching", lambda t, a, r: [(t, a)]),
+    ("m2c_undeclared_drafts", "_open", lambda t, a, r: [(t, a)]),
+    ("masked_compare_signed_cast", "_open_of", lambda t, a, r: [(t, a)]),
+    ("narrow_store_width", "_statement_end", lambda t, a, r: [(t, a)]),
+    ("nested_join_hoist_repairs", "_enclosing_block", _three),
+    ("or_chain_order_repairs", "_close", lambda t, a, r: [(t, a)]),
+    ("outer_cursor_entry_copy_repairs", "_block_head", lambda t, a, r: [(t, a)]),
+    ("paired_statement_moves", "_statement_end", _three),
+    ("param_loop_carrier", "_block_start", _three),
+    ("pointer_pair_loop", "_span", lambda t, a, r: [(t, a, "(", ")"), (t, a, "{", "}"), (t, a, "{", "{"), (t, a, "{}", "}")]),
+    ("product_split_sum", "_group_start", lambda t, a, r: [(t, a)]),
+    ("product_split_sum", "_group_end", lambda t, a, r: [(t, a)]),
+    ("queue_cursor_index_repairs", "_block_end", _three),
+    ("quotient_chain_stage", "_open", lambda t, a, r: [(t, a)]),
+    ("record_row_member", "_expression_end", lambda t, a, r: [(t, a)]),
+    ("result_weight_scope", "_close", _params),
+    ("retry_goto_scope_repairs", "_close", lambda t, a, r: _params(t, a, r) + [(t, a)]),
+    ("run_weight_scope", "_match", _params),
+    ("saved_register_cascade", "_block_of", _four),
+    ("signed_shift_operand", "_open_of", lambda t, a, r: [(t, a)]),
+    ("source_variable_reuse_repairs", "_block_end", _three),
+]
+
+
+def test_the_seventh_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(88)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\t", "\n", ";", ",", "é", "𝄞", "((", "}}", "; "]
+    for module_name, function, build in SEVENTH_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)

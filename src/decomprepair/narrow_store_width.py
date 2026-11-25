@@ -47,7 +47,7 @@ def _stores(asm):
     return {(match[1], int(match[2], 0)) for match in _ASM.finditer(asm or '')}
 
 
-def _statement_end(clean, start):
+def _python_statement_end(clean, start):
     depth = 0
     for index in range(start, len(clean)):
         char = clean[index]
@@ -57,6 +57,17 @@ def _statement_end(clean, start):
         if depth < 0:
             return None
     return None
+
+
+_statement_end = _python_statement_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_end(clean, start):
+        found = _scan.statement_end(clean, start, len(clean), '([{', ')]}', False, True, None)
+        return _python_statement_end(clean, start) if found is NotImplemented else found
 
 
 def _holds(part, stores, asm):

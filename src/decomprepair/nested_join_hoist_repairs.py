@@ -65,7 +65,7 @@ def _block_end(clean, open_at):
     return end - 1 if end else None
 
 
-def _enclosing_block(clean, at, floor):
+def _python_enclosing_block(clean, at, floor):
     """(open, close) of the innermost `{...}` around `at`, above `floor`."""
     depth = 0
     for pos in range(at - 1, floor - 1, -1):
@@ -77,6 +77,22 @@ def _enclosing_block(clean, at, floor):
                 return (pos, end) if end and end > at else None
             depth -= 1
     return None
+
+
+_enclosing_block = _python_enclosing_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _enclosing_block(clean, at, floor):
+        found = _scan.enclosing_open(clean, at, floor, -1)
+        if found is not NotImplemented:
+            if found < 0:
+                return None
+            end = _block_end(clean, found)
+            return (found, end) if end and end > at else None
+        return _python_enclosing_block(clean, at, floor)
 
 
 def _is_switch_body(clean, open_at, floor):

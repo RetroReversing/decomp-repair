@@ -42,7 +42,7 @@ _INITIALISED = re.compile(rf'(?:(?:unsigned|signed|const|volatile|static|registe
                           rf'(?:\[[^\]]*\])?\s*(?:=[^;{{}}]*)?;$')
 
 
-def _match(clean, at, opening, closing):
+def _python_match(clean, at, opening, closing):
     """The index just past the bracket that closes the one opened at `at`, or -1."""
     depth = 0
     for i in range(at, len(clean)):
@@ -53,6 +53,17 @@ def _match(clean, at, opening, closing):
             if depth == 0:
                 return i + 1
     return -1
+
+
+_match = _python_match
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _match(clean, at, opening, closing):
+        found = _scan.close_if_past(clean, at, opening, closing, -1)
+        return _python_match(clean, at, opening, closing) if found is NotImplemented else found
 
 
 def _statement_end(clean, at, limit):

@@ -79,10 +79,21 @@ def variants(source, name):
     return result
 
 
-def _block_end(clean, at, end):
+def _python_block_end(clean, at, end):
     depth = 0
     for i in range(at, end):
         depth += (clean[i] == '{') - (clean[i] == '}')
         if depth < 0:
             return i
     return end
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, at, end):
+        found = _scan.enclosing_end(clean, at, end, end)
+        return _python_block_end(clean, at, end) if found is NotImplemented else found

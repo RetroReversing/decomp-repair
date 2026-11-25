@@ -33,7 +33,7 @@ PLAIN = re.compile(r'\b(?:goto|break|continue|return|switch|do|while|for|case|de
 LABEL = re.compile(rf'(?<![\w.:?])({IDENT})\s*:(?![:=])')
 
 
-def _span(clean, at, open_char, close_char):
+def _python_span(clean, at, open_char, close_char):
     """The index just past the balanced group whose opener is at `at`, or None."""
     depth = 0
     for index in range(at, len(clean)):
@@ -41,6 +41,17 @@ def _span(clean, at, open_char, close_char):
         if depth == 0:
             return index+1
     return None
+
+
+_span = _python_span
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _span(clean, at, open_char, close_char):
+        found = _scan.close_every(clean, at, open_char, close_char, True, None)
+        return _python_span(clean, at, open_char, close_char) if found is NotImplemented else found
 
 
 def _number(text):

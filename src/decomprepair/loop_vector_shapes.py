@@ -65,7 +65,7 @@ def _indexed_loops(source, clean, opening, end):
     return out
 
 
-def _matching(clean, at):
+def _python_matching(clean, at):
     depth = 0
     for i in range(at, len(clean)):
         if clean[i] == '{':
@@ -75,6 +75,17 @@ def _matching(clean, at):
             if depth == 0:
                 return i
     return -1
+
+
+_matching = _python_matching
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _matching(clean, at):
+        found = _scan.close_if(clean, at, '{', '}', -1)
+        return _python_matching(clean, at) if found is NotImplemented else found
 
 
 def _only_read(body, var):

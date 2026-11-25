@@ -122,7 +122,7 @@ def _flatten(operand):
     return [inner]
 
 
-def _close(text, start):
+def _python_close(text, start):
     depth = 0
     for i in range(start, len(text)):
         depth += text[i] == '('
@@ -130,6 +130,17 @@ def _close(text, start):
         if depth == 0:
             return i
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, start):
+        found = _scan.close_every(text, start, '(', ')', False, -1)
+        return _python_close(text, start) if found is NotImplemented else found
 
 
 def _chains(clean, start, end):

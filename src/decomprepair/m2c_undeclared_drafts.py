@@ -16,7 +16,7 @@ import re
 _TYPES = {'M2C_UNK': 's32', 'M2C_UNK8': 's8', 'M2C_UNK16': 's16', 'M2C_UNK32': 's32'}
 
 
-def _open(source, close):
+def _python_open(source, close):
     """Index of the `(` matching the `)` at `close`, or None."""
     depth = 0
     for i in range(close, -1, -1):
@@ -27,6 +27,17 @@ def _open(source, close):
             if depth == 0:
                 return i
     return None
+
+
+_open = _python_open
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _open(source, close):
+        found = _scan.open_if(source, close, '(', ')', None)
+        return _python_open(source, close) if found is NotImplemented else found
 
 
 def _definition(source, name):

@@ -37,7 +37,7 @@ _AFTER_LITERAL_BAD = re.compile(r'\s*(?:[.(\[\w]|\*=)')
 _BEFORE_OK = set('(,=+-<>?:[{;}|^!~') | {''}  # not * / % (same precedence), & (unary), ) or a name
 
 
-def _group_start(text, close):
+def _python_group_start(text, close):
     """The index of the `(` matching the `)` at `close`, or None."""
     depth = 0
     for i in range(close, -1, -1):
@@ -50,7 +50,18 @@ def _group_start(text, close):
     return None
 
 
-def _group_end(text, open_):
+_group_start = _python_group_start
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _group_start(text, close):
+        found = _scan.open_if(text, close, '(', ')', None)
+        return _python_group_start(text, close) if found is NotImplemented else found
+
+
+def _python_group_end(text, open_):
     depth = 0
     for i in range(open_, len(text)):
         if text[i] == '(':
@@ -60,6 +71,17 @@ def _group_end(text, open_):
             if depth == 0:
                 return i + 1
     return None
+
+
+_group_end = _python_group_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _group_end(text, open_):
+        found = _scan.close_if_past(text, open_, '(', ')', None)
+        return _python_group_end(text, open_) if found is NotImplemented else found
 
 
 def _prev_char(text, index):

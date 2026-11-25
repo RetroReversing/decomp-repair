@@ -24,7 +24,7 @@ _MAGIC = {1000: '0x10624dd3', 3: '0xaaaaaaab', 5: '0xcccccccd', 10: '0xcccccccd'
 _UNSIGNED = re.compile(r'\b(?:u32|u16|u8|uint32_t|uint16_t|uint8_t|unsigned(?:\s+(?:int|short|char))?)\b')
 
 
-def _open(text, close):
+def _python_open(text, close):
     """The index of the `(` that matches the `)` at `close`, or None."""
     depth = 0
     for i in range(close, -1, -1):
@@ -35,6 +35,17 @@ def _open(text, close):
             if not depth:
                 return i
     return None
+
+
+_open = _python_open
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _open(text, close):
+        found = _scan.open_if(text, close, '(', ')', None)
+        return _python_open(text, close) if found is NotImplemented else found
 
 
 def _top_division(inner):

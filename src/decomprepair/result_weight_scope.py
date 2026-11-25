@@ -37,7 +37,7 @@ def _span(source, name):
     return (span[0] + head.end() - 1, span[1]) if head else None
 
 
-def _close(text, at, left, right):
+def _python_close(text, at, left, right):
     depth = 0
     for index in range(at, len(text)):
         if text[index] == left:
@@ -47,6 +47,17 @@ def _close(text, at, left, right):
             if depth == 0:
                 return index + 1
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, at, left, right):
+        found = _scan.close_if_past(text, at, left, right, None)
+        return _python_close(text, at, left, right) if found is NotImplemented else found
 
 
 def _line(source, start, end):
