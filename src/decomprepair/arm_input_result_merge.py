@@ -32,7 +32,7 @@ def _skip_space(text, i):
     return i
 
 
-def _close(text, i, open_, close):
+def _python_close(text, i, open_, close):
     depth = 0
     for j in range(i, len(text)):
         if text[j] == open_:
@@ -42,6 +42,17 @@ def _close(text, i, open_, close):
             if depth == 0:
                 return j
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, i, open_, close):
+        found = _scan.close_if(text, i, open_, close, -1)
+        return _python_close(text, i, open_, close) if found is NotImplemented else found
 
 
 def _arm(clean, i):
@@ -58,7 +69,7 @@ def _arm(clean, i):
     return end + 1, stmt.group(1)
 
 
-def _block_end(clean, i, hi):
+def _python_block_end(clean, i, hi):
     """Where the block around `i` closes (a block-scope declaration's name may be declared again after it)."""
     depth = 0
     for j in range(i, hi):
@@ -69,6 +80,13 @@ def _block_end(clean, i, hi):
                 return j
             depth -= 1
     return hi
+
+
+_block_end = _python_block_end
+if _scan is not None:
+    def _block_end(clean, i, hi):
+        found = _scan.enclosing_end(clean, i, hi, hi)
+        return _python_block_end(clean, i, hi) if found is NotImplemented else found
 
 
 def _declared_type(body, name):

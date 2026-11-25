@@ -57,7 +57,7 @@ def _ws(t, i):
     return i
 
 
-def _close(t, i, left, right):
+def _python_close(t, i, left, right):
     depth = 0
     for j in range(i, len(t)):
         if t[j] == left:
@@ -67,6 +67,17 @@ def _close(t, i, left, right):
             if depth == 0:
                 return j + 1
     return None
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(t, i, left, right):
+        found = _scan.close_if_past(t, i, left, right, None)
+        return _python_close(t, i, left, right) if found is NotImplemented else found
 
 
 def _stmt(t, i):

@@ -40,7 +40,7 @@ def _mentions(text, name):
     return list(re.finditer(rf'(?<![\w.>]){re.escape(name)}\b', text))
 
 
-def _block_end(clean, at):
+def _python_block_end(clean, at):
     depth = 0
     for index in range(at, len(clean)):
         if clean[index] == '{':
@@ -50,6 +50,17 @@ def _block_end(clean, at):
                 return index
             depth -= 1
     return len(clean)
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, at):
+        found = _scan.enclosing_end(clean, at, len(clean), len(clean))
+        return _python_block_end(clean, at) if found is NotImplemented else found
 
 
 def complement_late(source, name):
