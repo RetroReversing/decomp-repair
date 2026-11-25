@@ -24,7 +24,7 @@ import re
 _TOKEN = re.compile(r'''\s+|0[xX][0-9a-fA-F]+[uUlL]*|\d+(?:\.\d+)?[fFuUlL]*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'
                         |<<=|>>=|->|<<|>>|<=|>=|==|!=|&&|\|\||[-+*/%&|^]=|\+\+|--|.''', re.X)
 _BINARY = re.compile(r'invalid operands to binary (\S+)')
-_DIAGNOSTIC = re.compile(r'^func\.(?:c|sn\.i):(\d+): (.*)$')  # (SN64's preprocessed file is func.sn.i)
+_DIAGNOSTIC = re.compile(r'^func\.(c|sn\.i):(\d+): (.*)$')  # (SN64's preprocessed file is func.sn.i)
 # IDO's `cfe: Error: func.c, line 21: Unacceptable operand of '+'.`, said in the words the repairs below know
 _IDO = re.compile(r'^cfe: Error: func\.c, line (\d+): (.*)$')
 _IDO_OPERAND = re.compile(r"Unacceptable operand of '?([^'\s.]+)'?\.?$")
@@ -39,8 +39,9 @@ def diagnostics(log):
     for text in str(log).splitlines():
         text = text.strip()
         found = _DIAGNOSTIC.match(text)
-        if found and 'warning' not in found[2]:
-            line, message = found[1], found[2]
+        if found and 'warning' not in found[3]:
+            # (SN64 numbers the lines of the preprocessed file, headers included: line 0 says "somewhere in the draft")
+            line, message = (found[2] if found[1] == 'c' else '0'), found[3]
         elif ido := _IDO.match(text):
             line, message = ido[1], _ido_message(ido[2])
             if message is None:
@@ -59,6 +60,10 @@ def _ido_message(text):
         return 'invalid operands to binary =='
     if text.startswith('Bad operand type for += or -='):
         return 'invalid operands to binary +='
+    if text.startswith('Cast a pointer into a non-integral type'):
+        return 'ido: pointer cast to a float'
+    if text.startswith('Cast a non-integral type into a pointer'):
+        return 'ido: float cast to a pointer'
     if text.startswith('Dereferenced a non-pointer'):
         return "invalid type argument of `unary *'"
     if found := _IDO_OPERAND.match(text):
@@ -224,6 +229,26 @@ def _binary(tokens, op, attempt):
     return [(tokens.starts[left], '(s32)'), (tokens.starts[at + 1], '(s32)')]
 
 
+def _casts(tokens, wanted):
+    """(index of the token after the cast's `)`) of each cast `wanted(inner tokens)` accepts, that is not followed by
+    an integer cast already."""
+    out = []
+    for i, token in enumerate(tokens):
+        if token != '(' or (close := _match(tokens, i)) is None or close == i + 1 or close + 1 >= len(tokens):
+            continue
+        inner = tokens[i + 1:close]
+        if all(t == '*' or _name(t) or t in _CAST_WORDS for t in inner) and wanted(inner) and tokens[close + 1:close + 4] != ['(', 's32', ')']:
+            out.append(close + 1)
+    return out
+
+
+def _word_cast(tokens, attempt, wanted):
+    """IDO refuses a cast between a float and a pointer. Through an integer (`(f32)(s32)&x`, `(T *)(s32)f`) both are
+    legal; the callee's parameter type m2c guessed is what put the float there."""
+    places = _casts(tokens, wanted)
+    return [(tokens.starts[places[attempt]], '(s32)')] if attempt < len(places) else None
+
+
 def _dereference(tokens, attempt, cast):
     places = _unary_operators(tokens, '*')
     if attempt >= len(places) or _atom_after(tokens, places[attempt] + 1) is None:
@@ -244,12 +269,19 @@ def _call_through_table(tokens, attempt):
     for at in _unary_operators(tokens, '*'):
         if tokens[at + 1:at + 2] == ['(']:
             close = _match(tokens, at + 1)
+            typed = close is not None and close > at + 2 and _is_cast(tokens, close)  # `*(s32 *)(address)(args)`
+            if typed and tokens[close + 1:close + 2] == ['(']:
+                after = _match(tokens, close + 1)
+                if after is not None and tokens[after + 1:after + 2] == ['(']:
+                    places.append((at, after, True))
+                continue
             if close is not None and tokens[close + 1:close + 2] == ['(']:
-                places.append((at, close))
+                places.append((at, close, False))
     if attempt >= len(places):
         return None
-    at, close = places[attempt]
-    return [(tokens.starts[at], '((s32 (*)()) '), (tokens.starts[at + 1], '(s32 *)'), (tokens.ends[close], ')')]
+    at, close, typed = places[attempt]
+    edits = [(tokens.starts[at], '((s32 (*)()) '), (tokens.ends[close], ')')]
+    return edits if typed else edits + [(tokens.starts[at + 1], '(s32 *)')]
 
 
 _SCALARS = ('f32', 'f64', 's8', 'u8', 's16', 'u16', 's32', 'u32', 's64', 'u64')
@@ -337,7 +369,16 @@ def compact(source):
 
 
 def repair(source, line, message, attempt=0):
-    """`source` with line `line` (1-based) changed for the compiler's `message`, or None when nothing fits."""
+    """`source` with line `line` (1-based) changed for the compiler's `message`, or None when nothing fits. Line 0 is
+    a diagnostic whose line is not the draft's (SN64's): the first line the repair fits."""
+    if line == 0:
+        lines = source.split('\n')
+        for at in range(1, len(lines) + 1):
+            if lines[at - 1].lstrip().startswith(('#', '/*', '//')):  # (the macros' own `*(type)(...)` is not a call)
+                continue
+            if (changed := repair(source, at, message, 0)) is not None and changed != source:
+                return changed
+        return None
     if (found := re.search(r"incompatible type for argument (\d+) of `(\w+)'", message)):
         if attempt:
             return None
@@ -352,6 +393,19 @@ def repair(source, line, message, attempt=0):
         for position, insert in sorted(edits, reverse=True):
             lines[line - 1] = lines[line - 1][:position] + insert + lines[line - 1][position:]
         return '\n'.join(lines)
+    if (found := re.search(r"(?:too few|too many) arguments to function(?: `(\w+)')?", message)):
+        # the call and the prototype m2c guessed disagree: the callee is declared without a parameter list
+        lines = source.split('\n')
+        if not 1 <= line <= len(lines):
+            return None
+        names = [found[1]] if found[1] else [m[1] for m in re.finditer(r'\b([A-Za-z_]\w*)\s*\(', lines[line - 1])]
+        changed = [d for n in dict.fromkeys(names) if (d := _drop_parameters(source, n)) is not None]
+        # a call through a function pointer type m2c wrote with a parameter list (`M2C_UNK (**)(void *, void *)`)
+        for pointer in re.finditer(r'\(\*+\)\([^()]+\)', lines[line - 1]):
+            if pointer[0].rstrip(')').split('(')[-1].strip() != 'void':
+                text = lines[line - 1][:pointer.start()] + re.sub(r'\)\([^()]+\)$', ')()', pointer[0]) + lines[line - 1][pointer.end():]
+                changed.append('\n'.join(lines[:line - 1] + [text] + lines[line:]))
+        return changed[attempt] if attempt < len(changed) else None
     lines = source.split('\n')
     if not 1 <= line <= len(lines):
         return None
@@ -360,6 +414,10 @@ def repair(source, line, message, attempt=0):
     tokens = _tokens(code)
     if found := _BINARY.search(message):
         edits = _binary(tokens, found[1], attempt)
+    elif message == 'ido: pointer cast to a float':
+        edits = _word_cast(tokens, attempt, lambda inner: inner[-1] in ('f32', 'f64'))
+    elif message == 'ido: float cast to a pointer':
+        edits = _word_cast(tokens, attempt, lambda inner: inner[-1] == '*')
     elif 'arithmetic on pointer to an incomplete type' in message:
         edits = _binary(tokens, '+', attempt) or _binary(tokens, '-', attempt - len(_binary_operators(tokens, '+')))
     elif 'void value not ignored' in message or 'invalid use of void expression' in message:
