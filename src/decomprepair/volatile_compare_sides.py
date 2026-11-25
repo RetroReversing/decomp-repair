@@ -27,7 +27,7 @@ CALL = re.compile(r'[A-Za-z_]\w*\s*\(')
 EFFECT = re.compile(r'\+\+|--|(?<![=!<>])=(?!=)')
 
 
-def _left(clean, at, lo):
+def _python_left(clean, at, lo):
     depth = 0
     for j in range(at - 1, lo - 1, -1):
         ch = clean[j]
@@ -43,7 +43,18 @@ def _left(clean, at, lo):
     return lo
 
 
-def _right(clean, at, hi):
+_left = _python_left
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _left(clean, at, lo):
+        found = _scan.left_boundary(clean, at, lo)
+        return _python_left(clean, at, lo) if found is NotImplemented else found
+
+
+def _python_right(clean, at, hi):
     depth = 0
     for j in range(at, hi):
         ch = clean[j]
@@ -57,6 +68,17 @@ def _right(clean, at, hi):
                              or (ch == '=' and clean[j + 1:j + 2] != '=' and clean[j - 1] not in '=!<>')):
             return j
     return hi
+
+
+_right = _python_right
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _right(clean, at, hi):
+        found = _scan.right_boundary(clean, at, hi)
+        return _python_right(clean, at, hi) if found is NotImplemented else found
 
 
 def variants(source, name):

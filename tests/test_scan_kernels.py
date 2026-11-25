@@ -483,3 +483,44 @@ def test_the_three_source_body_scans_match_their_plain_loops_on_random_c():
             source = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 14)))
             for name in ("f", "g", "h"):
                 assert _outcome(kernel_backed, source, name) == _outcome(twin, source, name), (module_name, source, name)
+
+
+LAST_BATCH = [
+    ("scaled_offset_local", "_statement_start", _three),
+    ("shared_return_tail_merge", "_enclosing_end", _three),
+    ("arm_label_share_repairs", "_opener", lambda t, a, r: [(t, a)]),
+    ("block_temp_role_merge", "_open_of", _three),
+    ("else_tail_into_arms", "_open_of", lambda t, a, r: [(t, a)]),
+    ("call_result_halfword_local", "_top_plus", _three),
+    ("call_test_argument_stage", "_split_args", _three),
+    ("expression_locals", "_sum_operands", _three),
+    ("gbi_macro_commands", "_depths", _three),
+    ("retry_goto_scope_repairs", "_top_level_equal", lambda t, a, r: [(t,)]),
+    ("ternary_min_max_orientation", "_arm_end", lambda t, a, r: [(t, a)]),
+    ("pointer_reload_web_split", "_depth_text", _three),
+    ("volatile_compare_sides", "_left", _three),
+    ("volatile_compare_sides", "_right", _three),
+    ("field_chain_local_nest", "_terms", lambda t, a, r: [(t,)]),
+    ("pointer_walk_to_index", "_arguments", lambda t, a, r: [(t, a)]),
+    ("expression_terms", "_declarators", _three),
+    ("arm_local_return_fold", "_blocks", _three),
+    ("byte_field_macros", "_arguments", lambda t, a, r: [(t, a)]),
+]
+
+
+def test_the_last_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(2024)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\n", ";", ",", "+", "++", "+=", "=", "==", "!=", "<=", "&&", "||", "&", "|", "?", ":",
+              "é", "𝄞", "((", "))", "; "]
+    for module_name, function, build in LAST_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(4000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)

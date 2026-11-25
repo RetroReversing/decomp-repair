@@ -77,7 +77,7 @@ def _outer_argument(clean, at, skip):
     return None
 
 
-def _top_plus(clean, start, end):
+def _python_top_plus(clean, start, end):
     """The spans of the operands of the depth-0 `+` operators between `start` and `end`."""
     spans, depth, begin = [], 0, start
     for at in range(start, end):
@@ -91,6 +91,17 @@ def _top_plus(clean, start, end):
             begin = at + 1
     spans.append((begin, end))
     return spans
+
+
+_top_plus = _python_top_plus
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_plus(clean, start, end):
+        found = _scan.top_plus(clean, start, end)
+        return _python_top_plus(clean, start, end) if found is NotImplemented else found
 
 
 def variants(source, name, header=''):

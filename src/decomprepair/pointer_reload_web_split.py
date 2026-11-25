@@ -78,7 +78,7 @@ def _in_loop(clean, enclosing):
     return False
 
 
-def _depth_text(clean, start, end):
+def _python_depth_text(clean, start, end):
     """The text of start:end with nested blocks blanked, so only the block's own statements show."""
     out, depth = [], 0
     for index in range(start, end):
@@ -92,6 +92,17 @@ def _depth_text(clean, start, end):
         else:
             out.append(char if depth == 0 else ' ')
     return ''.join(out)
+
+
+_depth_text = _python_depth_text
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _depth_text(clean, start, end):
+        found = _scan.depth_text(clean, start, end)
+        return _python_depth_text(clean, start, end) if found is NotImplemented else found
 
 
 def _plans(source, part):

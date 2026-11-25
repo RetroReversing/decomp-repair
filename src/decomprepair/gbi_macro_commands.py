@@ -447,13 +447,24 @@ def _macros(commands, masked, raw=False):
 
 # ---- runs -------------------------------------------------------------------------------------------------------
 
-def _depths(clean, start, end):
+def _python_depths(clean, start, end):
     depth, out = 0, []
     for i in range(start, end):
         depth += clean[i] == '{'
         depth -= clean[i] == '}'
         out.append(depth)
     return out
+
+
+_depths = _python_depths
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _depths(clean, start, end):
+        found = _scan.brace_depths(clean, start, end)
+        return _python_depths(clean, start, end) if found is NotImplemented else found
 
 
 def _plan(clean, spans, cursor, size, records, start):

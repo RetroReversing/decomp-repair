@@ -710,7 +710,7 @@ def unwrap_parens(str text):
                 depth -= 1
             if depth == 0 and i < n - 1:
                 return text
-        text = text[1:-1].strip()
+        text = text[1:n - 1].strip()  # (explicit: a negative index is undefined with wraparound off)
     return text
 
 
@@ -870,3 +870,306 @@ def index_end(str text, Py_ssize_t at):
         elif c == u';' or c == u'{' or c == u'}':
             return None
     return None
+
+
+# The last of the plain scanners: operand and argument splits, a first `==`, an arm's end, and where a comparison's side begins and ends.
+
+def top_plus(str text, Py_ssize_t start, Py_ssize_t end):
+    """[(begin, end)] of the operands of the depth-0 `+` operators of text[start:end] (not `++`)."""
+    cdef Py_ssize_t at, begin = start, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, prev
+    cdef list spans = []
+    if start < 0 or end > length:
+        return NotImplemented
+    for at in range(start, end):
+        c = text[at]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        elif c == u'+' and depth == 0:
+            prev = text[length - 1] if at == 0 else text[at - 1]  # the plain scan's text[at - 1] wraps at 0
+            if prev != u'+' and (at + 1 >= length or text[at + 1] != u'+'):
+                spans.append((begin, at))
+                begin = at + 1
+    spans.append((begin, end))
+    return spans
+
+
+def split_args_paren(str text, Py_ssize_t start, Py_ssize_t end):
+    """[(begin, end)] of the top-level comma-separated arguments of text[start:end] (`([` against `)]`); the last always."""
+    cdef Py_ssize_t i, at = start
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list spans = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        elif c == u',' and depth == 0:
+            spans.append((at, i))
+            at = i + 1
+    spans.append((at, end))
+    return spans
+
+
+def argument_spans_all(str text, Py_ssize_t start, Py_ssize_t end):
+    """argument_spans, the last span always kept (brackets `([{`)."""
+    cdef Py_ssize_t i, begin = start
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list spans = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'(' or c == u'[' or c == u'{':
+            depth += 1
+        elif c == u')' or c == u']' or c == u'}':
+            depth -= 1
+        if c == u',' and depth == 0:
+            spans.append((begin, i))
+            begin = i + 1
+    spans.append((begin, end))
+    return spans
+
+
+def sum_operands(str text, Py_ssize_t start, Py_ssize_t end):
+    """[(begin, end)] of each top-level operand of a sum in text[start:end] (`+` not `++` or `+=`); [] if it is no sum."""
+    cdef Py_ssize_t i, begin = start, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, nxt, prev
+    cdef list parts = []
+    if start < 0 or end > length:
+        return NotImplemented
+    for i in range(start, end):
+        c = text[i]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        if depth == 0 and c == u'+':
+            if i + 1 >= length:
+                continue  # the plain scan's `'' not in '+='` is False at the end of the text
+            nxt = text[i + 1]
+            if nxt == u'+' or nxt == u'=':
+                continue
+            if i > 0 and text[i - 1] == u'+':  # (at i = 0 the plain scan's slice is empty, so not a `+`)
+                continue
+            parts.append((begin, i))
+            begin = i + 1
+    if not parts or depth:
+        return []
+    parts.append((begin, end))
+    return parts
+
+
+def first_top(str text, Py_ssize_t begin, Py_ssize_t end, str separator):
+    """The first offset in text[begin:end] of `separator` at bracket depth 0 (`([{`), else -1."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, sep
+    if begin < 0 or end > len(text) or len(separator) != 1:
+        return NotImplemented
+    sep = separator[0]
+    for i in range(begin, end):
+        c = text[i]
+        if c == u'(' or c == u'[' or c == u'{':
+            depth += 1
+        elif c == u')' or c == u']' or c == u'}':
+            depth -= 1
+        if depth == 0 and c == sep:
+            return i
+    return -1
+
+
+def top_level_equal(str text):
+    """The offset of the first `==` outside brackets (`([`) that is not part of `!==`, `<==`, `>===` or `===`; None if none."""
+    cdef Py_ssize_t pos, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, prev
+    for pos in range(length - 1):
+        c = text[pos]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        if depth == 0 and c == u'=' and text[pos + 1] == u'=':
+            if pos == 0:
+                continue  # the plain scan's `'' not in '!<>='` is False at the start
+            prev = text[pos - 1]
+            if prev == u'!' or prev == u'<' or prev == u'>' or prev == u'=':
+                continue
+            if pos + 2 < length and text[pos + 2] == u'=':
+                continue
+            return pos
+    return None
+
+
+def arm_end(str text, Py_ssize_t at):
+    """The first `:`, `)`, `]`, `;` or `,` outside any brackets from `at` (a closer at depth 0, or `:;,`); len(text) if none."""
+    cdef Py_ssize_t i, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if at < 0:
+        return NotImplemented
+    for i in range(at, length):
+        c = text[i]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            if depth == 0:
+                return i
+            depth -= 1
+        elif depth == 0 and (c == u':' or c == u';' or c == u','):
+            return i
+    return length
+
+
+def and_cuts(str text):
+    """The offsets of each `&&` outside brackets (`([`), overlapping ones included."""
+    cdef Py_ssize_t at, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list cuts = []
+    for at in range(length - 1):
+        c = text[at]
+        if c == u'(' or c == u'[':
+            depth += 1
+        elif c == u')' or c == u']':
+            depth -= 1
+        if depth == 0 and c == u'&' and text[at + 1] == u'&':
+            cuts.append(at)
+    return cuts
+
+
+def depth_text(str text, Py_ssize_t start, Py_ssize_t end):
+    """text[start:end] with every nested block (and the braces) blanked, so only the block's own statements show."""
+    cdef Py_ssize_t index
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list out = []
+    if start < 0 or end > len(text):
+        return NotImplemented
+    for index in range(start, end):
+        c = text[index]
+        if c == u'{':
+            depth += 1
+            out.append(u' ')
+        elif c == u'}':
+            depth -= 1
+            out.append(u' ')
+        else:
+            out.append(c if depth == 0 else u' ')
+    return ''.join(out)
+
+
+cdef inline bint _boundary_char(Py_UCS4 c):
+    return c == u',' or c == u';' or c == u'{' or c == u'}' or c == u'?' or c == u':'
+
+
+def left_boundary(str text, Py_ssize_t at, Py_ssize_t lo):
+    """Just after the `(` that opens the group around `at`, or after the nearest `,;{}?:`, `&&`, `||` or plain `=` before it
+    (looking back from `at - 1` to `lo`); `lo` if none."""
+    cdef Py_ssize_t j
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, p
+    if lo < 1 or at > len(text) - 1 or at < 1:
+        return NotImplemented
+    j = at - 1
+    while j >= lo:
+        c = text[j]
+        if c == u')':
+            depth += 1
+        elif c == u'(':
+            if depth == 0:
+                return j + 1
+            depth -= 1
+        elif depth == 0:
+            p = text[j - 1]
+            if _boundary_char(c) or ((c == u'&' or c == u'|') and p == c):
+                return j + 1
+            if c == u'=' and not (p == u'=' or p == u'!' or p == u'<' or p == u'>') and text[j + 1] != u'=':
+                return j + 1
+        j -= 1
+    return lo
+
+
+def right_boundary(str text, Py_ssize_t at, Py_ssize_t hi):
+    """The `)` that closes the group around `at`, or the nearest `,;{}?:`, `&&`, `||` or plain `=` after it; `hi` if none."""
+    cdef Py_ssize_t j, length = len(text)
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, p
+    if at < 1 or hi > length:
+        return NotImplemented
+    for j in range(at, hi):
+        c = text[j]
+        if c == u'(':
+            depth += 1
+        elif c == u')':
+            if depth == 0:
+                return j
+            depth -= 1
+        elif depth == 0:
+            if _boundary_char(c) or ((c == u'&' or c == u'|') and j + 1 < length and text[j + 1] == c):
+                return j
+            if c == u'=' and (j + 1 >= length or text[j + 1] != u'=') and not (
+                    text[j - 1] == u'=' or text[j - 1] == u'!' or text[j - 1] == u'<' or text[j - 1] == u'>'):
+                return j
+    return hi
+
+
+def blocks_two_deep(str text, Py_ssize_t opening, Py_ssize_t end):
+    """[(start, end)] of the brace blocks whose `}` closes at depth 2 (a function body's own blocks and their arms),
+    sorted. An unbalanced `}` (no opener left) is the plain scan's IndexError: it is left to it."""
+    cdef Py_ssize_t pos, start
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list starts = []
+    cdef list out = []
+    if opening < 0 or end > len(text):
+        return NotImplemented
+    for pos in range(opening, end):
+        c = text[pos]
+        if c == u'{':
+            depth += 1
+            starts.append(pos)
+        elif c == u'}':
+            if not starts:
+                return NotImplemented
+            start = starts.pop()
+            if depth == 2:
+                out.append((start, pos + 1))
+            depth -= 1
+    return sorted(out)
+
+
+def macro_arguments(str text, Py_ssize_t start):
+    """(offset past the `)`, [(begin, end)] of the two arguments) of a macro call whose arguments begin at `start`, split at
+    parenthesis depth 0 (inside [] or {} too); (None, []) when there are not exactly two or it never closes."""
+    cdef Py_ssize_t pos, first = start
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    cdef list parts = []
+    if start < 0:
+        return NotImplemented
+    for pos in range(start, len(text)):
+        c = text[pos]
+        if c == u'(':
+            depth += 1
+        elif c == u')':
+            if depth == 0:
+                parts.append((first, pos))
+                if len(parts) == 2:
+                    return pos + 1, parts
+                return None, []
+            depth -= 1
+        elif c == u',' and depth == 0:
+            parts.append((first, pos))
+            first = pos + 1
+    return None, []

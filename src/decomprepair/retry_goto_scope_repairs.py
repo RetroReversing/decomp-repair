@@ -67,13 +67,24 @@ def _unwrap(text):
     return text
 
 
-def _top_level_equal(text):
+def _python_top_level_equal(text):
     depth = 0
     for pos in range(len(text) - 1):
         depth += (text[pos] in '([') - (text[pos] in ')]')
         if depth == 0 and text[pos:pos + 2] == '==' and text[pos - 1:pos] not in '!<>=' and text[pos + 2:pos + 3] != '=':
             return pos
     return None
+
+
+_top_level_equal = _python_top_level_equal
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_level_equal(text):
+        found = _scan.top_level_equal(text)
+        return _python_top_level_equal(text) if found is NotImplemented else found
 
 
 def _positive(condition):

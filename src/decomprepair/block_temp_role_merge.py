@@ -57,7 +57,7 @@ else:
         return _python_close(clean, at, left, right) if found is NotImplemented else found
 
 
-def _open_of(clean, at, lo):
+def _python_open_of(clean, at, lo):
     depth = 0
     for i in range(at - 1, lo - 1, -1):
         if clean[i] == '}':
@@ -67,6 +67,17 @@ def _open_of(clean, at, lo):
                 return i
             depth -= 1
     return None
+
+
+_open_of = _python_open_of
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _open_of(clean, at, lo):
+        found = _scan.enclosing_open(clean, at, lo, None)
+        return _python_open_of(clean, at, lo) if found is NotImplemented else found
 
 
 def _loops(clean, lo, hi):

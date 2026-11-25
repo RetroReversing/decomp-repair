@@ -30,7 +30,7 @@ LIMIT = 6
 MAX_TAIL_LINES = 40
 
 
-def _open_of(clean, closing):
+def _python_open_of(clean, closing):
     """Position of the `{` that matches the `}` at `closing`, scanning backwards."""
     depth = 0
     for pos in range(closing, -1, -1):
@@ -42,6 +42,17 @@ def _open_of(clean, closing):
             if depth == 0:
                 return pos
     return None
+
+
+_open_of = _python_open_of
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _open_of(clean, closing):
+        found = _scan.open_if(clean, closing, '{', '}', None)
+        return _python_open_of(clean, closing) if found is NotImplemented else found
 
 
 def _python_block_end(clean, start, limit):

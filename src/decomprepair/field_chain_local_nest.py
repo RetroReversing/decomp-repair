@@ -32,7 +32,7 @@ LIMIT = 4
 _FIELD = r'\*\s*\(\s*\(\s*(?:s32|u32|int)\s*\*\s*\)\s*\(\s*\(\s*\(\s*char\s*\*\s*\)\s*{base}\s*\)\s*\+\s*{off}\s*\)\s*\)'
 
 
-def _terms(cond):
+def _python_terms(cond):
     depth, cuts = 0, []
     for at in range(len(cond) - 1):
         depth += (cond[at] in '([') - (cond[at] in ')]')
@@ -46,6 +46,24 @@ def _terms(cond):
         start = cut + 2
     pieces.append(cond[start:].strip())
     return pieces
+
+
+_terms = _python_terms
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _terms(cond):
+        cuts = _scan.and_cuts(cond)
+        if not cuts:
+            return None
+        pieces, start = [], 0
+        for cut in cuts:
+            pieces.append(cond[start:cut].strip())
+            start = cut + 2
+        pieces.append(cond[start:].strip())
+        return pieces
 
 
 def _flat(cond):

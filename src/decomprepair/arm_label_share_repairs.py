@@ -83,7 +83,7 @@ def _flow_end(clean, position, limit):
     return index
 
 
-def _opener(clean, close_at):
+def _python_opener(clean, close_at):
     depth = 0
     for index in range(close_at, -1, -1):
         if clean[index] == '}':
@@ -93,6 +93,17 @@ def _opener(clean, close_at):
             if depth == 0:
                 return index
     return None
+
+
+_opener = _python_opener
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _opener(clean, close_at):
+        found = _scan.open_if(clean, close_at, '{', '}', None)
+        return _python_opener(clean, close_at) if found is NotImplemented else found
 
 
 def variants(source, name):

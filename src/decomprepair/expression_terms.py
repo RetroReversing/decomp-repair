@@ -778,7 +778,7 @@ def _statement(clean, begin, end, block, result, types):
     result.append(Site('expr', at, end, statement, block, len(result), labeled=labeled))
 
 
-def _declarators(clean, begin, end):
+def _python_declarators(clean, begin, end):
     spans = []
     cuts = [begin - 1] + _top_split(clean, begin, end, ',') + [end]
     for a, b in zip(cuts, cuts[1:]):
@@ -792,6 +792,24 @@ def _declarators(clean, begin, end):
         if eq is not None and clean[eq+1:b].strip() and not clean[eq+1:b].lstrip().startswith('{'):
             spans.append((eq + 1, b))
     return spans
+
+
+_declarators = _python_declarators
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _declarators(clean, begin, end):
+        spans = []
+        cuts = [begin - 1] + _top_split(clean, begin, end, ',') + [end]
+        for a, b in zip(cuts, cuts[1:]):
+            eq = _scan.first_top(clean, a + 1, b, '=')
+            if eq is NotImplemented:
+                return _python_declarators(clean, begin, end)
+            if eq >= 0 and clean[eq + 1:b].strip() and not clean[eq + 1:b].lstrip().startswith('{'):
+                spans.append((eq + 1, b))
+        return spans
 
 
 # ---------------------------------------------------------------- chains
