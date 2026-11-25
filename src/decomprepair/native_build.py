@@ -9,8 +9,12 @@ folder, so building is all it takes, and deleting the `.so` files (`--clean`) re
 Without Cython or a C compiler nothing is built and nothing changes. `DECOMPREPAIR_NATIVE=0` has no effect at import
 (the choice is which files exist), so tests run both ways by building and cleaning.
 
-    build_native.py            build every module in NATIVE into src/decomprepair/
-    build_native.py --clean    remove the compiled modules
+    native_build.py                    build every module in NATIVE next to this file
+    native_build.py --clean            remove the compiled modules
+    native_build.py --only a,b         build just those modules of NATIVE
+    native_build.py --package DIR      work on the decomprepair folder DIR (an installed copy: it must hold the
+                                       .py files; needs Cython and setuptools, run it with the file's path so the
+                                       package's own imports are not needed)
 """
 import os
 import sys
@@ -19,7 +23,7 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
-PACKAGE = Path(__file__).resolve().parents[1] / "src" / "decomprepair"
+PACKAGE = Path(__file__).resolve().parent  # --package DIR builds into another copy (an installed bundle)
 
 # Add a module here once its tests pass compiled. Keep to modules that don't read their own source or `__file__`.
 NATIVE = [
@@ -185,14 +189,15 @@ def clean() -> None:
         path.unlink()
 
 
-def build_one(name: str) -> int:
+def build_one(name: str, package: Path | None = None) -> int:
     """Compile one module; a module Cython can't translate stays interpreted without blocking the others."""
     from Cython.Build import cythonize
     from setuptools import Extension
     from setuptools.dist import Distribution
+    package = Path(package or PACKAGE)
     with tempfile.TemporaryDirectory(prefix="decomprepair-native-") as work:
         try:
-            extensions = cythonize([Extension(f"decomprepair.{name}", [str(PACKAGE / f"{name}.py")])],
+            extensions = cythonize([Extension(f"decomprepair.{name}", [str(package / f"{name}.py")])],
                                    build_dir=work, quiet=True, compiler_directives={"language_level": "3"})
             dist = Distribution({"ext_modules": extensions, "package_dir": {"": "src"}, "packages": ["decomprepair"]})
             command = dist.get_command_obj("build_ext")
@@ -206,12 +211,17 @@ def build_one(name: str) -> int:
         count = 0
         for path in Path(work).rglob("decomprepair/*"):
             if path.suffix in (".so", ".pyd"):
-                (PACKAGE / path.name).write_bytes(path.read_bytes())
+                (package / path.name).write_bytes(path.read_bytes())
                 count += 1
         return count
 
 
 def main(argv: list[str]) -> int:
+    global PACKAGE
+    if "--package" in argv:
+        PACKAGE = Path(argv[argv.index("--package") + 1]).resolve()
+    only = argv[argv.index("--only") + 1].split(",") if "--only" in argv else None  # a few modules, to try it
+    names = [name for name in NATIVE if only is None or name in only]
     clean()
     if "--clean" in argv:
         return 0
@@ -225,9 +235,9 @@ def main(argv: list[str]) -> int:
     jobs = int(os.environ.get("DECOMPREPAIR_NATIVE_JOBS", "4"))
     try:
         with ProcessPoolExecutor(jobs) as pool:
-            built = sum(pool.map(build_one, NATIVE))
+            built = sum(pool.map(build_one, names, [PACKAGE] * len(names)))
     except BrokenProcessPool:  # a compiler worker was killed (memory pressure): finish what is missing one at a time
-        built = len(compiled()) + sum(build_one(name) for name in NATIVE if not list(PACKAGE.glob(f"{name}.*.so"))
+        built = len(compiled()) + sum(build_one(name, PACKAGE) for name in names if not list(PACKAGE.glob(f"{name}.*.so"))
                                       and not list(PACKAGE.glob(f"{name}.*.pyd")))
     print(f"Built {built} native modules into {PACKAGE}.")
     return 0
