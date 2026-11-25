@@ -34,8 +34,8 @@ from .hand_found_support import (
     local_type,
     number,
     simple,
-    store_target,
     stmts,
+    store_target,
 )
 from .integer_repair_support import edit, view
 
