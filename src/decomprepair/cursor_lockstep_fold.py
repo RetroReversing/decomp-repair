@@ -49,7 +49,10 @@ CASTS = r'(?:unsigned\s+(?:char|short|int|long)|signed\s+(?:char|short|int|long)
 
 
 def _number(text):
-    return int(text, 16 if text.lower().startswith('0x') else 10)
+    """A C integer literal's value, with the sign a helper's `return -0xA0;` carries (the helper's body is `-0xA0`, which
+    `int(text, 16)` rejects, and the crash stopped the whole local repair pass)."""
+    sign, digits = (-1, text[1:].lstrip()) if text.startswith('-') else (1, text)
+    return sign * int(digits, 16 if digits.lower().startswith('0x') else 10)
 
 
 def _helpers(clean):
