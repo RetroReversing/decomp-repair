@@ -266,8 +266,8 @@ def test_the_trimmed_child_writes_the_same_display_list_as_the_draft(tmp_path):
 
     def run(text, label):
         text = text.replace('extern void *sCursor;', 'void *sCursor;').replace('extern Gfx *sCursor;', 'Gfx *sCursor;')
-        text = re.sub(r'(?m)^M2C_UNK g3\([^;]*\); /\* extern \*/$', 'M2C_UNK g3();', text)
-        main = 'M2C_UNK g3() { return 0; }\nint main(void) {\n'
+        text = re.sub(r'(?m)^M2C_UNK g3\([^;]*\); /\* extern \*/$', 'M2C_UNK g3(M2C_UNK, ...);', text)
+        main = 'M2C_UNK g3(M2C_UNK a, ...) { return a; }\nint main(void) {\n'
         for call in ('d(5, 7, (void *) 0x1234)', 'd(32, 0x7F, (void *) 0x80001000)', 'd(-3, 1, 0)'):
             main += f'    memset(buffer, 0, sizeof buffer); sCursor = (void *) buffer; {call};\n'
             main += '    for (int i = 0; i < 64; i++) printf("%08x ", buffer[i]); printf("%ld\\n", (long) ((char *) sCursor - (char *) buffer));\n'
