@@ -15,9 +15,10 @@ anyway, and the entry test written inline (`if (arg0->f == 0)`) gets a register 
 alone or in pairs scored 35, 240 or 560.
 
 arity_drop_store_step
-    For each callee whose matched definition (in `callees`) takes N parameters and is called with more, where the
-    dropped arguments are side-effect free and at least one is not a plain name (plain names are
-    `callee_arity_trim`'s): the call without them; then, for a dropped `v + K` (or `v - K`) that a statement before the
+    For each callee whose matched definition (in `callees`) takes N parameters and is called with more, where every
+    call's extra arguments are side-effect free and one of them is a `v + K` sum (plain names are
+    `callee_arity_trim`'s): every call of it without them (a call left with the old count would not compile against
+    the trimmed prototype); then, for a dropped `v + K` (or `v - K`) that a statement before the
     call stores (`LHS = v + K;`) while `v` is read nowhere after that store, the store written as `v += K; LHS = v;`
     (`v++` for 1); then that child with an entry test inlined, when `v` was set just before an `if (v == 0)` /
     `if (v != 0)` / `if (v)` / `if (!v)` whose block assigns `v` before reading it and `v` is read nowhere after
@@ -121,7 +122,7 @@ def variants(source, name, callees=''):
     if not head:
         return []
     opening = span[0] + head.end() - 1
-    out = []
+    calls = {}  # callee -> [(hit, cut, close, dropped)] for every call that passes more than the definition takes
     for hit in re.finditer(rf'(?<![\w.>])({IDENT})\s*\(', clean[:span[1]]):
         if hit.start() < opening or hit[1] in ('if', 'while', 'for', 'switch', 'return', 'sizeof'):
             continue
@@ -139,40 +140,48 @@ def variants(source, name, callees=''):
         if len(args) <= count:
             continue
         dropped = [inner[a:b].strip() for a, b in args[count:]]
-        if not all(_pure(d) for d in dropped) or all(re.fullmatch(IDENT, d) for d in dropped):
-            continue
         cut = hit.end() + (args[count - 1][1] if count else 0)
-        drop = [(cut, close, '')] + _prototype_edits(source, clean, span, hit[1], params)
+        calls.setdefault(hit[1], (params, []))[1].append((hit, cut, close, dropped))
+    out = []
+    for callee, (params, sites) in calls.items():
+        # Every call of the callee loses its extra arguments together (the prototype changes with them), so each
+        # dropped argument must be side-effect free; this family takes callees where one is a `v + K` sum.
+        if not all(_pure(d) for site in sites for d in site[3]):
+            continue
+        if not any(_STEP.fullmatch(d) for site in sites for d in site[3]):
+            continue
+        drop = [(cut, close, '') for _, cut, close, _ in sites] + _prototype_edits(source, clean, span, callee, params)
         out.append((FAMILY, _apply(source, drop)))
-        call_start = _statement_start(clean, hit.start())
-        for text in dropped:
-            step = _STEP.fullmatch(text)
-            if not step:
-                continue
-            var, sign, amount = step[1], step[2], step[3]
-            norm = re.sub(r'\s+', '', text)
-            store = None
-            for found in re.finditer(r'([^;{}]*?)=(?!=)([^;{}]*);', clean[opening:call_start]):
-                left, right = found[1].strip(), re.sub(r'\s+', '', found[2])
-                if right == norm and left != var and not left.endswith(('+', '-', '*', '/', '&', '|', '^', '<', '>',
-                                                                        '!')):
-                    store = (opening + found.start(), opening + found.end(), found[1].strip())
-            if store is None:
-                continue
-            store_at = _statement_start(clean, store[0])
-            while clean[store_at] in ' \t\n':
-                store_at += 1
-            later = clean[store[1]:cut] + clean[close:span[1]]
-            if _mentions(later, var, 0, len(later)):
-                continue
-            bump = f'{var}++;' if sign == '+' and amount == '1' else f'{var}--;' if amount == '1' \
-                else f'{var} {sign}= {amount};'
-            indent = _indent(source, store_at)
-            stepped = drop + [(store_at, store[1], f'{bump}\n{indent}{store[2]} = {var};')]
-            out.append((FAMILY, _apply(source, stepped)))
-            entry = _entry_inline(source, clean, opening + 1, store_at, var)
-            if entry:
-                out.append((FAMILY, _apply(source, stepped + entry)))
+        for hit, cut, close, dropped in sites:
+            call_start = _statement_start(clean, hit.start())
+            for text in dropped:
+                step = _STEP.fullmatch(text)
+                if not step:
+                    continue
+                var, sign, amount = step[1], step[2], step[3]
+                norm = re.sub(r'\s+', '', text)
+                store = None
+                for found in re.finditer(r'([^;{}]*?)=(?!=)([^;{}]*);', clean[opening:call_start]):
+                    left, right = found[1].strip(), re.sub(r'\s+', '', found[2])
+                    if right == norm and left != var and not left.endswith(('+', '-', '*', '/', '&', '|', '^', '<', '>',
+                                                                            '!')):
+                        store = (opening + found.start(), opening + found.end(), found[1].strip())
+                if store is None:
+                    continue
+                store_at = _statement_start(clean, store[0])
+                while clean[store_at] in ' \t\n':
+                    store_at += 1
+                later = clean[store[1]:cut] + clean[close:span[1]]
+                if _mentions(later, var, 0, len(later)):
+                    continue
+                bump = f'{var}++;' if sign == '+' and amount == '1' else f'{var}--;' if amount == '1' \
+                    else f'{var} {sign}= {amount};'
+                indent = _indent(source, store_at)
+                stepped = drop + [(store_at, store[1], f'{bump}\n{indent}{store[2]} = {var};')]
+                out.append((FAMILY, _apply(source, stepped)))
+                entry = _entry_inline(source, clean, opening + 1, store_at, var)
+                if entry:
+                    out.append((FAMILY, _apply(source, stepped + entry)))
     seen, unique = set(), []
     for family, text in out:
         if text != source and text not in seen:

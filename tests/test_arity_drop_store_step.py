@@ -64,5 +64,16 @@ def test_plain_names_and_calls_are_left_to_other_families():
     assert variants(SOURCE, 'scene') == []
 
 
+def test_every_call_of_the_callee_is_trimmed_together():
+    source = SOURCE.replace('        arg0->next = 14;\n', '        arg0->next = 14;\n        notify(1, 2, 3, arg0->next);\n')
+    found = children(source)
+    assert found and all('notify(1, 2, 3);' in text for text in found)
+
+
+def test_extra_arguments_without_a_sum_are_left_alone():
+    source = SOURCE.replace('0, id + 1);', '0, arg0->next);')
+    assert children(source) == []
+
+
 def test_it_declares_itself():
     assert REPAIR['variants'] is variants and 'callees' in REPAIR['needs']
