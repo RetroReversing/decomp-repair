@@ -39,3 +39,69 @@ def close(str text, Py_ssize_t start, str left=u'(', str right=u')'):
             return pos + 1
         pos += 1
     return None
+
+
+# c_scan.py's three bracket walkers. Arguments the plain versions treat oddly (a negative offset indexes from the end, an
+# offset past the text raises IndexError) go back to them, so every answer and every exception stays theirs.
+python_c_close = None
+python_enclosing_block = None
+python_header_before = None
+
+
+def c_close(str clean, Py_ssize_t opening, str left=u'{', str right=u'}'):
+    """c_scan.close: the index of the bracket closing the one at `opening`, or -1."""
+    cdef Py_ssize_t length = len(clean), i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 open_char, close_char, c
+    if opening < 0 or len(left) != 1 or len(right) != 1:
+        return python_c_close(clean, opening, left, right)
+    open_char = left[0]
+    close_char = right[0]
+    for i in range(opening, length):
+        c = clean[i]
+        if c == open_char:
+            depth += 1
+        elif c == close_char:
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def c_enclosing_block(str clean, Py_ssize_t at, Py_ssize_t lo):
+    """c_scan.enclosing_block: the `{` of the innermost block around `at` (not before `lo`), or -1."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if lo < 0 or at > len(clean) + 1 or (at == len(clean) + 1 and at - 1 >= lo):
+        return python_enclosing_block(clean, at, lo)
+    i = at - 1
+    while i >= lo:
+        c = clean[i]
+        if c == u'}':
+            depth += 1
+        elif c == u'{':
+            if depth == 0:
+                return i
+            depth -= 1
+        i -= 1
+    return -1
+
+
+def c_header_before(str clean, Py_ssize_t opening):
+    """c_scan.header_before: the statement header just before the `{` at `opening`."""
+    cdef Py_ssize_t i = opening - 1
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c
+    if opening < 0 or opening > len(clean):
+        return python_header_before(clean, opening)
+    while i >= 0:
+        c = clean[i]
+        if c == u')':
+            depth += 1
+        elif c == u'(':
+            depth -= 1
+        elif depth == 0 and (c == u';' or c == u'{' or c == u'}'):
+            break
+        i -= 1
+    return clean[i + 1:opening].strip()
