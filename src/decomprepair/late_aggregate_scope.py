@@ -47,7 +47,7 @@ if _scan is not None:
         return _python_depth_one(clean, opening, end) if found is NotImplemented else found
 
 
-def _statement_start(clean, block, first):
+def _python_statement_start(clean, block, first):
     """Where the statement holding `first` begins inside `block` (an index of its `{`), or None."""
     brace = paren = 0
     start = block + 1
@@ -70,6 +70,23 @@ def _statement_start(clean, block, first):
     while clean[start].isspace():
         start += 1
     return None if re.match(r'(?:else|case|default)\b', clean[start:]) else start
+
+
+_statement_start = _python_statement_start
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_start(clean, block, first):
+        start = _scan.statement_start_in_block(clean, block, first)
+        if start is NotImplemented:
+            return _python_statement_start(clean, block, first)
+        if start < 0:
+            return None
+        while clean[start].isspace():
+            start += 1
+        return None if re.match(r'(?:else|case|default)\b', clean[start:]) else start
 
 
 def variants(source, name):

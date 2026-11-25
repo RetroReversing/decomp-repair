@@ -88,7 +88,7 @@ if _scan is not None:
         return _python_top_statements(clean, lo, hi) if found is NotImplemented else found
 
 
-def _always_runs(clean, opening, at, loop_start):
+def _python_always_runs(clean, opening, at, loop_start):
     """True when the statement at `at` is reached whenever the loop is: every block that encloses it also encloses
     the loop, or is a bare block (opened after `;`, `{` or `}`)."""
     stack = []
@@ -103,6 +103,24 @@ def _always_runs(clean, opening, at, loop_start):
         if not bare and not (end and end > loop_start):
             return False
     return True
+
+
+_always_runs = _python_always_runs
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _always_runs(clean, opening, at, loop_start):
+        stack = _scan.open_stack_strict(clean, opening, at)
+        if stack is NotImplemented:
+            return _python_always_runs(clean, opening, at, loop_start)
+        for brace in stack:
+            end = close(clean, brace, '{', '}')
+            bare = clean[:brace].rstrip()[-1:] in (';', '{', '}')
+            if not bare and not (end and end > loop_start):
+                return False
+        return True
 
 
 def _removal(clean, a, b):

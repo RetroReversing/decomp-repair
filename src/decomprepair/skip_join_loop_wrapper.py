@@ -34,7 +34,7 @@ LIMIT = 6
 STEP = re.compile(rf'(?:{IDENT}\s*\+\+|\+\+\s*{IDENT}|{IDENT}\s*\+=\s*1|{IDENT}\s*=\s*{IDENT}\s*\+\s*1)\s*;')
 
 
-def _statements(clean, start, end):
+def _python_statements(clean, start, end):
     """(start, end) of each top-level statement of clean[start:end]."""
     out, depth, begin, i = [], 0, None, start
     while i < end:
@@ -55,6 +55,17 @@ def _statements(clean, start, end):
             begin = None
         i += 1
     return out
+
+
+_statements = _python_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statements(clean, start, end):
+        found = _scan.statements_skip_join(clean, start, end)
+        return _python_statements(clean, start, end) if found is NotImplemented else found
 
 
 def _loops(clean, span):

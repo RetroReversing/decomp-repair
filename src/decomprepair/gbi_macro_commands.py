@@ -119,7 +119,7 @@ def _strip(e):
             return e
 
 
-def _split(e, op):
+def _python_split(e, op):
     """e split on a top-level binary `op` (`|`, `&` or `<<`), never inside parentheses or as `||`/`&&`."""
     parts, depth, start, i = [], 0, 0, 0
     while i < len(e):
@@ -140,6 +140,17 @@ def _split(e, op):
         i += 1
     parts.append(e[start:])
     return [p.strip() for p in parts]
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(e, op):
+        found = _scan.split_operator(e, op)
+        return _python_split(e, op) if found is NotImplemented else found
 
 
 def _number(e):

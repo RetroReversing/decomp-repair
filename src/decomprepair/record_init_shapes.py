@@ -104,7 +104,7 @@ def _inline(source, hit, body, step, tick, off, count, stride, drop, end):
     return re.sub(rf'\n[ \t]*(?:s32|u32|int)\s+{off}\s*;[ \t]*(?=\n)', '', head + text[hit.start():], count=1)
 
 
-def _statements(clean, start, end):
+def _python_statements(clean, start, end):
     """(begin, end) of each top-level statement in clean[start:end]; a braced block is one statement."""
     out, begin, depth, parens, pos = [], None, 0, 0, start
     while pos < end:
@@ -127,6 +127,17 @@ def _statements(clean, start, end):
             begin = None
         pos += 1
     return out
+
+
+_statements = _python_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statements(clean, start, end):
+        found = _scan.statements_record_init(clean, start, end)
+        return _python_statements(clean, start, end) if found is NotImplemented else found
 
 
 def _has_call(text):

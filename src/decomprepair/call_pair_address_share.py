@@ -27,7 +27,7 @@ LIMIT = 6
 IDENT = r'[A-Za-z_]\w*'
 
 
-def _statements(clean, lo, hi):
+def _python_statements(clean, lo, hi):
     """(start, end) of each simple statement ending in `;` between lo and hi, at any nesting (not `for` headers)."""
     out = []
     start = None
@@ -49,6 +49,17 @@ def _statements(clean, lo, hi):
             start = i
         i += 1
     return out
+
+
+_statements = _python_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statements(clean, lo, hi):
+        found = _scan.statements_pair_share(clean, lo, hi)
+        return _python_statements(clean, lo, hi) if found is NotImplemented else found
 
 
 def _local_type(body, name):

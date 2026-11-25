@@ -34,7 +34,7 @@ _CALL = re.compile(rf'\b{_ID}\s*\(')
 _DECLARATION = re.compile(rf'^\s*(?:(?:const|volatile|unsigned|signed|struct|register|static)\s+)*{_ID}(?:\s+|\s*\*+\s*){_ID}\s*(?:=|;|\[)')
 
 
-def _statements(clean, opening, closing):
+def _python_statements(clean, opening, closing):
     """(start, end) of each top-level statement in the body, a compound statement counted as one."""
     out, i, start, depth = [], opening + 1, None, 0
     while i < closing:
@@ -57,6 +57,17 @@ def _statements(clean, opening, closing):
             start = None
         i += 1
     return out
+
+
+_statements = _python_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statements(clean, opening, closing):
+        found = _scan.statements_scheduling(clean, opening + 1, closing)
+        return _python_statements(clean, opening, closing) if found is NotImplemented else found
 
 
 def _fresh(source, stem):

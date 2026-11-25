@@ -592,3 +592,51 @@ def test_no_module_that_takes_the_kernel_shadows_it_with_a_scan_of_its_own():
         if imports_kernel and defines_scan:
             clashes.append(path.stem)
     assert clashes == []
+
+
+def _a_part(t, r):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(opening=r.randint(-1, len(t) + 1), end=r.randint(0, len(t) + 1))
+
+
+STATEMENTS_BATCH = [
+    ("declaration_scope_sink_repairs", "_blocks", _three),
+    ("local_split_reuse", "_matches", _three),
+    ("pointer_reload_web_split", "_blocks", lambda t, a, r: [(t, _a_part(t, r))]),
+    ("record_init_shapes", "_statements", _three),
+    ("scheduling_scope", "_statements", _three),
+    ("skip_join_loop_wrapper", "_statements", _three),
+    ("loop_counter_value_split", "_statements", _three),
+    ("call_pair_address_share", "_statements", _three),
+    ("float_arm_roles", "_statements", _three),
+    ("walk_counter_for", "_always_runs", _four),
+    ("gbi_macro_commands", "_split", lambda t, a, r: [(t, "|"), (t, "&"), (t, "<<"), (t, "+")]),
+    ("arm_result_constant_sink", "_top_statements", _three),
+    ("entry_scheduling_scope", "_parameters", lambda t, a, r: [(t, _a_part(t, r), "a"), (t, _a_part(t, r), "if")]),
+    ("loop_address_argument_local", "_loops", _three),
+    ("hoisted_invariant_inline", "_loops", _three),
+    ("scaled_copy_in_place", "_loops", _three),
+    ("or_chain_order_repairs", "_chains", _three),
+    ("allocation_lever_repairs", "_operands", lambda t, a, r: [(t,)]),
+    ("store_flag_compare_inline", "_condition", lambda t, a, r: [(t, a)]),
+    ("late_aggregate_scope", "_statement_start", _three),
+]
+
+
+def test_the_statement_batch_of_own_scans_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(777)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\n", ";", ",", "|", "||", "&", "&&", "+", "++", "+=", "*", "-", "=", "else", "else ",
+              "while", "while (a);", "do {", "for (;;) {", "if (", "case 1:", "default:", "é", "𝄞", "elsewhere"]
+    for module_name, function, build in STATEMENTS_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(3000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 26)))
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
