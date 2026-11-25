@@ -222,7 +222,7 @@ def place(rom: bytes, lo: int, hi: int, floor: int, calls: list[int], known: lis
     back = max(floor, lo - 2 * SCAN_BLOCK) - lo
     called = [t - base for t in own | set(calls) if back <= t - base < hi - lo
               and not any(a <= t < b for a, b in known)]  # a call into known code says nothing about this one
-    first = min([frames[0], *called])
+    first = min([frames[0]] + called)
     start = code_before(rom, lo + first, max(floor, 0))
     first = start - lo
     end = lo + returns[-1] + 8  # the last return and its delay slot

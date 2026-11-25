@@ -134,3 +134,10 @@ workflow. A version in `pyproject.toml` above the last tag is released as writte
 
 AGPL-3.0-only (`LICENSE`), like decompdecomp, which this code comes from. Some readers began in decomp.wtf
 (`LICENSE-decomp.wtf`).
+
+## Optional native modules
+
+`python scripts/build_native.py` compiles the hot shared modules listed in `NATIVE` (the statement scanner, the C source
+helpers, the MIPS readers) with Cython, unchanged from their Python source, next to the `.py` files; Python then
+imports the compiled copy. Without Cython or a C compiler nothing is built and nothing changes;
+`build_native.py --clean` removes them. Add a module to `NATIVE` once the tests pass with it compiled.
