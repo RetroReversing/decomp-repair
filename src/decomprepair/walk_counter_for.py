@@ -60,7 +60,7 @@ def _number(text):
     return int(text.strip().rstrip('uUlL'), 0)
 
 
-def _top_statements(clean, lo, hi):
+def _python_top_statements(clean, lo, hi):
     """[(start, end)] of the `;`-terminated statements of clean[lo:hi] at its own level (nested blocks skipped)."""
     out, depth, begin = [], 0, lo
     for pos in range(lo, hi):
@@ -75,6 +75,17 @@ def _top_statements(clean, lo, hi):
             out.append((begin, pos + 1))
             begin = pos + 1
     return out
+
+
+_top_statements = _python_top_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_statements(clean, lo, hi):
+        found = _scan.top_statements(clean, lo, hi)
+        return _python_top_statements(clean, lo, hi) if found is NotImplemented else found
 
 
 def _always_runs(clean, opening, at, loop_start):

@@ -40,7 +40,7 @@ def _split(text):
     return parts
 
 
-def _top_level(text, start):
+def _python_top_level(text, start):
     """Offsets in `text` that are outside every bracket, from `start`."""
     depth, spans = 0, []
     for at in range(start, len(text)):
@@ -51,6 +51,17 @@ def _top_level(text, start):
             depth -= 1
         spans.append(depth == 0)
     return spans
+
+
+_top_level = _python_top_level
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_level(text, start):
+        found = _scan.top_level_flags(text, start)
+        return _python_top_level(text, start) if found is NotImplemented else found
 
 
 def _arms(clean, body_start, body_end):

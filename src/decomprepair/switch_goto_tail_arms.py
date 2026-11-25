@@ -28,13 +28,26 @@ _LABEL = re.compile(rf'^\s*(?P<label>{IDENT})\s*:(?!:)')
 _NOT_LABELS = {'default', 'case'}
 
 
-def _close(clean, opening, pair='{}'):
+def _python_close(clean, opening, pair='{}'):
     depth = 0
     for index in range(opening, len(clean)):
         depth += (clean[index] == pair[0]) - (clean[index] == pair[1])
         if depth == 0:
             return index
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(clean, opening, pair='{}'):
+        if len(pair) != 2:
+            return _python_close(clean, opening, pair)
+        found = _scan.close_every(clean, opening, pair[0], pair[1], False, -1)
+        return _python_close(clean, opening, pair) if found is NotImplemented else found
 
 
 def _statements(clean, start, end):

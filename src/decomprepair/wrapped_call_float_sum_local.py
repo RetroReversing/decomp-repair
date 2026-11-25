@@ -31,13 +31,24 @@ _OPEN = re.compile(r'(?:do\s*\{\s*)+')
 _FLOAT = re.compile(r'\d+\.\d*f\b|\d+\.\d*[eE][-+]?\d+f\b')
 
 
-def _closing(text, at):
+def _python_closing(text, at):
     depth = 0
     for i in range(at, len(text)):
         depth += (text[i] == '(') - (text[i] == ')')
         if depth == 0:
             return i
     return -1
+
+
+_closing = _python_closing
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _closing(text, at):
+        found = _scan.close_every(text, at, '(', ')', False, -1)
+        return _python_closing(text, at) if found is NotImplemented else found
 
 
 def _top_plus(text):

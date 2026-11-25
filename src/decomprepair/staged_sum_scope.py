@@ -40,7 +40,7 @@ _CALL = re.compile(rf'\b{IDENT}\s*\(\s*(?!\s*(?:\w+\s*)+\**\s*\))')
 _SCALAR = r'(?:unsigned\s+|signed\s+)?(?:char|short|int|long|[su](?:8|16|32))'
 
 
-def _close(text, start):
+def _python_close(text, start):
     """Index after the parenthesis that closes the one at `start`, or -1."""
     depth = 0
     for i in range(start, len(text)):
@@ -51,6 +51,17 @@ def _close(text, start):
             if depth == 0:
                 return i + 1
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, start):
+        found = _scan.close_if_past(text, start, '(', ')', -1)
+        return _python_close(text, start) if found is NotImplemented else found
 
 
 def _plain(statement):

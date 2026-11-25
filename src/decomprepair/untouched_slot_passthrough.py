@@ -74,7 +74,7 @@ def _number(text):
         return None
 
 
-def _block(clean, at):
+def _python_block(clean, at):
     """The `{` that opens the innermost block around `at`, and the `}` that closes it (None, None outside any)."""
     depth = 0
     for i in range(at, -1, -1):
@@ -86,6 +86,22 @@ def _block(clean, at):
                 return i, (end - 1 if end else None)
             depth -= 1
     return None, None
+
+
+_block = _python_block
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block(clean, at):
+        found = _scan.enclosing_open(clean, at + 1, 0, -1)
+        if found is not NotImplemented:
+            if found < 0:
+                return None, None
+            end = close(clean, found, '{', '}')
+            return found, (end - 1 if end else None)
+        return _python_block(clean, at)
 
 
 def _arm_siblings(clean, first, second):

@@ -23,7 +23,7 @@ I = r'[A-Za-z_]\w*'
 N = r'-?(?:0[xX][0-9a-fA-F]+|\d+)'
 
 
-def _terms(text):
+def _python_terms(text):
     """`text` cut at its top-level `||`."""
     parts, depth, begin, i = [], 0, 0, 0
     while i < len(text):
@@ -36,6 +36,17 @@ def _terms(text):
             continue
         i += 1
     return parts + [text[begin:]]
+
+
+_terms = _python_terms
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _terms(text):
+        found = _scan.split_top(text, '||', True)
+        return _python_terms(text) if found is NotImplemented else found
 
 
 def _positive(term):

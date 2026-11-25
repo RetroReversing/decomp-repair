@@ -63,7 +63,7 @@ def _statement_start(clean, pos, opening):
     return None
 
 
-def _statement_end(clean, pos, end):
+def _python_statement_end(clean, pos, end):
     """The `;` ending the statement that holds `pos` at its own nesting level, or None."""
     depth = 0
     k = pos
@@ -79,6 +79,17 @@ def _statement_end(clean, pos, end):
             return k
         k += 1
     return None
+
+
+_statement_end = _python_statement_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statement_end(clean, pos, end):
+        found = _scan.statement_end(clean, pos, end, '({[', ')}]', False, True, None)
+        return _python_statement_end(clean, pos, end) if found is NotImplemented else found
 
 
 def _fold_source(clean, local, glob, ctype, pos, opening):

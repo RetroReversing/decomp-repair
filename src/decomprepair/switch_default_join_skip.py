@@ -42,7 +42,7 @@ FAMILIES = ('switch_default_join_skip', 'switch_default_join_skip_narrow', 'swit
 _TEST = re.compile(r'(\n[ \t]*)if \((?:\((\w+)\)|(\w+)) & 0xFF\)|(\n[ \t]*)if \((\w+)\)')
 
 
-def _close(text, at):
+def _python_close(text, at):
     """Index of the brace closing the one at `at`."""
     depth = 0
     for i in range(at, len(text)):
@@ -53,6 +53,17 @@ def _close(text, at):
             if depth == 0:
                 return i
     return -1
+
+
+_close = _python_close
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _close(text, at):
+        found = _scan.close_if(text, at, '{', '}', -1)
+        return _python_close(text, at) if found is NotImplemented else found
 
 
 def _fresh(text, base):
