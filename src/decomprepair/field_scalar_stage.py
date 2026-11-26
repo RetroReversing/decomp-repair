@@ -173,7 +173,7 @@ def variants(source, name):
     caches += [(subset, True, r, k) for subset in subsets_of_pointers for r in (False, True) for k in ((0,) if not r else EARLY)]
     for chosen in [None] + subsets:
         for cache in caches:
-            for cache_first in ((False, True) if chosen and cache else (False,)):
+            for cache_first in ([False, True] if chosen and cache else [False]):
                 if chosen is None and cache is None:
                     continue
                 body, groups = list(statements), []

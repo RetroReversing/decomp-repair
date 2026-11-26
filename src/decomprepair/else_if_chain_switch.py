@@ -144,7 +144,7 @@ def variants(source, name):
         if limit <= 0 or limit > LABELS + 1:
             labels = []
 
-        for with_labels, first in (((True, True), (True, False), (False, False)) if labels else ((False, True), (False, False))):
+        for with_labels, first in ([(True, True), (True, False), (False, False)] if labels else [(False, True), (False, False)]):
             built = _build(source, variable, cases, labels if with_labels else [], default, indent, first)
             out.append(source[:hit.start()] + built + source[end:])
     return [(FAMILY, text) for text in dict.fromkeys(out)][:LIMIT]

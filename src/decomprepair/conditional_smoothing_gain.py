@@ -87,7 +87,8 @@ def _site_counts(rows):
             continue
         pair = constants[mul[2], other_mul[2]][-2:]
         if len(pair) == 2 and at - pair[0][0] <= 80 and pair[0][1] != pair[1][1]:
-            measured[integer(load[2]), frozenset(bits for _, bits in pair), mul[2]] += 1
+            gains = frozenset([bits for _, bits in pair])  # built first: Cython's compiler crashes on it in the key
+            measured[integer(load[2]), gains, mul[2]] += 1
     return measured
 
 

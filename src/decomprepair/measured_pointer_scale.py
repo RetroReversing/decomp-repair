@@ -256,7 +256,7 @@ def _float_record_load(part, header, rows, row, register, amount):
     """A float field load needs the original byte stride and no integer conversion."""
     if amount < 2 or row + 4 >= len(rows):
         return None
-    hi, add, load, convert = rows[row + 1:row + 5]
+    hi, add, load, convert = list(rows[row + 1:row + 5])
     if any(mark != ' ' or wanted != current for mark, wanted, current in (hi, add, load)):
         return None
     base = re.fullmatch(rf'lui (?P<reg>\$\w+), %hi\((?P<table>{IDENT})\)', hi[1])
@@ -595,7 +595,7 @@ def _guarded_halfword_table(part, header, rows, row, register, amount):
     """Recover the halfword being tested when the draft reads a whole word."""
     if row + 4 >= len(rows):
         return None
-    high, add, load, branch = rows[row + 1:row + 5]
+    high, add, load, branch = list(rows[row + 1:row + 5])
     if any(mark != ' ' or a != b for mark, a, b in (high, add, branch)):
         return None
     base = re.fullmatch(rf'lui (\$\w+), %hi\(({IDENT})\)', high[1])
@@ -847,7 +847,7 @@ def _paired_call_setup(part, rows):
                 break
 
     for i in range(len(rows) - 3):
-        old, call, slot, new = rows[i:i + 4]
+        old, call, slot, new = list(rows[i:i + 4])
         if tuple(old) != ('o', '', new[1]) or tuple(new) != ('o', new[1], ''):
             continue
         load = re.fullmatch(rf'lbu \$s[0-7], ({NUMBER})\(\$s[0-7]\)', new[1])

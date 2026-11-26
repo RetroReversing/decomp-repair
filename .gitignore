@@ -11,3 +11,5 @@ dist/
 build/
 *.so.source
 *.pyd.source
+_compiled*
+_objects/

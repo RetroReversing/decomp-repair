@@ -177,7 +177,7 @@ def variants(source, name):
                         result.append((PLAIN, edit(source, base)))
                         continue
                     for first_depth in (1, 2):
-                        for splitting in ((False, True) if split else (False,)):
+                        for splitting in ([False, True] if split else [False]):
                             edits = list(base)
                             if address:
                                 edits.append((address[0], address[1], _wrap(source[address[0]:address[1]], first_depth)))

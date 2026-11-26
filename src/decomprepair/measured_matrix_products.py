@@ -23,7 +23,7 @@ def variants(source, name, header, rows):
     lines = [normalized_integer_lines((a, b)) for _, a, b in rows]
     observed = 0
     for i in range(len(lines) - 2):
-        (a, b), (c, d), (e, f) = lines[i:i+3]
+        (a, b), (c, d), (e, f) = list(lines[i:i+3])
         first = re.fullmatch(r'lh (\$\w+), (.+)', a)
         second = re.fullmatch(r'lw (\$\w+), (.+)', c)
         other_first = re.fullmatch(r'lh (\$\w+), (.+)', b)

@@ -83,16 +83,59 @@ def _script():
 
 def test_missing_lists_what_has_no_build_of_its_source(tmp_path):
     build = _script()
-    kernel, plain = build.KERNELS[0], build.NATIVE[0]
+    kernel, plain = build.KERNELS[0], "some_family"
     (tmp_path / f"{kernel}.pyx").write_text("def f(): pass\n")
     (tmp_path / f"{plain}.py").write_text("x = 1\n")
-    assert build.missing(tmp_path) == [kernel]  # modules with no source here are not asked for
+    (tmp_path / "permuter_gen.py").write_text("x = 1\n")  # stays interpreted
+    assert build.missing(tmp_path) == [kernel]
     assert build.missing(tmp_path, everything=True) == [kernel, plain]
     _build(tmp_path, kernel, f"{kernel}.pyx")
-    _build(tmp_path, plain, f"{plain}.py")
+    (tmp_path / "library.bin").write_bytes(b"")
+    (tmp_path / build.MANIFEST).write_text(f"library.bin\n{plain} {build.digest_of(plain, tmp_path)}\n")
     assert build.missing(tmp_path, everything=True) == []
     (tmp_path / f"{plain}.py").write_text("x = 2\n")
     assert build.missing(tmp_path, everything=True) == [plain]
+    (tmp_path / "library.bin").unlink()
+    assert build.read_manifest(tmp_path) == ("", {})
+
+
+def test_plain_modules_load_from_one_library_until_their_source_changes(tmp_path):
+    if any(importlib.util.find_spec(name) is None for name in ("Cython", "setuptools")):
+        pytest.skip("Cython is not installed")
+    package = tmp_path / "somepackage"
+    package.mkdir()
+    shutil.copy(guard.__file__, package / "_native_guard.py")
+    shutil.copy(PACKAGE / "native_build.py", package / "native_build.py")
+    (package / "__init__.py").write_text("from . import _native_guard\n_native_guard.install(__name__, __path__[0])\n")
+    (package / "one.py").write_text("def answer():\n    return 'one'\n")
+    (package / "two.py").write_text("from . import one\n\ndef answer():\n    return one.answer() + ' and two'\n")
+
+    def build(*arguments):
+        return subprocess.run([sys.executable, str(package / "native_build.py"), "--package", str(package),
+                               *arguments], capture_output=True, text=True, check=True).stdout
+
+    def loaded():
+        code = ("from somepackage import one, two\nimport os\n"
+                "assert one.__file__.endswith('one.py') and two.__file__.endswith('two.py')\n"
+                "print(two.answer())\n"
+                "print(os.path.splitext(one.__spec__.origin)[1], os.path.splitext(two.__spec__.origin)[1])\n")
+        return subprocess.run([sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True,
+                              check=True).stdout.split("\n")[:2]
+
+    if "Linked 2 modules" not in build("--all"):
+        pytest.skip("no C compiler here")
+    assert loaded() == ["one and two", ".bin .bin"]
+    assert build("--all", "--missing") == "" and build("--all", "--list-missing") == ""
+    (package / "one.py").write_text("def answer():\n    return 'changed'\n")
+    assert loaded() == ["changed and two", ".py .bin"]  # the changed module from source, before any rebuild
+    assert build("--all", "--list-missing").split() == ["one"]
+    assert "Built 1 native" in build("--only", "one", "--missing", "--no-link")
+    assert loaded()[1] == ".py .bin"
+    assert "Linked 2 modules" in build("--all", "--missing", "--discard-objects")
+    assert loaded() == ["changed and two", ".bin .bin"]
+    assert len(list(package.glob("_compiled-*.bin"))) == 1 and not (package / "_objects").exists()
+    build("--clean")
+    assert loaded() == ["changed and two", ".py .py"]
 
 
 def test_a_new_build_replaces_the_old_file_instead_of_writing_into_it(tmp_path):

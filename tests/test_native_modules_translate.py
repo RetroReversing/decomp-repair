@@ -1,6 +1,7 @@
-"""Every module native_build lists must get through Cython: one that doesn't is retried at every app start, and one
+"""Every module native_build compiles (all but INTERPRETED) must get through Cython: one that doesn't is retried at every app start, and one
 took over twenty minutes. Only the translation to C runs here (seconds); no C compiler is needed."""
 import importlib.util
+import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +12,7 @@ import pytest
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "decomprepair"
 
 
-def test_every_listed_module_translates_in_reasonable_time(tmp_path):
+def test_every_module_translates_in_reasonable_time(tmp_path):
     if importlib.util.find_spec("Cython") is None:
         pytest.skip("Cython is not installed")
     spec = importlib.util.spec_from_file_location("native_build_listed", PACKAGE / "native_build.py")
@@ -23,5 +24,15 @@ def test_every_listed_module_translates_in_reasonable_time(tmp_path):
                               capture_output=True, text=True, timeout=300)
         return None if done.returncode == 0 else f"{name}: {done.stderr[-300:]}"
 
-    with ThreadPoolExecutor(4) as pool:
+    with ThreadPoolExecutor(max(4, os.cpu_count() or 1)) as pool:
         assert [failure for failure in pool.map(translate, build.NATIVE) if failure] == []
+
+
+def test_a_module_run_as_a_program_stays_interpreted():
+    spec = importlib.util.spec_from_file_location("native_build_programs", PACKAGE / "native_build.py")
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    programs = [name for name in build.NATIVE
+                if '\nif __name__ == "__main__":' in (text := (PACKAGE / f"{name}.py").read_text(encoding="utf-8"))
+                or "\nif __name__ == '__main__':" in text]
+    assert programs == []

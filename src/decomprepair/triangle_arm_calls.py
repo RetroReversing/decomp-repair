@@ -102,13 +102,13 @@ def variants(source, name):
             calls = [_call(arm['call'], arm['names'], arm['obj']) for arm in (half, byte)]
             if None in calls or calls[0] != calls[1]:
                 continue
-            callee, plane, end = *calls[0], hit.end('byte') + 1
+            (callee, plane), end = calls[0], hit.end('byte') + 1
         else:
             shared = CALL.fullmatch(hit['after'] or '')
             found = _call(shared, half['names'], half['obj'])
             if not found:
                 continue
-            callee, plane, end = *found, hit.end()
+            (callee, plane), end = found, hit.end()
         sites.append((hit.start(), end, hit['cond'], half, byte, callee, plane))
     if not sites:
         return []

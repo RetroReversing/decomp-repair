@@ -23,7 +23,7 @@ def _target(asm, early, late, offset, mode):
     rows = instructions(asm)[:42]
     load = r'lw\s+(\$\w+),\s*{}\((\$\w+)\)'
     for index in range(len(rows)-5):
-        a, b, mode_high, mode_low, spill, slot = rows[index:index+6]
+        a, b, mode_high, mode_low, spill, slot = list(rows[index:index+6])
         first = re.fullmatch(load.format(early), a)
         second = re.fullmatch(load.format(late), b)
         high = re.fullmatch(rf'lui\s+(\$\w+),\s*%hi\({mode}\)', mode_high)

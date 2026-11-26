@@ -62,7 +62,7 @@ def variants(source, name):
             else:
                 head = f'extern {decl["t"]} {glob}[];\n'
                 read = f'{glob}[0]'
-            for drop in ((True, False) if fence else (False,)):
+            for drop in ([True, False] if fence else [False]):
                 text, last = [], 0
                 cuts = [(part.opening + u, part.opening + u + len(glob), read) for u in uses]
                 if drop:
