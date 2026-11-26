@@ -51,7 +51,7 @@ if _scan is not None:
         return _python_close(text, at) if found is NotImplemented else found
 
 
-def _arguments(text):
+def _python_arguments(text):
     parts, depth, start = [], 0, 0
     for at, char in enumerate(text):
         depth += (char in '([') - (char in ')]')
@@ -60,6 +60,16 @@ def _arguments(text):
             start = at + 1
     parts.append(text[start:].strip())
     return parts
+
+
+_arguments = _python_arguments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arguments(text):
+        return [piece.strip() for piece in _scan.top_pieces(text, ',', 2)]
 
 
 def _bits(arg):

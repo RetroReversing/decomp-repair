@@ -167,7 +167,7 @@ def integer(text):
     return int(text, 16 if text.lower().startswith('0x') else 10)
 
 
-def split_args(text):
+def _python_split_args(text):
     start = depth = 0
     result = []
     for pos, char in enumerate(text):
@@ -178,6 +178,22 @@ def split_args(text):
     if text.strip():
         result.append((start, len(text)))
     return result
+
+
+split_args = _python_split_args
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def split_args(text):
+        result, start = [], 0
+        for at in _scan.top_offsets(text, ',', 3):
+            result.append((start, at))
+            start = at + 1
+        if text.strip():
+            result.append((start, len(text)))
+        return result
 
 
 def calls(part, name):

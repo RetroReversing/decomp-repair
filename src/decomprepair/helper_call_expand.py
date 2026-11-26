@@ -26,7 +26,7 @@ HELPER = re.compile(rf'(?m)^[ \t]*(?:inline\s+static|static\s+inline)\s+[\w ]+?\
 SIMPLE = re.compile(rf'^\s*(?:\(\s*[\w ]+\)\s*)?(?:{IDENT}|0[xX][0-9a-fA-F]+|\d+)\s*$')
 
 
-def _split(text):
+def _python_split(text):
     parts, depth, start = [], 0, 0
     for at, ch in enumerate(text):
         depth += (ch in '([') - (ch in ')]')
@@ -35,6 +35,16 @@ def _split(text):
             start = at + 1
     parts.append(text[start:])
     return [p.strip() for p in parts if p.strip()]
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(text):
+        return [piece.strip() for piece in _scan.top_pieces(text, ',', 2) if piece.strip()]
 
 
 def variants(source, name):

@@ -98,7 +98,7 @@ def variants(source, name):
     return result[:4]
 
 
-def split_sum(text):
+def _python_split_sum(text):
     """`A + B` at the top level of `text` (one `+`), else None."""
     depth = 0
     plus = []
@@ -109,3 +109,16 @@ def split_sum(text):
     if len(plus) != 1:
         return None
     return text[:plus[0]], text[plus[0]+1:]
+
+
+split_sum = _python_split_sum
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def split_sum(text):
+        plus = _scan.top_offsets(text, '+', 1)
+        if len(plus) != 1:
+            return None
+        return text[:plus[0]], text[plus[0] + 1:]

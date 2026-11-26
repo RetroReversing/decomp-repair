@@ -51,7 +51,7 @@ def _has_call(text):
     return any(match[1] not in _TYPES for match in re.finditer(r'\b(' + _IDENT + r')\s*\(', text))
 
 
-def _top_comma(text):
+def _python_top_comma(text):
     """The offset of the one comma at depth 0 of `text`, or None when there is none or more than one."""
     depth, found = 0, []
     for index, char in enumerate(text):
@@ -59,6 +59,17 @@ def _top_comma(text):
         if char == ',' and depth == 0:
             found.append(index)
     return found[0] if len(found) == 1 else None
+
+
+_top_comma = _python_top_comma
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_comma(text):
+        found = _scan.top_offsets(text, ',', 2)
+        return found[0] if len(found) == 1 else None
 
 
 def _groups(condition):
