@@ -67,3 +67,21 @@ def test_the_library_runs_it():
     report = propose.propose("u32 func(u32 a, u32 b, u32 c) { return a + b + c; }", 'func')
     found = {p.family for p in report.proposals if p.module == 'reassociation_repairs'}
     assert found == set(FAMILIES)
+
+
+def test_a_value_stored_through_an_m2c_field_with_a_pointer_type_regroups():
+    """The display-list word shape: the statement names `s32 **`, and the sum ends in a plain `char` array."""
+    from decomprepair import reassociation_repairs
+    source = '''extern u8 D_A;
+extern u8 D_B;
+extern char D_C[];
+
+void f(void **arg0) {
+    void *p;
+
+    p = *arg0;
+    M2C_FIELD(p, s32 **, 4) = (void *) ((D_A << 0xC) + ((D_B << 0xB) + D_C));
+}
+'''
+    texts = [text for _, text in reassociation_repairs.variants(source, 'f')]
+    assert any('(void *) ((D_B << 0xB) + ((D_A << 0xC) + D_C));' in text for text in texts)

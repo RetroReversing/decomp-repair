@@ -485,6 +485,9 @@ class Types:
             if ':' in declarator:
                 continue
             ty = base
+            if ty is None and (stars or array) and [w for w in base_words if w not in QUALIFIERS] == ['char']:
+                # a plain `char` has the target's signedness, but a pointer to it adds like any pointer
+                ty = Ty('opaque', spelling='char')
             if ty is not None:
                 for _ in range(stars + (1 if array else 0)):
                     spelling = ty.spelling + ('*' if ty.spelling.endswith('*') else ' *')

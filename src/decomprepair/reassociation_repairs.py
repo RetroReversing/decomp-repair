@@ -21,8 +21,15 @@ are `arithmetic_operand_order`'s). A chain is only offered when every grouping i
   call, an assignment or a `volatile` name, nor a mix of integer types whose partial results would change type with the
   grouping.
 
+A statement the reader cannot parse whole is read from its `=` on: m2c's `M2C_FIELD(p, s32 **, 4) = ...` names a
+type where an argument goes, so the whole display-list word it stores had no children. A 73-instruction display-list
+function (KMC GCC 2.7.2 `-O1`) stood at 60 on `(a << 12) + ((b << 11) + D_x)` and matched written
+`(b << 11) + ((a << 12) + D_x)`.
+
 It is a scheduling hypothesis: the value is the same, the judge says whether the bytes are.
 """
+import re
+
 from .expression_terms import Types, bare, chain, exact_regrouping, names, parse, regroupings, render, sites
 
 FAMILY = 'reassociate'
@@ -40,6 +47,19 @@ def _spine(node):
             yield from _spine(inner)
 
 
+def _value_start(source, start, end):
+    """Where the assigned value begins: after the first plain `=` outside brackets, or None."""
+    depth = 0
+    for found in re.finditer(r'[()\[\]{}]|(?<![=!<>+\-*/%&|^])=(?!=)', source[start:end]):
+        mark = found[0]
+        if mark == '=':
+            if not depth:
+                return start + found.end()
+        else:
+            depth += 1 if mark in '([{' else -1
+    return None
+
+
 def variants(source, name, header='', int_bits=None):
     """(family, source) for each regrouped chain; see the module's docstring."""
     if int_bits not in (None, 32):
@@ -52,6 +72,8 @@ def variants(source, name, header='', int_bits=None):
         if site.kind == 'declaration':
             continue
         root = parse(source, site.start, site.end, types.typedefs)
+        if root is None and (value := _value_start(source, site.start, site.end)) is not None:
+            root = parse(source, value, site.end, types.typedefs)
         if root is None:
             continue
         covered = set()
