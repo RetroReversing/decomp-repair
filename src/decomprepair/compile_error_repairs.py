@@ -12,6 +12,7 @@ repair here changes only that line, and only the expression the message is about
   type the assigned local has (a byte when that is not known).
 * `arithmetic on pointer to an incomplete type`: the same as an invalid binary `+`.
 * `pointer value used where a floating point value was expected`: `(f32) p` converts what `p` holds.
+* `subscript is not an integer`: `base[&symbol]`, an address held as the index, is read as a number.
 * `source too large`: the draft without its comments and indentation, which m2c's big functions spend a fifth on.
 * `incompatible type for argument N of `f'`: the callee's declaration drops its parameter list; a function that has
   only its definition (a call to itself) has the call's argument converted to the parameter's type.
@@ -71,6 +72,8 @@ def _ido_message(text):
         return "invalid type argument of `unary *'"
     if text.startswith("The number of arguments doesn't agree"):
         return 'too few arguments to function'  # (IDO names no callee: the repair reads the line's calls)
+    if text.startswith('Should only subscript an array with an integral expression'):
+        return 'array subscript is not an integer'
     if text.startswith('Non-function name referenced in function call'):
         return 'called object is not a function'
     for words, operator in _IDO_OPERATOR_CLASSES:
@@ -155,7 +158,9 @@ def _atom_start(tokens, end):
             start = opening
             if start > 0 and _name(tokens[start - 1]):
                 return start - 1
-            if start > 0 and tokens[start - 1] == ']':
+            # `table[i][j]`, `(&table)[i]`, `(callee)(x)`: the group before is part of the same operand, so a cast
+            # goes in front of all of it (between the two it is no C). A cast's `)` stays outside.
+            if start > 0 and (tokens[start - 1] == ']' or tokens[start - 1] == ')' and not _is_cast(tokens, start - 1)):
                 continue
             return start
         if re.match(r'[\w"\']', last):
@@ -285,6 +290,23 @@ def _call_through_table(tokens, attempt):
     at, close, typed = places[attempt]
     edits = [(tokens.starts[at], '((s32 (*)()) '), (tokens.ends[close], ')')]
     return edits if typed else edits + [(tokens.starts[at + 1], '(s32 *)')]
+
+
+def _subscript(tokens, attempt):
+    """`base[index]` with an address as the index: `base[(s32) (index)]`. Subscripts that are already a number, or
+    cast, are left alone, so the next attempt asks about the next one that can be wrong."""
+    places = []
+    for i, token in enumerate(tokens):
+        if token != '[' or (close := _match(tokens, i)) is None or close == i + 1:
+            continue
+        inner = tokens[i + 1:close]
+        if inner[:3] == ['(', 's32', ')'] or (len(inner) == 1 and inner[0][0].isdigit()):
+            continue
+        places.append((i + 1, close))
+    if attempt >= len(places):
+        return None
+    start, close = places[attempt]
+    return [(tokens.starts[start], '(s32)('), (tokens.starts[close], ')')]
 
 
 _SCALARS = ('f32', 'f64', 's8', 'u8', 's16', 'u16', 's32', 'u32', 's64', 'u64')
@@ -433,6 +455,8 @@ def repair(source, line, message, attempt=0):
             edits = [(bases[attempt - spent], '(s32)')] if 0 <= attempt - spent < len(bases) else None
     elif 'arithmetic on pointer to an incomplete type' in message:
         edits = _binary(tokens, '+', attempt) or _binary(tokens, '-', attempt - len(_binary_operators(tokens, '+')))
+    elif 'array subscript is not an integer' in message:
+        edits = _subscript(tokens, attempt)
     elif 'void value not ignored' in message or 'invalid use of void expression' in message:
         edits = _untyped_read(tokens, attempt, _read_type(source, code))
     elif 'pointer value used where a floating point value was expected' in message:
