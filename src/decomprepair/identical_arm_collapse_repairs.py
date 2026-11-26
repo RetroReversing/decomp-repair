@@ -18,7 +18,7 @@ LIMIT = 8
 ARMS = re.compile(r'(?P<head>\bif\s*\((?P<cond>[^;{}]*)\)\s*)\{(?P<a>[^{}]*)\}\s*else\s*\{(?P<b>[^{}]*)\}')
 
 
-def variants(source, name, header=''):
+def variants(source, name, header='', depth=True):
     part = view(source, name)
     if not part:
         return []
@@ -39,4 +39,17 @@ def variants(source, name, header=''):
             # the `if` is the unbraced body of an `else` or another statement: the arm's statements need their braces
             text = '{\n' + indent + '  ' + ('\n' + indent + '  ').join(lines) + '\n' + indent + '}'
         out.append(edit(source, [(m.start(), m.end(), text)]))
-    return [(FAMILIES[0], c) for c in out[:LIMIT] if c != source]
+    found = [(FAMILIES[0], c) for c in out[:LIMIT] if c != source]
+    if depth and found:
+        # nested: an if whose arms hold ifs that collapse (`if (a) { if (b) { g(); } else { g(); } } else { if (b) ... }`):
+        # every collapse in turn, innermost first, as one child, since each step alone leaves the outer arms unequal
+        # (an N64 argument-block builder had four equal calls under two conditions)
+        text, steps = source, 0
+        while steps < 12:
+            step = variants(text, name, header, depth=False)
+            if not step:
+                break
+            text, steps = step[0][1], steps + 1
+        if steps > 1 and all(text != c for _, c in found):
+            found.append((FAMILIES[0], text))
+    return found

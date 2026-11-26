@@ -37,3 +37,12 @@ def test_an_if_that_is_the_unbraced_body_of_an_else_keeps_all_its_statements_in_
     texts = [text for _, text in repair.variants(source, 'f')]
     assert len(texts) == 1
     assert 'else\n    {\n      h(1);\n      h(2);\n    }' in texts[0].replace('else\n    ', 'else\n    ')
+
+
+def test_nested_equal_arms_collapse_to_one_statement_in_one_child():
+    source = ('void f(s32 *p)\n{\n    if (*p & 1)\n    {\n        if (*p & 2)\n        {\n            g(p);\n        }\n'
+              '        else\n        {\n            g(p);\n        }\n    }\n    else\n    {\n        if (*p & 2)\n        {\n'
+              '            g(p);\n        }\n        else\n        {\n            g(p);\n        }\n    }\n}\n')
+    texts = [text for _, text in repair.variants(source, 'f')]
+    assert texts and all(text.count('g(p);') <= 3 for text in texts)
+    assert any('if' not in text and text.count('g(p);') == 1 for text in texts)
