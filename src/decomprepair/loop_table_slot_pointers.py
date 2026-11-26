@@ -34,6 +34,13 @@ the forms `V = SYM[E];`, `V = SYM[E] + K;`, `V = &SYM[E][K];` or staged through 
 then `V = *(T **) V ...;`, decomp-repair `table_slot_self_stage`), the rewrite above with each table as the hoisted
 one, the slots in the run's order or the hoisted table's first, and the table pointer at the body's top or right
 before the run.
+
+The reads may be block-scope declarations with initialisers (`Vert *verts = VERTS[type];` at the top of the loop body,
+m2c's and a clean rewrite's spelling): those lines are offered split into declarations and assignments first, and the
+table pointer then goes after the body's declarations, where C89 allows a statement. Until then the `top` child of
+such a body put the statement above the declarations and spliced the new declarations at a stale offset, so it never
+compiled (a 537-instruction N64 collision ray test, SN64 GCC 2.8.1: its plain form 5029 -> 4689, `-mfp32` 3629 -> 3109,
+with the triangle table hoisted and one slot per table).
 """
 import re
 
@@ -169,7 +176,86 @@ def _load_line(read, slots, indent):
     return f'{indent}{var} = &(*{slot})[{rest}];\n'
 
 
+_DECL = re.compile(rf'[ \t]*(?:const[ \t]+)?{IDENT}(?:[ \t]*\*+[ \t]*|[ \t]+){IDENT}[ \t]*(?:\[[^\];\n]*\][ \t]*)*;[ \t]*\n')
+_INIT = re.compile(rf'([ \t]*)((?:const[ \t]+)?{IDENT}(?:[ \t]*\*+[ \t]*|[ \t]+))({IDENT})[ \t]*=(?!=)[ \t]*([^;{{}}\n]*);[ \t]*\n')
+_KEYWORDS = {'return', 'goto', 'else', 'case', 'do', 'while', 'for', 'if', 'switch'}
+
+
+def _declaration(clean, at):
+    """The end of the declaration line at `at` (bare, or `T *v = expr;` with `initialised`), or None."""
+    for pattern, initialised in ((_DECL, False), (_INIT, True)):
+        hit = pattern.match(clean, at)
+        if hit and re.match(rf'[ \t]*(?:const[ \t]+)?({IDENT})', hit[0])[1] not in _KEYWORDS:
+            return hit, initialised
+    return None, False
+
+
+def _declarations_end(clean, at):
+    """Just past the declarations (and blank lines) that open the block whose body starts at `at`."""
+    while True:
+        blank = re.compile(r'[ \t]*\n').match(clean, at)
+        if blank:
+            at = blank.end()
+            continue
+        hit, _ = _declaration(clean, at)
+        if not hit:
+            return at
+        at = hit.end()
+
+
+def _split_initialisers(source, name):
+    """`source` with each loop body's initialised declarations split into declarations and assignments, or None."""
+    span = find(source, name)
+    if not span:
+        return None
+    clean = _blank(source)
+    start, end = span
+    edits = []
+    for brace in re.finditer(r'\{', clean[start:end]):
+        opening = start + brace.start()
+        if not c_scan.LOOP_HEADER.search(c_scan.header_before(clean, opening)):
+            continue
+        at = opening + 1 + re.match(r'[ \t]*\n?', clean[opening + 1:]).end()
+        assigns, splits = [], []
+        while True:
+            blank = re.compile(r'[ \t]*\n').match(clean, at)
+            if blank:
+                at = blank.end()
+                continue
+            hit, initialised = _declaration(clean, at)
+            if not hit:
+                break
+            if initialised:
+                text = source[hit.start():hit.end()]
+                part = _INIT.match(text)
+                splits.append((hit.start(), hit.end(), f'{part[1]}{part[2].rstrip()}{"" if part[2].rstrip().endswith("*") else " "}{part[3]};\n'))
+                assigns.append(f'{part[1]}{part[3]} = {part[4].strip()};\n')
+            at = hit.end()
+        if splits:
+            edits.extend(splits)
+            edits.append((at, at, ''.join(assigns)))
+    if not edits:
+        return None
+    return _apply(source, edits)
+
+
+def _apply(source, edits):
+    """`source` with each (start, end, text) replaced; at one position, earlier edits in the list come first."""
+    text = source
+    for index, (lo, hi, new) in sorted(enumerate(edits), key=lambda item: (item[1][0], item[0]), reverse=True):
+        text = text[:lo] + new + text[hi:]
+    return text
+
+
 def rewrites(source, name):
+    result = _rewrites(source, name)
+    split = _split_initialisers(source, name)
+    if split:
+        result += [text for text in _rewrites(split, name) if text not in result]
+    return result[:LIMIT]
+
+
+def _rewrites(source, name):
     span = find(source, name)
     if not span:
         return []
@@ -207,6 +293,7 @@ def rewrites(source, name):
         top = _loop_top(clean, at, opening)
         if top < 0:
             continue
+        top = min(_declarations_end(clean, top), at)
         indent = line[1]
         run_end = reads[-1][0]
         run_end += re.match(r'[ \t]*\n?', source[run_end:]).end()
@@ -226,14 +313,15 @@ def rewrites(source, name):
                     + ''.join(_load_line(r, slots, indent) for r in order)
                 for place in ('top', 'run'):
                     if place == 'run' or top == line_start:
-                        text = source[:line_start] + indent + table_line + run + source[run_end:]
+                        edits = [(first_decl, first_decl, decls),
+                                 (line_start, run_end, indent + table_line + run)]
                     else:
-                        text = (source[:top] + top_indent + table_line + source[top:line_start] + run
-                                + source[run_end:])
-                    text = text[:first_decl] + decls + text[first_decl:]
+                        edits = [(first_decl, first_decl, decls), (top, top, top_indent + table_line),
+                                 (line_start, run_end, run)]
+                    text = _apply(source, edits)
                     if text != source and text not in result:
                         result.append(text)
-    return result[:LIMIT]
+    return result
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 60}  # the registry: no caller wiring (registry.py)
