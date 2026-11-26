@@ -60,3 +60,29 @@ def test_a_local_the_loop_writes_gets_no_copy():
 def test_a_function_without_a_loop_or_with_a_taken_address_is_left_alone():
     assert not variants('void f(u8 a)\n{\n  u16 pos;\n  pos = a;\n  g(pos);\n}\n', 'f')
     assert not variants(SOURCE.replace('pos = group;', 'pos = group;\n  h(&pos);'), 'f')
+
+
+MIP_LEVELS = """void g(u32 *out, u8 *tex)
+{
+  s32 i;
+  s32 hl;
+  s32 w;
+  hl = tex[0];
+  w = 1 << tex[1];
+  for (i = 0; i < 4; i++)
+  {
+    do { *out++ = (w << 9) | (hl & 0xF); } while (0);
+    *out++ = w;
+    hl--;
+    w >>= 1;
+  }
+}
+"""
+
+
+def test_a_value_the_rest_of_the_block_writes_is_never_renamed_there():
+    # A mip-level loop's inner `do { } while (0)` reads `hl`, and the outer body then steps it: renaming `hl--` to
+    # the copy kept `hl` constant across the outer iterations (an unfaithful child that scored better).
+    for family, text in variants(MIP_LEVELS, 'g'):
+        assert '    hl--;' in text, (family, text)
+        assert 'key--' not in text
