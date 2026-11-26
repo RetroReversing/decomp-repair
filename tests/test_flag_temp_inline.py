@@ -43,6 +43,51 @@ def test_a_flag_word_assigned_again_or_a_temporary_with_other_values_is_left_alo
     assert all('use(fast);' in text and 'fast != 0' in text for _, text in inline.variants(early, 'f'))
 
 
+JOINED = '''void f(s32 bits, u8 left, u8 right) {
+    s32 hit;
+    s32 var_v0;
+
+    hit = 0;
+    if (bits & 1) {
+        hit = 1;
+    }
+    if (bits & 2) {
+        if (left != right) {
+            hit = 1;
+            goto done;
+        }
+        var_v0 = hit & 0xFF;
+        if (right < 5) {
+            hit = 1;
+            goto done;
+        }
+    } else {
+done:
+        var_v0 = hit & 0xFF;
+    }
+    if (var_v0 != 0) {
+        use(hit);
+    }
+}
+'''
+
+
+def test_a_word_assigned_several_times_when_every_path_to_the_read_sets_the_temporary_after_it():
+    out = [text for _, text in inline.variants(JOINED, 'f')]
+    assert len(out) == 1
+    assert 'var_v0' not in out[0] and 'if ((hit & 0xFF) != 0) {' in out[0]
+    assert 'done:\n;\n    }' in out[0]
+
+
+def test_a_write_of_the_word_between_the_temporary_and_the_read_is_refused():
+    late = JOINED.replace('        if (right < 5) {', '        hit = 2;\n        if (right < 5) {')
+    assert not inline.variants(late, 'f')
+    unset = JOINED.replace('done:\n        var_v0 = hit & 0xFF;', 'done:\n        use(0);')
+    assert not inline.variants(unset, 'f')
+    shared = JOINED.replace('s32 hit;', 'extern s32 hit;')
+    assert not inline.variants(shared.replace('    hit = 0;\n', '    hit = 0;\n    watch(&hit);\n'), 'f')
+
+
 def test_the_module_declares_itself_to_the_registry():
     from decomprepair import registry
     declared = {r.module: r for r in registry.declared()}
