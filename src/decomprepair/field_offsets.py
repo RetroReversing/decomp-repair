@@ -8,7 +8,8 @@ number in the C says them: they come from the struct's definition. A literal edi
 `pairs` reads which offsets differ from the candidate's compiled body and the target, instruction by instruction (same
 opcode and registers, a load or store off a pointer other than the stack or the small-data base, no relocation). 
 `from_pairs` finds the struct field each old offset belongs to, among the fields the function reads through a typed
-pointer (`p->field`), and offers two C texts:
+pointer: `p->field`, `p->pos.x` (offsets add up inside a struct value), `a[i].field`, `p[i].field` and each
+dereference of a chain such as `p->next->hp`. It offers two C texts:
 - the struct's definition with padding before each moved field, so it lands at its new offset and the fields after it
   follow, when the definition is in the source (a donor's type brought with its C);
 - every use of a moved field written at its new offset (`(*(s16 *)((char *)p + 0x16))`), which works whatever header
@@ -184,29 +185,95 @@ def pairs(compiled, target, relocated, big):
     return out
 
 
-def _pointers(source, types):
-    """{variable: struct} for the variables the source declares as a pointer to a struct this reader can lay out."""
+class Access:
+    """One load or store a C expression makes off a struct: `p->a.b` (one access, at a's offset plus b's, off `p`),
+    and in `p->next->hp` two (`next` off `p`, `hp` off `p->next`)."""
+
+    def __init__(self, start, end, chain, group, struct, member, offset):
+        self.start, self.end, self.chain, self.group = start, end, chain, group
+        self.struct, self.member, self.offset = struct, member, offset
+
+    def key(self):
+        return (id(self.struct), self.offset)
+
+
+DECLARED = re.compile(r'((?:struct\s+)?[A-Za-z_]\w*)\s+((?:\*\s*)?)([A-Za-z_]\w*)\s*((?:\[[^\]]*\])?)\s*(?=[,;)=\[])')
+CHAIN = re.compile(r'(?<![\w.>&])([A-Za-z_]\w*)(\s*\[[^\[\]]*\])?((?:\s*(?:->|\.)\s*[A-Za-z_]\w*)+)')
+STEP = re.compile(r'\s*(->|\.)\s*([A-Za-z_]\w*)')
+
+
+def _declarations(source, types):
+    """{variable: (struct, pointer, array)} for what the source declares as a struct, a pointer to one or an array."""
     out = {}
-    clean = _blank(source)
-    for m in re.finditer(r'((?:struct\s+)?[A-Za-z_]\w*)\s*\*\s*([A-Za-z_]\w*)\s*(?=[,;)=\[])', clean):
+    for m in DECLARED.finditer(_blank(source)):
         found = types.struct(m.group(1))
-        if found is not None:
-            out.setdefault(m.group(2), found)
+        if found is not None and m.group(2).count('*') <= 1:
+            out.setdefault(m.group(3), (found, bool(m.group(2).strip()), bool(m.group(4))))
     return out
 
 
-def _accesses(source, pointers):
-    """[(start, end, variable, member)] for each `p->field` the source reads or writes, `p` a struct pointer."""
-    out = []
+def _chains(source, types):
+    """[(start, end, base text, [(operator, text, Access)])]: each struct expression and the accesses it makes."""
     clean = _blank(source)
-    for m in re.finditer(r'(?<![\w.>&])([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)', clean):
-        found = pointers.get(m.group(1))
-        if found is None:
+    declared = _declarations(source, types)
+    out = []
+    for m in CHAIN.finditer(clean):
+        decl = declared.get(m.group(1))
+        if decl is None:
             continue
-        member = next((x for x in found.members if x.name == m.group(2)), None)
-        if member is not None:
-            out.append((m.start(), m.end(), m.group(1), member, found))
+        current, pointer, array = decl
+        steps = list(STEP.finditer(m.group(3)))
+        first = steps[0].group(1)
+        indexed = bool(m.group(2))
+        if (first == '->') != (pointer and not indexed) or (first == '.' and pointer and not indexed):
+            continue
+        if first == '.' and not indexed and array:
+            continue
+        groups, offset, member, struct, ok = [], 0, None, current, True
+        base = m.start(3)
+        for index, step in enumerate(steps):
+            if index and step.group(1) == '->':
+                if member is None or member.stars != 1 or member.dims:
+                    ok = False
+                    break
+                groups.append((struct, member, offset, base, m.start(3) + step.start()))
+                struct = types.struct(member.ctype)
+                if struct is None:
+                    ok = False
+                    break
+                offset, base = 0, m.start(3) + step.start()
+            elif index:
+                if member is None or member.stars or member.dims:
+                    ok = False
+                    break
+                inner = types.struct(member.ctype)
+                if inner is None:
+                    ok = False
+                    break
+                container = inner  # offsets stay relative to the dereferenced struct
+                member = next((x for x in container.members if x.name == step.group(2)), None)
+                if member is None:
+                    ok = False
+                    break
+                offset += member.offset
+                continue
+            container = struct
+            member = next((x for x in container.members if x.name == step.group(2)), None)
+            if member is None:
+                ok = False
+                break
+            offset = member.offset if step.group(1) == '->' or index == 0 else offset + member.offset
+        if not ok or member is None:
+            continue
+        groups.append((struct, member, offset, base, m.end(3)))
+        accesses = [Access(m.start(), m.end(), m, (start, stop), group_struct, last, at)
+                    for group_struct, last, at, start, stop in groups]
+        out.append((m, accesses))
     return out
+
+
+def _accesses(source, types):
+    return [access for _, accesses in _chains(source, types) for access in accesses]
 
 
 def _relayout(found, moved):
@@ -228,45 +295,69 @@ def _relayout(found, moved):
     return f"{head} {{\n    {body}\n}}{' ' + found.alias if found.alias else ''};"
 
 
+def _spelled(member):
+    return (member.ctype + ' ' + '*' * member.stars).strip()
+
+
 def from_pairs(source, header, offsets):
     """C texts with the fields at `offsets` ({old: new}) moved: the struct laid out again, and the uses rewritten."""
     if not offsets or not source:
         return []
     types = Types(source, header)
-    pointers = _pointers(source, types)
-    uses = _accesses(source, pointers)
+    chains = _chains(source, types)
     by_offset = {}
-    for start, end, variable, member, found in uses:
-        if member.offset in offsets:
-            by_offset.setdefault(member.offset, {})[id(member)] = (member, found)
-    moved = {}  # id(member) -> new offset, only where one read field has the old offset
-    for old, members in by_offset.items():
-        if len(members) == 1:
-            moved[next(iter(members))] = offsets[old]
+    for _, accesses in chains:
+        for access in accesses:
+            if access.offset in offsets:
+                by_offset.setdefault(access.offset, {})[access.key()] = access
+    moved = {}  # access key -> new offset, only where one struct field has the old offset
+    for old, keys in by_offset.items():
+        if len(keys) == 1:
+            moved[next(iter(keys))] = offsets[old]
     if not moved:
         return []
     out = []
-    structs = {id(found): found for _, _, _, member, found in uses if id(member) in moved}
-    edits = []
-    for found in structs.values():
-        if found.in_source:
-            text = _relayout(found, moved)
+    # The struct laid out again: only for a moved field read directly (not inside a nested struct value).
+    direct = {}
+    for _, accesses in chains:
+        for access in accesses:
+            if access.key() in moved:
+                if access.member.offset != access.offset or not access.struct.in_source:
+                    direct = None
+                    break
+                direct[id(access.member)] = (moved[access.key()], access.struct)
+        if direct is None:
+            break
+    if direct:
+        edits, ok = {}, True
+        for structure in {id(s): s for _, s in direct.values()}.values():
+            text = _relayout(structure, {key: at for key, (at, s) in direct.items() if s is structure})
             if text is None:
-                edits = []
+                ok = False
                 break
-            edits.append((found.start, found.end, text))
-    if edits:
-        relaid = source
-        for start, end, text in sorted(edits, reverse=True):
-            relaid = relaid[:start] + text + relaid[end:]
-        out.append(relaid)
+            edits[(structure.start, structure.end)] = text
+        if ok:
+            relaid = source
+            for (start, end), text in sorted(edits.items(), reverse=True):
+                relaid = relaid[:start] + text + relaid[end:]
+            out.append(relaid)
+    # Every use written at its new offset, whatever header defines the struct.
     rewritten = source
-    for start, end, variable, member, found in sorted(uses, key=lambda item: -item[0]):
-        if id(member) not in moved or member.dims:
+    for m, accesses in sorted(chains, key=lambda item: -item[0].start()):
+        if not any(access.key() in moved for access in accesses):
             continue
-        spelled = member.ctype + ' ' + '*' * member.stars
-        rewritten = (rewritten[:start] + f'(*({spelled.strip()} *)((char *){variable} + 0x{moved[id(member)]:X}))'
-                     + rewritten[end:])
+        expr = source[m.start():m.start(3)]
+        for index, access in enumerate(accesses):
+            start, stop = access.group
+            if access.key() in moved and not access.member.dims and not (
+                    access.member.stars == 0 and types.struct(access.member.ctype) is not None):
+                via_value = index == 0 and source[start:stop].lstrip().startswith('.')
+                base = '&' + expr if via_value else expr
+                plain = re.fullmatch(r'[A-Za-z_]\w*', base)
+                expr = f'(*({_spelled(access.member)} *)((char *){base if plain else "(" + base + ")"} + 0x{moved[access.key()]:X}))'
+            else:
+                expr += source[start:stop]
+        rewritten = rewritten[:m.start()] + expr + rewritten[m.end():]
     if rewritten != source:
         out.append(rewritten)
     return [text for text in dict.fromkeys(out) if text != source]
@@ -274,14 +365,13 @@ def from_pairs(source, header, offsets):
 
 def variants(source, name, header='', asm=''):
     """The target's distinct struct offsets paired in order with the ones the function reads through its one struct
-    pointer type, when both have the same number and differ (a field inserted before them)."""
+    type, when both have the same number and differ (a field inserted before them)."""
     types = Types(source, header)
-    pointers = _pointers(source, types)
-    uses = _accesses(source, pointers)
-    kinds = {id(found) for _, _, _, _, found in uses}
+    accesses = _accesses(source, types)
+    kinds = {id(access.struct) for access in accesses}
     if len(kinds) != 1:
         return []
-    mine = sorted({member.offset for _, _, _, member, _ in uses})
+    mine = sorted({access.offset for access in accesses})
     theirs = set()
     for line in (asm or '').splitlines():
         line = line.split('*/', 1)[-1].strip()
