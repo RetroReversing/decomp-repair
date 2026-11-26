@@ -38,7 +38,32 @@ def _argument_type(arg, types):
         return 'f32'
     if re.fullmatch(IDENT, arg):
         return types.get(arg)
+    if _float_load(arg):
+        return 'f32'
     return None
+
+
+def _whole(text):
+    """`text` is one operand: a name, `&name`, or one parenthesis around all of it."""
+    if re.fullmatch(r'&?\s*' + IDENT, text):
+        return True
+    return text.startswith('(') and close(text, 0) == len(text)
+
+
+def _float_load(arg):
+    """The whole argument is a read through a float pointer: `*(f32 *)p`, `*((f32 *)(p + n))` or
+    `M2C_FIELD(p, f32 *, n)` (m2c's spelling of a global table's field)."""
+    field = re.match(r'M2C_FIELD\s*\(', arg)
+    if field:
+        return (close(arg, field.end() - 1) == len(arg)
+                and re.search(r',\s*(?:f32|float)\s*\*\s*,[^,]*\)$', arg) is not None)
+    if not arg.startswith('*'):
+        return False
+    rest = arg[1:].strip()
+    if rest.startswith('(') and close(rest, 0) == len(rest):
+        rest = rest[1:-1].strip()  # `*((f32 *)x)`: the parenthesis around the cast and its operand
+    cast = re.match(r'\(\s*(?:volatile\s+)?(?:f32|float)\s*\*\s*\)\s*', rest)
+    return bool(cast) and _whole(rest[cast.end():])
 
 
 def variants(source, name):

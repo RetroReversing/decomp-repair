@@ -28,3 +28,25 @@ def test_left_alone_without_a_float_argument_or_with_differing_calls():
     assert f.variants(SOURCE.replace('b = g(arg1);', 'b = g(arg0);').replace('g(arg2)', 'g(arg0)'), 'k') == []
     assert f.variants(SOURCE.replace('b = g(arg1);', 'b = g(arg1, 2);'), 'k') == []
     assert f.variants(SOURCE.replace('f32 g();', 'f32 g(f32);'), 'k') == []
+
+
+def test_a_load_through_a_float_pointer_is_a_float_argument():
+    # An N64 table update: the callee only ever gets table fields, so no named f32 shows its type.
+    source = '''f32 g();
+
+f32 k(s32 i) {
+    return g(*((f32 *)((s8 *)&D_80000000 + i))) + g(*(f32 *)(D_80000004 + i)) + g(M2C_FIELD(D_80000008, f32 *, 4));
+}
+'''
+    (family, proto), = f.variants(source, 'k')
+    assert 'f32 g(f32);' in proto
+
+
+def test_an_integer_load_or_a_comparison_of_a_float_load_is_not():
+    source = '''f32 g();
+
+f32 k(s32 i) {
+    return g(*(s32 *)i) + g(*(f32 *)i > 0.0f);
+}
+'''
+    assert f.variants(source, 'k') == []
