@@ -155,7 +155,8 @@ def variants(source, name, tables=()):
                 if order!=list(range(len(groups))):
                     text=''.join(source[groups[i][0]:groups[i][1]] for i in order)
                     result.append(('target_switch_order',source[:groups[0][0]]+text+source[groups[-1][1]:]))
-    return list(dict.fromkeys(result))[:2] + gap_variants(source, name, tables)
+    return (list(dict.fromkeys(result))[:2] + gap_variants(source, name, tables)
+            + label_variants(source, name, tables))
 
 
 
@@ -229,6 +230,80 @@ def gap_variants(source, name, tables=()):
                 for label in targets[:6]:
                     out.append((GAP_FAMILY, source[:first] + f'case {number}: goto {label};\n' + source[first:]))
     return list(dict.fromkeys(out))[:GAP_LIMIT]
+
+
+LABEL_FAMILY = 'switch_table_labels'
+
+
+def label_variants(source, name, tables=()):
+    """Every case label rebuilt from the target's jump table, the arms keeping their order.
+
+    GCC lays the arms out in source order, so when a switch has as many arms (apart from `default:`) as the table has
+    destinations of its own, the i-th arm is the i-th lowest destination and its labels are every value the table
+    sends there. This covers a source with only some of a long grouped list (a decompiler that could not read the
+    table writes one value per arm, or leaves them all to `default:`), which no relabelling of the existing labels
+    reaches. The table's most common destination is taken for the default (a hypothesis, as in `hints`); the first
+    and last values are written on the default arm when the table sends them there, so the table keeps its span.
+    The judge decides."""
+    from collections import Counter
+    span = find(source, name)
+    if not span or not tables:
+        return []
+    clean = _blank(source)
+    out = []
+    for switch in re.finditer(r'\bswitch\s*\(', clean[span[0]:span[1]]):
+        cond = close(clean, span[0] + switch.end() - 1)
+        if not cond:
+            continue
+        brace = cond + len(clean[cond:]) - len(clean[cond:].lstrip())
+        if clean[brace:brace + 1] != '{' or not (end := close(clean, brace, '{', '}')):
+            continue
+
+        def top(at, brace=brace):
+            return clean[brace + 1:at].count('{') == clean[brace + 1:at].count('}')
+
+        labels = [m for m in LABEL.finditer(source, brace + 1, end - 1)
+                  if top(m.start()) and clean[m.start():m.start() + 4] in ('case', 'defa')]
+        every = [m for m in re.finditer(r'\b(?:case|default)\b', clean[brace + 1:end - 1])
+                 if top(brace + 1 + m.start())]
+        if not labels or len(labels) != len(every) or clean[brace + 1:labels[0].start()].strip():
+            continue
+        runs = [[labels[0]]]  # labels stacked with nothing between them name one arm
+        for before, label in zip(labels, labels[1:]):
+            if clean[before.end():label.start()].strip():
+                runs.append([label])
+            else:
+                runs[-1].append(label)
+        arms = [run for run in runs if all(label[1] is not None for label in run)]
+        fallback = [run for run in runs if run not in arms]
+        for low, destinations in tables:
+            if not 2 <= len(destinations) <= 256:
+                continue
+            common = Counter(destinations).most_common(1)[0][0]
+            own = sorted(set(destinations) - {common})
+            if len(own) != len(arms) or not arms:
+                continue
+            hexed = any('x' in (label[1] or '').lower() for label in labels)
+
+            def case(number, hexed=hexed):
+                return f'case 0x{number:X}:' if hexed and number >= 0 else f'case {number}:'
+
+            edits = []
+            for run, address in zip(arms, own):
+                text = ' '.join(case(low + i) for i, where in enumerate(destinations) if where == address)
+                edits.append((run[0].start(), run[-1].end(), text))
+            ends = [low + i for i in (0, len(destinations) - 1) if destinations[i] == common]
+            if fallback:
+                edits.append((fallback[0][0].start(), fallback[0][-1].end(),
+                              ' '.join([*map(case, ends), 'default:'])))
+            elif ends:
+                continue
+            proposal = source
+            for start, stop, text in sorted(edits, reverse=True):
+                proposal = proposal[:start] + text + proposal[stop:]
+            if proposal != source:
+                out.append((LABEL_FAMILY, proposal))
+    return list(dict.fromkeys(out))[:4]
 
 
 def hints(source, name, tables=(), header=''):
