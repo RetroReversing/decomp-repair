@@ -59,3 +59,66 @@ def test_an_index_written_between_a_row_pointer_and_its_read_keeps_the_pointer()
 
 def test_it_declares_itself():
     assert REPAIR['variants'] is variants and REPAIR['families'] == (FAMILY,)
+
+
+ROWS = """extern u8 D_80100300[];
+
+void blit(u8 side)
+{
+    s32 j;
+    s32 off;
+    u8 *base;
+    u8 *dst;
+
+    base = D_80100300 + (side << 12);
+    off = side << 11;
+    for (j = 0; j < 8; j++) {
+        dst = base + off;
+        *((u16 *) (dst + j * 2)) = j;
+    }
+}
+"""
+
+
+def test_a_scaled_index_kept_in_a_local_is_a_dimension():
+    [(_, child)] = variants(ROWS.replace('(side << 12)', '(g_page << 12)'), 'blit')
+    assert 'extern u16 D_80100300[][2][1024];' in child
+    assert 'D_80100300[g_page][side][j] = j;' in child
+    assert 'off' not in child and 'dst' not in child and 'base' not in child
+
+
+COPY = """extern s32 D_80100400;
+extern u8 D_80100500[];
+extern u8 D_80100600;
+extern u16 D_80100700[];
+
+void grab(void)
+{
+    s32 i;
+    s32 j;
+    s32 off;
+    s32 x;
+    s32 y;
+    u8 *src;
+
+    off = (5 * D_80100600) * 8;
+    x = (((s32) (*((u16 *) (D_80100500 + 0x2110 + off)))) << 16) >> 21;
+    y = *((s16 *) (D_80100500 + 0x2112 + off));
+    for (j = 0; j < 32; j++) {
+        src = ((u8 *) D_80100400) + (j + y) * 0x280;
+        for (i = 0; i < 32; i++) {
+            D_80100700[i] = *((u16 *) (src + (i + x) * 2));
+        }
+    }
+}
+"""
+
+
+def test_a_pointer_global_and_an_array_of_records_are_declared():
+    [(_, child)] = variants(COPY, 'grab')[:1]
+    assert 'extern u16 (*D_80100400)[320];' in child
+    assert 'D_80100700[i] = D_80100400[j + y][i + x];' in child
+    assert child.index('} Rows_D_80100500;') < child.index('extern Rows_D_80100500 D_80100500;') and 'u8 D_80100500[]' not in child
+    assert 'u8 head[0x2110];\n    Row_D_80100500 r[1];' in child
+    assert 'x = ((s16) D_80100500.r[D_80100600].m0 >> 5);' in child and 'y = D_80100500.r[D_80100600].m2;' in child
+    assert 'off' not in child and 'src' not in child

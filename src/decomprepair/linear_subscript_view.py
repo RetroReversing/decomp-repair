@@ -18,7 +18,10 @@ linear_subscript_view
     with a member per offset, each an array shaped by its strides, padding between. Row pointers set once from a
     table plus indices are read through and removed.
 
-The program reads and writes the same addresses. A table with a use the rewrite cannot read (its address passed on,
+The program reads and writes the same addresses. A table whose offsets lie within one stride of one index is an array of records (`D.r[i].m4`). A pointer kept in
+    an integer global and read only through byte casts is declared as the pointer to rows it is
+    (`u16 (*P)[320]`, `P[y][x]`); the first child also writes a halfword's shift pair after such a read
+    as its cast. A table with a use the rewrite cannot read (its address passed on,
 a stepped pointer, an index written between a row pointer's assignment and a read through it) is left alone.
 """
 import re
@@ -111,7 +114,8 @@ def _linear(text, roots):
         if c == '*' and text[:i].strip():
             scale = _number(text[i + 1:])
             if scale:
-                return None, {_unwrap(text[:i]): scale}, 0
+                index, inner = _factored(text[:i])
+                return None, {index: scale * inner}, 0
         if text.startswith('<<', i):
             shift = _number(text[i + 2:])
             if shift is not None:
@@ -125,6 +129,15 @@ def _linear(text, roots):
     if any(re.search(rf'\b{re.escape(r)}\b', text) for r in roots):
         raise _Unknown
     return None, {text: 1}, 0
+
+
+def _factored(text):
+    """`(5 * x) * 8` is `x` taken 40 times: (index, the constant factor already inside it)."""
+    text = _unwrap(text)
+    m = re.fullmatch(r'(?:(0x[0-9A-Fa-f]+|\d+)\s*\*\s*([A-Za-z_]\w*)|([A-Za-z_]\w*)\s*\*\s*(0x[0-9A-Fa-f]+|\d+))', text)
+    if m:
+        return (m.group(2) or m.group(3)), int(m.group(1) or m.group(4), 0)
+    return text, 1
 
 
 class _Access:
@@ -143,7 +156,50 @@ def _depth_end(body, at):
     return len(body)
 
 
-def _pointers(body, roots):
+_CALL = re.compile(r'(?<![\w.>])(?!(?:if|for|while|switch|return|sizeof)\b)[A-Za-z_]\w*\s*\(')
+
+
+def _unchanged(body, index, a, b):
+    """The names of an index expression are not written between two positions; a global is not read across a call."""
+    between = body[a:b]
+    for word in set(re.findall(r'(?<![\w.>])[A-Za-z_]\w*', index)):
+        if word in _SIZES:
+            continue
+        if re.search(rf'(?<![\w.>]){word}\s*(?:[-+*/&|^]?=(?!=)|<<=|>>=|\+\+|--)|(?:\+\+|--)\s*{word}\b', between):
+            return False
+        if word.startswith(('D_', 'g')) and _CALL.search(between):
+            return False
+    return True
+
+
+def _scaled_locals(body):
+    """{local: (index, stride, declaration span, assignment span)} for integer locals set once to a scaled index."""
+    out = {}
+    for decl in re.finditer(r'(?m)^[ \t]*(?:s32|u32|int)\s+([A-Za-z_]\w*)\s*(?:=[^;{},]+)?;[ \t]*\n?', body):
+        name = decl.group(1)
+        writes = list(re.finditer(rf'(?<![\w.>]){name}\s*(?:[-+*/&|^]?=(?!=)|<<=|>>=|\+\+|--)|(?:\+\+|--|&)\s*{name}\b', body))
+        stmt = re.compile(rf'(?m)^[ \t]*{name}\s*=\s*([^;{{}}]+);[ \t]*\n?').search(body)
+        if not stmt:  # or set where it is declared
+            stmt = None
+        initial = re.search(rf'(?m)^[ \t]*(?:s32|u32|int)\s+{name}\s*=\s*([^;{{}},]+);[ \t]*\n?', body)
+        if initial:
+            stmt, decl = initial, initial
+            writes = writes[1:] if writes else writes
+            writes = [None] + writes
+        if len(writes) != 1 or not stmt:
+            continue
+        try:
+            _, terms, constant = _linear(stmt.group(1), set())
+        except _Unknown:
+            continue
+        if constant == 0 and len(terms) == 1:
+            [(index, stride)] = terms.items()
+            if stride > 1:
+                out[name] = (index, stride, decl.span(), stmt.span())
+    return out
+
+
+def _pointers(body, roots, scaled):
     """{pointer: (root, terms, constant, element type, declaration spans, assignment span)} for byte pointers set once."""
     out = {}
     for decl in re.finditer(rf'(?m)^[ \t]*({_BYTE})\s*\*\s*([A-Za-z_]\w*)\s*;[ \t]*\n?', body):
@@ -171,6 +227,10 @@ def _pointers(body, roots):
             root, terms, constant = base[0], {**base[1], **terms}, base[2] + constant
         if root is None:
             raise _Unknown
+        for local, (index, stride, _, _) in scaled.items():
+            if terms.get(local) == 1 and index not in terms:
+                del terms[local]
+                terms[index] = stride
         resolved[name] = (root, terms, constant, out[name][1], out[name][2], out[name][3])
         return resolved[name]
 
@@ -197,9 +257,9 @@ def _stable(body, pointers, name, use):
     return True
 
 
-def _accesses(body, roots):
+def _accesses(body, roots, scaled):
     """Every access through `roots` (and pointers made from them), or None per root when one cannot be read."""
-    pointers = _pointers(body, roots)
+    pointers = _pointers(body, roots, scaled)
     bases = {n: p for n, p in pointers.items() if not p[1] and not p[2]}   # holds the table's address itself
     rows = {n: p for n, p in pointers.items() if n not in bases}
     names = set(roots) | set(pointers)
@@ -214,6 +274,13 @@ def _accesses(body, roots):
             root, terms, constant = _linear(text, names)
             if root is None:
                 return
+            for local, (index_text, stride, _, assigned) in scaled.items():
+                if terms.get(local) == 1 and index_text not in terms:
+                    if not (assigned[1] <= start <= _depth_end(body, assigned[1])
+                            and _unchanged(body, index_text, assigned[1], start)):
+                        raise _Unknown
+                    del terms[local]
+                    terms[index_text] = stride
             if index is not None:
                 other, more, extra = _linear(index, names)
                 if other or set(more) & set(terms):
@@ -233,8 +300,9 @@ def _accesses(body, roots):
         except _Unknown:
             return
 
-    for m in re.finditer(r'\*\s*\(\s*([A-Za-z_]\w*)\s*\*\s*\)\s*(?=[A-Za-z_(])', body):
-        kind = m.group(1)
+    # `*(T *) E` and m2c's `*((T *) E)`
+    for m in re.finditer(r'\*\s*(\(\s*)?\(\s*([A-Za-z_]\w*)\s*\*\s*\)\s*(?=[A-Za-z_(])', body):
+        kind = m.group(2)
         if kind not in _SIZES or inside(m.start(), covered):
             continue
         if body[m.end()] == '(':
@@ -243,6 +311,11 @@ def _accesses(body, roots):
         else:
             word = re.match(r'[A-Za-z_]\w*', body[m.end():]).group()
             end, text = m.end() + len(word), word
+        if m.group(1):
+            outer = _closing(body, m.start(1))
+            if body[end:outer].strip():
+                continue
+            end = outer + 1
         add(m.start(), end, text, kind)
     for m in re.finditer(r'(?<![\w.>])([A-Za-z_]\w*)\s*\[', body):
         name = m.group(1)
@@ -293,7 +366,39 @@ def _subscripts(access, strides, extra):
     return ''.join(f'[{index.get(s, "0")}]' for s in strides) + ('[0]' if extra else '')
 
 
-def _plan(name, accesses, pointers, bases):
+def _record_rows(name, offsets, aliases):
+    """Offsets within one stride of one index: an array of records starting at the lowest offset, or None."""
+    every = [a for group in offsets.values() for a in group]
+    strides = {tuple(a.terms.values()) for a in every}
+    if aliases or len(offsets) < 2 or len(strides) != 1 or len(next(iter(strides))) != 1:
+        return None
+    [stride] = next(iter(strides))
+    base = min(offsets)
+    lines, replace, at = [], {}, 0
+    for offset in sorted(offsets):
+        group = offsets[offset]
+        kinds = {a.kind for a in group}
+        if len(kinds) != 1:
+            return None
+        kind, member = kinds.pop(), offset - base
+        if member < at or member % _SIZES[kind] or member + _SIZES[kind] > stride:
+            return None
+        if member > at:
+            lines.append(f'    u8 pad{at:X}[0x{member - at:X}];')
+        lines.append(f'    {kind} m{member:X};')
+        at = member + _SIZES[kind]
+        for a in group:
+            replace[a] = f'{name}.r[{next(iter(a.terms))}].m{member:X}'
+    if stride > at:
+        lines.append(f'    u8 pad{at:X}[0x{stride - at:X}];')
+    head = f'    u8 head[0x{base:X}];\n' if base else ''
+    typedefs = ('typedef struct\n{\n' + '\n'.join(lines) + f'\n}} Row_{name};\n'
+                f'typedef struct\n{{\n{head}    Row_{name} r[1];\n}} Rows_{name};\n')
+    # the declaration follows its type, where the typedefs go
+    return '', [typedefs + f'extern Rows_{name} {name};\n'], replace, None
+
+
+def _plan(name, accesses, pointers, bases, pointer=False):
     """(new extern declaration, [typedef], {access: replacement}, pointer type or None) for one table."""
     offsets = {}
     for a in accesses:
@@ -308,10 +413,17 @@ def _plan(name, accesses, pointers, bases):
         if not strides:
             raise _Unknown
         dims, extra = _shape(strides, _SIZES[kind])
-        declaration = f'extern {kind} {name}[]' + ''.join(f'[{d}]' for d in dims) + ';'
+        inner = ''.join(f'[{d}]' for d in dims)
+        if pointer:
+            declaration = f'extern {kind} (*{name}){inner};' if inner else f'extern {kind} *{name};'
+        else:
+            declaration = f'extern {kind} {name}[]{inner};'
         return declaration, [], {a: name + _subscripts(a, strides, extra) for a in accesses}, None
-    if min(offsets) < 0:
+    if pointer or not offsets or min(offsets) < 0:
         raise _Unknown
+    rows = _record_rows(name, offsets, aliases)
+    if rows:
+        return rows
     view = f'View_{name}'
     lines, replace, at = [], {}, 0
     ordered = sorted(offsets)
@@ -347,7 +459,7 @@ def _plan(name, accesses, pointers, bases):
     return None, [typedef], replace, view
 
 
-def _apply(source, span, chosen, plans, pointers, bases, declarations):
+def _apply(source, span, chosen, plans, pointers, bases, declarations, scaled):
     start, end = span
     body = source[start:end]
     edits = []
@@ -367,6 +479,13 @@ def _apply(source, span, chosen, plans, pointers, bases, declarations):
             else:
                 edits.append((*p[4], ''))
                 edits.append((*p[5], ''))
+    # a scaled index local whose only readers were removed row pointers goes with them
+    for local, (_, _, declared, assigned) in scaled.items():
+        gone = [declared, assigned] + [(a, b) for a, b, _ in edits]
+        mentions = [m.start() for m in re.finditer(rf'(?<![\w.>]){local}\b', _blank(body))]
+        if len(mentions) > 2 or (declared == assigned and len(mentions) > 1):
+            if all(any(a <= at < b for a, b in gone) for at in mentions):
+                edits += [(*declared, '')] + ([(*assigned, '')] if assigned != declared else [])
     edits.sort()
     for a, b in zip(edits, edits[1:]):
         if b[0] < a[1]:
@@ -379,11 +498,19 @@ def _apply(source, span, chosen, plans, pointers, bases, declarations):
     for name in chosen:
         declaration, typedefs, _, _ = plans[name]
         types += ''.join(typedefs)
-        if declaration:
+        if declaration is not None:
             old = declarations[name]
             head = head.replace(old, declaration, 1)
     line = head.rfind('\n') + 1
     return head[:line] + types + head[line:] + body + tail
+
+
+# `((s32) x << 16) >> 21`, the halves of a halfword's sign extension with the scale in the second: `(s16) x >> 5`
+_SHIFT_PAIR = re.compile(r'\(\(\(s32\) \(([^()]*(?:\[[^][]*\][^()]*)*)\)\) << 16\) >> (1[6-9]|2\d|3[01])\b')
+
+
+def _short_casts(source):
+    return _SHIFT_PAIR.sub(lambda m: f'((s16) {m.group(1)} >> {int(m.group(2)) - 16})', source)
 
 
 def variants(source, name):
@@ -400,10 +527,20 @@ def variants(source, name):
         if len(re.findall(rf'\b{root}\b', outside)) == 1 and re.search(rf'\b{root}\b', body):
             roots[root] = m.group(1)
             declarations[root] = source[m.start():m.end()].lstrip()
+    held = set()   # an integer or byte-pointer global holding a table's address
+    for m in re.finditer(rf'(?m)^[ \t]*extern\s+(?:s32|u32|int|{_BYTE}\s*\*)\s*\b([A-Za-z_]\w*)\s*;', clean[:start]):
+        root = m.group(1)
+        mentions = [hit.start() for hit in re.finditer(rf'\b{root}\b', body)]
+        cast = [hit.end() for hit in re.finditer(rf'\(\s*{_BYTE}\s*\*\s*\)\s*(?=\(?\s*{root}\b)', body)]
+        if mentions and len(re.findall(rf'\b{root}\b', outside)) == 1 and len(cast) == len(mentions):
+            roots[root] = 'u8'
+            held.add(root)
+            declarations[root] = source[m.start():m.end()].lstrip()
     if not roots:
         return []
     try:
-        found, pointers, bases, broken = _accesses(body, roots)
+        scaled = _scaled_locals(body)
+        found, pointers, bases, broken = _accesses(body, roots, scaled)
     except _Unknown:
         return []
     plans = {}
@@ -412,25 +549,29 @@ def variants(source, name):
         if not mine or root in broken:
             continue
         # a byte table read only at plain indices is already the array the game declared
-        if all(a.constant == 0 and a.via is None and set(a.terms.values()) <= {1} and _SIZES[a.kind] == 1 for a in mine):
+        if root not in held and all(a.constant == 0 and a.via is None and set(a.terms.values()) <= {1} and _SIZES[a.kind] == 1 for a in mine):
             continue
         try:
-            plans[root] = _plan(root, mine, pointers, bases)
+            plans[root] = _plan(root, mine, pointers, bases, root in held)
         except _Unknown:
             continue
     if not plans:
         return []
     choices = [list(plans)]
     if len(plans) > 1:
-        records = [n for n, p in plans.items() if p[3]]
+        records = [n for n, p in plans.items() if p[1]]
         if records and len(records) < len(plans):
             choices.append([n for n in plans if n not in records])
         choices += [[n] for n in plans]
     out = []
-    for chosen in choices:
-        child = _apply(source, span, chosen, plans, pointers, bases, declarations)
-        if child and child != source and (FAMILY, child) not in out:
-            out.append((FAMILY, child))
+    for position, chosen in enumerate(choices):
+        child = _apply(source, span, chosen, plans, pointers, bases, declarations, scaled)
+        if not child or child == source:
+            continue
+        # with every table written out, the halfword reads behind a shift pair are casts too
+        for text in ([_short_casts(child), child] if position == 0 else [child]):
+            if (FAMILY, text) not in out:
+                out.append((FAMILY, text))
     return out[:LIMIT]
 
 
