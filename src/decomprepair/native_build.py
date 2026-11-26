@@ -17,6 +17,7 @@ Without Cython or a C compiler nothing is built and nothing changes. `DECOMPREPA
                                        .py files; needs Cython and setuptools, run it with the file's path so the
                                        package's own imports are not needed)
 """
+import hashlib
 import importlib.util
 import os
 import sys
@@ -193,6 +194,9 @@ def compiled() -> list[Path]:
 def clean() -> None:
     for path in compiled():
         path.unlink()
+    for name in KERNELS + NATIVE:
+        for stamp in PACKAGE.glob(f"{name}.*.source"):
+            stamp.unlink()
 
 
 def build_one(name: str, package: Path | None = None) -> int:
@@ -201,9 +205,14 @@ def build_one(name: str, package: Path | None = None) -> int:
     from setuptools import Extension
     from setuptools.dist import Distribution
     package = Path(package or PACKAGE)
+    source = package / f"{name}.pyx"
+    if not source.is_file():
+        source = package / f"{name}.py"
+    # stamped on the built file so the library passes over it once the source changes (_native_guard.py)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix="decomprepair-native-") as work:
         try:
-            extensions = cythonize([Extension(f"decomprepair.{name}", [str(package / (f"{name}.pyx" if (package / f"{name}.pyx").is_file() else f"{name}.py"))])],
+            extensions = cythonize([Extension(f"decomprepair.{name}", [str(source)])],
                                    build_dir=work, quiet=True, compiler_directives={"language_level": "3"})
             dist = Distribution({"ext_modules": extensions, "package_dir": {"": "src"}, "packages": ["decomprepair"]})
             command = dist.get_command_obj("build_ext")
@@ -218,6 +227,7 @@ def build_one(name: str, package: Path | None = None) -> int:
         for path in Path(work).rglob("decomprepair/*"):
             if path.suffix in (".so", ".pyd"):
                 (package / path.name).write_bytes(path.read_bytes())
+                (package / (path.name + ".source")).write_text(digest + "\n", encoding="ascii")
                 count += 1
         return count
 

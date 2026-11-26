@@ -31,6 +31,10 @@ Every kernel follows the pattern the existing ones use:
 5. **It builds in seconds and is on by default.** `python src/decomprepair/native_build.py` builds `KERNELS`; the bundles
    of decompdecomp run it. Run the test suite with the kernel built and with it removed (`native_build.py --clean`).
 
+6. **Build with `native_build.py`, not `cythonize` by hand.** It stamps each built file with its source's SHA-256,
+   and the library passes over a build whose stamp does not match (`_native_guard.py`): an unstamped or outdated build
+   is ignored and the Python twin answers.
+
 ## What stays Python
 
 Typing helps only where the time is a loop over characters or numbers. Code whose time is regex matching, `str` methods,
