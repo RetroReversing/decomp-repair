@@ -12,6 +12,12 @@ A matrix-copy loop (KMC GCC 2.7.2, `-O2 -G0 -mips3 -mgp32 -mfp32`) sat at 100 wi
 `f32` in its place. `unknown32_float` covers `M2C_UNK32` fields; this covers a read written with an explicit word
 type: `*(s32 *)(addr)`, `*(u32 *)(addr)`, `M2C_FIELD(x, s32 *, off)`, with or without an explicit `(f32)` cast on it.
 
+The same read multiplied or divided inside an expression (`(a - b) * *(s32 *)(table + i * 4)`, a float table m2c typed
+as words) converts too. A 60-instruction N64 float state update (KMC GCC 2.7.2 `-O1 -G0 -mips3 -mgp32 -mfp32`): the
+m2c draft was 390 with the word read, 140 with `f32`, and `store_tail_into_arms` matched from there. Offered for a
+`*(word *)` operand of `*` or `/` only (a `+` there may be address arithmetic), and with `asm` only when the target
+converts no integer to float at all.
+
 Offered for a statement `local = READ;` (or `local = (f32) READ;`) whose local is a plain `f32`/`float` local of the
 function. Evidence from `asm` when given: the target has an `lwc1` and fewer `cvt.s.w` than the source has such
 conversions (otherwise the conversion is the game's and nothing is offered). One child per site and one with every site.
@@ -33,6 +39,38 @@ SITE = re.compile(r'(?m)(?:^|(?<=[;{}]))(?P<lead>\s*)(?P<name>[A-Za-z_]\w*)\s*=\
                   + READ + r'\s*;')
 
 
+OPERAND = re.compile(r'\*\s*\(\s*(?:\(\s*)?(?P<ptr>' + WORD + r')\s*\*\s*\)')
+LONE_CAST = re.compile(r'\(\s*' + WORD + r'\s*\*\s*\)$')
+
+
+def _read_end(clean, star):
+    """Just past the dereference that starts at the `*` at `star`: `*(T *)x`, `*(T *)(..)` or `*((T *) ..)`."""
+    opening = clean.index('(', star)
+    after = close(clean, opening)
+    if not after or not LONE_CAST.match(clean[opening:after]):
+        return after
+    rest = re.compile(r'\s*([A-Za-z_]\w*)?').match(clean, after)
+    following = re.compile(r'\s*\(').match(clean, after)
+    if following:
+        return close(clean, following.end() - 1)
+    return rest.end() if rest[1] else None
+
+
+def _operands(clean, opening, end):
+    """The word dereferences that are an operand of `*` or `/`."""
+    out = []
+    for m in OPERAND.finditer(clean, opening + 1, end):
+        before = clean[:m.start()].rstrip().rstrip('( \t\n')
+        if before[-1:] not in ('*', '/') or not re.search(r'[\w\])]\s*[*/]$', before):
+            before = None
+        stop = _read_end(clean, m.start())
+        after = stop and clean[stop:end].lstrip(') \t\n')
+        if before or (after and after[:1] in ('*', '/') and after[1:2] not in ('/', '*')
+                      and re.search(r'[(=,*/+\-]\s*$', clean[:m.start()])):
+            out.append(m)
+    return out
+
+
 def variants(source, name, asm=''):
     span = find(source, name)
     if not span:
@@ -50,17 +88,25 @@ def variants(source, name, asm=''):
             continue
         group = 'ptr' if m['ptr'] else 'fptr'
         sites.append((m, group))
+    if asm:
+        converted = len(re.findall(r'\bcvt\.s\.w\b', asm))
+        if not re.search(r'\blwc1\b', asm):
+            return []
+        if converted >= len(sites):
+            sites = []
+    else:
+        converted = 0
+    assigned = {m.start(group) for m, group in sites}
+    if not converted:
+        sites += [(m, 'ptr') for m in _operands(clean, opening, end) if m.start('ptr') not in assigned]
     if not sites:
         return []
-    if asm:
-        if not re.search(r'\blwc1\b', asm) or len(re.findall(r'\bcvt\.s\.w\b', asm)) >= len(sites):
-            return []
 
     def build(chosen):
         edits = []
         for m, group in chosen:
             edits.append((m.start(group), m.end(group), 'f32'))
-            if m['cast']:
+            if m.groupdict().get('cast'):
                 edits.append((m.start('cast'), m.end('cast'), ''))
         text = source
         for s, e, r in sorted(edits, reverse=True):

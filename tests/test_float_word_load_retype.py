@@ -38,3 +38,23 @@ def test_left_alone_when_the_target_converts_or_loads_no_float_or_the_target_is_
 
 def test_it_declares_itself():
     assert r.REPAIR['families'] == ('float_word_load_retype',)
+
+
+TABLE = '''void f(void *arg0, f32 arg1) {
+    M2C_FIELD(arg0, f32 *, 0x754) = (f32) ((M2C_FIELD(arg0, f32 *, 0x770) - arg1) * *(s32 *)((M2C_FIELD(arg0, u8 *, 0x74C) * 4) + M2C_FIELD(arg0, s32 *, 0x238)));
+}
+'''
+
+
+def test_a_word_read_multiplied_inside_an_expression():
+    (out,) = [t for _, t in r.variants(TABLE, 'f', ASM)]
+    assert '* *(f32 *)((M2C_FIELD(arg0, u8 *, 0x74C) * 4) + M2C_FIELD(arg0, s32 *, 0x238))' in out
+    spelled = TABLE.replace('*(s32 *)(', '(*((s32 *) (').replace('0x238)));', '0x238)))));')
+    assert r.variants(spelled, 'f', ASM)[0][1] == spelled.replace('*((s32 *) (', '*((f32 *) (')
+    first = 'void f(s32 p, f32 k) {\n    D = *(s32 *)(p + 4) * k;\n}\n'
+    assert r.variants(first, 'f', ASM)[0][1] == first.replace('s32 *)(', 'f32 *)(')
+
+
+def test_a_word_read_added_or_in_a_target_that_converts_is_left_alone():
+    assert r.variants(TABLE.replace('arg1) * *(s32', 'arg1) + *(s32'), 'f', ASM) == []
+    assert r.variants(TABLE, 'f', ASM + 'cvt.s.w    $f0, $f0\n') == []
