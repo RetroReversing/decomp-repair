@@ -79,3 +79,52 @@ def test_a_fenced_initialiser_goes_with_its_fence():
     fenced = SOURCE.replace("        y = 0x37;\n", "        do { y = 0x37; } while (0);\n")
     family, text = rg.variants(fenced, 'draw')[0]
     assert 'row = 0;' in text and 'do { row = 0; } while (0);' not in text and 'y = 0x37' not in text
+
+
+# A three-row options menu (SN64 GCC 2.8.1, 525 -> 205 with no do-while fence): the body is a switch on the counter whose
+# arms end in `break`; those leave the switch, not the loop, so every pass still steps y once.
+SWITCH = """\
+void menu(s32 sel)
+{
+    s32 i;
+    s32 y;
+    i = 0;
+    y = 0x50;
+    for (; i < 3; i++) {
+        put(0xA0, y);
+        switch (i) {
+        case 0:
+            if (sel == i) {
+                bar(0);
+            }
+            for (sel = 0; sel < 5; sel++) {
+                put(sel, y);
+            }
+            break;
+        default:
+            bar(2);
+            break;
+        }
+        y += 10;
+    }
+}
+"""
+
+
+def test_a_switch_whose_breaks_leave_only_the_switch():
+    texts = [t for f, t in rg.variants(SWITCH, 'menu') if f == rg.FAMILY]
+    assert texts
+    text = texts[0]
+    assert 'y = row * 10 + 0x50;' in text and 'y += 10;' not in text and 'row = 0;' in text
+    body = text[text.index('for (; i < 3; i++) {'):]
+    assert body.index('y = row * 10 + 0x50;') < body.index('put(0xA0, y);')
+    assert body.index('row++;') > body.index('switch (i)')
+
+
+def test_a_switch_arm_that_leaves_the_loop_still_declines():
+    for escape in ('return;', 'continue;', 'goto out;'):
+        source = SWITCH.replace('            bar(2);\n', f'            bar(2);\n            {escape}\n')
+        assert not [t for f, t in rg.variants(source, 'menu') if 'y = row' in t]
+    # a break outside any switch or inner loop leaves the loop itself
+    source = SWITCH.replace('        y += 10;\n', '        if (sel) {\n            break;\n        }\n        y += 10;\n')
+    assert not [t for f, t in rg.variants(source, 'menu') if 'y = row' in t]
