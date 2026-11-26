@@ -40,6 +40,14 @@ def variants(source, name, asm):
         pointee = m['type'] + (' *' * (len(m['stars']) - 1))
         if pointee in SIZES:
             pointers[m['name']] = SIZES[pointee]
+    # (a pointer parameter too: `func(arg1, arg0 + 4)` with `s32 *arg0` passed 0x10 bytes where the game passed 4,
+    # exact as `(s8 *) arg0 + 4`)
+    signature = re.search(r'\b' + re.escape(name) + r'\s*\(([^)]*)\)\s*{', clean[span[0]:span[1]])
+    for m in re.finditer(r'(?:^|,)\s*(?:const\s+)?(?P<type>[A-Za-z_]\w*)\s*(?P<stars>\*+)\s*(?P<name>' + IDENT + r')\s*(?=,|$)',
+                         signature[1] if signature else ''):
+        pointee = m['type'] + (' *' * (len(m['stars']) - 1))
+        if pointee in SIZES and m['name'] not in pointers:
+            pointers[m['name']] = SIZES[pointee]
     # (a global pointer the function steps, `extern u16 *D;` ... `D += 0xC;`: an N64 list walk stepped 0xC bytes where
     # the draft stepped 0x18; exact as `D += 6;`)
     outside = clean[:span[0]] + clean[span[1]:]
@@ -64,7 +72,7 @@ def variants(source, name, asm):
             result.append((FAMILY, source[:at] + '(s8 *) ' + source[at:]))
     # `*((i * 4) + &D)` on a symbol of a 4-byte type scales the index again: an N64 function stored at `i * 16`
     # where the game stored at `i * 4`, exact as `(&D)[i]`
-    for use in re.finditer(r'\*\s*\(\s*\(\s*(?P<i>' + IDENT + r')\s*\*\s*(?P<k>0x[0-9a-fA-F]+|\d+)\s*\)\s*\+\s*&\s*(?P<d>'
+    for use in re.finditer(r'\*\s*\(\s*\(\s*(?P<i>' + IDENT + r'(?:\([^()]*\))?)\s*\*\s*(?P<k>0x[0-9a-fA-F]+|\d+)\s*\)\s*\+\s*&\s*(?P<d>'
                            + IDENT + r')\s*\)', body):
         declared = re.search(r'(?m)^[ \t]*extern\s+(?P<t>[A-Za-z_]\w*)\s+' + use['d'] + r'\s*;', outside)
         size = SIZES.get(declared['t']) if declared else None
@@ -73,4 +81,4 @@ def variants(source, name, asm):
             continue
         index = use['i'] if k == size else f"{use['i']} * {k // size}"
         result.append((FAMILY, source[:opening + use.start()] + f"(&{use['d']})[{index}]" + source[opening + use.end():]))
-    return result[:4]
+    return result[:6]
