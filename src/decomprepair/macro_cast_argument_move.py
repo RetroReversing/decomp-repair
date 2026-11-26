@@ -31,7 +31,7 @@ _DEFINE = re.compile(rf'^[ \t]*#[ \t]*define[ \t]+(?P<name>{_ID})\((?P<params>[^
 _CAST = re.compile(rf'^\s*\(\s*(?P<t>[su](?:8|16))\s*\)\s*(?P<x>{_ID})\s*$')
 
 
-def _split(text):
+def _python_split(text):
     """The top-level comma-separated pieces of an argument list."""
     out, depth, start = [], 0, 0
     for i, c in enumerate(text):
@@ -44,6 +44,21 @@ def _split(text):
             start = i + 1
     out.append((start, len(text)))
     return out
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(text):
+        result, start = [], 0
+        for at in _scan.top_offsets(text, ',', 3):
+            result.append((start, at))
+            start = at + 1
+        result.append((start, len(text)))
+        return result
 
 
 def _calls(clean, name, blanked_defines):

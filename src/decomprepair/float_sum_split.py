@@ -31,7 +31,7 @@ def _norm(text):
     return re.sub(r'\s+', '', text)
 
 
-def _top_level(text, ch):
+def _python_top_level(text, ch):
     """Indexes of `ch` at bracket depth 0 (a `==`, `+=`, `++` is not one)."""
     depth, out = 0, []
     for i, c in enumerate(text):
@@ -47,6 +47,27 @@ def _top_level(text, ch):
                 continue
             out.append(i)
     return out
+
+
+_top_level = _python_top_level
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_level(text, ch):
+        found = _scan.top_offsets(text, ch, 3)
+        if found is NotImplemented:
+            return _python_top_level(text, ch)
+        out = []
+        for i in found:
+            before, after = text[i - 1:i], text[i + 1:i + 2]
+            if ch == '=' and (before in '=!<>+-*/%&|^' or after == '='):
+                continue
+            if ch == '+' and (before == '+' or after in '+='):
+                continue
+            out.append(i)
+        return out
 
 
 def _python_strip_parens(text):

@@ -26,7 +26,7 @@ _AFTER = re.compile(r'\s*(?:==|!=|<=|>=|<|>|&(?!&)|\|(?!\|))')
 _HALF = re.compile(r'\s*([su]16)\s*\*\s*')
 
 
-def _split(text):
+def _python_split(text):
     pieces, depth, start = [], 0, 0
     for index, char in enumerate(text):
         depth += (char in '([') - (char in ')]')
@@ -35,6 +35,16 @@ def _split(text):
             start = index + 1
     pieces.append(text[start:])
     return pieces
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(text):
+        return _scan.top_pieces(text, ',', 2)
 
 
 def variants(source, name):

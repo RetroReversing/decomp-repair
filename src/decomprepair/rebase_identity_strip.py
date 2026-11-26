@@ -52,7 +52,7 @@ def _helpers(text):
     return bases, rebases
 
 
-def _split(text):
+def _python_split(text):
     """The top-level comma-separated arguments of a call's parenthesised text."""
     parts, depth, start = [], 0, 0
     for i, ch in enumerate(text):
@@ -62,6 +62,16 @@ def _split(text):
             start = i + 1
     parts.append(text[start:])
     return parts
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(text):
+        return _scan.top_pieces(text, ',', 1)
 
 
 def variants(source, name, header=''):

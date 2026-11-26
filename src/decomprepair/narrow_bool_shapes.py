@@ -31,7 +31,7 @@ HELPER = re.compile(rf'(?:static\s+inline|inline\s+static)\s+(?P<ret>[\w\s]*?\w[
                     rf'\((?P<params>[^()]*)\)\s*{{\s*return\s+(?P<expression>[^;{{}}]+);\s*}}')
 
 
-def _split(text):
+def _python_split(text):
     """Top-level comma-separated pieces of an argument list."""
     pieces, depth, start = [], 0, 0
     for index, char in enumerate(text):
@@ -44,6 +44,16 @@ def _split(text):
             start = index + 1
     pieces.append(text[start:])
     return [piece.strip() for piece in pieces]
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(text):
+        return [piece.strip() for piece in _scan.top_pieces(text, ',', 2)]
 
 
 def _params(text):

@@ -37,7 +37,7 @@ def _fresh(source, stem):
     return f'{stem}{n}'
 
 
-def _top_level_semicolons(text):
+def _python_top_level_semicolons(text):
     parts, depth, last = [], 0, 0
     for i, ch in enumerate(text):
         if ch in '([{':
@@ -49,6 +49,16 @@ def _top_level_semicolons(text):
             last = i + 1
     parts.append(text[last:])
     return parts
+
+
+_top_level_semicolons = _python_top_level_semicolons
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_level_semicolons(text):
+        return _scan.top_pieces(text, ';', 3)
 
 
 def _breaks(body):

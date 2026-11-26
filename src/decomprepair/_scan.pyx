@@ -1712,3 +1712,48 @@ def statement_start_in_block(str text, Py_ssize_t block, Py_ssize_t first):
     if brace:
         return -1
     return start
+
+
+# Splitting at a separator that is outside every bracket: many families' own `_split`. `level` says which brackets count:
+# 1 parentheses, 2 also `[ ]`, 3 also `{ }`. A bracket is never the separator (the plain scans test the brackets first).
+
+def top_offsets(str text, str separator, int level):
+    """The offsets of each `separator` character of `text` at bracket depth 0."""
+    cdef Py_ssize_t i
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, sep
+    cdef list found = []
+    if len(separator) != 1:
+        return NotImplemented
+    sep = separator[0]
+    for i in range(len(text)):
+        c = text[i]
+        if c == u'(' or (level >= 2 and c == u'[') or (level >= 3 and c == u'{'):
+            depth += 1
+        elif c == u')' or (level >= 2 and c == u']') or (level >= 3 and c == u'}'):
+            depth -= 1
+        elif c == sep and depth == 0:
+            found.append(i)
+    return found
+
+
+def top_pieces(str text, str separator, int level):
+    """`text` cut at each `separator` character at bracket depth 0 (see top_offsets), the pieces as they are."""
+    cdef Py_ssize_t i, start = 0
+    cdef Py_ssize_t depth = 0
+    cdef Py_UCS4 c, sep
+    cdef list pieces = []
+    if len(separator) != 1:
+        return NotImplemented
+    sep = separator[0]
+    for i in range(len(text)):
+        c = text[i]
+        if c == u'(' or (level >= 2 and c == u'[') or (level >= 3 and c == u'{'):
+            depth += 1
+        elif c == u')' or (level >= 2 and c == u']') or (level >= 3 and c == u'}'):
+            depth -= 1
+        elif c == sep and depth == 0:
+            pieces.append(text[start:i])
+            start = i + 1
+    pieces.append(text[start:])
+    return pieces

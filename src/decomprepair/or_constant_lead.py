@@ -28,7 +28,7 @@ _CONSTANT = re.compile(r'(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*')
 MAX_CHILDREN = 6
 
 
-def _split_or(text):
+def _python_split_or(text):
     """The terms of a top-level `|` chain in `text` (not `||`), or None when it has no top-level `|`."""
     terms, depth, start = [], 0, 0
     for pos, char in enumerate(text):
@@ -43,6 +43,24 @@ def _split_or(text):
         return None
     terms.append(text[start:].strip())
     return terms
+
+
+_split_or = _python_split_or
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split_or(text):
+        terms, start = [], 0
+        for at in _scan.top_offsets(text, '|', 2):
+            if text[at - 1:at] != '|' and text[at + 1:at + 2] != '|':
+                terms.append(text[start:at].strip())
+                start = at + 1
+        if not terms:
+            return None
+        terms.append(text[start:].strip())
+        return terms
 
 
 def _flatten(text):

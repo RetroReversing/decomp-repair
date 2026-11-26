@@ -24,7 +24,7 @@ CALL = re.compile(r'(?m)^([ \t]*)(?:([A-Za-z_]\w*)\s*=\s*)?([A-Za-z_]\w*)\s*\(')
 PREVIOUS = re.compile(r'(?m)^([ \t]*)([A-Za-z_]\w*)\s*=\s*([^;{}]+);[ \t]*\n[ \t]*$')
 
 
-def _split(text):
+def _python_split(text):
     parts, depth, last = [], 0, 0
     for at, char in enumerate(text):
         depth += (char == '(') - (char == ')')
@@ -33,6 +33,16 @@ def _split(text):
             last = at + 1
     parts.append(text[last:])
     return parts
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(text):
+        return _scan.top_pieces(text, ',', 1)
 
 
 def variants(source, name):

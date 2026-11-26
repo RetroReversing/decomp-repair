@@ -640,3 +640,47 @@ def test_the_statement_batch_of_own_scans_match_their_plain_loops_on_random_text
             where = rng.randint(-3, len(text) + 2)
             for args in build(text, where, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+def _whole(t, a, r):
+    return [(t,)]
+
+
+SPLITS_BATCH = [
+    ("arm_call_result_inline", "_arguments", _whole),
+    ("paired_call_argument_inline_repairs", "_arguments", _whole),
+    ("widened_field_read_repairs", "_split", _whole),
+    ("counter_offset_local", "_split", _whole),
+    ("guarded_cursor_do_loop", "_split", _whole),
+    ("switch_arm_tail_calls", "_split", _whole),
+    ("call_conversion_stage", "_split", _whole),
+    ("rebase_identity_strip", "_split", _whole),
+    ("call_index_staging_repairs", "split_sum", _whole),
+    ("comma_gate_plain", "_top_comma", _whole),
+    ("integer_repair_support", "split_args", _whole),
+    ("macro_cast_argument_move", "_split", _whole),
+    ("narrow_bool_shapes", "_split", _whole),
+    ("loop_goto_form_repairs", "_top_level_semicolons", _whole),
+    ("helper_call_expand", "_split", _whole),
+    ("inline_param_width", "_arguments", _whole),
+    ("condition_value_reuse", "_split_and", _whole),
+    ("literal_mask_conjunction", "_split", _whole),
+    ("or_constant_lead", "_split_or", _whole),
+    ("float_sum_split", "_top_level", lambda t, a, r: [(t, ch) for ch in (",", "+", "=", "|", "(", "", ",,")]),
+]
+
+
+def test_the_top_level_splitters_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(888)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", " ", "\n", ";", ",", "+", "++", "+=", "|", "||", "|=", "&", "&&", "=", "==", "!=", "é", "𝄞"]
+    for module_name, function, build in SPLITS_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(3000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 24)))
+            for args in build(text, 0, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)

@@ -29,7 +29,7 @@ _SWITCH = re.compile(r'\bswitch\s*\(')
 _LABEL = re.compile(r'\b(?:case\b[^:;{}?]*|default)\s*:')
 
 
-def _split(text):
+def _python_split(text):
     parts, depth, start = [], 0, 0
     for at, char in enumerate(text):
         depth += (char in '([{') - (char in ')]}')
@@ -38,6 +38,16 @@ def _split(text):
             start = at + 1
     parts.append(text[start:].strip())
     return parts
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(text):
+        return [piece.strip() for piece in _scan.top_pieces(text, ',', 3)]
 
 
 def _python_top_level(text, start):

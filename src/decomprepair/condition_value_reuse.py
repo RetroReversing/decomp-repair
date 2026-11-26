@@ -48,7 +48,7 @@ if _scan is not None:
         return _python_close(clean, start, left, right) if found is NotImplemented else found
 
 
-def _split_and(condition):
+def _python_split_and(condition):
     """(left, right) when the condition is exactly `A && B` at the top level, else None."""
     depth, cuts = 0, []
     for at, ch in enumerate(condition):
@@ -59,6 +59,19 @@ def _split_and(condition):
     if len(cuts) != 1:
         return None
     return condition[:cuts[0]], condition[cuts[0] + 2:]
+
+
+_split_and = _python_split_and
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split_and(condition):
+        cuts = [at for at in _scan.top_offsets(condition, '&', 2) if condition[at:at + 2] == '&&']
+        if len(cuts) != 1:
+            return None
+        return condition[:cuts[0]], condition[cuts[0] + 2:]
 
 
 def _loop_around(clean, opening, at):

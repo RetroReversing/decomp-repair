@@ -46,7 +46,7 @@ def _plain(expression):
     return bool(re.fullmatch(r'[\w\s()+\-*/%&|^~<>!,.\[\]]+', expression))
 
 
-def _arguments(text):
+def _python_arguments(text):
     """Top-level comma-separated pieces of a call's argument text."""
     pieces, depth, start = [], 0, 0
     for index, char in enumerate(text):
@@ -56,6 +56,16 @@ def _arguments(text):
             start = index + 1
     pieces.append(text[start:])
     return pieces
+
+
+_arguments = _python_arguments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arguments(text):
+        return _scan.top_pieces(text, ',', 2)
 
 
 def _simple(argument):
