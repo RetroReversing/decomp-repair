@@ -13,11 +13,18 @@ Without Cython or a C compiler nothing is built and nothing changes. `DECOMPREPA
     native_build.py --all              also compile every module in NATIVE unchanged (about an hour, ~3% faster)
     native_build.py --clean            remove the compiled modules
     native_build.py --only a,b         build just those modules of KERNELS and NATIVE
+    native_build.py --missing          build only those with no build of the current source (with --all: of every
+                                       module in the lists), leaving the others as they are
+    native_build.py --list-missing     print those names, one per line (with --all: including NATIVE)
+
+A built file is moved into place whole, so a process that is running, or starting, never reads half of one and one
+that has the old file loaded keeps it.
     native_build.py --package DIR      work on the decomprepair folder DIR (an installed copy: it must hold the
                                        .py files; needs Cython and setuptools, run it with the file's path so the
                                        package's own imports are not needed)
 """
 import hashlib
+import importlib.machinery
 import importlib.util
 import os
 import sys
@@ -199,15 +206,54 @@ def clean() -> None:
             stamp.unlink()
 
 
+def source_of(name: str, package: Path) -> Path:
+    typed = package / f"{name}.pyx"
+    return typed if typed.is_file() else package / f"{name}.py"
+
+
+def current(name: str, package: Path | None = None) -> bool:
+    """True when this Python would import a build of `name` made from the source it has now."""
+    package = Path(package or PACKAGE)
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        built = package / (name + suffix)
+        if built.is_file():
+            try:
+                stamp = (package / (built.name + ".source")).read_text(encoding="ascii").strip()
+                return stamp == hashlib.sha256(source_of(name, package).read_bytes()).hexdigest()
+            except (OSError, UnicodeDecodeError):
+                return False
+    return False
+
+
+def missing(package: Path | None = None, everything: bool = False) -> list[str]:
+    """The kernels (with `everything`, the plain modules too) that have a source here and no current build."""
+    package = Path(package or PACKAGE)
+    wanted = KERNELS + NATIVE if everything else KERNELS
+    return [name for name in wanted if source_of(name, package).is_file() and not current(name, package)]
+
+
+def install_built(built: Path, package: Path, digest: str) -> None:
+    """Move one built file and its stamp into `package`. Never written in place: a running process may have the old
+    file mapped (macOS kills it when the bytes change under it) and a starting one must not load half of the new one."""
+    destination = package / built.name
+    stamp = package / (built.name + ".source")
+    arriving = package / f"{built.name}.{os.getpid()}.tmp"  # no import suffix at its end
+    try:
+        arriving.write_bytes(built.read_bytes())
+        stamp.unlink(missing_ok=True)  # an unstamped build is passed over, never trusted
+        os.replace(arriving, destination)
+        stamp.write_text(digest + "\n", encoding="ascii")
+    finally:
+        arriving.unlink(missing_ok=True)
+
+
 def build_one(name: str, package: Path | None = None) -> int:
     """Compile one module; a module Cython can't translate stays interpreted without blocking the others."""
     from Cython.Build import cythonize
     from setuptools import Extension
     from setuptools.dist import Distribution
     package = Path(package or PACKAGE)
-    source = package / f"{name}.pyx"
-    if not source.is_file():
-        source = package / f"{name}.py"
+    source = source_of(name, package)
     # stamped on the built file so the library passes over it once the source changes (_native_guard.py)
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix="decomprepair-native-") as work:
@@ -226,8 +272,11 @@ def build_one(name: str, package: Path | None = None) -> int:
         count = 0
         for path in Path(work).rglob("decomprepair/*"):
             if path.suffix in (".so", ".pyd"):
-                (package / path.name).write_bytes(path.read_bytes())
-                (package / (path.name + ".source")).write_text(digest + "\n", encoding="ascii")
+                try:
+                    install_built(path, package, digest)
+                except OSError as error:  # Windows holds a loaded .pyd: the next build after it exits succeeds
+                    print(f"{name}: not installed, stays as it was ({str(error)[:200]})")
+                    continue
                 count += 1
         return count
 
@@ -239,9 +288,19 @@ def main(argv: list[str]) -> int:
     only = argv[argv.index("--only") + 1].split(",") if "--only" in argv else None  # a few modules, to try it
     wanted = KERNELS + NATIVE if "--all" in argv or only else KERNELS
     names = [name for name in wanted if only is None or name in only]
-    clean()
-    if "--clean" in argv:
+    if "--list-missing" in argv:
+        for name in missing(PACKAGE, everything="--all" in argv):
+            print(name)
         return 0
+    if "--clean" in argv:
+        clean()
+        return 0
+    if "--missing" in argv:
+        names = [name for name in names if source_of(name, PACKAGE).is_file() and not current(name, PACKAGE)]
+        if not names:
+            return 0
+    else:
+        clean()
     if any(importlib.util.find_spec(module) is None for module in ("Cython", "setuptools")):
         print("Cython or setuptools is unavailable: the library stays interpreted.")
         return 0
@@ -250,8 +309,7 @@ def main(argv: list[str]) -> int:
         with ProcessPoolExecutor(jobs) as pool:
             built = sum(pool.map(build_one, names, [PACKAGE] * len(names)))
     except BrokenProcessPool:  # a compiler worker was killed (memory pressure): finish what is missing one at a time
-        built = len(compiled()) + sum(build_one(name, PACKAGE) for name in names if not list(PACKAGE.glob(f"{name}.*.so"))
-                                      and not list(PACKAGE.glob(f"{name}.*.pyd")))
+        built = sum(current(name, PACKAGE) or build_one(name, PACKAGE) for name in names)
     print(f"Built {built} native modules into {PACKAGE}.")
     return 0
 

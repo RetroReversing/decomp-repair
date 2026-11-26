@@ -72,3 +72,57 @@ def test_native_build_stamps_what_it_builds(tmp_path):
     with open(tmp_path / "_scan.pyx", "a", encoding="utf-8") as source:
         source.write("\n# changed\n")
     assert guard.stale_builds(tmp_path) == {"_scan": None}
+
+
+def _script():
+    spec = importlib.util.spec_from_file_location("native_build_under_test", PACKAGE / "native_build.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_missing_lists_what_has_no_build_of_its_source(tmp_path):
+    build = _script()
+    kernel, plain = build.KERNELS[0], build.NATIVE[0]
+    (tmp_path / f"{kernel}.pyx").write_text("def f(): pass\n")
+    (tmp_path / f"{plain}.py").write_text("x = 1\n")
+    assert build.missing(tmp_path) == [kernel]  # modules with no source here are not asked for
+    assert build.missing(tmp_path, everything=True) == [kernel, plain]
+    _build(tmp_path, kernel, f"{kernel}.pyx")
+    _build(tmp_path, plain, f"{plain}.py")
+    assert build.missing(tmp_path, everything=True) == []
+    (tmp_path / f"{plain}.py").write_text("x = 2\n")
+    assert build.missing(tmp_path, everything=True) == [plain]
+
+
+def test_a_new_build_replaces_the_old_file_instead_of_writing_into_it(tmp_path):
+    build = _script()
+    package, work = tmp_path / "package", tmp_path / "work"
+    package.mkdir()
+    work.mkdir()
+    old = _build(package, "mod")
+    (work / old.name).write_bytes(b"the new build")
+    with old.open("rb") as loaded:  # what a running process has mapped
+        build.install_built(work / old.name, package, "abc")
+        assert loaded.read() == b"not a shared library"
+    assert old.read_bytes() == b"the new build"
+    assert (package / (old.name + guard.STAMP)).read_text() == "abc\n"
+    assert sorted(path.name for path in package.iterdir()) == sorted([old.name, old.name + guard.STAMP])
+
+
+def test_missing_builds_once_and_then_has_nothing_to_do(tmp_path):
+    if any(importlib.util.find_spec(name) is None for name in ("Cython", "setuptools")):
+        pytest.skip("Cython is not installed")
+    for name in ("native_build.py", "_scan.pyx"):
+        shutil.copy(PACKAGE / name, tmp_path / name)
+
+    def run(*arguments):
+        return subprocess.run([sys.executable, str(tmp_path / "native_build.py"), "--package", str(tmp_path),
+                               *arguments], capture_output=True, text=True, check=True).stdout
+
+    if "Built 1 native" not in run("--missing"):
+        pytest.skip("no C compiler here")
+    built = next(path for path in tmp_path.iterdir() if path.suffix in (".so", ".pyd"))
+    was = built.stat().st_mtime_ns
+    assert run("--missing") == "" and run("--list-missing") == ""
+    assert built.stat().st_mtime_ns == was
