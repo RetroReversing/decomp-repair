@@ -25,7 +25,7 @@ from .pattern_repairs import close
 FAMILY = 'store_guard_scope'
 FAMILIES = (FAMILY,)
 LIMIT = 12
-def _loop_header(text):
+def _python_loop_header(text):
     """True when `text` (what precedes a `{` or a statement) ends with `for (...)`, `while (...)` or `do`."""
     text = text.rstrip()
     if re.search(r'\bdo$', text):
@@ -38,6 +38,24 @@ def _loop_header(text):
         if depth == 0:
             return re.search(r'\b(?:for|while)\s*$', text[:position]) is not None
     return False
+
+
+_loop_header = _python_loop_header
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _loop_header(text):
+        text = text.rstrip()
+        if re.search(r'\bdo$', text):
+            return True
+        if not text.endswith(')'):
+            return False
+        position = _scan.open_every(text, len(text) - 1, '(', ')', None)
+        if position is None:
+            return False
+        return re.search(r'\b(?:for|while)\s*$', text[:position]) is not None
 
 
 def _inside_loop(clean, position, low):

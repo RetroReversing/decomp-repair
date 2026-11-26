@@ -132,7 +132,7 @@ def _pair(loop):
     return None
 
 
-def _blocks(clean):
+def _python_blocks(clean):
     """(open, close) offsets of every brace block of `clean` that is not nested in another, in order."""
     out, depth, start = [], 0, 0
     for index, char in enumerate(clean):
@@ -145,6 +145,16 @@ def _blocks(clean):
             if depth == 0:
                 out.append((start, index))
     return out
+
+
+_blocks = _python_blocks
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _blocks(clean):
+        return _scan.brace_groups(clean, 0, len(clean))
 
 
 def _sink(text, clean, base):

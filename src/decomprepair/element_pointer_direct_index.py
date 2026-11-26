@@ -35,7 +35,7 @@ NAMES = re.compile(rf'(?<![\w.]){IDENT}')
 KEYWORDS = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'do', 'else'}
 
 
-def _block_end(clean, position, lo, hi):
+def _python_block_end(clean, position, lo, hi):
     depth = 0
     for i in range(position, hi):
         c = clean[i]
@@ -46,6 +46,17 @@ def _block_end(clean, position, lo, hi):
                 return i
             depth -= 1
     return None
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, position, lo, hi):
+        found = _scan.enclosing_end(clean, position, hi, None)
+        return _python_block_end(clean, position, lo, hi) if found is NotImplemented else found
 
 
 def _modifies(text, name):

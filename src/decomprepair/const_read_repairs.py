@@ -60,7 +60,7 @@ def _written(body, var):
     return bool(re.search(rf'\w\s*\([^;()]*?(?<![\w.]){v}(?![\w\[])\s*[,)]', calls))
 
 
-def _reads(body):
+def _python_reads(body):
     """M2C_FIELD reads made const: every M2C_FIELD that isn't the target of an assignment."""
     out, last = [], 0
     for m in FIELD.finditer(body):
@@ -76,6 +76,27 @@ def _reads(body):
         out.append(body[last:m.start(2)] + 'const ' + m[2])
         last = m.end(2)
     return ''.join(out) + body[last:] if out else body
+
+
+_reads = _python_reads
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _reads(body):
+        out, last = [], 0
+        for m in FIELD.finditer(body):
+            i = _scan.close_every(body, m.start() + len('M2C_FIELD'), '(', ')', False, None)
+            if i is NotImplemented:
+                return _python_reads(body)
+            if i is None:
+                i = len(body)
+            if re.match(r'\s*(?:[-+*/|&^]|<<|>>)?=(?!=)', body[i + 1:]):
+                continue
+            out.append(body[last:m.start(2)] + 'const ' + m[2])
+            last = m.end(2)
+        return ''.join(out) + body[last:] if out else body
 
 
 def variants(source, name, asm=''):

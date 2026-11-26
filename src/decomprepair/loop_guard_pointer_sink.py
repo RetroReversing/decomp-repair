@@ -40,7 +40,7 @@ SET = re.compile(r'(?m)^([ \t]*)([A-Za-z_]\w*)\s*=\s*(&\s*[A-Za-z_]\w*|[A-Za-z_]
 FOR = re.compile(r'(?m)^([ \t]*)for\s*\(')
 
 
-def _parts(header):
+def _python_parts(header):
     """INIT, COND, INCR of a `for` header's parenthesised text, or None."""
     depth, cuts = 0, []
     for index, char in enumerate(header):
@@ -54,6 +54,20 @@ def _parts(header):
         return None
     parts = header[:cuts[0]].strip(), header[cuts[0] + 1:cuts[1]].strip(), header[cuts[1] + 1:].strip()
     return parts if all(parts) else None
+
+
+_parts = _python_parts
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _parts(header):
+        cuts = _scan.top_offsets(header, ';', 2)
+        if len(cuts) != 2:
+            return None
+        parts = header[:cuts[0]].strip(), header[cuts[0] + 1:cuts[1]].strip(), header[cuts[1] + 1:].strip()
+        return parts if all(parts) else None
 
 
 def _indent(text, by='    '):

@@ -14,7 +14,7 @@ FAMILIES = (FAMILY,)
 _CONTROL = re.compile(r'\s*(?:if|else|do|while|for|switch|case|default|goto|return|break|continue)\b|\s*\w+\s*:(?!:)')
 
 
-def _statements(clean, position, end, limit):
+def _python_statements(clean, position, end, limit):
     """Ends of the plain statements that follow `position`, up to the first control statement."""
     stops = []
     while len(stops) < limit:
@@ -31,6 +31,27 @@ def _statements(clean, position, end, limit):
         stops.append(stop)
         position = stop
     return stops
+
+
+_statements = _python_statements
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _statements(clean, position, end, limit):
+        stops = []
+        while len(stops) < limit:
+            if _CONTROL.match(clean, position) or clean[position:end].strip().startswith(('{', '}')):
+                break
+            stop = _scan.statement_end(clean, position, end, '([{', ')]}', True, False, None)
+            if stop is NotImplemented:
+                return _python_statements(clean, position, end, limit)
+            if stop is None:
+                break
+            stops.append(stop)
+            position = stop
+        return stops
 
 
 def variants(source, name, limit=6):

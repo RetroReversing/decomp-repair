@@ -49,13 +49,24 @@ def _mention(name):
     return re.compile(rf'(?<![\w.>]){re.escape(name)}\b')
 
 
-def _block_end(clean, opening):
+def _python_block_end(clean, opening):
     depth = 0
     for at in range(opening, len(clean)):
         depth += (clean[at] == '{') - (clean[at] == '}')
         if depth == 0:
             return at
     return -1
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, opening):
+        found = _scan.close_every(clean, opening, '{', '}', False, -1)
+        return _python_block_end(clean, opening) if found is NotImplemented else found
 
 
 def _in_loop(clean, start, at):
@@ -85,7 +96,7 @@ def _loop_blocks(clean, start, end):
     return out
 
 
-def _wrapped(text):
+def _python_wrapped(text):
     """Whether text is one parenthesised expression, `(a * b)`."""
     if not (text.startswith('(') and text.endswith(')')):
         return False
@@ -95,6 +106,19 @@ def _wrapped(text):
         if depth == 0 and at < len(text) - 1:
             return False
     return True
+
+
+_wrapped = _python_wrapped
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _wrapped(text):
+        if not (text.startswith('(') and text.endswith(')')):
+            return False
+        found = _scan.close_every(text, 0, '(', ')', False, None)
+        return not (found is not None and found < len(text) - 1)
 
 
 def _inline_scratch(source, clean, opening, close, counter):

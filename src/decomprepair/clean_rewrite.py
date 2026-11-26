@@ -362,7 +362,7 @@ HELPER = re.compile(r'(?:(?:inline|static|__inline__|__inline)\s+)+(?P<ret>[\w\s
 PURE = re.compile(r'\s*(?:' + IDENT + r'|0[xX][0-9a-fA-F]+|\d+[uUlL]*|&\s*' + IDENT + r')\s*$')
 
 
-def _split_args(text):
+def _python_split_args(text):
     out, depth, last = [], 0, 0
     for i, char in enumerate(text):
         if char in '([':
@@ -375,6 +375,18 @@ def _split_args(text):
             last += 1
     out.append(text[last:])
     return [arg.strip() for arg in out] if text.strip() else []
+
+
+_split_args = _python_split_args
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split_args(text):
+        if not text.strip():
+            return []
+        return [arg.strip() for arg in _scan.top_pieces(text, ',', 2)]
 
 
 def _inline_helpers(source, name):

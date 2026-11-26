@@ -80,7 +80,7 @@ def _store(text, records):
 
 # ---- expressions ------------------------------------------------------------------------------------------------
 
-def _wrapped(e):
+def _python_wrapped(e):
     """True when e's first `(` closes at its very end."""
     if not e.startswith('('):
         return False
@@ -91,6 +91,19 @@ def _wrapped(e):
         if depth == 0:
             return i == len(e) - 1
     return False
+
+
+_wrapped = _python_wrapped
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _wrapped(e):
+        if not e.startswith('('):
+            return False
+        found = _scan.close_every(e, 0, '(', ')', False, None)
+        return found is not None and found == len(e) - 1
 
 
 def _primary(e):

@@ -727,3 +727,59 @@ def test_the_second_batch_of_splitters_match_their_plain_loops_on_random_text():
                 text = "(" + text + ")"
             for args in build(text, 0, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+def _position_span(t, a, r):
+    return [(t, (r.randint(0, len(t)), r.randint(0, len(t) + 1)), name) for name in ("a", "if", "C::a")]
+
+
+def _statements_args(t, a, r):
+    return [(t, a, r.randint(-2, len(t) + 2), r.randint(0, 4))]
+
+
+EXISTING_SCANS_BATCH = [
+    ("gbi_macro_commands", "_wrapped", _whole),
+    ("global_store_counter_stage", "_wrapped", _whole),
+    ("global_store_counter_stage", "_block_end", lambda t, a, r: [(t, a)]),
+    ("element_pointer_direct_index", "_block_end", _four),
+    ("macro_join_tail_scope", "_block_end", _four),
+    ("nested_guard_repairs", "_operands", _whole),
+    ("affine_operand_repairs", "differences", _whole),
+    ("byte_mask_halfword_local", "_mask", _whole),
+    ("byte_mask_halfword_local", "_group", _whole),
+    ("chained_assignment_split", "_assignments", _whole),
+    ("loop_guard_pointer_sink", "_parts", _whole),
+    ("increment_old_value_copy", "_assignment", _whole),
+    ("increment_old_value_copy", "_closes_at_end", _whole),
+    ("const_read_repairs", "_reads", _whole),
+    ("store_guard_scope", "_loop_header", _whole),
+    ("csource", "opens_body", _position_span),
+    ("pointer_pair_loop", "_blocks", _whole),
+    ("clean_rewrite", "_split_args", _whole),
+    ("ternary_call_arms", "_split_args", _three),
+    ("arm_variable_share", "_arms", lambda t, a, r: [(t, _a_part(t, r))]),
+    ("string_walk_index", "_unary", _whole),
+    ("init_placement_repairs", "_statements", _statements_args),
+    ("loop_weight_repairs", "_plain_statement_ends", _statements_args),
+]
+
+
+def test_the_batch_on_existing_scans_matches_the_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(1234)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", "x = 1;", "if", "do", "do ", "for ", "while ", "return", " else ", "} else {", " ", "\n", ";", ",",
+              "+", "-", "->", "&", "&&", "|", "||", "=", "==", "+=", "*", "0xFF", "(s16)", "é", "(a)",
+              "M2C_FIELD(a, s32 *, 4)", "M2C_FIELD(", " = ", "+= "]
+    for module_name, function, build in EXISTING_SCANS_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(2500):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 18)))
+            if rng.random() < 0.25:
+                text = "(" + text + ")"
+            where = rng.randint(-3, len(text) + 2)
+            for args in build(text, where, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)

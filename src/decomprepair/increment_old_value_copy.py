@@ -73,7 +73,7 @@ if _scan is not None:
         return _python_segments(clean, start, end) if found is NotImplemented else found
 
 
-def _assignment(text):
+def _python_assignment(text):
     """(left, right) of the first top-level `=` that is an assignment, or None."""
     depth = 0
     for at, char in enumerate(text):
@@ -86,6 +86,20 @@ def _assignment(text):
             if after != '=' and before not in '=<>!+-*/%&|^':
                 return text[:at].strip(), text[at + 1:].strip()
     return None
+
+
+_assignment = _python_assignment
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _assignment(text):
+        for at in _scan.top_offsets(text, '=', 2):
+            before, after = text[at - 1:at], text[at + 1:at + 2]
+            if after != '=' and before not in '=<>!+-*/%&|^':
+                return text[:at].strip(), text[at + 1:].strip()
+        return None
 
 
 def _strip(text):
@@ -101,13 +115,24 @@ def _strip(text):
             return text
 
 
-def _closes_at_end(text):
+def _python_closes_at_end(text):
     depth = 0
     for at, char in enumerate(text):
         depth += (char == '(') - (char == ')')
         if depth == 0:
             return at == len(text) - 1
     return False
+
+
+_closes_at_end = _python_closes_at_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _closes_at_end(text):
+        found = _scan.close_every(text, 0, '(', ')', False, None)
+        return found is not None and found == len(text) - 1
 
 
 def _increment(right, name):
