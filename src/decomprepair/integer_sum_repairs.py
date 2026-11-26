@@ -5,6 +5,10 @@ gcc 2.7.2 orders an `addu`'s operands by how it builds the sum: as pointer arith
 `p = (void *) (((i & 0xFFFF) * 4) + (s32) base);` both were exact (one needed it in both of its loops). The value is
 the same; only the register order changes, which the judge settles. Offered for every such sum together and for each
 alone, index first and base first.
+
+A byte cast of the base, `p = (u8 *) arg1 + i * 5;` with `arg1` an integer, is the same sum: pointer arithmetic puts
+the base first where the target's `addu $v1, $v1, $a1` has the index first (a 61-instruction N64 table fill, KMC GCC
+2.7.2, 5 -> 0).
 """
 import re
 
@@ -15,6 +19,7 @@ FAMILY = 'integer_pointer_sum'
 FAMILIES = (FAMILY,)
 
 IDENT = r'[A-Za-z_]\w*'
+BYTE_CAST = re.compile(r'\(\s*(?:u8|s8|char|unsigned char|signed char)\s*\*\s*\)\s*(' + IDENT + r')$')
 ASSIGN = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<lhs>' + IDENT + r')\s*=\s*(?P<rhs>[^;{}]+);')
 
 
@@ -69,7 +74,10 @@ def variants(source, name):
         if not parts:
             continue
         left, right = parts
-        if right in pointers and left not in pointers:
+        cast = BYTE_CAST.match(left)
+        if cast and right not in pointers:  # `(u8 *) base + i * 5`: a byte sum, whatever the base's own type
+            index, base = right, cast[1]
+        elif right in pointers and left not in pointers:
             index, base = left, right
         elif left in pointers and right not in pointers:
             index, base = right, left
