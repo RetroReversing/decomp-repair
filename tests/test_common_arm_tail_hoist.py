@@ -44,3 +44,43 @@ def test_the_module_declares_itself_to_the_registry():
     for repair in registry.declared():
         if repair.module == 'common_arm_tail_hoist':
             assert registry.problems(repair) == []
+
+
+CHAINED = '''void fill(void)
+{
+    do {
+        if (t == 5) {
+            if (n == a) {
+                x[i] = 1;
+                n++;
+            } else {
+                x[i] = 2;
+                n++;
+            }
+        } else {
+            if (n == 0) {
+                y[0] = 0;
+            } else if (n == a) {
+                y[1] = 0;
+            } else {
+                y[2] = n;
+            }
+            n++;
+        }
+        i += 2;
+    } while (n < a);
+}
+'''
+
+
+def test_a_statement_every_leaf_of_a_nested_chain_ends_with_is_written_once_after_it():
+    texts = [text for family, text in variants(CHAINED, 'fill') if family == 'chain_tail_hoist']
+    best = min(texts, key=lambda text: text.count('n++;'))
+    assert best.count('n++;') == 1
+    assert best.index('y[2] = n;') < best.index('n++;') < best.index('i += 2;')
+    assert best.count('{') == best.count('}')
+
+
+def test_a_chain_with_another_ending_or_no_else_is_left_alone():
+    assert variants('void f(void) { if (a) { g(); n++; } else if (b) { h(); n++; } else { m++; } }', 'f') == []
+    assert variants('void f(void) { if (a) { g(); n++; } else if (b) { h(); n++; } }', 'f') == []
