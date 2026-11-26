@@ -67,3 +67,17 @@ def test_a_field_read_through_a_pointer_is_split_and_comes_first():
     found = [text for family, text in variants(source, 'f') if family == FAMILY]
     assert 'v = ((Obj *) o)->speed;\n' in found[0] and 'v /= k;' in found[0]
     assert not variants('void f(Obj *o, f32 k) { f32 v; v = o->a > k; }', 'f')
+
+
+def test_a_product_quotient_chain_is_split_at_its_last_operator():
+    """A 378-instruction N64 colour interpolator (SN64 GCC 2.8.1 -mfp32): `w = t * s; w /= len;` 3446 -> 3235."""
+    out = [_squash(s) for _, s in variants('void f(f32 t, f32 s, f32 len) { f32 w; w = t * s / len; G(w); }', 'f')]
+    assert any('w = t * s; w /= len;' in s for s in out)
+    assert not variants('void f(f32 t, f32 s, f32 len) { f32 w; w = t * s + len / t; G(w); }', 'f')
+
+
+def test_the_combined_child_is_applied_by_place_not_by_rank():
+    """The combined child used the ranked order (loads first) and garbled the text when a load came later."""
+    source = 'void f(f32 a, f32 *p, f32 n) { f32 v; f32 w; v = a * n; w = p[0] / n; G(v, w); }'
+    out = [_squash(s) for _, s in variants(source, 'f')]
+    assert any('v = a; v *= n; w = p[0]; w /= n;' in s for s in out)
