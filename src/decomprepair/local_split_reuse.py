@@ -180,6 +180,8 @@ def _split_children(source, part, name, declared):
                 continue
             if not _read_before_in_loop(clean, loops, local, second[0]):
                 span = [second[0]] + _uses(clean, local, second[1], stop)
+                if following:  # the next definition may read this range's value (`X = (X & 3) ? .. : X;`)
+                    span += _uses(clean, local, following[0][1], following[0][2])
                 child = edit(source, [(at, at + len(local), new) for at in span])
                 moved = view(child, name)
                 if moved:
