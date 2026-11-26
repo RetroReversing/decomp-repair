@@ -48,7 +48,7 @@ def variants(source, name):
     for block_open, block_close in sorted(pairs.items()):
         units = statements(clean, block_open + 1, block_close)
         for index in range(len(units) - 2):
-            a, b, c = units[index:index + 3]
+            a, b, c = list(units[index:index + 3])
             first = FIRST.fullmatch(clean[a[0]:a[1]].strip())
             second = SECOND.fullmatch(clean[b[0]:b[1]].strip())
             third = THIRD.fullmatch(clean[c[0]:c[1]].strip())

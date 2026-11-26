@@ -101,7 +101,7 @@ def _snapshot(part, _name, header, resolve, target):
 
 def _scaled_table_changes(changed, tables):
     for i, inst in enumerate(tables):
-        shift, upper, lower = changed[3 * i:3 * i + 3]
+        shift, upper, lower = list(changed[3 * i:3 * i + 3])
         old = re.fullmatch(rf'lui \$a1, %hi\(({IDENT})\)', upper[2])
         tail = int(inst['tail'])
         if (not old or normalized_integer_lines(shift[1:]) != (f'sll $v0, $v0, {tail}', f'sll $v0, $v0, {tail + 2}')

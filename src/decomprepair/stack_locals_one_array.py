@@ -121,7 +121,7 @@ def variants(source, name):
     gaps = any(count and used[off] is not None and len(used[off]) < count for off, _, _, count, _ in block)
     first = block[0]
     out = []
-    for compact in ((False, True) if gaps else (False,)):
+    for compact in ([False, True] if gaps else [False]):
         if compact and any(used[off] is None for off, _, _, count, _ in block if count):
             continue
         slots, size = _layout(block, used, compact)

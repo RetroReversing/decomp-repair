@@ -258,7 +258,7 @@ def hints(source, name, tables=(), header=''):
             inside={n for n in labels if low<=n<low+len(destinations)}
             if len(inside)<2:continue
             for i in range(len(labels)-1):
-                a,b=labels[i:i+2]
+                a,b= list(labels[i:i+2])
                 between=text[brace+1+positions[i][1]:brace+1+positions[i+1][0]].strip()
                 if not between and a in inside and b in inside and destinations[a-low]!=destinations[b-low]:
                     result.append(f'Retail switch-table review: grouped source labels {a}/{b} have different target entry points. Check fallthrough and revision-specific case grouping; no labels were changed.')

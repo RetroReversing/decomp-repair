@@ -53,7 +53,7 @@ def variants(source, name, asm):
     copies = list(COPY.finditer(clean, opening, end))
     i = 0
     while i + 2 < len(copies):
-        a, b, c = copies[i:i + 3]
+        a, b, c = list(copies[i:i + 3])
         offs = [int(m['do'], 0) for m in (a, b, c)]
         srcs = [int(m['so'], 0) for m in (a, b, c)]
         if (a.end() == b.start() and b.end() == c.start() and len({m['d'] for m in (a, b, c)}) == 1

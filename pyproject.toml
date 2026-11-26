@@ -47,3 +47,6 @@ select = ["F", "I", "E9", "B006", "B008", "B023"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["decomprepair"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]  # src holds modules named *_test.py, which are not tests

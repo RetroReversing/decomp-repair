@@ -42,7 +42,7 @@ def _target(asm, base, argument, expected):
         return False
     output = None
     for i, prior in enumerate(saved):
-        load, subtract, store = after[i * 3:i * 3 + 3]
+        load, subtract, store = list(after[i * 3:i * 3 + 3])
         later = _LOAD.fullmatch(load)
         if not later or later[1] in registers or int(prior[2], 0) != base + 4*i or int(later[2], 0) != base + 4*i:
             return False
