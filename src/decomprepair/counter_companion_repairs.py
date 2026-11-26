@@ -13,12 +13,17 @@ rest of its edits), the target's order of preheader instructions.
 
 Each companion `v` that starts at an expression and steps by a constant `S` as the loop's last statements, and is
 not read after the loop, becomes `INIT + j * S` at its uses (a pointer through `(char *)`), with its initialisation
-and step dropped. The counter must start at 0 and step by 1 as another of those last statements, and the
-initialisations must be the statements right before the loop. Offered with every companion rewritten and, when
-there are several, each one alone.
+and step dropped. The counter must start at an integer constant and step by 1 as another of those last statements.
+A counter that starts at `C` other than 0 gives `INIT + (j - C) * S`, or `j * S` when the companion starts at `C * S`
+(an audio voice loop counted from -4 beside a byte offset from -0x70, SN GCC 2.7.2: 170 -> 0 with `D + i * 0x1C`).
+The initialisations are the statements right before the loop, or (a constant or a symbol's address only) earlier in a
+block that encloses the loop, with nothing between that names the variable. Steps may sit in braces of their own (the
+plain form of a saved best keeps a fence's block). Offered with every companion rewritten and, when there are several,
+each one alone.
 """
 import re
 
+from . import c_scan
 from .csource import _blank, find
 from .pattern_repairs import close
 
@@ -35,10 +40,26 @@ INITS = re.compile(r'(?:[ \t\n]*' + IDENT + r'\s*=(?!=)[^;{}]+;)+[ \t\n]*$')
 
 
 def _tail(body):
-    """The trailing run of step statements of a loop body: (start, name, stride or None) in order."""
+    """The trailing run of step statements of a loop body: (start, name, stride or None) in order. A trailing block
+    in braces that holds only steps (or nothing) counts as its steps."""
+    return _run(body)[0]
+
+
+def _run(body):
+    """_tail's steps, and where the run starts (the text before it is not a step)."""
     steps, end = [], len(body.rstrip())
     while end > 0:
         text = body[:end]
+        if text.endswith('}'):
+            opening = c_scan.enclosing_block(text, len(text) - 1, 0)
+            if opening < 0:
+                break
+            inside, stop = _run(text[opening + 1:-1])
+            if text[opening + 1:opening + 1 + stop].strip():
+                break
+            steps.extend((opening + 1 + position, name, stride) for position, name, stride in reversed(inside))
+            end = len(text[:opening].rstrip())
+            continue
         start = max(text.rfind(';', 0, end - 1), text.rfind('{'), text.rfind('}')) + 1
         statement = text[start:].strip()
         count, step = COUNT.fullmatch(statement), STEP.fullmatch(statement)
@@ -50,7 +71,7 @@ def _tail(body):
         else:
             break
         end = start
-    return steps[::-1]
+    return steps[::-1], end
 
 
 def _loops(clean, opening, end):
@@ -79,11 +100,48 @@ def _removal(clean, a, b):
     return a - (len(clean[:a]) - len(clean[:a].rstrip(' \t'))), b
 
 
-def _value(var, base, stride, counter, pointer):
-    scaled = f'{counter} * {stride}'
+def _int(text):
+    """The value of an integer literal (with an optional sign and U suffix), or None."""
+    match = re.fullmatch(r'(-?)\s*(' + NUM + r')', text.strip())
+    if not match:
+        return None
+    value = int(match[2].rstrip('uU'), 0)
+    return -value if match[1] else value
+
+
+def _value(var, base, stride, counter, pointer, first=0):
+    scaled = f'({counter} {"-" if first > 0 else "+"} {abs(first)}) * {stride}' if first else f'{counter} * {stride}'
+    start = _int(base)
+    if first and start is not None and start == first * int(stride.rstrip('uU'), 0):
+        scaled, base = f'{counter} * {stride}', '0'
     if pointer:
         return f'((char *) ({base}) + {scaled})'
     return f'({scaled})' if base in ('0', '0U') else f'({base} + {scaled})'
+
+
+def _earlier_init(clean, opening, start, var, reads=False):
+    """`var = <constant or &symbol>;` earlier in a block that encloses the loop at `start`, with nothing between it
+    and the loop naming var (with `reads`, nothing writing or taking the address of it: the counter, whose init
+    stays, may be tested by a guard): the match, or None."""
+    word = r'(?<![\w.>])' + var + r'\b'
+    if reads:
+        word = (r'(?<![\w.>])' + var + r'\s*(?:[-+*/&|^]|<<|>>)?=(?!=)|(?:\+\+|--)\s*' + var + r'\b|\b' + var
+                + r'\s*(?:\+\+|--)|&\s*' + var + r'\b')
+    hits = list(re.finditer(r'(?<![\w.>])(?P<name>' + var + r')\s*=(?!=)\s*(?P<value>[^;{}]+);', clean[:start]))
+    hits = [hit for hit in hits if hit.start() > opening]
+    if not hits:
+        return None
+    hit = hits[-1]
+    value = hit['value'].strip()
+    if _int(value) is None and not re.fullmatch(r'&\s*' + IDENT, value):
+        return None
+    if re.search(word, clean[hit.end():start]):
+        return None
+    block = c_scan.enclosing_block(clean, hit.start(), opening)
+    while block > opening and c_scan.close(clean, block) < start \
+            and clean[:block].rstrip()[-1:] in (';', '{', '}'):  # a bare block (a fence's, opened by plain_best)
+        block = c_scan.enclosing_block(clean, block, opening)
+    return hit if block >= 0 and c_scan.close(clean, block) > start else None
 
 
 def variants(source, name):
@@ -103,27 +161,34 @@ def variants(source, name):
         if len(counters) != 1 or len({s[1] for s in steps}) != len(steps):
             continue
         counter = counters[0][1]
+        if not re.search(r'\b' + counter + r'\b', clean[cond_open:cond_end]):
+            continue
         region = INITS.search(clean, opening, start)
-        if not region or clean[opening:region.start()].rstrip()[-1:] not in (';', '{', '}') \
-                or not re.search(r'\b' + counter + r'\b', clean[cond_open:cond_end]):
+        if region and clean[opening:region.start()].rstrip()[-1:] not in (';', '{', '}'):
+            region = None
+        inits = {hit['name']: hit for hit in INIT.finditer(clean, region.start(), start)} if region else {}
+        names = {name for _, name, _ in steps}
+        for name in names - set(inits):
+            hit = _earlier_init(clean, opening, start, name, reads=name == counter)
+            if hit:
+                inits[name] = hit
+        first = _int(inits[counter]['value']) if inits.get(counter) is not None else None
+        if first is None:
             continue
-        inits = {hit['name']: hit for hit in INIT.finditer(clean, region.start(), start)}
-        if inits.get(counter) is None or inits[counter]['value'].strip() not in ('0', '0U'):
-            continue
-        first = body_open + 1 + steps[0][0]
+        body_first = body_open + 1 + steps[0][0]
         after = clean[body_end:end]
         companions = []
         for position, var, stride in steps:
             init = inits.get(var)
             if stride is None or init is None:
                 continue
-            declared = re.search(r'(?m)^[ \t]*[A-Za-z_][\w ]*?(\*?)[ \t]*\b' + var + r'[ \t]*;', clean[opening:region.start()])
+            declared = re.search(r'(?m)^[ \t]*[A-Za-z_][\w ]*?(\*?)[ \t]*\b' + var + r'[ \t]*;', clean[opening:init.start()])
             word = r'\b' + var + r'\b'
             if (not declared or re.search(word, after) or re.search(word, clean[cond_open:cond_end])
                     or re.search(r'&\s*' + var + r'\b', clean[opening:end])
                     or re.search(r'(?<![\w.>])' + var + r'\s*(?:[-+*/&|^]|<<|>>)?=(?!=)|(?:\+\+|--)\s*' + var + r'\b|\b'
-                                 + var + r'\s*(?:\+\+|--)', clean[body_open + 1:first])
-                    or len(re.findall(word, region.group())) != 1):
+                                 + var + r'\s*(?:\+\+|--)', clean[body_open + 1:body_first])
+                    or len(re.findall(word, clean[init.start():start])) != 1):
                 continue
             companions.append((var, stride, init, bool(declared[1])))
         if not companions:
@@ -131,8 +196,8 @@ def variants(source, name):
         for group in [companions] + ([[c] for c in companions] if len(companions) > 1 else []):
             edits = []
             for var, stride, init, pointer in group:
-                value = _value(var, init['value'].strip(), stride, counter, pointer)
-                for use in re.finditer(r'(?<![\w.>])' + var + r'\b', clean[body_open + 1:first]):
+                value = _value(var, init['value'].strip(), stride, counter, pointer, first)
+                for use in re.finditer(r'(?<![\w.>])' + var + r'\b', clean[body_open + 1:body_first]):
                     edits.append((body_open + 1 + use.start(), body_open + 1 + use.end(), value))
                 for position, name_, _ in steps:
                     if name_ == var:
