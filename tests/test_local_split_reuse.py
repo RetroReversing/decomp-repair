@@ -129,3 +129,25 @@ def test_it_is_a_registered_repair_with_a_bounded_child_count():
     assert registry.get('local_split_reuse') and registry.problems(registry.get('local_split_reuse')) == []
     assert set(REPAIR['families']) == {FAMILY_SPLIT, FAMILY_CURSOR, FAMILY_BASE, FAMILY_TEST}
     assert len(variants(SPLIT, 'step')) <= LIMIT
+
+
+def test_second_range_renames_the_reads_of_the_next_definition():
+    # A 97-instruction N64 loader: `size = n; ...; size = f(buf); size = (size & 0x3F) ? ... : size;`. The second
+    # range ends at the next definition, whose right side reads it: renaming only `size = f(buf)` left the rounding
+    # reading the first range's value (an unfaithful child that scored better by accident).
+    src = '''s32 f(s32 n, u8 *buf) {
+    s32 size;
+    s32 end;
+
+    size = n;
+    buf = g(size + n);
+    size = h(n, buf);
+    size = (size & 0x3F) ? (size & ~0x3F) + 0x40 : size;
+    end = k(buf + size);
+    return end;
+}
+'''
+    for fam, child in variants(src, 'f'):
+        if fam != FAMILY_SPLIT or 'size2 = h(n, buf);' not in child:
+            continue
+        assert 'size = (size2 & 0x3F) ? (size2 & ~0x3F) + 0x40 : size2;' in child, child
