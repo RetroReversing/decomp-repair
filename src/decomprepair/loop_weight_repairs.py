@@ -267,7 +267,7 @@ def _sunk_starts(source, part, hit):
 _CONTROL = re.compile(r'\s*(?:if|else|do|while|for|switch|case|default|goto|return|break|continue)\b|\s*\w+\s*:(?!:)')
 
 
-def _plain_statement_ends(clean, position, end, limit):
+def _python_plain_statement_ends(clean, position, end, limit):
     """Ends of the plain (no braces, no control, no label) statements that follow `position`."""
     stops = []
     while len(stops) < limit:
@@ -284,6 +284,27 @@ def _plain_statement_ends(clean, position, end, limit):
         stops.append(stop)
         position = stop
     return stops
+
+
+_plain_statement_ends = _python_plain_statement_ends
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _plain_statement_ends(clean, position, end, limit):
+        stops = []
+        while len(stops) < limit:
+            if not clean[position:end].strip() or clean[position:end].lstrip().startswith(('{', '}')) or _CONTROL.match(clean, position):
+                break
+            stop = _scan.statement_end(clean, position, end, '([{', ')]}', True, False, None)
+            if stop is NotImplemented:
+                return _python_plain_statement_ends(clean, position, end, limit)
+            if stop is None:
+                break
+            stops.append(stop)
+            position = stop
+        return stops
 
 
 def _can_hoist(part, flow, guard, variable):

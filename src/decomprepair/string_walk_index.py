@@ -92,7 +92,7 @@ def _loops(clean, opening, end):
                    (brace.end(), body_end - 1), body_end)
 
 
-def _unary(text):
+def _python_unary(text):
     """True when a `*` that follows `text` dereferences (rather than multiplies): after an operator, `(`, `return`, or a cast."""
     text = text.rstrip()
     if not text or text[-1] in '(,=!<>+-*/%&|^?:;{}[~' or re.search(r'\breturn$', text):
@@ -104,6 +104,23 @@ def _unary(text):
             if depth == 0:
                 return bool(CASTS.fullmatch(text[at:]))
     return False
+
+
+_unary = _python_unary
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _unary(text):
+        text = text.rstrip()
+        if not text or text[-1] in '(,=!<>+-*/%&|^?:;{}[~' or re.search(r'\breturn$', text):
+            return True
+        if text.endswith(')'):
+            at = _scan.open_every(text, len(text) - 1, '(', ')', None)
+            if at is not None:
+                return bool(CASTS.fullmatch(text[at:]))
+        return False
 
 
 def _fresh(clean):

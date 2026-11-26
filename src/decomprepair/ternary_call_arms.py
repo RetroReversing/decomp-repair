@@ -42,7 +42,7 @@ def variants(source, name):
     return [(FAMILY, text) for text in rewrites(source, name)]
 
 
-def _split_args(clean, lo, hi):
+def _python_split_args(clean, lo, hi):
     """(start, end) of each top-level argument in clean[lo:hi]."""
     out, depth, at = [], 0, lo
     for i in range(lo, hi):
@@ -56,6 +56,17 @@ def _split_args(clean, lo, hi):
             at = i + 1
     out.append((at, hi))
     return out
+
+
+_split_args = _python_split_args
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split_args(clean, lo, hi):
+        found = _scan.argument_spans_all(clean, lo, hi)
+        return _python_split_args(clean, lo, hi) if found is NotImplemented else found
 
 
 def _ternary(text):

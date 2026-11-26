@@ -34,7 +34,7 @@ _LITERAL = re.compile(r'-?(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d*)?[fF]?)$')
 _NOT_STATEMENT = {'if', 'while', 'for', 'switch', 'return', 'case', 'else', 'do', 'goto'}
 
 
-def _assignments(text):
+def _python_assignments(text):
     """The parts of `text` split at its top-level plain `=` signs (a compound assignment or compare is not one)."""
     parts, depth, last = [], 0, 0
     for i, c in enumerate(text):
@@ -52,6 +52,26 @@ def _assignments(text):
             last = i + 1
     parts.append(text[last:])
     return [part.strip() for part in parts]
+
+
+_assignments = _python_assignments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _assignments(text):
+        parts, last = [], 0
+        for i in _scan.top_offsets(text, '=', 2):
+            before, after = text[i - 1:i], text[i + 1:i + 2]
+            if before in '=!<>+-*/%&|^' and before or after == '=':
+                if after == '=':
+                    return None
+                continue
+            parts.append(text[last:i])
+            last = i + 1
+        parts.append(text[last:])
+        return [part.strip() for part in parts]
 
 
 def _free(expr):

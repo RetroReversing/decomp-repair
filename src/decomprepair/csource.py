@@ -213,7 +213,7 @@ def at_file_scope(text: str, at: int) -> bool:
     return all(opened)
 
 
-def opens_body(text: str, span: tuple[int, int], name: str) -> bool:
+def _python_opens_body(text: str, span: tuple[int, int], name: str) -> bool:
     """True when what find() found at `span` is `name`'s own definition: its parameter list is followed by its body,
     with qualifiers, `throw()` or a constructor's initialisers between them, never a `;`. find() also takes a call
     followed by an expression and a block for one (`static double bias = f(2.0) * 2.0;`, then the next definition's
@@ -230,6 +230,24 @@ def opens_body(text: str, span: tuple[int, int], name: str) -> bool:
             break
     brace = clean.find("{", i)
     return brace >= 0 and ";" not in clean[i:brace]
+
+
+opens_body = _python_opens_body
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def opens_body(text: str, span: tuple[int, int], name: str) -> bool:
+        clean = _blank(text[span[0]:span[1]])
+        m = re.search(rf"(?<![\w~]){re.escape(name.split('::')[-1])}\s*\(", clean)
+        if m is None:
+            return False
+        i = _scan.close_every(clean, m.end() - 1, '(', ')', True, None)
+        if i is None:
+            i = len(clean)
+        brace = clean.find("{", i)
+        return brace >= 0 and ";" not in clean[i:brace]
 
 
 def _conditionals(text: str, pos: int):

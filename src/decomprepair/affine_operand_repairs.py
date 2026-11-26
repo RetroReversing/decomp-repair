@@ -22,13 +22,26 @@ def pure(text):
     return not re.search(r'\b(?:volatile|sizeof)\b|\+\+|--|[=,?:]|\b'+IDENT+r'\s*\(', text)
 
 
-def differences(text):
+def _python_differences(text):
     depth = 0
     for i, char in enumerate(text):
         depth += (char in '([') - (char in ')]')
         if char == '-' and depth == 0 and text[i+1:i+2] != '>':
             return text[:i].strip(), text[i+1:].strip()
     return None
+
+
+differences = _python_differences
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def differences(text):
+        for i in _scan.top_offsets(text, '-', 2):
+            if text[i + 1:i + 2] != '>':
+                return text[:i].strip(), text[i + 1:].strip()
+        return None
 
 
 def unparen(text):

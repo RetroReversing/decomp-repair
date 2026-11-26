@@ -27,7 +27,7 @@ FAMILIES = (FAMILY,)
 LIMIT = 6
 
 
-def _arms(clean, part):
+def _python_arms(clean, part):
     """(start, end) of the then-arm and else-arm bodies of every `if ... { } else { }` in the function."""
     found = []
     for hit in re.finditer(r'\}\s*else\s*\{', clean[part.opening:part.end]):
@@ -48,6 +48,28 @@ def _arms(clean, part):
         if end_else and start_then is not None:
             found.append(((start_then + 1, end_then), (start_else + 1, end_else)))
     return found
+
+
+_arms = _python_arms
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arms(clean, part):
+        found = []
+        for hit in re.finditer(r'\}\s*else\s*\{', clean[part.opening:part.end]):
+            end_then = part.opening + hit.start()
+            start_else = part.opening + hit.end() - 1
+            end_else = close(clean, start_else, '{', '}')
+            start_then = _scan.open_every(clean, end_then, '{', '}', None)
+            if start_then is NotImplemented:
+                return _python_arms(clean, part)
+            if start_then is not None and (end_then <= part.opening or start_then <= part.opening):
+                start_then = None
+            if end_else and start_then is not None:
+                found.append(((start_then + 1, end_then), (start_else + 1, end_else)))
+        return found
 
 
 def _first_assignment(clean, name, span):

@@ -14,7 +14,7 @@ FAMILY = 'nested_guard'
 FAMILIES = (FAMILY,)
 
 
-def _operands(condition):
+def _python_operands(condition):
     """The two top-level `&&` operands of a condition, or None."""
     depth, cut = 0, []
     for i, ch in enumerate(condition):
@@ -24,6 +24,19 @@ def _operands(condition):
     if len(cut) != 1 or '||' in re.sub(r'\([^()]*\)', '', condition):
         return None
     return condition[:cut[0]].strip(), condition[cut[0] + 2:].strip()
+
+
+_operands = _python_operands
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _operands(condition):
+        cut = [i for i in _scan.top_offsets(condition, '&', 1) if condition.startswith('&&', i)]
+        if len(cut) != 1 or '||' in re.sub(r'\([^()]*\)', '', condition):
+            return None
+        return condition[:cut[0]].strip(), condition[cut[0] + 2:].strip()
 
 
 def variants(source, name):

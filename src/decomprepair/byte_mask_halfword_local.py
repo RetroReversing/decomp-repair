@@ -36,7 +36,7 @@ _DECL = re.compile(rf'(?m)(?<=[;{{}}\n])(?P<lead>[ \t]*)(?P<type>u8|unsigned\s+c
 _WIDE = {'unsigned int', 'unsigned', 'u32', 's32', 'int'}
 
 
-def _mask(text):
+def _python_mask(text):
     """`E & M` at the top level of `text` (M below 0x100), as (E, M), or None."""
     depth, at = 0, None
     for i, char in enumerate(text):
@@ -52,7 +52,27 @@ def _mask(text):
     return (left, right) if 0 < value < 0x100 else None
 
 
-def _group(text):
+_mask = _python_mask
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _mask(text):
+        at = None
+        for i in _scan.top_offsets(text, '&', 1):
+            if text[i + 1:i + 2] != '&' and text[i - 1:i] != '&':
+                at = i
+        if at is None:
+            return None
+        left, right = text[:at].strip(), text[at + 1:].strip()
+        if not left or not re.fullmatch(NUMBER, right):
+            return None
+        value = int(re.sub(r'[uUlL]+$', '', right), 0)
+        return (left, right) if 0 < value < 0x100 else None
+
+
+def _python_group(text):
     """The inside of `text` when all of it is one parenthesised group."""
     text = text.strip()
     if not text.startswith('('):
@@ -63,6 +83,20 @@ def _group(text):
         if depth == 0:
             return text[1:i] if i == len(text) - 1 else None
     return None
+
+
+_group = _python_group
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _group(text):
+        text = text.strip()
+        if not text.startswith('('):
+            return None
+        i = _scan.close_every(text, 0, '(', ')', False, None)
+        return text[1:i] if i is not None and i == len(text) - 1 else None
 
 
 def _byte_of(rhs):

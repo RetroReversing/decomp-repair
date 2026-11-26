@@ -106,7 +106,7 @@ def _split_macros(source, header):
     return found
 
 
-def _block_end(clean, position, lo, hi):
+def _python_block_end(clean, position, lo, hi):
     """The offset of the `}` that closes the innermost block holding `position` (inside the function), or None."""
     depth = 0
     for i in range(position - 1, lo - 1, -1):
@@ -119,6 +119,22 @@ def _block_end(clean, position, lo, hi):
                 return end - 1 if end and end <= hi else None
             depth -= 1
     return None
+
+
+_block_end = _python_block_end
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _block_end(clean, position, lo, hi):
+        found = _scan.enclosing_open(clean, position, lo, -1)
+        if found is NotImplemented:
+            return _python_block_end(clean, position, lo, hi)
+        if found < 0:
+            return None
+        end = close(clean, found, '{', '}')
+        return end - 1 if end and end <= hi else None
 
 
 def _if_chains(clean, lo, hi):
