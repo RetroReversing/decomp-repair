@@ -13,6 +13,17 @@ sb $v1,0xc($v0)`) while each value is loaded by index again (`lui $v1; addu $v1,
 local for the test and the update (`{ s32 h = table[i].count; if ((u32) (h - 6) < 6) { table[i].count = h + 1; ...`),
 where the target keeps the loaded value in a register for both (965 -> 645).
 
+`record_slot_base_pointer` holds the array's address in a pointer local of its own before the slot's:
+
+    Rec *p = &table[i];              ->   Rec *__repair_base = table;
+                                          Rec *p = &__repair_base[i];
+
+The address is then an insn loop.c sees apart from the index arithmetic, with a life long enough to hoist out of the
+loop (`lui $t0; addiu $t0` before it, `addu $v1,$v1,$t0` inside), where `&table[i]` loads it again each iteration
+("move-insn ... not desirable" in the .loop dump). KMC GCC 2.7.2 -O1, a 149-instruction initialiser over 5-byte records,
+465 -> 0 from direct member writes through `record_slot_store_pointer`. It is offered for a declaration already in the
+source and for each slot pointer `record_slot_store_pointer` makes, as one child.
+
 Offered for `extern T table[];` arrays and runs of two or more writes to one `table[i]`: all updating runs together
 (runs of numbers stay indexed), all runs, and each run alone. The candidate is never a verdict: the judge decides.
 """
@@ -23,13 +34,16 @@ from .csource import _blank, find
 
 FAMILY = 'record_slot_store_pointer'
 HELD = 'record_slot_held_test'
-FAMILIES = (FAMILY, HELD)
+BASE = 'record_slot_base_pointer'
+FAMILIES = (FAMILY, HELD, BASE)
 LIMIT = 8
 _ID = r'[A-Za-z_]\w*'
 _ARRAY = re.compile(rf'\bextern\s+({_ID})\s+({_ID})\s*\[\s*\w*\s*\]\s*;')
 _WRITE = re.compile(rf'(?P<table>{_ID})\s*\[(?P<index>[^\[\];{{}}]+)\]\s*\.\s*(?P<member>{_ID})\s*'
                     r'(?:(?P<step>\+\+|--)|(?P<op>[+\-&|^])?=(?!=)\s*(?P<value>[^;{}]+?))\s*;')
 _IF = re.compile(r'\bif\s*\(')
+_SLOT = re.compile(rf'\b(?P<kind>{_ID})\s*\*\s*(?P<pointer>{_ID})\s*=\s*&\s*(?P<table>{_ID})\s*'
+                   r'\[(?P<index>[^\[\];{}]+)\]\s*;')
 
 
 def _runs(clean, source, lo, hi, tables):
@@ -135,6 +149,26 @@ def _held_children(source, clean, lo, hi, tables):
     return out
 
 
+def _based(text, tables):
+    """Each `T *p = &table[index];` of the text, with the table's address in a pointer local declared before it."""
+    clean = _blank(text)
+    if '__repair_base' in clean:
+        return []
+    found = [m for m in _SLOT.finditer(clean)
+             if tables.get(m['table']) == m['kind'] and clean[:m.start()].rstrip().endswith(('{', ';', '}'))]
+    picks = ([found] if len(found) > 1 else []) + [[m] for m in found]
+    out = []
+    for pick in picks[:LIMIT]:
+        edited = text
+        for number, m in reversed(list(enumerate(pick))):
+            base = f'__repair_base{number or ""}'
+            index = text[m.start('index'):m.end('index')].strip()
+            edited = (edited[:m.start()] + f'{m["kind"]} *{base} = {m["table"]}; {m["kind"]} *{m["pointer"]} = &{base}[{index}];'
+                      + edited[m.end():])
+        out.append((BASE, edited))
+    return out
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -144,8 +178,11 @@ def variants(source, name):
     tables = {m[2]: m[1] for m in _ARRAY.finditer(clean)}
     if opening < 0 or not tables:
         return []
-    return (_pointer_children(source, clean, opening, span[1], tables)
-            + _held_children(source, clean, opening, span[1], tables))
+    pointers = _pointer_children(source, clean, opening, span[1], tables)
+    based = _based(source, tables)
+    for _, slotted in pointers:
+        based += _based(slotted, tables)[:1]
+    return pointers + _held_children(source, clean, opening, span[1], tables) + based[:LIMIT]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'archs': ('mips',)}

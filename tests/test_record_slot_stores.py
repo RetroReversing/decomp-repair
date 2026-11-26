@@ -1,5 +1,5 @@
 """A record slot's stores through a pointer to the slot, and the tested member held for its update."""
-from decomprepair.record_slot_stores import FAMILY, HELD, variants
+from decomprepair.record_slot_stores import BASE, FAMILY, HELD, variants
 
 PLAIN = '''extern Rec table[];
 void f(u16 i)
@@ -48,3 +48,13 @@ def test_a_run_of_numbers_stays_indexed_in_the_first_child():
     first = _children(source, FAMILY)[0]
     assert first.count('__repair_slot = &table[i];') == 2
     assert 'table[i].count = 0; table[i].total = 0;' in first
+
+
+def test_the_array_base_is_held_before_the_slot_pointer():
+    source = 'extern Rec table[];\nvoid f(u16 i)\n{\n  if (g) {\n    Rec *p = &table[i];\n    p->count = 4;\n  }\n}\n'
+    assert ['Rec *__repair_base = table; Rec *p = &__repair_base[i];' in t for t in _children(source, BASE)] == [True]
+
+
+def test_a_slot_pointer_made_from_indexed_writes_comes_with_its_base_in_one_child():
+    based = _children(PLAIN, BASE)
+    assert any(t.count('Rec *__repair_base') == 2 and 'Rec *__repair_slot = &__repair_base1[i];' in t for t in based), based
