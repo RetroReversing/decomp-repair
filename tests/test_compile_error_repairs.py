@@ -198,3 +198,8 @@ def test_a_call_that_disagrees_with_its_own_definition_goes_through_an_unprototy
     source = 'void g(s32 a) {\n    g(a, 1);\n}\n'
     out = repair(source, 2, "too few arguments to function")
     assert out == 'void g(s32 a) {\n    ((s32 (*)())g)(a, 1);\n}\n'
+
+
+def test_a_float_base_of_an_m2c_field_is_converted_through_a_word():
+    source = 'void f(f32 a) {\n    x = M2C_FIELD(a, u16 *, 6);\n}\n'
+    assert repair(source, 2, 'ido: float cast to a pointer') == 'void f(f32 a) {\n    x = M2C_FIELD((s32)a, u16 *, 6);\n}\n'
