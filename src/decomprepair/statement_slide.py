@@ -132,10 +132,18 @@ def commutes_past_call(one, two, locals_):
 
 
 def _locals(part):
-    """The plain scalar locals of the function that nothing takes the address of and that are not `volatile`."""
+    """The plain scalar locals and parameters of the function that nothing takes the address of and that are not `volatile`."""
     body = part.clean[part.opening:part.end]
-    declared = set(re.findall(rf'(?m)^[ \t]*(?:register\s+)?(?:unsigned\s+)?(?:s8|u8|s16|u16|s32|u32|f32|f64|int|char|short|long|float|double)'
+    declared = list(re.findall(rf'(?m)^[ \t]*(?:register\s+)?(?:unsigned\s+)?(?:s8|u8|s16|u16|s32|u32|f32|f64|int|char|short|long|float|double)'
                               rf'[ \t]+({IDENT})[ \t]*;', body))
+    # A parameter is as much a local as a declared one (a 131-instruction table walk: `index = start;` above the call
+    # after the walk, 295 -> 0).
+    signature = part.clean[:part.opening]
+    head = signature[signature.rfind('(') + 1:signature.rfind(')')]
+    for piece in head.split(','):
+        found = re.search(rf'({IDENT})\s*$', piece)
+        if found and len(piece.split()) > 1 and 'volatile' not in piece:
+            declared = declared + [found[1]]
     return {name for name in declared if not re.search(rf'&\s*{name}\b', body)}
 
 
