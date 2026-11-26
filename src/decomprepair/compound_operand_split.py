@@ -1,4 +1,4 @@
-"""A float assigned from one binary operation, written as an assignment and a compound assignment.
+"""A float (or 32-bit integer mask) assigned from one binary operation, written as an assignment and a compound assignment.
 
 `v = (-x) * rate;` against `v = -x; v *= rate;`. On KMC GCC 2.7.2 (N64) the first form expands to a temporary for
 the negation and a product that ties to the variable only afterwards; the second writes the negation straight into the
@@ -24,6 +24,11 @@ A chain of `*` and `/` is split at its outermost (last) operator (`w = t * sin2 
 variable is then set twice, so the first scheduler no longer launches its product as a single-set (birthing) insn. On a
 378-instruction N64 colour interpolator (SN64 GCC 2.8.1, `-mfp32`) that put the weight's product first and the other
 weight's into the shared register, as in the target: 3446 -> 3235 in the isolated judge.
+
+A 32-bit integer local assigned from `&`, `|` or `^` splits the same way (`bits = row[j] & ~mine[j];` as
+`bits = row[j]; bits &= ~mine[j];`): the first load goes straight into the local and ahead of the second. A
+92-instruction N64 bit-count routine (KMC GCC 2.7.2, `-O1`) was 205 -> 0 on that one statement. Only the bitwise
+operators are offered for integers: they give the same bits whatever the operands' signedness.
 """
 import re
 
@@ -33,20 +38,25 @@ FAMILY = 'compound_operand_split'
 FAMILIES = (FAMILY,)
 _ID = r'[A-Za-z_]\w*'
 _TYPE = re.compile(r'\b(?:f32|float|f64|double)\b([^;(){}]*);')
+_WORD_TYPE = re.compile(r'\b(?:unsigned\s+int|u32|s32|int)\b([^;(){}]*);')
 _STATEMENT = re.compile(rf'(?<=[;{{}}])(\s*)({_ID})\s*=\s*([^;{{}}=]+);')
 _OPERAND_END = re.compile(r'[\w)\]]')
 _LIMIT = 24
 
 
-def _float_names(text):
-    """Names declared as float scalars in `text` (a declarator list, an initializer or a pointer is accounted for)."""
+def _declared(text, types):
+    """Names declared as scalars of `types` in `text` (a declarator list, an initializer or a pointer is accounted for)."""
     out = set()
-    for hit in _TYPE.finditer(text):
+    for hit in types.finditer(text):
         for part in hit[1].split(','):
             name = part.split('=')[0].strip()
             if re.fullmatch(_ID, name):
                 out.add(name)
     return out
+
+
+def _float_names(text):
+    return _declared(text, _TYPE)
 
 
 def _split(rhs):
@@ -81,6 +91,36 @@ def _split(rhs):
     return rhs[:found[-1]].strip(), rhs[found[-1]], rhs[found[-1] + 1:].strip()
 
 
+def _split_bits(rhs):
+    """(left, op, right) at the last top-level `&`, `|` or `^`, when that is the only kind of operator out there that
+    binds as loosely (`a & b | c`, a comparison or a ternary gives None)."""
+    depth, found, prev = 0, [], ''
+    for i, c in enumerate(rhs):
+        if c in '([':
+            depth += 1
+        elif c in ')]':
+            depth -= 1
+        elif depth == 0:
+            if c in '?:=!' or (c in '<>' and rhs[i + 1:i + 2] != c and rhs[i - 1:i] not in (c, '-')):
+                return None
+            if c in '&|^' and prev and _OPERAND_END.match(prev):
+                if rhs[i + 1:i + 2] == c:
+                    return None
+                found.append(i)
+        if not c.isspace():
+            prev = c
+    if depth != 0 or not found or len({rhs[i] for i in found}) > 1:
+        return None
+    if rhs[:found[-1]].rstrip().endswith('*)'):  # `(u32 *) &x`: an address-of after a pointer cast
+        return None
+    return rhs[:found[-1]].strip(), rhs[found[-1]], rhs[found[-1] + 1:].strip()
+
+
+def _word_operand(operand, name):
+    return (operand and not re.search(rf'\b{name}\b', operand) and not re.search(rf'{_ID}\s*\(', operand)
+            and not re.search(r'[=?]|&&|\|\||\+\+|--', operand))
+
+
 def _paren(text):
     return text if re.fullmatch(r'-?[\w.]+', text) else f'({text})'
 
@@ -90,22 +130,26 @@ def _simple(operand, name):
             and not re.search(r'[=<!&|?]|(?<!-)>|\+\+|--', operand))
 
 
-def _children(clean, lo, hi, floats):
+def _children(clean, lo, hi, floats, words=frozenset()):
     """[(start, end, [replacement, ...])] for each statement that can be split."""
     out = []
     for hit in _STATEMENT.finditer(clean, lo, hi):
         name = hit[2]
-        if name not in floats:
+        if name in floats:
+            split, simple = _split, _simple
+        elif name in words:
+            split, simple = _split_bits, _word_operand
+        else:
             continue
-        parts = _split(hit[3].strip())
+        parts = split(hit[3].strip())
         if not parts:
             continue
         left, op, right = parts
         left = re.sub(r'^\(\s*(-?\s*[\w.]+)\s*\)$', r'\1', left)
-        if not _simple(left, name) or not _simple(right, name):
+        if not simple(left, name) or not simple(right, name):
             continue
         indent = hit[1].split('\n')[-1]
-        forms = [(left, right)] + ([(right, left)] if op in '+*' else [])
+        forms = [(left, right)] + ([(right, left)] if op in '+*&|^' else [])
         out.append((hit.start(2), hit.end(), [f'{name} = {a};\n{indent}{name} {op}= {_paren(b)};' for a, b in forms]))
     # a load split from its operation first (the target's load straight into the local), then the rest in order:
     # a 1300-instruction function had its one such statement past the first _LIMIT
@@ -121,8 +165,8 @@ def variants(source, name):
     opening = clean.find('{', *span)
     if opening < 0 or re.search(r'\bvolatile\b', clean[span[0]:span[1]]):
         return []
-    floats = _float_names(clean[span[0]:span[1]])
-    found = _children(clean, opening, span[1], floats)
+    body = clean[span[0]:span[1]]
+    found = _children(clean, opening, span[1], _declared(body, _TYPE), _declared(body, _WORD_TYPE))
     out = []
     for start, end, forms in found:
         for text in forms:

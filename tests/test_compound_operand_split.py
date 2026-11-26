@@ -81,3 +81,19 @@ def test_the_combined_child_is_applied_by_place_not_by_rank():
     source = 'void f(f32 a, f32 *p, f32 n) { f32 v; f32 w; v = a * n; w = p[0] / n; G(v, w); }'
     out = [_squash(s) for _, s in variants(source, 'f')]
     assert any('v = a; v *= n; w = p[0]; w /= n;' in s for s in out)
+
+
+def test_an_integer_mask_is_split_with_its_first_load_first():
+    """A 92-instruction N64 bit-count routine (KMC GCC 2.7.2 -O1): 205 -> 0 on this one statement."""
+    source = ('extern u32 D[][8]; void f(u8 a) { u32 bits; u8 j; u32 row; '
+              'for (j = 0; j < 8; j++) { bits = D[row][j] & ~D[a][j]; G(bits); } }')
+    out = [_squash(s) for _, s in variants(source, 'f')]
+    assert any('bits = D[row][j]; bits &= (~D[a][j]);' in s for s in out)
+
+
+def test_integers_split_only_bitwise_operators():
+    base = 'void f(u32 a, u32 b, u32 *p) { u32 v; %s G(v); }'
+    for body in ('v = a + b;', 'v = a & b | a;', 'v = a && b;', 'v = a & v;', 'v = (u32 *) &a;', 'v = a == b;'):
+        assert not variants(base % body, 'f'), body
+    out = [_squash(s) for _, s in variants(base % 'v = (a << 2) | p[0];', 'f')]
+    assert any('v = (a << 2); v |= (p[0]);' in s for s in out)
