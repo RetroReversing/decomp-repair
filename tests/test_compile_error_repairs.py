@@ -203,3 +203,19 @@ def test_a_call_that_disagrees_with_its_own_definition_goes_through_an_unprototy
 def test_a_float_base_of_an_m2c_field_is_converted_through_a_word():
     source = 'void f(f32 a) {\n    x = M2C_FIELD(a, u16 *, 6);\n}\n'
     assert repair(source, 2, 'ido: float cast to a pointer') == 'void f(f32 a) {\n    x = M2C_FIELD((s32)a, u16 *, 6);\n}\n'
+
+
+def test_ido_cast_goes_in_front_of_a_parenthesised_subscript():
+    # `(&table)[i] == arg0`: a cast between `)` and `[` was no C, and the draft stayed uncompilable
+    source = "    if ((&D_80000000)[temp_v1] == arg0) {"
+    message = diagnostics("cfe: Error: func.c, line 1: Unacceptable operand of == or !=.")[0][1]
+    fixed = repair(source, 1, message)
+    assert fixed == "    if ((s32)(&D_80000000)[temp_v1] == (s32)arg0) {"
+
+
+def test_ido_address_as_a_subscript_is_read_as_a_number():
+    source = "    *dst = value | base[&D_80000000] | (&sp18)[var_a2];"
+    log = "cfe: Error: func.c, line 1: Should only subscript an array with an integral expression"
+    message = diagnostics(log)[0][1]
+    assert repair(source, 1, message) == "    *dst = value | base[(s32)(&D_80000000)] | (&sp18)[var_a2];"
+    assert repair(source, 1, message, 1) == "    *dst = value | base[&D_80000000] | (&sp18)[(s32)(var_a2)];"
