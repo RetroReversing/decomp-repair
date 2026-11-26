@@ -25,6 +25,11 @@ are required to be absent from the exclusion list (`-mabi=eabi`, `-mabi=n32`/`64
 prototypes the source itself declares (a header's can't be edited). Without an assembly the explicit o32 flags
 (`-mgp32`, `-mabi=32`) stand in for the evidence, as in `float_argument_bits`.
 
+Zeros say nothing by their bits. But GCC 2.7.2 sets each integer zero from `$zero`, while two `0.0f` arguments are
+one constant it puts in the first register and copies (`addu $a1,$zero,$zero; addu $a2,$a1,$zero`, and the same after a
+`lui` for `0.5f, 0.5f`). The target's copy therefore counts as evidence for the positions it joins: three KMC GCC 2.7.2
+`-O1` calls of one callee, `f(0x41, 0, 0, 0, 0, 0xA0)` one row off, were exact with `f32` parameters and `0.0f, 0.0f`.
+
 A literal is a "round" float when it is finite, its exponent is in a sane range (roughly 1e-4 .. 1e7) and the value is
 the float nearest to a short decimal (3115.0f, 20.0f, 0.5f): `float_text`. Every call to the callee in the function must
 pass such a literal (or zero) at the position, since any other value would be converted, not reinterpreted. Children:
@@ -41,6 +46,7 @@ from .target_call_arity_repairs import IDENT, LINE
 FAMILY = 'float_argument_prototype'
 FAMILIES = (FAMILY,)
 LIMIT = 8
+COPY = re.compile(r'\$(a[1-3])\s*,\s*\$(a[1-3]|zero)(?:\s*,\s*\$zero)?\s*$')
 O32_FLAGS = {'-mgp32', '-mabi=32'}
 OTHER_ABI_FLAGS = {'-m64', '-mgp64', '-mabi=64', '-mabi=n32', '-mabi=eabi'}
 ARGUMENT_POSITIONS = (1, 2, 3)  # `$a1`-`$a3`: the registers the evidence reads (the first argument is float_argument_bits')
@@ -53,8 +59,11 @@ ENDS_BLOCK = {'j', 'jr', 'jal', 'jalr', 'b', 'beq', 'bne', 'beqz', 'bnez', 'blez
               'beql', 'bnel', 'beqzl', 'bnezl'}
 
 
-def evidence(asm):
-    """{callee: {argument position: {bits the target's `lui`/`ori` builds in that argument's register at a call}}}."""
+def evidence(asm, copies=None):
+    """{callee: {argument position: {bits the target's `lui`/`ori` builds in that argument's register at a call}}}.
+
+    A register copy (`addu $a2,$a1,$zero`) carries the bits along; `copies`, when given, collects {callee: {positions that
+    shared one register's value that way, the source's and the destination's}}."""
     code = []
     for line in asm.splitlines():
         if re.fullmatch(r'\s*[.\w]+:\s*', line):
@@ -63,20 +72,35 @@ def evidence(asm):
             code.append((hit['op'], hit['args'].strip()))
     found = {}
     registers = {}
+    shared = []  # (source register, destination register) of each live copy
+
+    def end(register):
+        registers.pop(register, None)
+        shared[:] = [pair for pair in shared if register not in pair]
 
     def step(op, args):
-        if op == 'lui' and (hit := LUI.match(args)):
+        if op in ('addu', 'move', 'or') and (hit := COPY.match(args)) and not (op != 'move' and args.count(',') != 2):
+            to, of = hit[1], hit[2]
+            end(to)
+            if of == 'zero':
+                registers[to] = 0
+            elif of in registers:
+                registers[to] = registers[of]
+                shared.append((of, to))
+        elif op == 'lui' and (hit := LUI.match(args)):
+            end(hit[1])
             value = int(hit[2], 16)
             registers[hit[1]] = (value >> 16 if value > 0xFFFF or '>>' in args else value) << 16
         elif op == 'ori' and (hit := ORI.match(args)) and hit[1] == hit[2] and hit[1] in registers:
             registers[hit[1]] |= int(hit[3], 16) & 0xFFFF
         elif op not in STORES:
             for register in re.findall(r'\$(a[0-3])\b', args.split(',')[0]):
-                registers.pop(register, None)  # (any other write to the register ends what the lui built)
+                end(register)  # (any other write to the register ends what the lui built)
 
     for at, (op, args) in enumerate(code):
         if op == 'label':
             registers.clear()
+            shared.clear()
         elif op in ('jal', 'jalr'):
             if op == 'jal' and at + 1 < len(code):
                 step(*code[at + 1])  # the delay slot runs before the callee
@@ -84,9 +108,13 @@ def evidence(asm):
                 for position in ARGUMENT_POSITIONS:
                     if f'a{position}' in registers:
                         found.setdefault(args, {}).setdefault(position, set()).add(registers[f'a{position}'])
+                if copies is not None and shared:
+                    copies.setdefault(args, set()).update(int(register[1]) for pair in shared for register in pair)
             registers.clear()
+            shared.clear()
         elif op in ENDS_BLOCK:
             registers.clear()
+            shared.clear()
         else:
             step(op, args)
     return found
@@ -115,7 +143,8 @@ def variants(source, name, header='', arch='mips', asm='', flags=()):
     flags = set(flags or ())
     if arch != 'mips' or flags & OTHER_ABI_FLAGS:
         return []
-    seen = evidence(asm) if asm else {}
+    copies = {}
+    seen = evidence(asm, copies) if asm else {}
     if not seen and not flags & O32_FLAGS:
         return []  # neither the target nor the profile says the arguments travel in integer registers
     span = find(source, name)
@@ -160,7 +189,9 @@ def variants(source, name, header='', arch='mips', asm='', flags=()):
                 text = float_text(bits) if bits is not None else None
                 if text is None or (bits and seen and bits not in seen[callee].get(index, ())):
                     break
-                useful |= bool(bits)
+                # (zeros alone say nothing, unless the target copies one into the other: an integer zero is set from
+                # `$zero` each time, a float constant is one register the second argument copies)
+                useful |= bool(bits) or index in copies.get(callee, ())
                 changes.append((a, b, ' ' + text if clean[a:a + 1] == ' ' else text))
             else:
                 if useful:
