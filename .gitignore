@@ -9,3 +9,5 @@ dist/
 *.so
 *.pyd
 build/
+*.so.source
+*.pyd.source

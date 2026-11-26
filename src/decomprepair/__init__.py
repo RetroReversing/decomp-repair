@@ -14,6 +14,12 @@ The modules are flat: `*_repairs` are the repair families, the rest are their sh
 text, `mips` and `mips_*` for MIPS code, `symbols` for symbol tables, `m2cfix` for m2c's output).
 """
 
+from . import _native_guard as _guard
+
+# before any other module of the package is imported: a compiled file left from an older version must not answer
+_guard.install(__name__, __path__[0])
+del _guard
+
 import re as _re
 
 # The families build thousands of patterns around a function's own names; Python keeps only 512 (plus 256 more in
