@@ -5,6 +5,7 @@ from decomprepair.narrow_value_shadows import (
     FAMILY_CHAIN,
     FAMILY_COUNTER,
     FAMILY_RETYPE,
+    FAMILY_WIDEN,
     variants,
 )
 
@@ -130,3 +131,40 @@ def test_the_copy_chain_gives_the_arm_two_copies_the_first_read_taking_the_secon
 
 def test_an_arm_without_a_nested_conditional_gets_no_chain():
     assert _of(FAMILY_CHAIN) == []
+
+
+# The else arm reads a 16-bit result several times; the target masks it once, first thing in the arm.
+WIDEN = '''void f(Obj *o)
+{
+  u16 slot;
+  s32 id;
+  slot = take();
+  if (slot != 0xFFFF)
+  {
+    id = spawn(o);
+    if ((u16) (id + 2) < 2)
+    {
+      drop(slot);
+    }
+    else
+    {
+      id &= 0xFFFF;
+      start(slot, id);
+      table[slot].owner = o;
+    }
+  }
+}
+'''
+
+
+def test_arm_head_widen_copies_a_narrow_local_into_an_int_at_the_head_of_the_arm():
+    children = [_squash(t) for f, t in variants(WIDEN, 'f') if f == FAMILY_WIDEN]
+    assert any('s32 __repair_slot_wide;' in t
+               and 'else { __repair_slot_wide = slot; id &= 0xFFFF; start(__repair_slot_wide, id); table[__repair_slot_wide].owner = o;' in t
+               and 'drop(slot);' in t
+               for t in children), children
+
+
+def test_arm_head_widen_leaves_a_local_the_arm_writes():
+    source = WIDEN.replace('table[slot].owner = o;', 'slot = 0;')
+    assert not [t for f, t in variants(source, 'f') if f == FAMILY_WIDEN]

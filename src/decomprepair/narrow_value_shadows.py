@@ -32,6 +32,12 @@ and a plain spelling folds away:
                        (the copies alone: 2460 -> 2295; they pay off only with the operand order, so the child is offered
                        whole).
 
+  arm_head_widen       `u16 n; n = f(); if (n != END) { if (c) {..} else { g(n); t[n] = 0; } }` -> the arm opens with
+                       `{ s32 __repair_n_wide = n; ... }` and reads that. A narrow local is extended at every use; one int
+                       copy at the arm's head is one `andi` before anything else the arm computes (`andi $s0,$s3,0xffff`
+                       first in the arm, KMC GCC 2.7.2 -O1, where only the order of two `andi`s differed: 210 -> 0 after
+                       `pointer_integer_phase_union`). The value may be set in any block before the `if`.
+
 Children carry the family name; only integer locals are rewritten and the original statements are untouched except for the
 read names. The candidate is never a verdict: the judge decides.
 """
@@ -45,7 +51,8 @@ FAMILY_ARM = 'arm_head_copy'
 FAMILY_COUNTER = 'counter_cast_test'
 FAMILY_RETYPE = 'wide_local_to_halfword'
 FAMILY_CHAIN = 'arm_copy_chain'
-FAMILIES = (FAMILY_CAST, FAMILY_ARM, FAMILY_COUNTER, FAMILY_RETYPE, FAMILY_CHAIN)
+FAMILY_WIDEN = 'arm_head_widen'
+FAMILIES = (FAMILY_CAST, FAMILY_ARM, FAMILY_COUNTER, FAMILY_RETYPE, FAMILY_CHAIN, FAMILY_WIDEN)
 _ID = r'[A-Za-z_]\w*'
 _WIDE = ('s32', 'u32', 'int', 'unsigned int', 'signed int', 'long', 'unsigned long')
 _NARROW = ('u16', 's16', 'u8', 's8')
@@ -185,6 +192,24 @@ def _arm_children(source, clean, opening, end):
     return out
 
 
+def _widen_children(source, clean, opening, end):
+    declared = _declared(clean, opening, end)
+    out = []
+    for at, arms in _if_arms(clean, opening, end):
+        for start, stop in arms:
+            body = clean[start + 1:stop]
+            for v, kind in declared.items():
+                if kind not in _NARROW or len(_reads(body, v)) < 2 or _writes(body, v):
+                    continue
+                if not _assign_before(clean, v, opening, at):
+                    continue
+                shadow = _unique(clean, f'__repair_{v}_wide')
+                inner = re.sub(rf'(?<![\w.>]){re.escape(v)}\b(?!\s*\()', shadow, source[start + 1:stop])
+                edited = f'{source[:start + 1]}\n{shadow} = {v};{inner}{source[stop:]}'
+                out.append((FAMILY_WIDEN, _declare(edited, opening, f's32 {shadow};')))
+    return out
+
+
 _FOR = re.compile(rf'\bfor\s*\(\s*(?P<v>{_ID})\s*=\s*[^;]+;\s*(?P<test>(?P=v)\s*<)\s*(?P<limit>[^;]+);\s*(?:(?P=v)\s*\+\+|\+\+\s*(?P=v)|(?P=v)\s*\+=\s*1)\s*\)')
 
 
@@ -294,7 +319,7 @@ def variants(source, name):
         return []
     clean, opening, end = found
     out = []
-    for build in (_cast_children, _arm_children, _counter_children, _retype_children, _chain_children):
+    for build in (_cast_children, _arm_children, _counter_children, _retype_children, _chain_children, _widen_children):
         out.extend(build(source, clean, opening, end))
     return out[:_MAX_CHILDREN]
 
