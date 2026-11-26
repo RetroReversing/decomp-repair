@@ -180,3 +180,21 @@ def test_an_sn64_diagnostic_is_applied_to_the_first_line_it_fits():
 def test_an_sn64_line_search_skips_the_preprocessor_lines():
     src = '#define F(e, t, o) (*(t)((s8 *)(e) + (o)))(x)\nvoid f(void) {\n    *(s32 *)((a * 4) + &T)(b);\n}\n'
     assert '#define F(e, t, o) (*(t)((s8 *)(e) + (o)))(x)' in repair(src, 0, 'called object is not a function')
+
+
+def test_ido_operator_classes_and_argument_counts_are_read():
+    log = ("cfe: Error: func.c, line 3: Unacceptable operand of a multiplicative operator.\n x\n"
+           "cfe: Error: func.c, line 4: The number of arguments doesn't agree with the number in the declaration.\n x\n"
+           "cfe: Error: func.c, line 5: Unacceptable operand of relational operator.\n x\n"
+           "cfe: Error: func.c, line 6: Non-function name referenced in function call.\n x\n")
+    assert diagnostics(log) == [(3, 'invalid operands to binary *'), (4, 'too few arguments to function'),
+                                (5, 'invalid operands to binary <'), (6, 'called object is not a function')]
+    source = 'void f(u8 *a) {\n    x = a * 4;\n    y = a > b;\n}\n'
+    assert repair(source, 2, 'invalid operands to binary *') == 'void f(u8 *a) {\n    x = (s32)a * (s32)4;\n    y = a > b;\n}\n'
+    assert repair(source, 3, 'invalid operands to binary <') == 'void f(u8 *a) {\n    x = a * 4;\n    y = (s32)a > (s32)b;\n}\n'
+
+
+def test_a_call_that_disagrees_with_its_own_definition_goes_through_an_unprototyped_pointer():
+    source = 'void g(s32 a) {\n    g(a, 1);\n}\n'
+    out = repair(source, 2, "too few arguments to function")
+    assert out == 'void g(s32 a) {\n    ((s32 (*)())g)(a, 1);\n}\n'

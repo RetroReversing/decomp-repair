@@ -28,6 +28,9 @@ _DIAGNOSTIC = re.compile(r'^func\.(c|sn\.i):(\d+): (.*)$')  # (SN64's preprocess
 # IDO's `cfe: Error: func.c, line 21: Unacceptable operand of '+'.`, said in the words the repairs below know
 _IDO = re.compile(r'^cfe: Error: func\.c, line (\d+): (.*)$')
 _IDO_OPERAND = re.compile(r"Unacceptable operand of '?([^'\s.]+)'?\.?$")
+# IDO names some operators by their class
+_IDO_OPERATOR_CLASSES = (('a multiplicative operator', '*'), ('an additive operator', '+'), ('a shift operator', '<<'),
+                         ('relational operator', '<'))
 _OPEN, _CLOSE = {'(': ')', '[': ']'}, {')': '(', ']': '['}
 _CAST_WORDS = {'s8', 's16', 's32', 's64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64', 'int', 'char', 'short', 'long',
                'unsigned', 'signed', 'float', 'double', 'void', 'const', 'volatile', 'struct'}
@@ -66,6 +69,13 @@ def _ido_message(text):
         return 'ido: float cast to a pointer'
     if text.startswith('Dereferenced a non-pointer'):
         return "invalid type argument of `unary *'"
+    if text.startswith("The number of arguments doesn't agree"):
+        return 'too few arguments to function'  # (IDO names no callee: the repair reads the line's calls)
+    if text.startswith('Non-function name referenced in function call'):
+        return 'called object is not a function'
+    for words, operator in _IDO_OPERATOR_CLASSES:
+        if text.startswith('Unacceptable operand of ' + words):
+            return 'invalid operands to binary ' + operator
     if found := _IDO_OPERAND.match(text):
         return 'invalid operands to binary ' + found[1]
     return None
@@ -200,33 +210,26 @@ def _unary_operators(tokens, op):
             if token == op and not _operand_end(tokens, i) and not _in_type(tokens, i)]
 
 
-_SIBLINGS = {'==': ('!=',), '+=': ('-=',)}  # IDO words one message for both
+_SIBLINGS = {'==': ('!=',), '+=': ('-=',), '<': ('>', '<=', '>='), '*': ('/', '%')}  # IDO words one message for both
 
 
 def _binary(tokens, op, attempt):
-    if op in _SIBLINGS:  # `+=` (IDO: "+= or -="): the compound assignments and their sibling
+    places = sorted(i for o in (op, *_SIBLINGS.get(op, ()), op + '=') for i in _binary_operators(tokens, o))
+    if op == '+=':  # (IDO: "+= or -=": the compound assignments and their sibling)
         places = sorted(i for o in (op, *_SIBLINGS[op]) for i in _binary_operators(tokens, o))
-        if attempt >= len(places):
-            return None
-        at = places[attempt]
-        if tokens[at] in ('+=', '-='):
-            return None if _atom_after(tokens, at + 1) is None else [(tokens.starts[at + 1], '(s32)')]
+    for at in places[attempt:]:  # (an operator whose operands can't be read is skipped, not the end of the search)
+        if tokens[at] in ('+=', '-=', op + '='):  # `*p += q`: the target stays as it is, the amount is an integer
+            right = _atom_after(tokens, at + 1)
+            if right is not None and tokens[at + 1:at + 4] != ['(', 's32', ')']:
+                return [(tokens.starts[at + 1], '(s32)')]
+            continue
         left, right = _atom_before(tokens, at), _atom_after(tokens, at + 1)
         if left is None or right is None:
-            return None
-        return [(tokens.starts[left], '(s32)'), (tokens.starts[at + 1], '(s32)')]
-    places = _binary_operators(tokens, op) + [i for i in _binary_operators(tokens, op + '=')]
-    places.sort()
-    if attempt >= len(places):
-        return None
-    at = places[attempt]
-    if tokens[at] == op + '=':  # `*p += q`: the target stays as it is, the amount is an integer
-        right = _atom_after(tokens, at + 1)
-        return None if right is None else [(tokens.starts[at + 1], '(s32)')]
-    left, right = _atom_before(tokens, at), _atom_after(tokens, at + 1)
-    if left is None or right is None:
-        return None
-    return [(tokens.starts[left], '(s32)'), (tokens.starts[at + 1], '(s32)')]
+            continue
+        edits = [(tokens.starts[i], '(s32)') for i in (left, at + 1) if tokens[i:i + 3] != ['(', 's32', ')']]
+        if edits:
+            return edits
+    return None
 
 
 def _casts(tokens, wanted):
@@ -405,6 +408,12 @@ def repair(source, line, message, attempt=0):
             if pointer[0].rstrip(')').split('(')[-1].strip() != 'void':
                 text = lines[line - 1][:pointer.start()] + re.sub(r'\)\([^()]+\)$', ')()', pointer[0]) + lines[line - 1][pointer.end():]
                 changed.append('\n'.join(lines[:line - 1] + [text] + lines[line:]))
+        # a call to the function being defined (or one declared with its parameters written out) that passes another
+        # count: the call reads the callee as taking no list
+        for n in dict.fromkeys(names) if not changed else ():
+            if f'{n}(' in lines[line - 1] and f'(({{}})'.format('s32 (*)()') + n not in lines[line - 1]:
+                call = re.sub(rf'(?<![\w.>]){re.escape(n)}\(', f'((s32 (*)(){chr(41)}{n})(', lines[line - 1], count=1)
+                changed.append('\n'.join(lines[:line - 1] + [call] + lines[line:]))
         return changed[attempt] if attempt < len(changed) else None
     lines = source.split('\n')
     if not 1 <= line <= len(lines):
