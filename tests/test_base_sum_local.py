@@ -58,3 +58,30 @@ def test_a_later_sum_outside_a_nested_block_declines():
     flat = SOURCE.replace('    if (idx >= 0xA0) {\n        tex(idx);\n        rect(((x4 + 64) & 0xFFF) << 12, x4 & 0xFFF);\n    }\n',
                           '    rect(((x4 + 64) & 0xFFF) << 12, x4 & 0xFFF);\n')
     assert _texts(flat) == []
+
+
+POINTER = '''void tile(s32 c, u8 ch) {
+    u8 *font;
+    u8 *spare;
+    s32 idx;
+
+    font = gFont;
+    idx = c - 0x20;
+    load((u32)(font + idx * 0xD0) & ~7);
+    if (ch >= 0xC0) {
+        mark(ch);
+        load((u32)(font + (gAccent[ch - 0xC0] - 0x20) * 0xD0) & ~7);
+    }
+}
+'''
+
+
+def test_a_pointer_base_takes_a_local_of_its_type_and_any_pure_addend():
+    texts = [text for family, text in s.variants(POINTER, 'tile') if family == s.FAMILY]
+    new = next(t for t in texts if 'u8 *sum;' in t and '    mark(ch);\n        sum = font' in t)
+    assert '    sum = font + idx * 0xD0;\n    load((u32)sum & ~7);' in new
+    assert '        sum = font + (gAccent[ch - 0xC0] - 0x20) * 0xD0;\n        load((u32)sum & ~7);' in new
+    assert any('spare = font + idx * 0xD0;' in t for t in texts)
+    assert not any('c = font' in t or 'idx = font' in t for t in texts)  # integers do not hold a pointer
+    called = POINTER.replace('(gAccent[ch - 0xC0] - 0x20)', 'pick(ch)')
+    assert not [t for f, t in s.variants(called, 'tile') if f == s.FAMILY]
