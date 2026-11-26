@@ -21,7 +21,7 @@ STATEMENT = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<lhs>[^;=\n]+?)\s*=(?!=)\s*'
 KEYWORD = re.compile(r'\s*(?:if|while|for|return|switch|else|do|case)\b')
 
 
-def _split(inner):
+def _python_split(inner):
     """The last top-level `|` of an expression: (left, right), or None."""
     depth = 0
     cut = None
@@ -33,6 +33,22 @@ def _split(inner):
     if cut is None:
         return None
     return inner[:cut].strip(), inner[cut + 1:].strip()
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(inner):
+        cut = None
+        for at in _scan.top_offsets(inner, '|', 2):
+            if inner[at - 1:at] != '|' and inner[at + 1:at + 2] != '|':
+                cut = at
+        if cut is None:
+            return None
+        return inner[:cut].strip(), inner[cut + 1:].strip()
 
 
 def variants(source, name):

@@ -29,7 +29,7 @@ OFFSET = re.compile(rf'\(\s*\(\s*char\s*\*\s*\)\s*(?P<addr>.+?)\s*\)\s*\+\s*(?P<
 LIMIT = 4
 
 
-def _split(text, op='|'):
+def _python_split(text, op='|'):
     """The operands of `text` at its top level."""
     parts, depth, begin = [], 0, 0
     for at, char in enumerate(text):
@@ -39,6 +39,26 @@ def _split(text, op='|'):
             begin = at + 1
     parts.append(text[begin:])
     return [p.strip() for p in parts]
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(text, op='|'):
+        # (a bracket as `op`: this loop counts the depth first and then tests, so it can split at one; the kernel never does)
+        found = NotImplemented if op in ('(', ')') else _scan.top_offsets(text, op, 1)
+        if found is NotImplemented:
+            return _python_split(text, op)
+        parts, begin = [], 0
+        for at in found:
+            if text[at:at + 2] != op * 2:
+                parts.append(text[begin:at])
+                begin = at + 1
+        parts.append(text[begin:])
+        return [part.strip() for part in parts]
 
 
 def _unparen(text):

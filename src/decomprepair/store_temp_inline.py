@@ -24,13 +24,26 @@ LIMIT = 6
 ASSIGN = re.compile(r'(?m)^([ \t]*)([A-Za-z_]\w*)\s*=(?!=)\s*([^;{}]+);[ \t]*\n(?=[ \t]*([^;{}]+);)')
 
 
-def _top_level_equals(text):
+def _python_top_level_equals(text):
     depth = 0
     for index, char in enumerate(text):
         depth += (char in '([')-(char in ')]')
         if char == '=' and depth == 0 and text[index - 1:index] not in ('=', '!', '<', '>') and text[index + 1:index + 2] != '=':
             return index
     return -1
+
+
+_top_level_equals = _python_top_level_equals
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_level_equals(text):
+        for at in _scan.top_offsets(text, '=', 2):
+            if text[at - 1:at] not in ('=', '!', '<', '>') and text[at + 1:at + 2] != '=':
+                return at
+        return -1
 
 
 def variants(source, name):

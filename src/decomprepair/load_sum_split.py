@@ -28,7 +28,7 @@ _PAIR = re.compile(rf'(?m)^([ \t]*)({_ID}) = ([^;{{}}\n]+);[ \t]*\n?[ \t]*({_ID}
 _EFFECT = re.compile(r'\+\+|--|(?<![=!<>])=(?!=)|\w\s*\(')
 
 
-def _top_plus(text):
+def _python_top_plus(text):
     """Offset of the last `+` that is outside every bracket, or -1."""
     depth, found = 0, -1
     for at, ch in enumerate(text):
@@ -36,6 +36,20 @@ def _top_plus(text):
         if ch == '+' and depth == 0 and text[at - 1:at] != '+' and text[at + 1:at + 2] not in ('+', '='):
             found = at
     return found
+
+
+_top_plus = _python_top_plus
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_plus(text):
+        found = -1
+        for at in _scan.top_offsets(text, '+', 2):
+            if text[at - 1:at] != '+' and text[at + 1:at + 2] not in ('+', '='):
+                found = at
+        return found
 
 
 def _sites(source, clean, opening, closing):

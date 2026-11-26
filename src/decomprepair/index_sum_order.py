@@ -25,7 +25,7 @@ from .pattern_repairs import close
 FAMILIES = ('pointer_sum_regroup', 'index_sum_swap')
 
 
-def _terms(text):
+def _python_terms(text):
     """`text` split on its top-level `+` (not inside brackets), as (start, end) spans; None for a top-level `-`."""
     depth, spans, start = 0, [], 0
     for at, char in enumerate(text):
@@ -40,6 +40,25 @@ def _terms(text):
             return None  # a difference: the grouping is not free
     spans.append((start, len(text)))
     return spans
+
+
+_terms = _python_terms
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _terms(text):
+        for at in _scan.top_offsets(text, '-', 2):
+            if text[at - 1:at] != '-' and text[at + 1:at + 2] not in ('-', '=', '>'):
+                return None  # a difference: the grouping is not free
+        spans, start = [], 0
+        for at in _scan.top_offsets(text, '+', 2):
+            if text[at - 1:at] != '+' and text[at + 1:at + 2] not in ('+', '='):
+                spans.append((start, at))
+                start = at + 1
+        spans.append((start, len(text)))
+        return spans
 
 
 def _quiet(text):

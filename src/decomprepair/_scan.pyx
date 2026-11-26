@@ -1715,7 +1715,8 @@ def statement_start_in_block(str text, Py_ssize_t block, Py_ssize_t first):
 
 
 # Splitting at a separator that is outside every bracket: many families' own `_split`. `level` says which brackets count:
-# 1 parentheses, 2 also `[ ]`, 3 also `{ }`. A bracket is never the separator (the plain scans test the brackets first).
+# 1 parentheses, 2 also `[ ]`, 3 also `{ }`. A bracket is never the separator: a plain scan that updates the depth and then tests the separator can split at one,
+# so a wrapper whose separator is a parameter hands brackets back to its twin.
 
 def top_offsets(str text, str separator, int level):
     """The offsets of each `separator` character of `text` at bracket depth 0."""

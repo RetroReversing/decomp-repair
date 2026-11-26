@@ -41,7 +41,7 @@ PATTERN = re.compile(
     rf'if\s*\(\s*(?P=x)\s*==\s*\(\s*u8\s*\)\s*(?P=y)\s*\)\s*return\s+1\s*;\s*return\s+0\s*;')
 
 
-def _strip(expression):
+def _python_strip(expression):
     expression = expression.strip()
     if expression.startswith('(') and expression.endswith(')'):
         depth = 0
@@ -52,6 +52,22 @@ def _strip(expression):
                 return expression
         return expression[1:-1]
     return expression
+
+
+_strip = _python_strip
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _strip(expression):
+        expression = expression.strip()
+        if expression.startswith('(') and expression.endswith(')'):
+            found = _scan.close_every(expression, 0, '(', ')', False, None)
+            if found is not None and found < len(expression) - 1:
+                return expression
+            return expression[1:-1]
+        return expression
 
 
 def _build(g, direct, split):

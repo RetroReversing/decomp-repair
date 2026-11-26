@@ -24,7 +24,7 @@ _STEP = re.compile(rf'\s*(?:(?:\+\+|--)\s*(?P<a>{_ID})|(?P<b>{_ID})\s*(?:\+\+|--
                    rf'(?P<d>{_ID})\s*=\s*(?P=d)\s*[-+]\s*[\w.\->\[\]]+)\s*')
 
 
-def _steps(text):
+def _python_steps(text):
     parts, depth, start = [], 0, 0
     for pos, char in enumerate(text):
         if char in '([{':
@@ -36,6 +36,16 @@ def _steps(text):
             start = pos + 1
     parts.append(text[start:])
     return parts
+
+
+_steps = _python_steps
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _steps(text):
+        return _scan.top_pieces(text, ',', 3)
 
 
 def _target(step):

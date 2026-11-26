@@ -22,7 +22,7 @@ _TYPE = r'(?:(?:unsigned|signed|register)\s+)*(?:u8|s8|u16|s16|u32|s32|int|long|
 _DECL_LINE = re.compile(rf'[ \t]*{_TYPE}\s*\**\s*{IDENT}\s*(?:\[[^\]]*\])?\s*(?:=[^;]*)?;[ \t]*\n')
 
 
-def _top_or(expr):
+def _python_top_or(expr):
     """The operands of `expr`'s top-level `|`, when there is exactly one."""
     depth, cuts = 0, []
     for at, char in enumerate(expr):
@@ -33,6 +33,20 @@ def _top_or(expr):
         return None
     left, right = expr[:cuts[0]].strip(), expr[cuts[0] + 1:].strip()
     return (left, right) if left and right else None
+
+
+_top_or = _python_top_or
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_or(expr):
+        cuts = [at for at in _scan.top_offsets(expr, '|', 2) if expr[at - 1:at] != '|' and expr[at + 1:at + 2] not in '|=']
+        if len(cuts) != 1:
+            return None
+        left, right = expr[:cuts[0]].strip(), expr[cuts[0] + 1:].strip()
+        return (left, right) if left and right else None
 
 
 def _shift(text):

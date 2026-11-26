@@ -131,7 +131,7 @@ def _one_per_line(source, name):
     return source[:part.opening] + body + source[part.end:]
 
 
-def _terms(text):
+def _python_terms(text):
     """The top-level terms of a sum of `+` only, or None."""
     terms, depth, start = [], 0, 0
     for at, char in enumerate(text):
@@ -143,6 +143,20 @@ def _terms(text):
             start = at + 1
     terms.append(text[start:].strip())
     return terms if len(terms) > 1 and all(terms) else None
+
+
+_terms = _python_terms
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _terms(text):
+        for at in _scan.top_offsets(text, '-', 1):
+            if text[at + 1:at + 2] != '>':
+                return None
+        terms = [term.strip() for term in _scan.top_pieces(text, '+', 1)]
+        return terms if len(terms) > 1 and all(terms) else None
 
 
 def _product_last(source, name, positions, counters):
