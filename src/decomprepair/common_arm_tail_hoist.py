@@ -11,6 +11,11 @@ third arms of a 417-instruction input handler: two `beql` targets, the last 20 o
 
 Offered for `if (C) { ...; T; } else { T; }` with braced arms and identical last statements (spacing ignored), where the
 then arm has more than the tail: one child per if. A candidate rewrite; the exact judge decides.
+
+`chain_tail_hoist` does the same for a whole exhaustive if / `else if` / `else` chain, nested chains included, whose
+every leaf ends with the same statement: m2c copies a loop's `n++;` into each arm, where the game wrote it once after
+the chain (a 92-instruction table fill, KMC GCC 2.7.2 `-O1`: 600 -> 180 from this alone, then 0 with two other
+families). It moves all the copies at once, since removing only some changes what the others do.
 """
 import re
 
@@ -18,7 +23,8 @@ from .integer_repair_support import edit, view
 from .pattern_repairs import close
 
 FAMILY = 'common_arm_tail_hoist'
-FAMILIES = (FAMILY,)
+CHAIN = 'chain_tail_hoist'
+FAMILIES = (FAMILY, CHAIN)
 _IF = re.compile(r'\bif\s*\(')
 
 
@@ -33,6 +39,92 @@ def _last(block):
     if not statement or re.search(r'[{}]|\b(?:if|else|for|while|do|switch|case|default|return|break|continue|goto)\b', statement):
         return None
     return start + (len(stripped[start:]) - len(stripped[start:].lstrip())), len(stripped)
+
+
+def _chain(clean, at):
+    """(end, [(open, close) of every braced arm]) of an exhaustive if/else chain starting at `at`, else None."""
+    arms = []
+    while True:
+        head = _IF.match(clean, at)
+        shut = close(clean, head.end() - 1) if head else None
+        then = re.compile(r'\s*\{').match(clean, shut) if shut else None
+        end = close(clean, then.end() - 1, '{', '}') if then else None
+        if not end:
+            return None
+        arms.append((then.end(), end - 1))
+        other = re.compile(r'\s*else\b\s*').match(clean, end)
+        if not other:
+            return None
+        at = other.end()
+        if clean.startswith('{', at):
+            end = close(clean, at, '{', '}')
+            if not end:
+                return None
+            arms.append((at + 1, end - 1))
+            return end, arms
+
+
+def _leaves(clean, arm):
+    """The spans of the statements that run last in an arm, following a chain that ends it; None when unknown."""
+    start, end = arm
+    body = clean[start:end].rstrip()
+    if body.endswith('}'):
+        for hit in _IF.finditer(clean, start, end):
+            before = clean[start:hit.start()].rstrip()
+            if before and before[-1] not in ';{}':
+                continue
+            if before.count('{') != before.count('}'):
+                continue
+            chain = _chain(clean, hit.start())
+            if chain and chain[0] == start + len(body):
+                spans = []
+                for inner in chain[1]:
+                    found = _leaves(clean, inner)
+                    if found is None:
+                        return None
+                    spans += found
+                return spans
+        return None
+    last = _last(clean[start:end])
+    return [(start + last[0], start + last[1])] if last else None
+
+
+def _chain_variants(source, part):
+    clean = part.clean
+    out = []
+    for hit in _IF.finditer(clean, part.opening + 1, part.end):
+        before = clean[:hit.start()].rstrip()
+        if before[-1:] not in (';', '{', '}'):
+            continue  # an `else if`, or the whole body of a test or loop
+        chain = _chain(clean, hit.start())
+        if not chain:
+            continue
+        end, arms = chain
+        spans = []
+        for arm in arms:
+            found = _leaves(clean, arm)
+            if found is None:
+                break
+            spans += found
+        else:
+            if len({re.sub(r'\s+', '', clean[a:b]) for a, b in spans}) != 1:
+                continue
+            a, b = spans[0]
+            tail = source[a:b]
+            names = set(re.findall(r'[A-Za-z_]\w*', clean[a:b]))
+            if any(re.search(rf'\b[A-Za-z_]\w*[\s*]+{re.escape(n)}\s*(?:[;=,\[])', clean[hit.start():end])
+                   for n in names):
+                continue  # a name the chain declares itself would be out of scope after it
+            indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, hit.start()) + 1:])[0]
+            edits = []
+            for a, b in spans:
+                line = source.rfind('\n', 0, a) + 1
+                if not source[line:a].strip() and source[b:b + 1] == '\n':
+                    a, b = line, b + 1
+                edits.append((a, b, ''))
+            edits.append((end, end, f'\n{indent}{tail}'))
+            out.append((CHAIN, edit(source, edits)))
+    return out
 
 
 def variants(source, name):
@@ -72,7 +164,8 @@ def variants(source, name):
         if before.endswith('else'):  # `else if`: the else gets the braces its two statements need
             text = f'{{\n{indent}{text}\n{indent}}}'
         out.append((FAMILY, edit(source, [(hit.start(), else_end, text)])))
-    return out
+    made = {text for _, text in out}
+    return out + [child for child in _chain_variants(source, part) if child[1] not in made]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}
