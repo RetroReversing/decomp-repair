@@ -43,13 +43,13 @@ def test_from_pairs_lays_the_struct_out_again_and_rewrites_the_uses():
     assert '} Actor;' in relaid and 'return a->hp + a->next->hp;' in relaid
     laid = fo.Types(relaid).struct('Actor')
     assert {m.name: m.offset for m in laid.members if not m.name.startswith('_pad')} == {'kind': 0, 'hp': 6, 'x': 8, 'next': 12} and laid.size == 16
-    assert 'return (*(s16 *)((char *)a + 0x6)) + a->next->hp;' in rewritten
+    assert 'return (*(s16 *)((char *)a + 0x6)) + (*(s16 *)((char *)(a->next) + 0x6));' in rewritten
 
 
 def test_a_struct_in_the_header_gets_only_the_rewritten_uses():
     header, function = DONOR.split('s32 actor_hp')
     out = fo.from_pairs('s32 actor_hp' + function, header, {2: 6})
-    assert out == ['s32 actor_hp(Actor *a) { return (*(s16 *)((char *)a + 0x6)) + a->next->hp; }\n']
+    assert out == ['s32 actor_hp(Actor *a) { return (*(s16 *)((char *)a + 0x6)) + (*(s16 *)((char *)(a->next) + 0x6)); }\n']
 
 
 def test_nothing_when_fields_would_overlap_or_the_offset_is_ambiguous():
@@ -70,3 +70,26 @@ def test_variants_pair_the_targets_offsets_in_order_and_are_declared():
     assert fo.variants(DONOR, 'actor_hp', '', asm.replace('0x6', '0x2').replace('0xc', '0x8')) == []
     entry = registry.get('field_offsets')
     assert entry is not None and registry.problems(entry) == []
+
+
+NESTED = '''typedef struct Vec { f32 x; f32 y; } Vec;
+typedef struct Body { s16 kind; Vec pos; struct Body *next; s16 hp; } Body;
+extern Body gBodies[4];
+f32 body_y(Body *b, s32 i) { return b->pos.y + gBodies[i].pos.x + b->next->hp; }
+'''
+
+
+def test_chains_read_nested_values_indexing_and_each_dereference():
+    types = fo.Types(NESTED)
+    found = sorted((a.offset, a.member.name) for a in fo._accesses(NESTED, types))
+    assert found == [(4, 'x'), (8, 'y'), (12, 'next'), (16, 'hp')]
+
+
+def test_nested_and_indexed_uses_are_rewritten_at_their_new_offsets():
+    out = fo.from_pairs(NESTED, '', {8: 12, 16: 20})
+    rewritten = out[-1]
+    assert '(*(f32 *)((char *)b + 0xC))' in rewritten  # b->pos.y, a field inside a struct value
+    assert '(*(s16 *)((char *)(b->next) + 0x14))' in rewritten  # the second dereference of b->next->hp
+    assert 'gBodies[i].pos.x' in rewritten  # not moved: written as it was
+    indexed = fo.from_pairs(NESTED, '', {4: 8})[-1]
+    assert '(*(f32 *)((char *)(&gBodies[i]) + 0x8))' in indexed and 'b->pos.y' in indexed
