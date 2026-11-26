@@ -72,6 +72,13 @@ def _kills(op, operands):
 def incoming_calls(asm):
     """{callee: {argument index}} for each callee `jal`ed exactly once: the argument registers that hold the caller's own
     value at that call on every path from the entry. Empty when the code has an indirect jump it cannot follow."""
+    return {callee: sites[0] for callee, sites in incoming_sites(asm).items() if len(sites) == 1}
+
+
+def incoming_sites(asm):
+    """{callee: [{argument index}, ...]}, one set per `jal` of the callee (in address order): the argument registers
+    that hold the caller's own value at that call on every path from the entry. Empty when the code has an indirect
+    jump it cannot follow. `incoming_calls` keeps the callees called once."""
     instructions, labels = _program(asm)
     count = len(instructions)
     successors = [[index + 1] if index + 1 < count else [] for index in range(count)]
@@ -114,9 +121,12 @@ def incoming_calls(asm):
             if merged != state[following]:
                 state[following] = merged
                 work.append(following)
+    sites = {}
+    for index in sorted(seen):
+        sites.setdefault(instructions[index][1], []).append({_REGISTERS.index(reg) for reg in seen[index]})
     callees = [operands for op, operands in instructions if op == 'jal']
-    return {instructions[index][1]: {_REGISTERS.index(reg) for reg in registers}
-            for index, registers in seen.items() if callees.count(instructions[index][1]) == 1}
+    # a `jal` the walk never reached (dead code) has no verdict: the callee is left out rather than guessed
+    return {callee: found for callee, found in sites.items() if len(found) == callees.count(callee)}
 
 
 def _parameters(part):

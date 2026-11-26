@@ -12,7 +12,8 @@ CASE = re.compile(r'\bcase\s+(-?(?:0[xX][0-9a-fA-F]+|0|[1-9][0-9]*))\s*:')
 
 
 def variants(source, name, differences):
-    return _relabel(source, name, differences) + empty_arm_variants(source, name, differences)
+    return (_relabel(source, name, differences) + empty_arm_variants(source, name, differences)
+            + default_swap_variants(source, name, differences))
 
 
 def _relabel(source, name, differences):
@@ -139,6 +140,68 @@ def empty_arm_variants(source, name, differences):
         hexed = any('x' in source[span[0]:span[1]].lower() for span in spans if span[2] is not None)
         text = ' '.join(f'case {value:#x}:' if hexed else f'case {value}:' for value in moved) + ' break;\n'
         out.append((EMPTY_ARM, edit(source, [*[(a, b, '') for a, b in removals], (at, at, lead + text)])))
+    return list(dict.fromkeys(out))[:2]
+
+
+DEFAULT_SWAP = 'linked_switch_default_swap'
+
+
+def default_swap_variants(source, name, differences):
+    """Two cases that trade destinations when one has an arm's label and the other only falls to `default:`.
+
+    The table rows say case 7 goes where the compiled table sends case 12 and the other way round;
+    `linked_switch_labels` exchanges two written labels, but here only one is written (`case 12: call(); default:
+    return;`: the arm carries the label the game gave the join, and the game's `case 7:` for the arm is the case the
+    draft left out because m2c merged it into `default:`). An N64 dispatcher (`-G0 -mips3 -mgp32 -mfp32 -O2`) was 1
+    (every instruction equal, two table words swapped) with `case 12:` on the call arm and exact with `case 7:
+    call(); case 12: default: return;`. The proposal renames the written label to the missing case and writes the
+    written one in front of `default:` (an arm is never left without a label). One proposal per switch; the judge
+    decides."""
+    if len(differences) != 2 or len({row['table'] for row in differences}) != 1:
+        return []
+    first, second = differences
+    if (first['case'] == second['case'] or first['target'] != second['candidate']
+            or second['target'] != first['candidate']):
+        return []
+    cases = (first['case'], second['case'])
+    part = view(source, name)
+    if not part or re.search(r'\b(?:asm|__asm__)\b', part.body):
+        return []
+    out = []
+    for switch in re.compile(r'\bswitch\s*\(').finditer(part.clean, part.opening + 1, part.end - 1):
+        after = close(part.clean, switch.end() - 1)
+        opening = re.match(r'\s*{', part.clean[after:part.end]) if after else None
+        if not opening:
+            continue
+        brace = after + opening.end() - 1
+        end = close(part.clean, brace, '{', '}')
+        if not end:
+            continue
+        scope = [*block_path(part, brace), brace]
+        marks = [hit for hit in re.compile(r'\b(?:case|default)\b').finditer(part.clean, brace + 1, end - 1)
+                 if block_path(part, hit.start()) == scope]
+        labels = {}
+        default = None
+        for hit in marks:
+            label = CASE.match(part.clean, hit.start())
+            if label:
+                labels[int(label[1], 0)] = label
+            elif re.compile(r'default\s*:').match(part.clean, hit.start()):
+                default = hit
+        if default is None or len(labels) + 1 != len(marks):
+            continue
+        written = [case for case in cases if case in labels]
+        missing = [case for case in cases if case not in labels]
+        if len(written) != 1:
+            continue
+        old, new = written[0], missing[0]
+        label = labels[old]
+        spell = (lambda value: f'{value:#x}') if 'x' in label[1].lower() else str
+        lead = re.search(r'[ \t]*$', source[:default.start()])[0]
+        indent = lead if source[:default.start()].endswith('\n' + lead) else ''
+        out.append((DEFAULT_SWAP, edit(source, [(label.start(1), label.end(1), spell(new)),
+                                                (default.start(), default.start(),
+                                                 f'case {spell(old)}:\n{indent}')])))
     return list(dict.fromkeys(out))[:2]
 
 
