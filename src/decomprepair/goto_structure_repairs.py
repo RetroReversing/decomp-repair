@@ -11,7 +11,8 @@ Each rewrite keeps the meaning: only labels every `goto` of which lies in the re
 
 - `goto_backward_loop`: `L: S...; if (c) { goto L; }` becomes `do { S... } while (c);`; `L: if (c) { T...; goto L; }`
   becomes `while (c) { T... }`; any other region from `L:` to its last `goto L;` becomes `for (;;) { ... break; }` with
-  `goto L;` as `continue;`, and, when the region ends with `if (c) { T...; goto L; }`, also
+  `goto L;` as `continue;` (a region whose last statement is an unconditional `goto L;` also gives `while (1) { S }`),
+  and, when the region ends with `if (c) { T...; goto L; }`, also
   `for (;;) { S...; if (!c) break; T... }`.
 - `goto_forward_else`: `if (c) { T...; goto B; } M... B: R...` (the only `goto B`) becomes
   `if (c) { T... } else { M... } R...`, or `if (!c) { M... }` when T is empty.
@@ -301,6 +302,11 @@ def _loop_variants(source, clean, function, label_list, i, name):
             mid = _replace_gotos(source, inner[0].start, inner[-1].end, name, 'continue;') if inner else ''
             emit(f'{indent}for (;;) {{\n{_lines(pre, indent)}{indent}    if ({_not(cond)}) {{\n{indent}        break;\n'
                  f'{indent}    }}\n{_lines(mid, indent)}{indent}}}\n')
+    if last.kind == 'goto' and last.parts.get('target') == name and prefix.strip():
+        # an unconditional backward goto is a loop with no test: `while (1)`, with no unreachable `continue; break;`
+        # (an unoptimised build keeps a jump for each, and its `while (1)` differs from `for (;;)`)
+        body = _replace_gotos(source, region[0].start, last.start, name, 'continue;')
+        emit(f'{indent}while (1) {{\n{_lines(body.rstrip(), indent)}{indent}}}\n')
     generic = _replace_gotos(source, region[0].start, region[-1].end, name, 'continue;')
     emit(f'{indent}for (;;) {{\n{_lines(generic, indent)}{indent}    break;\n{indent}}}\n')
     return found

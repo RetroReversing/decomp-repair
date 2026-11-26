@@ -224,3 +224,20 @@ def test_nested_entry_needs_a_single_goto_and_a_declared_variable():
     assert g.NESTED_ENTRY_FAMILY not in [f for f, _ in g.variants(two, 'f')]
     undeclared = NESTED_ENTRY.replace('    s32 *held;\n', '')
     assert g.NESTED_ENTRY_FAMILY not in [f for f, _ in g.variants(undeclared, 'f')]
+
+
+FOREVER = '''void f(void) {
+    a();
+loop_4:
+    if (D != 0) {
+        D();
+    }
+    goto loop_4;
+}
+'''
+
+
+def test_an_unconditional_backward_goto_is_while_one():
+    # an unoptimised (-O0) build keeps a jump for every `continue; break;`, so only a bare `while (1)` matched
+    out = texts(FOREVER, 'goto_backward_loop')
+    assert any('while (1) {' in t and 'goto' not in t and 'continue' not in t and 'break' not in t for t in out)
