@@ -21,8 +21,12 @@ where the target has it last, after loop.c's reduced pointers. Read in the `-dL`
 Offered when the local is set once to an integer literal before a `do { } while` or `for` loop (optionally inside a
 `do { } while (0)` fence), is otherwise written only by `+= K` with one literal `K`, either one top-level statement of
 the body or the last statement of each arm of one top-level `if`/`else` (a fence around it is allowed), is not read
-after the step or after the loop, and its address is never taken; and the body has no `goto`, label, `break`,
-`continue`, `return` or `switch`, so every pass steps it exactly once. Children: `row++;` before the counter's step;
+after the step or after the loop, and its address is never taken; and the body has no `goto`, label, `continue` or
+`return`, and no `break` of its own (one inside a `switch` or an inner loop leaves only that statement), so every pass
+steps it exactly once. A three-row options menu whose body is a `switch` on the counter (SN64 GCC 2.8.1, `-G0 -mips3
+-O2`) went 525 -> 205 this way with no do-while fence: `y = 0x50;` set where the source wrote it was floated to the top
+of the entry block by sched1 (a multi-set biv with priority 1 and a later INSN_LUID than the hoisted address of the
+table the arms update), where the target has the table's `lui` first and `y`'s `li` beside the cosine chain. Children: `row++;` before the counter's step;
 `row++;` last in the body; `row = 0;` right before the loop where the literal was set further up.
 """
 import re
@@ -39,6 +43,44 @@ _INT = r'(?:0[xX][0-9A-Fa-f]+|\d+)[uUlL]*'
 _WORD = {'int', 's32', 'u32', 'signed int', 'unsigned int', 'unsigned', 'short', 's16', 'u16', 'long', 'signed'}
 _CONTROL = re.compile(r'\b(?:goto|break|continue|return|switch|case|default)\b')
 _LABEL = re.compile(r'(?:^|[;{}])\s*' + _IDENT + r'\s*:(?!:)')
+_INNER = re.compile(r'\b(switch|for|while|do)\b\s*(?:\(|\{)')
+
+
+def _own_control(clean, lo, hi):
+    """clean[lo:hi] with the bodies of the switches and loops inside it blanked, after checking them: a `break` (or a
+    switch's `case`/`default:`) in there leaves only that statement, and every pass still reaches the step after it.
+    None when an inner part could leave the loop or skip the step (`goto`, `continue`, `return`, a label)."""
+    out, at = [], lo
+    while True:
+        m = _INNER.search(clean, at, hi)
+        if not m:
+            break
+        brace = clean.find('{', m.start(), hi)
+        if m[1] != 'do':
+            paren = clean.index('(', m.start())
+            cond = close(clean, paren)
+            if cond is None:
+                return None
+            brace = _skip(clean, cond, hi)
+        if brace < 0 or brace >= hi or clean[brace] != '{':
+            return None
+        stop = close(clean, brace, '{', '}')
+        if stop is None or stop > hi:
+            return None
+        inner = re.sub(r'\b(?:case\b[^:;{}]*|default\s*):(?!:)', ' ', clean[brace + 1:stop - 1]) if m[1] == 'switch' \
+            else clean[brace + 1:stop - 1]
+        if re.search(r'\b(?:goto|continue|return)\b', inner) or _LABEL.search(inner):
+            return None
+        if m[1] == 'do':
+            tail = re.compile(r'\s*while\s*\([^;]*\)\s*;').match(clean, stop)
+            if not tail or tail.end() > hi:
+                return None
+            stop = tail.end()
+        out.append(clean[at:m.start()])
+        out.append(' ' * (stop - m.start()))
+        at = stop
+    out.append(clean[at:hi])
+    return ''.join(out)
 
 
 def _skip(clean, at, end):
@@ -53,7 +95,7 @@ def _statements(clean, start, end):
     result, at = [], _skip(clean, start, end)
     while at < end:
         rest = clean[at:end]
-        head = re.match(r'(if|for|while)\s*\(', rest)
+        head = re.match(r'(if|for|while|switch)\s*\(', rest)
         if head:
             cond = close(clean, at + head.end() - 1)
             brace = _skip(clean, cond or end, end)
@@ -239,7 +281,8 @@ def variants(source, name):
     results = []
     for start, stop, body_open, body_close, last, counter in _loops(clean, opening + 1, end - 1):
         body = clean[body_open + 1:body_close]
-        if _CONTROL.search(body) or _LABEL.search(body):
+        own = _own_control(clean, body_open + 1, body_close)
+        if own is None or _CONTROL.search(own) or _LABEL.search(own):
             continue
         statements = _statements(clean, body_open + 1, body_close)
         if not statements:
