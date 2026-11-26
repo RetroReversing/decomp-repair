@@ -30,9 +30,14 @@ table the arms update), where the target has the table's `lui` first and `y`'s `
 `row++;` last in the body; `row = 0;` right before the loop where the literal was set further up; and, when the loop's
 own counter is 0 on entry (its init or the last top-level write before the loop says so) and the body writes it only
 by its step, `y = i * K + C;` with no row variable, at the top of the body and after the body's leading givs of the
-counter (the options menu's second stepped local, a spilled `yoff = 0; ... yoff += 10`, went 85 -> 25 that way, after
+counter; and a local the `for` header starts at a literal and steps
+(`for (j = 0, k = 0, x = 0xA0; j < 5; k += 20, j++, x += 10)`) as `x = j * 10 + 0xA0;` at the top of the body, every such
+local of the loop at once in each order, loops with the same header alone and together (the same menu's two bar loops:
+both locals, `x` first, closed its last rows once its arms' temporary was inlined, 90 -> 0; `k` first 470) (the options
+menu's second stepped local, a spilled `yoff = 0; ... yoff += 10`, went 85 -> 25 that way, after
 `y = i * 10 + 0x50;`; first, 1465; through a row counter, 85).
 """
+import itertools
 import re
 
 from .csource import _blank, find
@@ -294,6 +299,90 @@ def _zero_start(clean, opening, start, body_open, body_close, last, counter):
     return bool(zero) and clean.count('{', opening, hit.start()) - clean.count('}', opening, hit.start()) == 1
 
 
+def _header_givs(source, clean, opening, end):
+    """`for (i = 0, v = C, ...; i < n; v += K, i++)`: the locals the header starts at a literal and steps by one, as
+    givs of the counter at the top of the body (`v = i * K + C;`), every such local of the loop at once, in each
+    order. A local qualifies when every loop that mentions it sets it in its own header (so it is dead between them)
+    and the body never writes it; the counter starts at 0 in the header and only the header steps it. Loops with the
+    same header are rewritten alone and together."""
+    loops = []
+    for m in re.finditer(r'\bfor\s*\(', clean[opening:end]):
+        paren = opening + m.end() - 1
+        cond = close(clean, paren)
+        brace = _skip(clean, cond or end, end)
+        if cond is None or brace >= end or clean[brace] != '{':
+            continue
+        parts = clean[paren + 1:cond - 1].split(';')
+        if len(parts) != 3:
+            continue
+        stop = close(clean, brace, '{', '}')
+        if stop is None:
+            continue
+        inits = [item.strip() for item in parts[0].split(',')]
+        steps = [item.strip() for item in parts[2].split(',')]
+        counter = next((_step_of(item + ';') for item in steps if _step_of(item + ';')), None)
+        if not counter or not any(re.fullmatch(re.escape(counter) + r'\s*=\s*0[uUlL]*', item) for item in inits):
+            continue
+        loops.append((opening + m.start(), paren, cond, brace, stop, inits, steps, counter))
+    found = []
+    for start, paren, cond, brace, stop, inits, steps, counter in loops:
+        body = clean[brace + 1:stop - 1]
+        write = r'(?:[-+*/%&|^]?=(?!=)|\+\+|--)'
+        if re.search(r'(?<![\w.>])' + re.escape(counter) + r'\s*' + write, body):
+            continue
+        givs = []
+        for item in inits:
+            hit = re.fullmatch(r'(' + _IDENT + r')\s*=\s*(' + _INT + r')', item)
+            if not hit or hit[1] == counter:
+                continue
+            var = hit[1]
+            stride = [re.fullmatch(re.escape(var) + r'\s*\+=\s*(' + _INT + r')', st) for st in steps]
+            stride = [x[1] for x in stride if x]
+            if len(stride) != 1 or re.search(r'(?<![\w.>])' + re.escape(var) + r'\s*' + write, body) \
+                    or re.search(r'&\s*' + re.escape(var) + r'\b', clean[opening:end]):
+                continue
+            # every mention of the local is inside a loop of ours that starts it in its header
+            mentions = [opening + x.start() for x in re.finditer(r'(?<![\w.>])' + re.escape(var) + r'\b', clean[opening:end])]
+            decl = re.search(r'(?:^|[;{}])\s*(?:unsigned\s+|signed\s+)?\w+\s+' + re.escape(var) + r'\s*;', clean[opening:end])
+            if not decl:
+                continue
+            mentions = [x for x in mentions if x >= opening + decl.end()]
+            owners = [lp for lp in loops if any(re.fullmatch(re.escape(var) + r'\s*=\s*' + _INT, it) for it in lp[5])]
+            if not all(any(lp[1] < x < lp[4] for lp in owners) for x in mentions):
+                continue
+            givs.append((var, hit[2], stride[0]))
+        if givs:
+            found.append(((paren, cond, brace, inits, steps, counter), givs, clean[start:brace]))
+    return found
+
+
+def _header_variants(source, clean, opening, end):
+    out = []
+    loops = _header_givs(source, clean, opening, end)
+    for index, (loop, givs, head) in enumerate(loops):
+        same = [other for other in loops if other[2] == head and other[1] == givs]
+        for order in itertools.permutations(givs):
+            for group in ([loop], [o[0] for o in same]) if len(same) > 1 else ([loop],):
+                edits = []
+                for paren, cond, brace, inits, steps, counter in group:
+                    names = {v for v, _, _ in order}
+                    keep_inits = [it for it in inits if not any(re.fullmatch(re.escape(v) + r'\s*=.*', it) for v in names)]
+                    keep_steps = [st for st in steps if not any(re.fullmatch(re.escape(v) + r'\s*\+=.*', st) for v in names)]
+                    header = f'{", ".join(keep_inits)}; {source[paren + 1:cond - 1].split(";")[1].strip()}; {", ".join(keep_steps)}'
+                    first = _skip(clean, brace + 1, end)
+                    indent = _indent(source, first)
+                    lines = ''.join(f'{v} = {counter} * {k}' + ('' if int(c.rstrip('uUlL'), 0) == 0 else f' + {c}')
+                                    + f';\n{indent}' for v, c, k in order)
+                    edits.append((paren + 1, cond - 1, header))
+                    edits.append((first, first, lines))
+                text = source
+                for a, b, new in sorted(edits, reverse=True):
+                    text = text[:a] + new + text[b:]
+                if text != source and (FAMILY, text) not in out:
+                    out.append((FAMILY, text))
+    return out
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -386,7 +475,8 @@ def variants(source, name):
                     text = text[:a] + new + text[b:]
                 if text != source and (FAMILY, text) not in results:
                     results.append((FAMILY, text))
-    return results[:LIMIT]
+    header = _header_variants(source, clean, opening + 1, end - 1)
+    return results[:LIMIT] + header[:LIMIT]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}

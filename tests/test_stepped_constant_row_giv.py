@@ -153,3 +153,47 @@ def test_no_counter_form_when_the_counter_does_not_start_at_zero():
         assert not [t for f, t in rg.variants(source, 'menu') if 'y = i * 10' in t]
     written = SWITCH.replace('        put(0xA0, y);\n', '        put(0xA0, y);\n        i += 0;\n')
     assert not [t for f, t in rg.variants(written, 'menu') if 'y = i * 10' in t]
+
+
+# The same menu's bar loops (100 -> 25 -> 0 with the arms' temporary inlined): `x` and `k` started and stepped in the
+# `for` header became givs of the counter, `x` first.
+BARS = """\
+void bars(s32 *lv, s32 yoff)
+{
+    s32 j;
+    s32 k;
+    s32 x;
+    s32 yy;
+    if (lv[0]) {
+        for (j = 0, yy = yoff, k = 0, x = 0xA0; j < 5; k += 20, j++, x += 10) {
+            put(x, yy + 0x50);
+            fill(k >= lv[0]);
+        }
+    } else {
+        for (j = 0, yy = yoff, k = 0, x = 0xA0; j < 5; k += 20, j++, x += 10) {
+            put(x, yy + 0x50);
+            fill(k >= lv[1]);
+        }
+    }
+}
+"""
+
+
+def test_header_stepped_locals_become_givs_of_the_counter():
+    texts = [t for f, t in rg.variants(BARS, 'bars') if f == rg.FAMILY]
+    both = [t for t in texts if t.count('for (j = 0, yy = yoff; j < 5; j++) {') == 2]
+    assert both
+    want = 'for (j = 0, yy = yoff; j < 5; j++) {\n            x = j * 10 + 0xA0;\n            k = j * 20;\n'
+    assert any(t.count(want) == 2 for t in both)
+    assert any('k = j * 20;\n            x = j * 10 + 0xA0;' in t for t in both)
+    assert any(t.count('for (j = 0, yy = yoff; j < 5; j++) {') == 1 for t in texts)
+
+
+def test_header_givs_decline_a_local_read_outside_the_loops():
+    read = BARS.replace('    if (lv[0]) {', '    x = 3;\n    put(x, 0);\n    if (lv[0]) {')
+    assert not [t for f, t in rg.variants(read, 'bars') if 'x = j * 10' in t]
+    nonzero = BARS.replace('for (j = 0, yy', 'for (j = 1, yy')
+    assert not [t for f, t in rg.variants(nonzero, 'bars') if 'j * 10' in t]
+    written = BARS.replace('            put(x, yy + 0x50);\n', '            put(x, yy + 0x50);\n            k++;\n', 1)
+    first = [t for f, t in rg.variants(written, 'bars') if 'k = j * 20' in t]
+    assert first and all(t.index('k = j * 20') > t.index('k++;') for t in first)  # only the loop that never writes k
