@@ -38,3 +38,15 @@ def test_an_assigned_call_and_a_decrement_and_every_site_together():
     together = found[-1][1]
     assert '        i = pick(n, 3);\n        n--;\n' in together
     assert '        use(0xA9 + count, i, 0);\n        count++;\n' in together
+
+
+def test_a_call_through_a_pointer_expression():
+    source = SOURCE.replace('use(0xA9 + n++, i + t2, e->f);', '(*(void (**)(s32)) (e + 4))(tbl[n++]);')
+    found = variants(source, 'load')
+    assert len(found) == 1
+    assert '(*(void (**)(s32)) (e + 4))(tbl[n]);\n        n++;\n' in found[0][1]
+
+
+def test_a_callee_expression_that_reads_the_counter_is_left_alone():
+    source = SOURCE.replace('use(0xA9 + n++, i + t2, e->f);', '(*handlers[n])(tbl[n++]);')
+    assert variants(source, 'load') == []
