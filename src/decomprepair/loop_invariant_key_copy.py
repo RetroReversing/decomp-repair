@@ -134,10 +134,15 @@ def variants(source, name):
                 continue
             after = clean[end:block]
             uses_after = bool(re.search(rf'(?<![\w.>]){var}\b', after))
+            # A copy only stands for V while V keeps its value. When the rest of the block
+            # writes V (`hl--;` after an inner `do { } while (0)` in a mip-level loop), renaming that write to K
+            # left V unchanged for the next iteration of the enclosing loop: an unfaithful child that scored better.
+            # Then only the loop reads the copy.
+            written_after = bool(re.search(WRITE.format(v=re.escape(var)), after))
             declaration = f'\n  {decl["type"]} {key};'
             where = source.index('\n', decl.end()) if '\n' in source[decl.end():] else decl.end()
             swap = _swapper(var, key)
-            plan = [(FAMILY, end, True)] if uses_after else []
+            plan = [(FAMILY, end, True)] if uses_after and not written_after else []
             plan.append((LOOP_ONLY, loop.start(), False) if uses_after else (FAMILY, loop.start(), False))
             for family, _, include_after in plan:
                 body = swap(source[loop.start():end]) + (swap(source[end:block]) if include_after else '')
