@@ -39,7 +39,9 @@ Every kernel follows the pattern the existing ones use:
 
 Typing helps only where the time is a loop over characters or numbers. Code whose time is regex matching, `str` methods,
 dict/set/tuple work or dataclass construction stays Python: compiling those modules unchanged (`native_build.py --all`,
-146 modules) measured about 3% on a draft pass for about an hour of compiling, so it is not the default. Before adding
+150 modules) measured about 3% on a draft pass, so it is not `native_build.py`'s default; decompdecomp's app
+compiles them too, in the background. A listed module must get through Cython
+(tests/test_native_modules_translate.py): one that doesn't is retried at every app start. Before adding
 anything for speed, profile a real function (`cProfile` over the declared repairs on m2c C from a real decomp, not a
 synthetic one): the large wins here came from quadratic scans, regexes that backtrack exponentially, repeated analyses of
 the same source and caches, all fixed in plain Python.

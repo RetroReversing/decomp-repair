@@ -10,7 +10,7 @@ Without Cython or a C compiler nothing is built and nothing changes. `DECOMPREPA
 (the choice is which files exist), so tests run both ways by building and cleaning.
 
     native_build.py                    build the typed kernels (KERNELS: seconds) next to this file
-    native_build.py --all              also compile every module in NATIVE unchanged (about an hour, ~3% faster)
+    native_build.py --all              also compile every module in NATIVE unchanged (minutes, ~3% faster)
     native_build.py --clean            remove the compiled modules
     native_build.py --only a,b         build just those modules of KERNELS and NATIVE
     native_build.py --missing          build only those with no build of the current source (with --all: of every
@@ -39,7 +39,7 @@ PACKAGE = Path(__file__).resolve().parent  # --package DIR builds into another c
 # Typed code (.pyx): faster per call by a large factor, and it compiles in seconds, so a bundle build always does it.
 KERNELS = ["_scan"]
 
-# Plain modules compiled unchanged: measured about 3% on a draft pass for an hour of compiling, so only `--all` does it.
+# Plain modules compiled unchanged: measured about 3% on a draft pass, so only `--all` does it (40 s with 8 jobs).
 NATIVE = [
     "integer_repair_support",
     "pattern_repairs",
@@ -256,10 +256,17 @@ def build_one(name: str, package: Path | None = None) -> int:
     source = source_of(name, package)
     # stamped on the built file so the library passes over it once the source changes (_native_guard.py)
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    directives = {"language_level": "3"}
+    if source.suffix == ".py":
+        # plain modules must behave as they do interpreted: annotations stay hints, and no guessed C types (Cython
+        # spent over twenty minutes inferring them for expression_terms, which compiles in a second without)
+        directives.update(annotation_typing=False, infer_types=False)
     with tempfile.TemporaryDirectory(prefix="decomprepair-native-") as work:
         try:
-            extensions = cythonize([Extension(f"decomprepair.{name}", [str(source)])],
-                                   build_dir=work, quiet=True, compiler_directives={"language_level": "3"})
+            # no debug symbols, which Python's own flags ask for and nobody reads: a quarter off the compile time
+            flags = [] if sys.platform == "win32" else ["-g0"]
+            extensions = cythonize([Extension(f"decomprepair.{name}", [str(source)], extra_compile_args=flags)],
+                                   build_dir=work, quiet=True, compiler_directives=directives)
             dist = Distribution({"ext_modules": extensions, "package_dir": {"": "src"}, "packages": ["decomprepair"]})
             command = dist.get_command_obj("build_ext")
             command.build_lib = work
