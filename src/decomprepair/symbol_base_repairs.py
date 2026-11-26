@@ -139,7 +139,7 @@ def variants(source, name, asm=''):
         # (a global pointer tested and cleared through its address while its fields are read through the value: an N64
         # function was exact only with `M2C_FIELD(D, ...)` left naming the global, gcc reloading it with %hi/%lo)
         through = [_reads_through(body, m) for m in uses]
-        keeps = (False, True) if not array and any(through) and not all(through) else (False,)
+        keeps = [False, True] if not array and any(through) and not all(through) else [False]  # lists: Cython compiles it
         for placement, scale, keep in [(p, k, e) for p in ('use', 'top') for k in steps for e in keeps]:
             text = source
             # replacements back to front so the offsets stay valid

@@ -91,7 +91,7 @@ def _lower_empty_targets(asm):
     rows = instructions(asm) if asm else []
     offsets = set()
     for i in range(len(rows)-6):
-        byte, low, first, compare, check, high, second = rows[i:i+7]
+        byte, low, first, compare, check, high, second = list(rows[i:i+7])  # list(): Cython crashes on a bare slice
         access = _BYTE.fullmatch(byte)
         left, right = _LI.fullmatch(low), _LI.fullmatch(high)
         bound = _SLTI.fullmatch(compare)

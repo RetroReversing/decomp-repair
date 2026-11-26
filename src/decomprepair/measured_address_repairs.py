@@ -118,7 +118,7 @@ def _masked_loop_address(part, rows, change):
     dest, offset, base = target.groups()
     if candidate.groups() != (dest, base, offset):
         return None
-    mask, shift = rows[i - 2:i]
+    mask, shift = rows[i - 2], rows[i - 1]  # not a slice: Cython's compiler crashes on unpacking one
     if any(mark != ' ' or a != b for mark, a, b in (mask, shift)):
         return None
     index_reg = re.escape(offset)
