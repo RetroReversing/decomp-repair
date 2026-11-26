@@ -27,7 +27,11 @@ steps it exactly once. A three-row options menu whose body is a `switch` on the 
 -O2`) went 525 -> 205 this way with no do-while fence: `y = 0x50;` set where the source wrote it was floated to the top
 of the entry block by sched1 (a multi-set biv with priority 1 and a later INSN_LUID than the hoisted address of the
 table the arms update), where the target has the table's `lui` first and `y`'s `li` beside the cosine chain. Children: `row++;` before the counter's step;
-`row++;` last in the body; `row = 0;` right before the loop where the literal was set further up.
+`row++;` last in the body; `row = 0;` right before the loop where the literal was set further up; and, when the loop's
+own counter is 0 on entry (its init or the last top-level write before the loop says so) and the body writes it only
+by its step, `y = i * K + C;` with no row variable, at the top of the body and after the body's leading givs of the
+counter (the options menu's second stepped local, a spilled `yoff = 0; ... yoff += 10`, went 85 -> 25 that way, after
+`y = i * 10 + 0x50;`; first, 1465; through a row counter, 85).
 """
 import re
 
@@ -36,7 +40,7 @@ from .pattern_repairs import close
 
 FAMILY = 'stepped_constant_row_giv'
 FAMILIES = (FAMILY,)
-LIMIT = 6
+LIMIT = 8
 
 _IDENT = r'[A-Za-z_]\w*'
 _INT = r'(?:0[xX][0-9A-Fa-f]+|\d+)[uUlL]*'
@@ -269,6 +273,27 @@ def _fresh(clean, base='row'):
     return name
 
 
+def _zero_start(clean, opening, start, body_open, body_close, last, counter):
+    """The loop counter is 0 on entry and written in the body only by its step: the loop's own init says
+    `counter = 0`, or the last write before the loop is a top-level `counter = 0;`."""
+    write = re.compile(r'(?<![\w.>])' + re.escape(counter) + r'\s*(?:[-+*/%&|^]?=(?!=)|\+\+|--)|(?:\+\+|--)\s*'
+                       + re.escape(counter) + r'\b')
+    body = clean[body_open + 1:body_close]
+    if last is not None:
+        body = clean[body_open + 1:last[0]] + ' ' * (last[1] - last[0]) + clean[last[1]:body_close]
+    if write.search(body):
+        return False
+    head = re.match(r'for\s*\(([^;]*);', clean[start:body_open])
+    if head and re.search(r'\b' + re.escape(counter) + r'\b', head[1]):
+        return any(re.fullmatch(re.escape(counter) + r'\s*=\s*0[uUlL]*', item.strip()) for item in head[1].split(','))
+    writes = list(write.finditer(clean, opening, start))
+    if not writes:
+        return False
+    hit = writes[-1]
+    zero = re.compile(re.escape(counter) + r'\s*=\s*0[uUlL]*\s*;').match(clean, hit.start())
+    return bool(zero) and clean.count('{', opening, hit.start()) - clean.count('}', opening, hit.start()) == 1
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -335,9 +360,29 @@ def variants(source, name):
                 choices = [[before, in_place], [at_end, in_place]]
             if clean[init_end:start].strip():
                 choices.append([before, *moved])
-            for extra in choices:
+            edits = [common + extra for extra in choices]
+            if _zero_start(clean, opening, start, body_open, body_close, last, counter):
+                # the loop's own counter is the row: `y = i * K + C;`, no new variable (a three-row options menu,
+                # SN64 GCC 2.8.1: a second stepped local as a giv of a row counter left it at 85, of `i` 85 -> 25)
+                # at the top of the body, and after the body's leading givs of the counter when it has some (the
+                # menu's second one went after `y = i * 10 + 0x50;`: before it, 1465)
+                tops = [statements[0][0]]
+                after = 0
+                while after < len(statements) and re.fullmatch(
+                        _IDENT + r'\s*=\s*' + re.escape(counter) + r'\s*\*\s*' + _INT + r'(?:\s*\+\s*' + _INT + r')?\s*;',
+                        clean[statements[after][0]:statements[after][1]].strip()):
+                    after += 1
+                if 0 < after < len(statements):
+                    tops.append(statements[after][0])
+                for top in tops:
+                    own = [(a, b, '') for a, b in (_remove(source, a, b) for a, b in places)]
+                    value = f'{counter} * {stride}' + ('' if int(init[1].rstrip('uUlL'), 0) == 0 else f' + {init[1]}')
+                    own.append((top, top, f'{var} = {value};\n' + body_indent))
+                    own.append((*_remove(source, init_start, init_end), ''))
+                    edits.append(own)
+            for each in edits:
                 text = source
-                for a, b, new in sorted(common + extra, key=lambda e: (e[0], e[1]), reverse=True):
+                for a, b, new in sorted(each, key=lambda e: (e[0], e[1]), reverse=True):
                     text = text[:a] + new + text[b:]
                 if text != source and (FAMILY, text) not in results:
                     results.append((FAMILY, text))
