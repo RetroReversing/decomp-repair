@@ -15,6 +15,22 @@ named temporary does not give those registers. A 114-instruction N64 table initi
 after 33 attempts and 1600 at the end of a repair chain from its draft, and is exact with this record array under
 `-O1` (the register explanation is a hypothesis from the two compiles).
 
+m2c's unstructured inner loops carry the byte offset of the counter in a temporary of their own; it is written
+back as the product first (the loop's `goto`s stay for the goto families):
+
+    i = 0;                                              i = 0;
+    off = 0 * 2;                                  ->
+    loop: *(off + ((j * 0x70) + &D_801000006)) = *(off + D_80200000);
+                                                        D_80100000[j].m6[i].m0 = D_80200000[i];
+    i += 1;
+    off = i * 2;
+    if (i < 16) goto loop;
+
+A table that no access scales by the record size is another table and stays as it is, as long as it lies outside the
+record. A member of a small array that the target names by no `%lo` and the source does not cast takes the width of
+its own subscript. Such a 97-instruction N64 initialiser went from a 5200 draft to this form (820, and exact with the
+goto loop structured, `-O1`).
+
 Widths come from the target's own loads and stores (`%lo(D_X + K)`), since m2c's draft types the symbols `M2C_UNK`;
 an offset the assembly does not name falls back to the access's own cast. A second, smaller index becomes a member
 array of records. Nothing is rewritten unless every use of every symbol involved is understood.
@@ -116,6 +132,42 @@ def _type(address, cast, widths):
     return kind
 
 
+def _offset_temps(text, blank):
+    """`text` with the counter's carried byte offsets (`T = N * S;` ... `i += 1; T = i * S;`) written as `(i * S)`."""
+    found = []
+    for step in re.finditer(r'(?m)\b([A-Za-z_]\w*)[ \t]*\+=[ \t]*1;\s*([A-Za-z_]\w*)[ \t]*=[ \t]*\1[ \t]*\*[ \t]*(\d+);', blank):
+        counter, temp, scale = step[1], step[2], step[3]
+        writes = list(re.finditer(r'(?m)^[ \t]*' + temp + r'[ \t]*=[ \t]*([^=;]+);[ \t]*\n', blank))
+        if len(writes) != 2 or re.search(r'&[ \t]*' + temp + r'\b|\b' + temp + r'[ \t]*(?:\+\+|--|[-+*/|&^]=)', blank):
+            continue
+        first = re.fullmatch(r'(\d+)[ \t]*\*[ \t]*' + scale, writes[0][1].strip())
+        if not first or not writes[0].end() <= step.start():
+            continue
+        started = re.findall(r'\b' + counter + r'[ \t]*=[ \t]*([^=;]+);', blank[:writes[0].start()])
+        if not started or started[-1].strip() != first[1]:
+            continue
+        found.append((counter, temp, scale))
+    for counter, temp, scale in found:
+        text = re.sub(r'(?m)^[ \t]*' + temp + r'[ \t]*=[^=;]+;[ \t]*\n', '', text)
+        text = re.sub(r'(?m)^[ \t]*[A-Za-z_]\w*[ \t]+' + temp + r'[ \t]*;[ \t]*\n', '', text)
+        text = re.sub(r'\b' + temp + r'\b', f'({counter} * {scale})', text)
+    return text, found
+
+
+def _other_tables(text, found, stride):
+    """`*((i * S) + D)` of a table the record does not hold, written `D[i]`: `i * S` was a byte offset."""
+    for counter, _, scale in found:
+        offset = r'\([ \t]*' + counter + r'[ \t]*\*[ \t]*' + scale + r'[ \t]*\)'
+        shape = re.compile(r'\*[ \t]*\([ \t]*(?:' + offset + r'[ \t]*\+[ \t]*&?(' + _SYMBOL + r')|&?(' + _SYMBOL +
+                           r')[ \t]*\+[ \t]*' + offset + r')[ \t]*\)')
+        for m in reversed(list(shape.finditer(text))):
+            symbol = m[1] or m[2]
+            declared = re.search(r'\bextern[ \t]+([A-Za-z_]\w*)[ \t]+' + symbol + r'\b', text)
+            if declared and _SIZE.get(declared[1]) == int(scale) and int(scale) != stride:
+                text = text[:m.start()] + f'{symbol}[{counter}]' + text[m.end():]
+    return text
+
+
 def _accesses(body, temps, widths):
     """[(start, end, symbol, address, type, [(index, scale)])] of every dereference of a symbol sum."""
     found = []
@@ -138,7 +190,10 @@ def _accesses(body, temps, widths):
             continue
         symbol = terms[0][0]
         address = int(symbol[2:], 16) + terms[1]
-        found.append((m.start(), stop, symbol, address, _type(address, cast, widths), terms[2]))
+        kind = _type(address, cast, widths)
+        if kind is None and len(terms[2]) == 2:
+            kind = {2: 's16', 4: 's32'}.get(min(scale for _, scale in terms[2]))
+        found.append((m.start(), stop, symbol, address, kind, terms[2]))
     return found
 
 
@@ -164,15 +219,23 @@ def variants(source, name, header='', asm=''):
         return []
     head, body, tail = source[:span[0]], _blank(source[span[0]:span[1]]), source[span[1]:]
     original = source[span[0]:span[1]]
+    original, carried = _offset_temps(original, body)
+    body = _blank(original)
     temps = {}
     for m in re.finditer(r'(?m)^[ \t]*([A-Za-z_]\w*)\s*=\s*([^=;][^;]*);', body):
         temps.setdefault(m[1], []).append((m.start(), m[2].strip()))
     widths = _target_widths(asm)
     accesses = _accesses(body, temps, widths)
-    if len(accesses) < 3 or any(a[4] is None for a in accesses):
+    if not accesses:
         return []
     stride = max(scale for a in accesses for _, scale in a[5])
+    others = [a for a in accesses if all(scale != stride for _, scale in a[5])]
+    accesses = [a for a in accesses if a not in others]
+    if len(accesses) < 3 or any(a[4] is None for a in accesses):
+        return []
     base = min(a[3] for a in accesses)
+    if any(base <= a[3] < base + stride for a in others):
+        return []
     rows = f'D_{base:08X}'
     direct, nested, inner_scale = {}, {}, None
     for _, _, _, address, kind, indices in accesses:
@@ -190,7 +253,7 @@ def variants(source, name, header='', asm=''):
         elif direct.setdefault(offset, kind) != kind:
             return []
     members = {o: (k, _SIZE[k], f'{k} m{o:X};') for o, k in direct.items()}
-    start = None
+    start, plain = None, False
     if nested:
         start = min(nested)
         if max(o + _SIZE[k] for o, k in nested.items()) - start > inner_scale:
@@ -201,7 +264,10 @@ def variants(source, name, header='', asm=''):
         lines = _member_lines(fields, inner_scale, '        ')
         if lines is None or not count or start in members:
             return []
+        # one field that fills the element is a plain array: GCC then keeps its address in a register of its own
+        plain = len(fields) == 1 and 0 in fields and fields[0][1] == inner_scale
         members[start] = (None, count * inner_scale,
+                          f'{fields[0][0]} m{start:X}[{count}];' if plain else
                           'struct {\n' + '\n'.join(lines) + f'\n    }} m{start:X}[{count}];')
     lines = _member_lines(members, stride, '    ')
     if lines is None:
@@ -213,7 +279,9 @@ def variants(source, name, header='', asm=''):
         index = next(i for i, scale in indices if scale == stride)
         offset = address - base
         rest = [i for i, scale in indices if scale != stride]
-        member = f'm{start:X}[{rest[0]}].m{offset - start:X}' if rest else f'm{offset:X}'
+        member = f'm{offset:X}'
+        if rest:
+            member = f'm{start:X}[{rest[0]}]' + ('' if plain else f'.m{offset - start:X}')
         edits.append((a, b, f'{rows}[{index}].{member}'))
     symbols = {a[2] for a in accesses} | {rows}
     # the record's own address passed on: `i * STRIDE + &D` is `&D[i]`
@@ -252,7 +320,10 @@ def variants(source, name, header='', asm=''):
         left = re.sub(r'&?' + re.escape(rows) + r'\[', '', _blank(text))
         if re.search(r'\b' + each + r'\b', left):
             return []
-    return [(FAMILY, head + record + text + tail)]
+    out = head + record + text + tail
+    if carried:
+        out = _other_tables(out, carried, stride)
+    return [(FAMILY, out)]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header', 'asm'), 'archs': ('mips',)}

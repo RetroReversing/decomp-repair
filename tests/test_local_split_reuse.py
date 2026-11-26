@@ -151,3 +151,22 @@ def test_second_range_renames_the_reads_of_the_next_definition():
         if fam != FAMILY_SPLIT or 'size2 = h(n, buf);' not in child:
             continue
         assert 'size = (size2 & 0x3F) ? (size2 & ~0x3F) + 0x40 : size2;' in child, child
+
+
+CARRIED_ROUND = """void f(s32 *p) {
+    s32 i;
+    s32 off;
+
+    i = 0;
+    off = 0 * 2;
+    do {
+        g(off + p);
+        i += 1;
+        off = i * 2;
+    } while (i < 16);
+}
+"""
+
+
+def test_a_value_a_loop_carries_to_a_use_is_not_renamed_apart_from_it():
+    assert not [c for f, c in variants(CARRIED_ROUND, 'f', '') if f == FAMILY_SPLIT]
