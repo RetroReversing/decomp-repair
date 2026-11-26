@@ -17,6 +17,13 @@ locals, literals and side-effect-free `inline` helpers: the call is moved up to 
 `T`'s argument slot and the updates follow it. One child per site and one with every site (KMC GCC 2.7.2, `-G0 -mips3
 -mgp32 -mfp32 -O2`: two of the three loops of a mixing function, 1560 -> 1355 one loop, 1150 both). The ordering reading
 is from sched.c; the judge decides each child.
+
+An update the call reads is moved too, when it is the only update of that local and its value reads no other updated
+local: the call reads the new value, so its arguments take the update's expression in place of the local
+(`y0 = y; y += step * rows; draw(x, y0, x1, y);` is `draw(x, y, x1, y + step * rows); y += step * rows;`). SN64 GCC
+2.8.1, a 360-instruction textured-strip drawer: both of its strip loops written so, 746 -> 126, every row left was a
+register a staged copy had taken (the old value and the new one are two pseudos where the call's argument copies hold
+them; hypothesis: the staged pair makes the new value's add read the copy).
 """
 import re
 
@@ -29,6 +36,8 @@ FAMILIES = (FAMILY,)
 LIMIT = 8
 GAP = 6  # update statements between the staged local and the call
 STAGE = re.compile(rf'^(?P<indent>[ \t]*)(?P<temp>{IDENT})\s*=\s*(?P<expr>[^;{{}}=]*?)\s*;\s*$')
+COMPOUND = re.compile(rf'^[ \t]*(?P<dest>{IDENT})\s*(?P<op>[-+*&|^]|<<|>>)?=(?!=)\s*(?P<value>[^;{{}}]*?)\s*;\s*$')
+TERM = re.compile(rf'(?:{IDENT}|0[xX][0-9A-Fa-f]+|\d+)(?:\s*\*\s*(?:{IDENT}|0[xX][0-9A-Fa-f]+|\d+))*')
 UPDATE = re.compile(rf'^[ \t]*(?:(?P<dest>{IDENT})\s*(?:[-+*&|^]|<<|>>)?=(?!=)\s*(?P<value>[^;{{}}]*?)|'
                     rf'(?:\+\+|--)\s*(?P<pre>{IDENT})|(?P<post>{IDENT})\s*(?:\+\+|--))\s*;\s*$')
 CALL = re.compile(rf'^(?P<indent>[ \t]*)(?P<callee>{IDENT})\s*\((?P<args>[^;{{}}]*)\)\s*;\s*$')
@@ -66,6 +75,28 @@ if _scan is not None:
             start = at + 1
         parts.append((start, len(text)))
         return parts
+
+
+def _new_value(text, written):
+    """The value `written` holds after the update statement `text`, as an expression of its old value, or None."""
+    if (step := re.match(rf'^[ \t]*(?:(?:\+\+|--)\s*{written}|{written}\s*(?:\+\+|--))\s*;\s*$', text)):
+        return f"{written} {'+' if '++' in step[0] else '-'} 1"
+    hit = COMPOUND.match(text)
+    if not hit or hit['dest'] != written:
+        return None
+    value = hit['value'].strip()
+    if not hit['op']:
+        return f'({value})'
+    if hit['op'] in '+-' and TERM.fullmatch(value):
+        return f"{written} {hit['op']} {value}"
+    return f"({written} {hit['op']} ({value}))"
+
+
+def _read_new(arg, written, value):
+    """`arg` with the local `written` read as `value`, its new value (parenthesised unless `arg` is the local alone)."""
+    if arg.strip() == written:
+        return arg.replace(written, value)
+    return re.sub(rf'(?<![\w.>]){written}\b', f'({value})', arg)
 
 
 def variants(source, name):
@@ -114,22 +145,40 @@ def variants(source, name):
         if len(slots) != 1 or len(re.findall(rf'(?<![\w.>]){temp}\b', args)) != 1:
             continue
         others = ' '.join(args[a:b] for k, (a, b) in enumerate(spans) if k != slots[0])
-        if {w for _, w in updates} & set(_names(others)):
+        written = [w for _, w in updates]
+        read = set(written) & set(_names(others))
+        new_values = {}
+        for w in read:  # the call reads the updated value: it takes the update's expression instead
+            at = [u for u, x in updates if x == w]
+            value = _new_value(body[at[0]].text, w) if len(at) == 1 else None
+            if value is None or (set(_names(value)) - {w}) & set(written) or temp in _names(value):
+                break
+            new_values[w] = value
+        if len(new_values) != len(read):
             continue
         later = re.compile(rf'(?<![\w.>]){re.escape(temp)}\b').search(part.clean, body[j].end, part.end)
         if later and not re.match(r'\s*=(?!=)', part.clean[later.end():]):
             continue
-        sites.append((i, j, [u for u, _ in updates], temp, expr, args, spans[slots[0]]))
+        sites.append((i, j, [u for u, _ in updates], temp, expr, args, spans[slots[0]], new_values))
     if not sites:
         return []
 
     def build(chosen):
         edits = []
-        for i, j, updates, temp, expr, args, (a, b) in chosen:
+        for i, j, updates, temp, expr, args, (a, b), new_values in chosen:
             call = body[j].source
             call_hit = CALL.match(body[j].text)
             wrapped = expr if re.fullmatch(rf'{IDENT}|\w+|[\w ]+\([^()]*\)|\(\s*[\w ]+\)\s*\w+', expr) else f'({expr})'
-            new_args = args[:a] + args[a:b].replace(temp, wrapped) + args[b:]
+            pieces = []
+            for k, (c, d) in enumerate(_args(args)):
+                arg = args[c:d]
+                if (c, d) == (a, b):
+                    arg = arg.replace(temp, wrapped)
+                else:
+                    for w, value in new_values.items():
+                        arg = _read_new(arg, w, value)
+                pieces.append(arg)
+            new_args = ','.join(pieces)
             new_call = call[:call_hit.start('args')] + new_args + call[call_hit.end('args'):]
             moved = [body[u].source for u in updates]
             block = '\n'.join([new_call] + moved) + '\n'
