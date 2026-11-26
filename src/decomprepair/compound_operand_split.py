@@ -19,6 +19,11 @@ function with no `volatile`. The candidate is never a verdict: the judge decides
 An operand may read a field through `->` (`v = ((T *) p)->f / k;` as `v = ((T *) p)->f; v /= k;`, the load then goes
 straight into `v`'s register: 85 -> 75 on a 1300-instruction KMC GCC 2.7.2 controller routine), and statements that
 load come first, before the cap.
+
+A chain of `*` and `/` is split at its outermost (last) operator (`w = t * sin2 / len1;` as `w = t * sin2; w /= len1;`): the
+variable is then set twice, so the first scheduler no longer launches its product as a single-set (birthing) insn. On a
+378-instruction N64 colour interpolator (SN64 GCC 2.8.1, `-mfp32`) that put the weight's product first and the other
+weight's into the shared register, as in the target: 3446 -> 3235 in the isolated judge.
 """
 import re
 
@@ -45,7 +50,7 @@ def _float_names(text):
 
 
 def _split(rhs):
-    """(left, op, right) of an expression with exactly one binary operator at depth 0, else None."""
+    """(left, op, right) of an expression's outermost binary operator at depth 0, else None."""
     depth, found, prev = 0, [], ''
     for i, c in enumerate(rhs):
         if c in '([':
@@ -69,9 +74,11 @@ def _split(rhs):
                 return None
         if not c.isspace():
             prev = c
-    if depth != 0 or len(found) != 1:
+    if depth != 0 or not found or (len(found) > 1 and any(rhs[i] in '+-' for i in found)):
         return None
-    return rhs[:found[0]].strip(), rhs[found[0]], rhs[found[0] + 1:].strip()
+    # a product/quotient chain (`t * s / len`) is split at its last operator, the outermost operation of the
+    # left-associative chain, so `v = t * s; v /= len;` computes what the statement did
+    return rhs[:found[-1]].strip(), rhs[found[-1]], rhs[found[-1] + 1:].strip()
 
 
 def _paren(text):
@@ -122,7 +129,7 @@ def variants(source, name):
             out.append((FAMILY, source[:start] + text + source[end:]))
     if len(found) > 1:
         src = source
-        for start, end, forms in reversed(found):
+        for start, end, forms in sorted(found, key=lambda item: item[0], reverse=True):  # by place (found is ranked)
             src = src[:start] + forms[0] + src[end:]
         out.append((FAMILY, src))
     return [x for x in out if x[1] != source]
