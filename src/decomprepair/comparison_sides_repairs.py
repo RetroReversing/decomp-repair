@@ -8,6 +8,10 @@ meaning is the same; only the operand order changes.
 The `((Field_f32 *) (((char *) base) + 0x14))->v` cells that m2c's drafts for this project use are operands too: on a
 1137-instruction player-update routine (KMC GCC 2.7.2, `-G0 -mips3 -mgp32 -mfp32 -O2`) `!(field < locals.vec58[1])`
 written `!(locals.vec58[1] > field)` loaded the two floats in the target's order (570 -> 550 and a row less).
+
+Every comparison is offered (a cap of four once left the later ones unreachable), and a comparison repeated with only
+its numbers changed (unrolled vector components, `a[0] < b[0]`, `a[1] < b[1]`, ...) also gets one child that swaps
+all of its copies: a 144-instruction three-component bounds update (`-O1`) needed nine swaps, 90 -> 0 in three.
 """
 import re
 
@@ -20,6 +24,7 @@ FAMILIES = (FAMILY,)
 IDENT = r'[A-Za-z_]\w*'
 FIELD_TYPE = r'Field_[A-Za-z_]\w*'
 FLIP = {'<': '>', '>': '<', '<=': '>=', '>=': '<=', '==': '==', '!=': '!='}
+LIMIT = 32  # single swaps offered
 
 
 def _operand_end(text, start):
@@ -46,7 +51,7 @@ def variants(source, name):
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
         return []
-    result = []
+    swaps = []  # (start, end, replacement, shape)
     for op in re.finditer(r'(?<![<>=!-])(<=|>=|<|>)(?![<>=])', clean[opening:end]):
         at = opening + op.start()
         # the left operand: the load ending right before the operator
@@ -64,11 +69,21 @@ def variants(source, name):
         right_end = _operand_end(clean, right_start)
         if right_end is None or re.match(r'\s*[-+*/&|^]', clean[right_end:]) or re.search(r'[-+*/&|^]\s*$', clean[:left_start]):
             continue
-        left = source[left_start:left_end]
+        left = source[left_start:left_end].strip()
         right = source[right_start:right_end].strip()
-        text = source[:left_start] + right + ' ' + FLIP[op[1]] + ' ' + left.strip() + source[right_end:]
-        if text not in [t for _, t in result]:
+        shape = tuple(re.sub(r'\d+', 'N', part) for part in (left, op[1], right))
+        swaps.append((left_start, right_end, right + ' ' + FLIP[op[1]] + ' ' + left, shape))
+    groups = {}
+    for swap in swaps:
+        groups.setdefault(swap[3], []).append(swap)
+    # the repeated comparisons first: one child for all the copies, then each comparison alone
+    chosen = [group for group in groups.values() if len(group) > 1] + [[swap] for swap in swaps[:LIMIT]]
+    result, seen = [], set()
+    for group in chosen:
+        text = source
+        for start, stop, replacement, _ in reversed(group):
+            text = text[:start] + replacement + text[stop:]
+        if text not in seen:
+            seen.add(text)
             result.append((FAMILY, text))
-        if len(result) >= 4:
-            break
     return result
