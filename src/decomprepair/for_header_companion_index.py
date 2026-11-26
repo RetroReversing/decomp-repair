@@ -28,7 +28,7 @@ _FOR = re.compile(r'\bfor\s*\(')
 _SIMPLE = re.compile(rf'(?:{_ID}|0[xX][0-9A-Fa-f]+|\d+)')
 
 
-def _parts(text):
+def _python_parts(text):
     """Comma-separated parts at depth 0."""
     out, depth, start = [], 0, 0
     for i, c in enumerate(text):
@@ -41,6 +41,16 @@ def _parts(text):
             start = i + 1
     out.append(text[start:].strip())
     return out
+
+
+_parts = _python_parts
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _parts(text):
+        return [part.strip() for part in _scan.top_pieces(text, ',', 2)]
 
 
 def _assigned(text, name):

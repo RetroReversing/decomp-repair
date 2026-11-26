@@ -26,7 +26,7 @@ def _pointers(clean, span, opening, end):
     return names
 
 
-def _split_sum(rhs):
+def _python_split_sum(rhs):
     """(left, right) of a top-level `a + b`, or None."""
     depth = 0
     for i, ch in enumerate(rhs):
@@ -35,6 +35,20 @@ def _split_sum(rhs):
             left, right = rhs[:i].strip(), rhs[i + 1:].strip()
             return (left, right) if left and right and '+' not in right.replace('(', ' ').split()[0] else None
     return None
+
+
+_split_sum = _python_split_sum
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split_sum(rhs):
+        for i in _scan.top_offsets(rhs, '+', 1):
+            if rhs[i - 1:i] != '+' and rhs[i + 1:i + 2] not in '+=':
+                left, right = rhs[:i].strip(), rhs[i + 1:].strip()
+                return (left, right) if left and right and '+' not in right.replace('(', ' ').split()[0] else None
+        return None
 
 
 def variants(source, name):

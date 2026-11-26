@@ -42,7 +42,7 @@ def _names(text):
     return re.findall(rf'(?<![\w.]){IDENT}', text)
 
 
-def _args(text):
+def _python_args(text):
     parts, depth, start = [], 0, 0
     for at, ch in enumerate(text):
         depth += (ch in '([') - (ch in ')]')
@@ -51,6 +51,21 @@ def _args(text):
             start = at + 1
     parts.append((start, len(text)))
     return parts
+
+
+_args = _python_args
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _args(text):
+        parts, start = [], 0
+        for at in _scan.top_offsets(text, ',', 2):
+            parts.append((start, at))
+            start = at + 1
+        parts.append((start, len(text)))
+        return parts
 
 
 def variants(source, name):

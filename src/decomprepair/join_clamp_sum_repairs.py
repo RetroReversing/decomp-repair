@@ -111,13 +111,23 @@ def _copy(source, name):
 _STORE = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<lhs>[^;=\n]*\*[^;=\n]+?)[ \t]*=[ \t]*\((?P<type>s16|u16|s8|u8)\)[ \t]*\((?P<sum>[^;]+)\)[ \t]*;[ \t]*$')
 
 
-def _top_level_plus(text):
+def _python_top_level_plus(text):
     depth, found = 0, []
     for pos, char in enumerate(text):
         depth += (char in '([') - (char in ')]')
         if depth == 0 and char == '+' and text[pos - 1:pos + 2] == ' + ':
             found.append(pos)
     return found
+
+
+_top_level_plus = _python_top_level_plus
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_level_plus(text):
+        return [at for at in _scan.top_offsets(text, '+', 2) if text[at - 1:at + 2] == ' + ']
 
 
 def _sum(source, name):

@@ -51,7 +51,7 @@ if _scan is not None:
         return _python_closing(text, at) if found is NotImplemented else found
 
 
-def _top_plus(text):
+def _python_top_plus(text):
     """The index of `text`'s one top-level `+` (not inside parentheses), or None."""
     depth, at = 0, []
     for i, char in enumerate(text):
@@ -59,6 +59,17 @@ def _top_plus(text):
         if depth == 0 and char == '+' and text[i - 1:i] not in ('+', 'e', 'E') and text[i + 1:i + 2] != '+':
             at.append(i)
     return at[0] if len(at) == 1 else None
+
+
+_top_plus = _python_top_plus
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _top_plus(text):
+        found = [i for i in _scan.top_offsets(text, '+', 1) if text[i - 1:i] not in ('+', 'e', 'E') and text[i + 1:i + 2] != '+']
+        return found[0] if len(found) == 1 else None
 
 
 def _fresh(clean):

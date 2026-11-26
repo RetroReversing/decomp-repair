@@ -101,7 +101,7 @@ def multiply_high(source, name, header):
     return out
 
 
-def _sum_terms(expression):
+def _python_sum_terms(expression):
     depth = 0
     last = 0
     terms = []
@@ -114,6 +114,16 @@ def _sum_terms(expression):
             terms.append(expression[last:i].strip())
             last = i+1
     return [*terms,expression[last:].strip()]
+
+
+_sum_terms = _python_sum_terms
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _sum_terms(expression):
+        return [term.strip() for term in _scan.top_pieces(expression, '+', 1)]
 
 
 def float_accumulator(source, name, header, precision):

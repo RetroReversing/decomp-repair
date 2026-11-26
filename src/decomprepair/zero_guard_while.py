@@ -41,7 +41,7 @@ def _norm(text):
     return re.sub(r'\s+', '', text)
 
 
-def _split_less(condition):
+def _python_split_less(condition):
     """`a < b` at the top level of `condition`: (a, b), or None."""
     depth = 0
     for i, ch in enumerate(condition):
@@ -49,6 +49,19 @@ def _split_less(condition):
         if depth == 0 and ch == '<' and condition[i + 1:i + 2] not in ('<', '=') and condition[i - 1:i] != '<':
             return condition[:i].strip(), condition[i + 1:].strip()
     return None
+
+
+_split_less = _python_split_less
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split_less(condition):
+        for i in _scan.top_offsets(condition, '<', 2):
+            if condition[i + 1:i + 2] not in ('<', '=') and condition[i - 1:i] != '<':
+                return condition[:i].strip(), condition[i + 1:].strip()
+        return None
 
 
 def variants(source, name):

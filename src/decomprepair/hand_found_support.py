@@ -31,7 +31,7 @@ def number(text):
     return sign * int(text, 16 if text.lower().startswith('0x') else 10)
 
 
-def operands(text):
+def _python_operands(text):
     """The comma-separated operands of an instruction, commas inside parentheses kept."""
     found, depth, start = [], 0, 0
     for at, char in enumerate(text):
@@ -42,6 +42,20 @@ def operands(text):
     if text[start:].strip():
         found.append(text[start:].strip())
     return found
+
+
+operands = _python_operands
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def operands(text):
+        pieces = _scan.top_pieces(text, ',', 1)
+        found = [piece.strip() for piece in pieces[:-1]]
+        if pieces[-1].strip():
+            found.append(pieces[-1].strip())
+        return found
 
 
 def instructions(asm):

@@ -684,3 +684,46 @@ def test_the_top_level_splitters_match_their_plain_loops_on_random_text():
             text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 24)))
             for args in build(text, 0, rng):
                 assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)
+
+
+SECOND_SPLITS_BATCH = [
+    ("for_header_companion_index", "_parts", _whole),
+    ("for_step_order", "_steps", _whole),
+    ("call_arg_late_update", "_args", _whole),
+    ("callee_arity_trim", "_arguments", _whole),
+    ("halfword_position_shift", "_terms", _whole),
+    ("index_sum_order", "_terms", _whole),
+    ("integer_sum_repairs", "_split_sum", _whole),
+    ("join_clamp_sum_repairs", "_top_level_plus", _whole),
+    ("load_sum_split", "_top_plus", _whole),
+    ("or_compound_steps", "_top_or", _whole),
+    ("or_constant_stage_repairs", "_split", _whole),
+    ("or_chain_order_repairs", "_split", _whole),
+    ("store_address_repairs", "split_sum", _whole),
+    ("store_address_stage", "_split", lambda t, a, r: [(t,)] + [(t, op) for op in ("|", "+", ",", "", "||", "(")]),
+    ("store_temp_inline", "_top_level_equals", _whole),
+    ("wrapped_call_float_sum_local", "_top_plus", _whole),
+    ("zero_guard_while", "_split_less", _whole),
+    ("hand_found_support", "operands", _whole),
+    ("target_arithmetic_repairs", "_sum_terms", _whole),
+    ("compare_arm_split_repairs", "_strip", _whole),
+]
+
+
+def test_the_second_batch_of_splitters_match_their_plain_loops_on_random_text():
+    import importlib
+
+    rng = random.Random(999)
+    pieces = ["(", ")", "{", "}", "[", "]", "a", "e", " ", "\n", ";", ",", "+", " + ", "++", "+=", "|", "||", "|=", "-", "->", "-=",
+              "<", "<<", "<=", "=", "==", "!=", "é", "𝄞", "(a)", "((", "))"]
+    for module_name, function, build in SECOND_SPLITS_BATCH:
+        module = importlib.import_module(f"decomprepair.{module_name}")
+        twin = getattr(module, "_python_" + function.lstrip("_"))
+        kernel_backed = getattr(module, function)
+        assert kernel_backed is not twin, f"{module_name}.{function} did not take the kernel"
+        for _ in range(3000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 20)))
+            if rng.random() < 0.3:
+                text = "(" + text + ")"
+            for args in build(text, 0, rng):
+                assert _outcome(kernel_backed, *args) == _outcome(twin, *args), (module_name, function, args)

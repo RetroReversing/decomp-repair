@@ -13,7 +13,7 @@ SCALAR = r'(?:[su](?:8|16|32)|char|short|int|unsigned\s+(?:char|short|int))'
 NUMBER = r'(?:0x[0-9a-fA-F]+|[0-9]+)'
 
 
-def split_sum(text):
+def _python_split_sum(text):
     """Find a binary addition outside casts and nested address expressions."""
     depth = 0
     for pos, token in enumerate(text):
@@ -21,6 +21,19 @@ def split_sum(text):
         if token == '+' and depth == 0:
             return text[:pos].strip(), text[pos+1:].strip()
     return None
+
+
+split_sum = _python_split_sum
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def split_sum(text):
+        found = _scan.top_offsets(text, '+', 2)
+        if not found:
+            return None
+        return text[:found[0]].strip(), text[found[0] + 1:].strip()
 
 
 def variants(source, name, arch):

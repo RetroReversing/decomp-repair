@@ -93,7 +93,7 @@ def weighted_pack(source, part, header):
     return []
 
 
-def _split(text):
+def _python_split(text):
     """The depth-zero `|` operands of `text`, or None when an operator other than a plain `|` is a top-level `|=`."""
     parts, depth, start = [], 0, 0
     for i, ch in enumerate(text):
@@ -106,6 +106,23 @@ def _split(text):
             start = i + 1
     parts.append(text[start:])
     return parts
+
+
+_split = _python_split
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _split(text):
+        parts, start = [], 0
+        for i in _scan.top_offsets(text, '|', 2):
+            if text[i + 1:i + 2] in ('|', '=') or text[i - 1:i] == '|':
+                return None
+            parts.append(text[start:i])
+            start = i + 1
+        parts.append(text[start:])
+        return parts
 
 
 def _flatten(operand):

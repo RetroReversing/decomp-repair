@@ -25,7 +25,7 @@ LIMIT = 8
 IDENT = r'[A-Za-z_]\w*'
 
 
-def _arguments(text):
+def _python_arguments(text):
     """(start, end) of each top-level argument inside a call's parentheses `text` (without them)."""
     out, depth, start = [], 0, 0
     for index, char in enumerate(text):
@@ -39,6 +39,22 @@ def _arguments(text):
     if text.strip():
         out.append((start, len(text)))
     return out
+
+
+_arguments = _python_arguments
+try:  # the typed kernel (native_build.py), when it is built: same answers, the loop in C
+    from . import _scan
+except ImportError:
+    _scan = None
+if _scan is not None:
+    def _arguments(text):
+        out, start = [], 0
+        for at in _scan.top_offsets(text, ',', 2):
+            out.append((start, at))
+            start = at + 1
+        if text.strip():
+            out.append((start, len(text)))
+        return out
 
 
 def variants(source, name, callees=''):
