@@ -135,6 +135,9 @@ uv run ruff check src tests
 
 Nothing in `src/decomprepair` may import decompdecomp (`decompnet`); `tests/test_library.py` checks this.
 
+`rule_mining.py` writes such rules from matches: `rewrite(before, after, name)` is the one statement-sized change, with
+names and numbers as slots, and `rule(old, new)` the file for it.
+
 ## Releases
 
 Merge changes to `main` without bumping the version or tagging. The `release` workflow (`.github/workflows/release.yml`,
