@@ -128,3 +128,28 @@ def test_a_switch_arm_that_leaves_the_loop_still_declines():
     # a break outside any switch or inner loop leaves the loop itself
     source = SWITCH.replace('        y += 10;\n', '        if (sel) {\n            break;\n        }\n        y += 10;\n')
     assert not [t for f, t in rg.variants(source, 'menu') if 'y = row' in t]
+
+
+def test_the_loops_own_counter_when_it_starts_at_zero():
+    source = SWITCH.replace('    y = 0x50;\n', '    y = 0x50;\n    yoff = 0;\n').replace(
+        '        y += 10;\n', '        y += 10;\n        yoff += 10;\n').replace(
+        '    s32 y;\n', '    s32 y;\n    s32 yoff;\n').replace('put(sel, y);', 'put(sel, y + yoff);')
+    texts = [t for f, t in rg.variants(source, 'menu') if f == rg.FAMILY]
+    own = [t for t in texts if 'y = i * 10 + 0x50;' in t and 'row' not in t]
+    assert own and 'y = 0x50;' not in own[0] and 'y += 10;' not in own[0]
+    yoff = [t for t in texts if 'yoff = i * 10;' in t]
+    assert yoff and all('yoff += 10;' not in t and 'yoff = 0;' not in t for t in yoff)
+    # after the body's leading giv of the counter as well as first
+    staged = SWITCH.replace('    for (; i < 3; i++) {\n', '    for (; i < 3; i++) {\n        z = i * 4 + 1;\n').replace(
+        '    s32 y;\n', '    s32 y;\n    s32 z;\n').replace('put(0xA0, y);', 'put(z, y);')
+    tops = [t for f, t in rg.variants(staged, 'menu') if 'y = i * 10 + 0x50;' in t]
+    assert any(t.index('y = i * 10') < t.index('z = i * 4') for t in tops)
+    assert any(t.index('z = i * 4') < t.index('y = i * 10') for t in tops)
+
+
+def test_no_counter_form_when_the_counter_does_not_start_at_zero():
+    for start in ('    i = 1;\n', '    if (sel) {\n        i = 0;\n    }\n'):
+        source = SWITCH.replace('    i = 0;\n', start)
+        assert not [t for f, t in rg.variants(source, 'menu') if 'y = i * 10' in t]
+    written = SWITCH.replace('        put(0xA0, y);\n', '        put(0xA0, y);\n        i += 0;\n')
+    assert not [t for f, t in rg.variants(written, 'menu') if 'y = i * 10' in t]
