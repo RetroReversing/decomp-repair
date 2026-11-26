@@ -54,6 +54,44 @@ def _constant_modes(clean, opening, end):
     return result[:4]
 
 
+def _widened_with_casts(source, clean, opening, end, start, stop):
+    """The local as `s32` with its old narrow type written at each read, so the value a use sees is unchanged.
+
+    A call's result held in a `u16` local and tested as `(u16) (ret + 2) < 2` was exact as `s32 ret` with `(u16) ret`
+    at the array subscripts (KMC gcc 2.7.2 `-O1`: 5 -> 0); widening alone sign-extends differently and was 1660.
+    A read already inside a cast to the narrow type is left alone."""
+    kind = ' '.join(clean[start:stop].split())
+    declared = re.compile(r'\s+(' + IDENT + r')\s*;').match(clean, stop)
+    if not declared:
+        return None
+    name = declared[1]
+    body_end = end
+    if re.search(r'&\s*' + name + r'\b|(?:\+\+|--)\s*' + name + r'\b|\b' + name + r'\s*(?:\+\+|--|[-+*/%&|^]=|<<=|>>=)',
+                 clean[opening:body_end]):
+        return None
+    covered = []
+    for cast in re.finditer(r'\(\s*' + kind.replace(' ', r'\s+') + r'\s*\)\s*\(', clean[opening:body_end]):
+        at = opening + cast.end() - 1
+        closing = close(clean, at, '(', ')')
+        if closing:
+            covered.append((at, closing))
+    reads = []
+    for hit in re.finditer(r'(?<![\w.>])' + name + r'\b', clean[opening:body_end]):
+        at = opening + hit.start()
+        before, after = clean[opening:at], clean[at + len(name):body_end]
+        if (declared.start(1) == at or re.match(r'\s*=(?!=)', after)
+                or re.search(r'\(\s*' + kind + r'\s*\)\s*$', before)
+                or any(a < at < b for a, b in covered)):
+            continue
+        reads.append(at)
+    if not reads:
+        return None
+    text = source
+    for at in sorted(reads, reverse=True):
+        text = text[:at] + f'(({kind}) {name})' + text[at + len(name):]
+    return text[:start] + 's32' + text[stop:]
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -87,6 +125,10 @@ def variants(source, name):
         if text != source:
             result.append((FAMILY, text))
     locals_ = [(a, b) for a, b in found if a > opening]
+    for start, stop in locals_:
+        cast = _widened_with_casts(source, clean, opening, end, start, stop)
+        if cast:
+            result.append((FAMILY, cast))
     if len(locals_) > 1:
         # (an N64 function's two halfword locals were exact only together: 402 -> 2 -> exact)
         text = source
