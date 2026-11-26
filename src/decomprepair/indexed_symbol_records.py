@@ -48,14 +48,18 @@ def _wrapped(text):
 
 
 def _split(text, operator):
+    """`text` split at the top-level `operator` (`+` or `*`); `++` is left alone."""
     parts, depth, last = [], 0, 0
-    for at, char in enumerate(text):
-        depth += {'(': 1, '[': 1, ')': -1, ']': -1}.get(char, 0)
-        if depth == 0 and char == operator and not (operator == '+' and (text[at:at + 2] == '++' or text[at - 1:at] == '+')):
-            parts.append(text[last:at].strip())
-            last = at + 1
-    parts.append(text[last:].strip())
-    return parts
+    for found in re.finditer(r'[()\[\]]|\+\+|\+|\*', text):
+        token = found[0]
+        if token in '([':
+            depth += 1
+        elif token in ')]':
+            depth -= 1
+        elif token == operator and not depth:
+            parts.append(text[last:found.start()].strip())
+            last = found.end()
+    return parts + [text[last:].strip()]
 
 
 def _terms(text, temps, at, seen=()):
