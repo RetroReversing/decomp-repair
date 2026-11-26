@@ -95,6 +95,10 @@ CAPSTONE = {True: (capstone.CS_ARCH_MIPS, capstone.CS_MODE_MIPS64 | capstone.CS_
 JR_RA = 0x03E00008
 COP0, COP2 = 0x10, 0x12  # the opcodes of coprocessor 0's and coprocessor 2's instructions
 CACHE, LL, SC = 0x2F, 0x30, 0x38  # cache, and the load-linked/store-conditional pair: no C compiler of the era emits them
+CONTROL_ACCESS_LIMIT = 12  # words: an accessor of $31 (cfc1/ctc1, a return, a nop or two)
+WORD_CONVERSION_LIMIT = 48  # words: the conversion routines are this short; a game function that has one inline is longer
+LONG_FORMAT, DOUBLEWORD_MOVES = 0x15, (0x01, 0x05)  # coprocessor 1's `l` format, and dmfc1/dmtc1
+LONG_CONVERSIONS = (0x08, 0x09, 0x0A, 0x0B, 0x25)  # round/trunc/ceil/floor.l, cvt.l: a float to a 64-bit integer
 COP2_MEMORY = (0x32, 0x3A, 0x36, 0x3E)  # lwc2, swc2, ldc2 (lqc2 on the EE), sdc2 (sqc2)
 EABI_ARGUMENTS = {8, 9, 10, 11}  # t0-t3: arguments too under the EABI
 SCAN_BLOCK = 0x400  # code is looked for in blocks of this many bytes; a function's start is at most two before
@@ -369,6 +373,17 @@ def asm_reason(code: bytes, big_endian: bool, *, eabi: bool = False, cop2: str =
             return "uses the cache instruction (cache): a cache-maintenance routine, written in assembly; C has no way to emit it"
         if op in (LL, SC):
             return "uses ll/sc (load-linked, store-conditional): an atomic routine, written in assembly; C has no way to emit them"
+    if len(words) <= WORD_CONVERSION_LIMIT and any(
+            w >> OPCODE_SHIFT == COP1 and ((w >> RS_SHIFT) & 0x1F in DOUBLEWORD_MOVES + (LONG_FORMAT,)
+                                           or ((w >> RS_SHIFT) & 0x1F in (0x10, 0x11) and w & FUNCT_BITS in LONG_CONVERSIONS))
+            for w in words):
+        return ("converts between a float and a 64-bit integer (dmfc1, dmtc1, cvt.d.l, trunc.l.d...): one of the compiler "
+                "runtime's conversion routines (libgcc's __d_to_ull, __ll_to_d and the like), which compiled game code "
+                "calls and never contains")
+    if len(words) <= CONTROL_ACCESS_LIMIT and any(
+            w >> OPCODE_SHIFT == COP1 and (w >> RS_SHIFT) & 0x1F in (0x02, 0x06) and (w >> RD_SHIFT) & 0x1F == 31 for w in words):
+        return ("reads or writes the floating-point control register (cfc1/ctc1 $31) in a few instructions: an accessor "
+                "of the SDK's or the compiler's runtime (osGetFpcCsr, __osSetFpcCsr), written in assembly")
     body = list(words)
     while len(body) > 1 and body[-1] == 0:  # alignment padding
         body.pop()

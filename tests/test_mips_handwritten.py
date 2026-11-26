@@ -58,3 +58,24 @@ def test_cache_and_atomic_instructions_are_assembly():
     assert 'cache' in mips.asm_reason(words(0xBC900000, JR_RA, NOP), True)
     assert 'll/sc' in mips.asm_reason(words(0xC0880000, 0xE0880000, JR_RA, NOP), True)
     assert mips.asm_reason(words(0x8C820000, JR_RA, NOP), True) is None  # lw is C
+
+
+def test_a_short_float_to_64_bit_conversion_is_the_runtimes():
+    from decomprepair.mips import asm_reason
+    def word(*fields):
+        return (0x11 << 26 | fields[0] << 21 | fields[1] << 16 | fields[2] << 11 | fields[3] << 6 | fields[4]).to_bytes(4, 'big')
+    jr_ra, nop = (0x03E00008).to_bytes(4, 'big'), bytes(4)
+    cvt_d_l = word(21, 0, 12, 0, 0x21)          # cvt.d.l $f0, $f12
+    dmfc1 = word(1, 2, 0, 0, 0)                  # dmfc1 $v0, $f0
+    assert 'runtime' in asm_reason(cvt_d_l + jr_ra + nop, True)
+    assert 'runtime' in asm_reason(dmfc1 + jr_ra + nop, True)
+    assert 'runtime' not in (asm_reason((dmfc1 + jr_ra + nop) + bytes(4) + bytes(4 * 60), True) or '')
+
+
+def test_a_tiny_fpu_control_accessor_is_the_sdks():
+    from decomprepair.mips import asm_reason
+    cfc1 = (0x11 << 26 | 2 << 21 | 2 << 16 | 31 << 11).to_bytes(4, 'big')   # cfc1 $v0, $31
+    ctc1 = (0x11 << 26 | 6 << 21 | 4 << 16 | 31 << 11).to_bytes(4, 'big')   # ctc1 $a0, $31
+    jr_ra, nop = (0x03E00008).to_bytes(4, 'big'), bytes(4)
+    assert 'control register' in asm_reason(cfc1 + jr_ra + nop, True)
+    assert 'control register' in asm_reason(ctc1 + jr_ra + nop, True)

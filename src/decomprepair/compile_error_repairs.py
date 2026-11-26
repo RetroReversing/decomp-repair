@@ -427,6 +427,10 @@ def repair(source, line, message, attempt=0):
         edits = _word_cast(tokens, attempt, lambda inner: inner[-1] in ('f32', 'f64'))
     elif message == 'ido: float cast to a pointer':
         edits = _word_cast(tokens, attempt, lambda inner: inner[-1] == '*')
+        if not edits:  # (the cast is inside m2c's `M2C_FIELD(base, type *, offset)`: the base is the float)
+            bases = [m.end() for m in re.finditer(r'M2C_FIELD\((?!\(s32\))', code)]
+            spent = len(_casts(tokens, lambda inner: inner[-1] == '*'))
+            edits = [(bases[attempt - spent], '(s32)')] if 0 <= attempt - spent < len(bases) else None
     elif 'arithmetic on pointer to an incomplete type' in message:
         edits = _binary(tokens, '+', attempt) or _binary(tokens, '-', attempt - len(_binary_operators(tokens, '+')))
     elif 'void value not ignored' in message or 'invalid use of void expression' in message:
