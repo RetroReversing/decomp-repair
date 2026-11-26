@@ -411,8 +411,8 @@ def repair(source, line, message, attempt=0):
         # a call to the function being defined (or one declared with its parameters written out) that passes another
         # count: the call reads the callee as taking no list
         for n in dict.fromkeys(names) if not changed else ():
-            if f'{n}(' in lines[line - 1] and f'(({{}})'.format('s32 (*)()') + n not in lines[line - 1]:
-                call = re.sub(rf'(?<![\w.>]){re.escape(n)}\(', f'((s32 (*)(){chr(41)}{n})(', lines[line - 1], count=1)
+            if f'{n}(' in lines[line - 1] and f'((s32 (*)()){n})' not in lines[line - 1]:
+                call = re.sub(rf'(?<![\w.>]){re.escape(n)}\(', f'((s32 (*)()){n})(', lines[line - 1], count=1)
                 changed.append('\n'.join(lines[:line - 1] + [call] + lines[line:]))
         return changed[attempt] if attempt < len(changed) else None
     lines = source.split('\n')
