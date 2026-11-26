@@ -175,9 +175,12 @@ def _type_only(param):
 
 
 def _definition(callees, callee):
-    """The parameter list of the callee's matched definition in `callees`, or None."""
+    """The parameter list of the callee's matched definition in `callees`, or None. A parameter may hold one level of
+    parentheses (`s8 (*box)[4]`, `void (*cb)(s32)`): a 182-instruction SN GCC loader passed a fourth argument to a
+    callee defined `(Model *m, s8 (*box)[4], Tri *tri)`, and with no definition read the stray argument stayed (120 ->
+    0 once dropped)."""
     clean = _blank(callees or '')
-    hits = list(re.finditer(rf'(?<![\w.>]){re.escape(callee)}\s*\(([^(){{}};]*)\)\s*{{', clean))
+    hits = list(re.finditer(rf'(?<![\w.>]){re.escape(callee)}\s*\(((?:[^(){{}};]|\([^(){{}};]*\))*)\)\s*{{', clean))
     return _params(hits[0][1]) if len(hits) == 1 else None
 
 

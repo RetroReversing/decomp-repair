@@ -42,5 +42,21 @@ def test_an_evaluated_argument_is_kept():
     assert all('speed(arg0, next(temp_a1));' in t for t in found)
 
 
+def test_the_sources_prototype_loses_the_parameters_too_and_parenthesised_parameters_are_read():
+    """A 182-instruction SN GCC loader: m2c's 4-parameter prototype and call of a callee defined with an array-pointer
+    parameter (`s8 (*box)[4]`); the trimmed call must come with a trimmed prototype or it does not compile (120 -> 0)."""
+    source = ("void draw(u8 *, s32, s32, s32);\nvoid none(s32, s32);\nvoid odd(s32, ...);\n"
+              "s32 load(u8 *buf, s32 count) {\n    draw(buf, 1, 2, count);\n    none(count, count);\n    return count;\n}\n")
+    callees = ("void draw(Model *m, s8 (*box)[4], Tri *tri) {\n    m->x = 1;\n}\n"
+               "void none(void) {\n}\n")
+    found = [text for family, text in variants(source, 'load', callees=callees) if family == FAMILY]
+    assert len(found) == 3
+    both = found[0]
+    assert 'void draw(u8 *, s32, s32);' in both and 'draw(buf, 1, 2);' in both
+    assert 'void none(void);' in both and 'none();' in both
+    assert 'void odd(s32, ...);' in both
+    assert any('void draw(u8 *, s32, s32);' in t and 'void none(s32, s32);' in t for t in found[1:])
+
+
 def test_it_declares_itself():
     assert REPAIR['variants'] is variants and 'callees' in REPAIR['needs']

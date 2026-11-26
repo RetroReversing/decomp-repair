@@ -11,7 +11,9 @@ outright.
 callee_arity_trim
     For each callee whose matched definition (in `callees`) takes N parameters and is called with more, the calls
     lose their arguments past N, when those are plain names (nothing evaluated is dropped). Every callee together
-    first, then each alone. The judge decides; a drop that is worse means the target used the value."""
+    first, then each alone. The judge decides; a drop that is worse means the target used the value. A prototype of
+    the callee in the source that declares more parameters loses them too, or the trimmed call would not compile
+    (`void func_80048D08(u8 *, s32, s32, s32);` before a call that m2c gave a fourth argument)."""
 import re
 
 from .csource import _blank, find
@@ -72,20 +74,38 @@ def variants(source, name, callees=''):
         if not all(re.fullmatch(IDENT, d) for d in dropped):
             continue
         cut = hit.end() + (args[count - 1][1] if count else 0)
-        per.setdefault(hit[1], []).append((cut, close))
+        if hit[1] not in per:
+            per[hit[1]] = _prototypes(clean, span, hit[1], count)
+        per[hit[1]].append((cut, close, ''))
     out = []
     edits = [e for sites in per.values() for e in sites]
     if len(per) > 1:
-        child = source
-        for start, end in sorted(edits, reverse=True):
-            child = child[:start] + child[end:]
-        out.append((FAMILY, child))
+        out.append((FAMILY, _apply(source, edits)))
     for sites in per.values():
-        child = source
-        for start, end in sorted(sites, reverse=True):
-            child = child[:start] + child[end:]
-        out.append((FAMILY, child))
+        out.append((FAMILY, _apply(source, sites)))
     return out[:LIMIT]
+
+
+def _apply(source, edits):
+    for start, end, text in sorted(edits, reverse=True):
+        source = source[:start] + text + source[end:]
+    return source
+
+
+def _prototypes(clean, span, callee, count):
+    """Edits (start, end, text) that cut the source's own prototypes of `callee` outside the function to `count`
+    parameters (`void` for none); an unprototyped `()` or one already that short is left alone."""
+    edits = []
+    for hit in re.finditer(rf'(?m)^[^\n;{{}}#]*?(?<![\w.>]){re.escape(callee)}\s*\(((?:[^(){{}};]|\([^(){{}};]*\))*)\)\s*;',
+                           clean):
+        if span[0] <= hit.start() < span[1]:
+            continue
+        params = _arguments(hit[1])
+        if not hit[1].strip() or hit[1].strip() == 'void' or len(params) <= count or '...' in hit[1]:
+            continue
+        start = hit.start(1)
+        edits.append((start, hit.end(1), hit[1][:params[count - 1][1]] if count else 'void'))
+    return edits
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'callees')}
