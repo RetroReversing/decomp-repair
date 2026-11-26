@@ -114,7 +114,12 @@ def _names(text):
 
 
 def _simple(clean, start, end):
-    return _SIMPLE.fullmatch(clean[start:end].strip())
+    match = _SIMPLE.fullmatch(clean[start:end].strip())
+    # a compound assignment (`count *= 8;`, `x >>= 1;`) reads its location: the left side then ends in the operator,
+    # and moving it past a statement that reads the location changed the program (a call got `count`, not `count * 8`)
+    if match and match['lhs'].rstrip()[-1:] in tuple('+-*/%&|^<>'):
+        return None
+    return match
 
 
 def _has_call(clean, start, end):

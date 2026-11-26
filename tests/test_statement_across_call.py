@@ -79,3 +79,14 @@ def test_it_is_registered_and_bounded():
     repair = registry.get('statement_across_call')
     assert repair and registry.problems(repair) == [] and set(REPAIR['families']) == {FAMILY_HOIST, FAMILY_SINK, FAMILY_CONDITION}
     assert len(variants(HOIST + SINK, 'run')) <= LIMIT
+
+
+def test_a_compound_assignment_is_not_moved():
+    # A 182-instruction N64 loader: `count *= 8;` was sunk below `f(.., count); end += count;` (its left side read as
+    # `count *`, which neither statement names): the call then got `count`, not `count * 8`.
+    source = ('void f(s32 *buf, s32 count) {\n    s32 end;\n\n    end = 0;\n    count *= 8;\n    g(buf, count);\n'
+              '    end += count;\n    h(end);\n}\n')
+    for op in ('*=', '+=', '-=', '|=', '&=', '<<=', '>>=', '^=', '/=', '%='):
+        src = source.replace('count *= 8;', f'count {op} 8;')
+        moved = [c for c in kids(src, None, 'f') if c.index(f'count {op} 8;') > c.index('g(buf')]
+        assert not moved, op
