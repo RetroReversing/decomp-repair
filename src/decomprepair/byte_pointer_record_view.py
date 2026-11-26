@@ -27,7 +27,14 @@ kind, offered as one child because neither step helps alone. The saved best also
 matched C does not take (`callee_arity_trim`'s edit, no change alone, 60); with it kept the record children are 180, so
 with `callees` the same children are offered again on that family's first trimmed source (0).
 
-Only when every other mention of a pointer is a whole value (a call argument, a stored value, a copy, a compare): no
+A single record also helps alone. A 72-instruction libaudio voice allocator (KMC GCC 2.7.2) read its parameter
+block pointer, `u8 *temp`, through casts: typed as a record alone it went 265 -> 50 (member stores let the scheduler
+move the stack local's reload above a global's field read), while all records together scored 220 until the stores
+were reordered. The family used to give up the whole function, because a second pointer was taken by address
+(`&sp10`). So each pointer group is judged for eligibility on its own, an ineligible one keeps its casts, and after
+the children with every eligible record come children with one group each.
+
+A group is retyped only when every other mention of its pointers is a whole value (a call argument, a stored value, a copy, a compare): no
 `p + K` outside a cast, no `p[i]`, `p++` or `*p`; all casts at one offset agree (signedness included, pointers as one),
 no two members overlap and every offset is a multiple of its member's size.
 """
@@ -46,6 +53,7 @@ ACCESS = re.compile(r'\*\s*\(\s*(?P<cast>[A-Za-z_][\w\s*]*?\*)\s*\)\s*\(\s*(?P<p
                     r'(?P<off>0[xX][0-9a-fA-F]+|\d+)\s*\)')
 LITERAL = r'-?(?:0[xX][0-9a-fA-F]+|\d+)[uU]?'
 LIMIT = 64
+ALONE = 8  # one child per pointer group, besides the one with all of them
 
 
 def _member_type(cast):
@@ -96,8 +104,39 @@ def _groups(body, pointers):
     return {p: find(p) for p in pointers}
 
 
-def _records(source, name):
-    """The retyped source (pins kept, pins dropped), or None."""
+def _refused(clean, base, body, declared, group, sites, members):
+    """Groups that cannot be records: a pointer taken by address, indexed or stepped, or casts that clash."""
+    refused = {group[hit['ptr']] for hit in ACCESS.finditer(body)
+               if hit['ptr'] in declared and _member_type(hit['cast']) is None}
+    for pointer, hits in sites.items():
+        for _, _, offset, kind, _ in hits:
+            if members[group[pointer]][offset] != kind:
+                refused.add(group[pointer])
+    covered = sorted((start, end) for hits in sites.values() for start, end, *_ in hits)
+    for pointer in (p for p in declared if group[p] in members):
+        for mention in re.finditer(r'(?<![\w.>])' + re.escape(pointer) + r'\b', body):
+            at = base + mention.start()
+            if any(a <= at < b for a, b in covered) or at == declared[pointer][1]:
+                continue
+            after = clean[base + mention.end():base + mention.end() + 3]
+            before = clean[max(0, at - 3):at]
+            if re.match(r'\s*(?:\[|\+|-(?!>)|\.)', after) or re.search(r'(?:\*|\+\+|--|&)\s*$', before):
+                refused.add(group[pointer])
+    for key, table in members.items():
+        position = 0
+        for offset in sorted(table):
+            size = SIZES[table[offset]]
+            if offset < position or offset % size:
+                refused.add(key)
+            position = offset + size
+        if len(table) > LIMIT:
+            refused.add(key)
+    return refused
+
+
+def _records(source, name, only=None):
+    """The retyped source (pins kept, pins dropped), or None. A group of pointers that cannot be retyped keeps its
+    casts and the others are still records; `only` retypes that one group."""
     part = view(source, name)
     if not part or re.search(r'\b(?:asm|__asm__|sizeof|typeof|__typeof__)\b', part.body):
         return None
@@ -107,43 +146,27 @@ def _records(source, name):
         return None
     base = part.opening + 1
     body = clean[base:part.end - 1]
-    sites = {}
-    for hit in ACCESS.finditer(body):
-        if hit['ptr'] not in declared:
-            continue
-        typed = _member_type(hit['cast'])
-        if typed is None:
-            return None
-        sites.setdefault(hit['ptr'], []).append((base + hit.start(), base + hit.end(), int(hit['off'], 0)) + typed)
-    if not sites:
-        return None
     group = _groups(body, list(declared))
-    members = {}
-    for pointer, hits in sites.items():
-        table = members.setdefault(group[pointer], {})
-        for _, _, offset, kind, _ in hits:
-            if table.setdefault(offset, kind) != kind:
-                return None
-    covered = sorted((start, end) for hits in sites.values() for start, end, *_ in hits)
+    sites, members = {}, {}
+    for hit in ACCESS.finditer(body):
+        typed = _member_type(hit['cast'])
+        if hit['ptr'] not in declared or typed is None:
+            continue
+        offset = int(hit['off'], 0)
+        sites.setdefault(hit['ptr'], []).append((base + hit.start(), base + hit.end(), offset) + typed)
+        members.setdefault(group[hit['ptr']], {}).setdefault(offset, typed[0])
+    refused = _refused(clean, base, body, declared, group, sites, members)
+    members = {key: table for key, table in members.items()
+               if key not in refused and (only is None or key == only)}
+    if not members:
+        return None
+    sites = {p: hits for p, hits in sites.items() if group[p] in members}
     retyped = {p for p in declared if group[p] in members}
-    for pointer in retyped:
-        for mention in re.finditer(r'(?<![\w.>])' + re.escape(pointer) + r'\b', body):
-            at = base + mention.start()
-            if any(a <= at < b for a, b in covered) or at == declared[pointer][1]:
-                continue
-            after = clean[base + mention.end():base + mention.end() + 3]
-            before = clean[max(0, at - 3):at]
-            if re.match(r'\s*(?:\[|\+|-(?!>)|\.)', after) or re.search(r'(?:\*|\+\+|--|&)\s*$', before):
-                return None
     records, typedefs, names = {}, [], {}
     for key, table in members.items():
-        if len(table) > LIMIT:
-            return None
         lines, position = [], 0
         for offset in sorted(table):
             size = SIZES[table[offset]]
-            if offset < position or offset % size:
-                return None
             if offset > position:
                 lines.append(f'    u8 pad{position:X}[0x{offset - position:X}];')
             lines.append(f'    {table[offset]} m{offset:X};')
@@ -214,14 +237,39 @@ def _literal_inline(source, name):
     return edit(source, edits) if edits else source
 
 
-def _children(source, name):
+def _roots(source, name):
+    """The group roots of the byte pointers the function reads through offset casts."""
+    part = view(source, name)
+    if not part:
+        return []
+    declared = _declarations(source, part.clean, part, name)
+    body = part.clean[part.opening + 1:part.end - 1]
+    group = _groups(body, list(declared))
+    return sorted({group[hit['ptr']] for hit in ACCESS.finditer(body) if hit['ptr'] in declared})[:ALONE]
+
+
+def _with_literals(source, name, texts):
     found = []
-    for text in _records(source, name) or ():
+    for text in texts:
         found.append(text)
         inlined = _literal_inline(text, name)
         if inlined != text:
             found.append(inlined)
     return found
+
+
+def _children(source, name):
+    return _with_literals(source, name, _records(source, name) or ())
+
+
+def _alone(source, name):
+    """The same children with one group of pointers retyped at a time, for a function where another group's cast
+    views already compile as the target does."""
+    roots = _roots(source, name)
+    if len(roots) < 2:
+        return []
+    texts = [text for root in roots for text in _records(source, name, root) or ()]
+    return _with_literals(source, name, texts)
 
 
 def variants(source, name, callees=''):
@@ -232,6 +280,11 @@ def variants(source, name, callees=''):
         trimmed = callee_arity_trim.variants(source, name, callees)
         if trimmed:
             found += [(FAMILY, text) for text in _children(trimmed[0][1], name)]
+    seen = {text for _, text in found}
+    for text in _alone(source, name):
+        if text not in seen:
+            seen.add(text)
+            found.append((FAMILY, text))
     return found
 
 
