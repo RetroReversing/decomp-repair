@@ -66,3 +66,56 @@ def test_declines_what_it_does_not_understand():
     assert records.variants(DRAFT.replace('temp_s0 = i * 0x20;', 'temp_s0 = i * 0x6;'), 'f', '', ASM) == []
     # a symbol the header declares
     assert records.variants(DRAFT, 'f', 'extern s16 D_80100002;', ASM) == []
+
+
+CARRIED = '''extern u16 D_80200000[];
+extern s8 D_80100000;
+extern s8 D_80100002;
+extern s8 D_80100006;
+extern s8 D_80100028;
+
+void f(void) {
+    s32 temp_v0;
+    s32 i;
+    s32 j;
+    s32 off;
+
+    j = 0;
+    do {
+        temp_v0 = j * 0x70;
+        *(&D_80100000 + temp_v0) = 0;
+        *(&D_80100002 + temp_v0) = 0;
+        i = 0;
+        off = 0 * 2;
+loop_2:
+        *(off + ((j * 0x70) + &D_80100006)) = *(off + D_80200000);
+        i += 1;
+        off = i * 2;
+        if (i < 0x10) {
+            goto loop_2;
+        }
+        *(&D_80100028 + temp_v0) = 0;
+        j += 1;
+    } while (j < 4);
+}
+'''
+CARRIED_ASM = '''
+    sh         $zero, %lo(D_80100000)($at)
+    sb         $zero, %lo(D_80100002)($at)
+    sw         $zero, %lo(D_80100028)($at)
+'''
+
+
+def test_a_carried_byte_offset_and_another_table():
+    [(_, out)] = records.variants(CARRIED, 'f', '', CARRIED_ASM)
+    assert 's16 m6[' in out
+    assert 'D_80100000[j].m6[i] = D_80200000[i];' in out
+    assert 'D_80100000[j].m28 = 0;' in out
+    assert 'off' not in out and 'temp_v0' not in out
+    assert 'loop_2:' in out
+
+
+def test_a_table_inside_the_record_that_no_record_index_reaches_is_declined():
+    inside = CARRIED.replace('*(off + D_80200000)', '*(off + D_80100010)').replace(
+        'extern u16 D_80200000[];', 'extern u16 D_80100010[];')
+    assert records.variants(inside, 'f', '', CARRIED_ASM) == []

@@ -166,8 +166,9 @@ def _split_children(source, part, name, declared):
             new = _fresh(used, local)
             # the first range: its definition and every use up to the second definition
             exposed = other != block and _exposed(clean, blocks, defs, local, other[1], hi)
-            if not _read_before_in_loop(clean, loops, local, first[0]) and not exposed:
-                span = [first[0]] + _uses(clean, local, first[1], second[0])
+            span = [first[0]] + _uses(clean, local, first[1], second[0])
+            if (not _read_before_in_loop(clean, loops, local, first[0]) and not exposed
+                    and not _comes_round(loops, first[0], span[1:], defs)):
                 child = edit(source, [(at, at + len(local), new) for at in span])
                 moved = view(child, name)
                 if moved:
@@ -178,8 +179,9 @@ def _split_children(source, part, name, declared):
             stop = following[0][0] if following else other[1]
             if other != whole and exposed:
                 continue
-            if not _read_before_in_loop(clean, loops, local, second[0]):
-                span = [second[0]] + _uses(clean, local, second[1], stop)
+            span = [second[0]] + _uses(clean, local, second[1], stop)
+            if (not _read_before_in_loop(clean, loops, local, second[0])
+                    and not _comes_round(loops, second[0], span[1:], defs)):
                 if following:  # the next definition may read this range's value (`X = (X & 3) ? .. : X;`)
                     span += _uses(clean, local, following[0][1], following[0][2])
                 child = edit(source, [(at, at + len(local), new) for at in span])
@@ -285,6 +287,13 @@ def _loops(clean, blocks, opening):
 def _read_before_in_loop(clean, loops, local, at):
     """Whether a loop round `at` mentions the local before it: its value then comes round from the last pass."""
     return any(start < at < end and _uses(clean, local, start, at) for start, end in loops)
+
+
+def _comes_round(loops, definition, uses, defs):
+    """Whether one of `uses` sits in a loop that does not hold `definition` but holds another definition: from the
+    second pass on that use reads the other one's value, so it cannot be renamed apart from it."""
+    return any(any(start < use < end for use in uses) and any(start < d[0] < end for d in defs if d[0] != definition)
+               for start, end in loops if not start < definition < end)
 
 
 def _fresh(used, local):
