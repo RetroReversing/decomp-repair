@@ -52,3 +52,25 @@ def test_macros_and_trivial_literals_are_left_alone():
 def test_the_module_declares_itself():
     assert REPAIR['families'] == (FAMILY,)
     assert registry.problems(registry.get('integer_argument_early_local')) == []
+
+
+M2C = """void setup(void *arg0) {
+    void *temp_s1;
+
+    M2C_FIELD(arg0, s16 *, 0x178) = (u16) D_80094192;
+    M2C_FIELD(arg0, s16 *, 0x17A) = first(D_800936DA, 0x3C, 0, 0x80, (temp_s1 = arg0 + 0xD4));
+    M2C_FIELD(arg0, s16 *, 0x172) = 0x64;
+    M2C_FIELD(arg0, s32 *, 0x16C) = second(temp_s1, &D_80096510, 0x64, 0x64, 1, 1, 0xC8, 0xC8, 0xC8, 0xE6, 0x47);
+    M2C_FIELD(arg0, s16 *, 0x170) = 0;
+}
+"""
+
+
+def test_a_last_stack_literal_is_set_before_the_m2c_store_that_precedes_the_call():
+    # An 11-argument call in KMC 2.7.2 -O1 whose last (stack) argument is 0x47: the target loads it before the
+    # `0x172` store and stores it from that register; with the literal inline the `li` is scheduled late. The set
+    # one statement above the call's own, before that store, was exact (200 -> 0 on a N64 racing game's setup).
+    found = [c for f, c in variants(M2C, 'setup', asm='addiu $t0, $zero, 0x47\n') if f == FAMILY]
+    exact = [c for c in found if 'k_0x47 = 0x47;\n    M2C_FIELD(arg0, s16 *, 0x172) = 0x64;' in c]
+    assert exact
+    assert '0xE6, k_0x47)' in exact[0] and 's32 k_0x47;' in exact[0]
