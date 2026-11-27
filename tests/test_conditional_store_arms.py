@@ -61,3 +61,38 @@ def test_narrow_temporary_keeps_its_cast_for_a_wider_store():
 }
 '''
     assert repairs.variants(source, 'f')[0][1].count('*out = (u8) (c + 1);') == 1
+
+
+TESTED = '''void f(u8 *p) {
+    s32 t;
+    f2(p);
+    t = f3(p);
+    if (t == 0) {
+        t = 0x3000;
+    }
+    *(s32 *)(p + 0x3C) = t;
+    *(s32 *)(p + 0x44) = *(s32 *)(p + 0x3C) / 44;
+}
+'''
+
+
+def test_a_defaulted_temporary_the_test_reads_stores_in_each_arm():
+    [(family, text)] = repairs.variants(TESTED, 'f')
+    assert family == repairs.TESTED_FAMILY
+    assert ('t = f3(p);\n    if (t == 0) { *(s32 *)(p + 0x3C) = 0x3000; } '
+            'else { *(s32 *)(p + 0x3C) = t; }\n') in text
+
+
+def test_the_stores_cast_is_kept_in_both_arms():
+    source = TESTED.replace('= t;\n    *(s32', '= (u16) t;\n    *(s32')
+    [(_, text)] = repairs.variants(source, 'f')
+    assert '= (u16) 0x3000; } else { *(s32 *)(p + 0x3C) = (u16) t; }' in text
+
+
+def test_a_temporary_read_later_is_left_alone():
+    source = TESTED.replace('/ 44;', '/ t;')
+    assert repairs.variants(source, 'f') == []
+
+
+def test_a_default_computed_by_a_call_is_left_alone():
+    assert repairs.variants(TESTED.replace('t = 0x3000;', 't = f4();'), 'f') == []
