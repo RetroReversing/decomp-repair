@@ -90,3 +90,18 @@ def test_a_member_read_into_a_local_is_not_a_store():
     code = code.replace('(((Item *) item)->tag) = (u16) gSerial;', 's += gSerial;').replace(
         '(((Item *) item)->id) = (s32) (gSerial & 0xFFFF);', 's += gSerial & 3;')
     assert variants(code, 'f') == []
+
+
+def test_expanded_field_stores_count_as_pointer_stores():
+    code = """extern u16 gSerial;
+void f(void *p)
+{
+    (*(s8 *)((char *)(p) + 0x78)) = 3;
+    (*(u16 *)((char *)(p) + 0x6A)) = (u16) gSerial;
+    (*(s32 *)((char *)(p) + 0x34)) = (s32) (gSerial & 0xFFFF);
+}
+"""
+    [(_, child)] = variants(code, 'f')
+    text = squash(child)
+    assert text.index('held_gSerial = gSerial;') < text.index('0x78)) = 3;')
+    assert '(u16) held_gSerial' in text and '(held_gSerial & 0xFFFF)' in text
