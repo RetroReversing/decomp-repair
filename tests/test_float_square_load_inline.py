@@ -35,3 +35,11 @@ def test_type_and_macro_must_be_nonvolatile_and_exact():
     assert repair.variants(SOURCE, 'f', ASM, '#define f32 volatile float') == []
     assert repair.variants(SOURCE.replace(MACRO, MACRO.rstrip() + ' + change()\n'), 'f', ASM) == []
     assert repair.variants(SOURCE, 'f', ASM, '#undef M2C_FIELD') == []
+
+
+def test_multiple_independent_pairs_are_offered_together():
+    source = SOURCE.replace('}', '    x2 = M2C_FIELD(p, f32 *, 12);\n    y2 = M2C_FIELD(p, f32 *, 16);\n    result2 = (x2 * x2) + (y2 * y2);\n}')
+    source = source.replace('    f32 x;', '    f32 x2;\n    f32 y2;\n    f32 result2;\n    f32 x;')
+    out = repair.variants(source, 'f', ASM)
+    assert len(out) == 3
+    assert 'x2 = M2C_FIELD' not in out[-1][1] and 'x = M2C_FIELD' not in out[-1][1]

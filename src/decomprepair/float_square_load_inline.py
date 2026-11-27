@@ -36,6 +36,7 @@ def variants(source, name, asm, header=''):
             or re.search(r'(?m)^\s*#\s*(?:define|undef)\s+f32\b', macros)):
         return []
     out = []
+    edits = []
     for hit in _PAIR.finditer(part.clean, part.opening + 1, part.end):
         x, y = hit['x'], hit['y']
         if x == y or re.search(r'/[*/]|#', source[hit.start():hit.end()]):
@@ -53,9 +54,13 @@ def variants(source, name, asm, header=''):
         b = source[slice(*hit.span('b'))]
         indent = re.match(r'[ \t]*', source[hit.start():hit.end()])[0]
         replacement = f'{indent}{hit["dest"]} = ({a} * {a}) + ({b} * {b});'
-        out.append((FAMILY, edit(source, decls + [(hit.start(), hit.end(), replacement)])))
+        group = decls + [(hit.start(), hit.end(), replacement)]
+        edits.extend(group)
+        out.append((FAMILY, edit(source, group)))
         if len(out) >= LIMIT:
             break
+    if len(out) > 1:
+        out.append((FAMILY, edit(source, edits)))
     return out
 
 
