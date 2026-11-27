@@ -108,3 +108,9 @@ def test_guard_sink_does_not_move_global_static_or_escaped_stores():
     ]
     for source in samples:
         assert 'init_sink_into_guard' not in {family for family, _ in m.variants(source, 'f')}
+
+
+def test_guard_sink_accepts_unescaped_comma_declared_locals():
+    source = 'void f(int c) { unsigned int x, y; x = 0; if (c) { use(x); } }'
+    assert any(family == 'init_sink_into_guard' for family, _ in m.variants(source, 'f'))
+    assert not any(family == 'init_sink_into_guard' for family, _ in m.variants(source.replace('x = 0;', 'save(&x); x = 0;'), 'f'))
