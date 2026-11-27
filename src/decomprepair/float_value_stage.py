@@ -15,6 +15,7 @@ arguments of a staged call must have no calls or side effects. MIPS only. The ca
 """
 import re
 
+from .call_carrier_pointer_split import _arguments
 from .csource import _blank, find
 
 FAMILY = 'float_value_stage'
@@ -29,20 +30,6 @@ _CALL = re.compile(r'^([A-Za-z_]\w*)\s*\((.*)\)$', re.S)
 _KEYWORDS = {'if', 'for', 'while', 'switch', 'return', 'sizeof'}
 _OPERATOR = re.compile(r'(?<=[\w\)\]])\s*(?:[*/+]|-(?!>))')
 _CALLED = re.compile(r'(?<![\w.>])(?!(?:s8|u8|s16|u16|s32|u32|f32)\b)[A-Za-z_]\w*\s*\(')
-
-
-def _arguments(text):
-    """[(start, end)] of the top-level arguments of a call's argument text; None when the brackets don't balance."""
-    parts, depth, last = [], 0, 0
-    for at, char in enumerate(text):
-        depth += (char in '([') - (char in ')]')
-        if depth < 0:
-            return None
-        if char == ',' and not depth:
-            parts.append((last, at))
-            last = at + 1
-    parts.append((last, len(text)))
-    return None if depth else parts
 
 
 def _value(text):
@@ -67,9 +54,7 @@ def _sites(source, clean, lo, hi, floats):
         call = _CALL.match(text.rstrip())
         if not call or call[1] in _KEYWORDS:
             continue
-        spans = _arguments(call[2])
-        if spans is None:
-            continue
+        spans = _arguments(call[2], 0, len(call[2]))
         args = [call[2][a:b] for a, b in spans]
         staged = [i for i, arg in enumerate(args) if _value(arg)]
         if len(staged) != 1:
