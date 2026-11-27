@@ -11,7 +11,8 @@ from .integer_repair_support import edit, view
 
 FAMILY = 'single_use_inline'
 FAMILIES = (FAMILY,)
-_TYPE = r'(?:register\s+)?(?:unsigned\s+(?:char|short|int)|[su](?:8|16|32)|int|short|char|f32)\s*\**'
+# m2c declares the cached address of a table row `void *` (`row = D_x + 0xC0;`), only ever as a pointer.
+_TYPE = r'(?:register\s+)?(?:void(?=\s*\*)|unsigned\s+(?:char|short|int)|[su](?:8|16|32)|int|short|char|f32)\s*\**'
 _LITERAL = re.compile(r'-?(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*\Z')
 _PURE = re.compile(r'[\w\s()+\-*/%&|^~<>!.\[\]]+\Z')
 

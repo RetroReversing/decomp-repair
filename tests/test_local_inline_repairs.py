@@ -87,3 +87,20 @@ s32 f(s32 a, s32 b) {
     assert both and 'g(h + 1, ((u32)(b & 0xffff) >> 7));' in both[0]
     # an operand changed inside the block keeps the local
     assert not inline.variants(source.replace('h = T[h];', 'h = T[h]; b = h;'), 'f')
+
+
+def test_a_void_pointer_row_address_is_inlined():
+    # m2c's cached table-row address (`row = T + 0xC0;`) passed to several calls: no child before, and the
+    # original wrote the address at each call.
+    source = '''extern u8 T[];
+
+void f(void) {
+    void *row;
+
+    row = T + 0xC0;
+    g(row, 1);
+    g(row, 2);
+}
+'''
+    out = [text for _, text in inline.variants(source, 'f')]
+    assert any('g((T + 0xC0), 1);' in t and 'g((T + 0xC0), 2);' in t for t in out)
