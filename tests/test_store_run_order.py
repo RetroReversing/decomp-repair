@@ -112,3 +112,49 @@ def test_children_are_bounded_and_differ_from_the_source():
 
 def test_it_declares_itself():
     assert module.REPAIR['variants'] is variants and set(module.REPAIR['families']) == {FAMILY, FAMILY_CONSTANT}
+
+
+VOICE = """void func_80067428(s32);
+void alloc(void *, s32, void *);
+void f(void *config, s32 count) {
+    struct {
+        s16 priority;
+        s16 bus;
+        s8 pitch;
+    } cfg;
+    s32 i;
+
+    for (i = 0; i < count; i++) {
+        func_80067428(i);
+        cfg.priority = (s16) M2C_FIELD(config, const s32 *, 0xC);
+        cfg.bus = 0;
+        cfg.pitch = 0;
+        alloc(&D_800FDBC0, i, &cfg);
+    }
+}
+"""
+
+
+def _order(text):
+    return tuple(sorted(('priority', 'bus', 'pitch'), key=lambda member: text.index(f'cfg.{member} =')))
+
+
+def test_a_local_structs_last_member_store_moves_to_the_front():
+    found = children(VOICE)
+    assert ('pitch', 'priority', 'bus') in [_order(text) for text in found]
+    assert all(text.index('func_80067428(i);') < text.index('cfg.') for text in found)
+    assert all(max(text.rindex('cfg.pitch'), text.rindex('cfg.bus')) < text.index('alloc(&D') for text in found)
+
+
+def test_a_struct_typedefs_local_moves_too_and_a_union_does_not():
+    inline = 'struct {\n        s16 priority;\n        s16 bus;\n        s8 pitch;\n    } cfg;'
+    typed = VOICE.replace(inline, 'VoiceCfg cfg;')
+    header = 'typedef struct { s16 priority; s16 bus; s8 pitch; } VoiceCfg;\n'
+    assert ('pitch', 'priority', 'bus') in [_order(text) for text in children(typed, header=header)]
+    assert not children(VOICE.replace('    struct {', '    union {'))
+
+
+def test_a_pointer_the_function_reassigns_may_reach_the_local():
+    for change in ('config = other;', 'config++;'):
+        found = children(VOICE.replace('    s32 i;\n\n', f'    s32 i;\n\n    {change}\n'))
+        assert all(_order(text).index('priority') == 0 for text in found)

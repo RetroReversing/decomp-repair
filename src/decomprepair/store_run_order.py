@@ -16,13 +16,21 @@ What this reads, for the function's runs of simple statements (a call, a branch,
     `base[off] = value;`, in every spelling of one cell the agents and m2c write: `M2C_FIELD(base, type *, off)`,
     `*(T *)((char *)base + off)`, `((Rec *) ((char *) base + off))->v` (a one-member record around the type),
     `base->member`, `base[3]`
+    `local.member = value;`                   a member of a local struct (`struct { .. } cfg;`, or a struct typedef's)
     `local = value;`, `local op= value;`      a plain local (declared, never address-taken, not `volatile`)
 
 where a value is made of literals, locals and parameters, `&symbol`, casts, operators (a division only by a
 literal) and reads of cells (`local = base[0x94] / 3;`). A statement that reads a bare global, calls, dereferences
 an unknown pointer or uses `volatile` is a barrier like a call. Two statements commute when no local is written by one and touched by the other and no cell
 of one overlaps a cell of the other: two cells of one base are told apart by their byte ranges (the type's width), two
-members by name, two indices by value; cells of different bases, or of one base in two spellings, are never told apart.
+members by name, two indices by value; cells of different bases, or of one base in two spellings, are never told apart,
+except a local struct's members against another local struct's and against cells read through a parameter the function
+never reassigns or takes the address of (the caller's pointer cannot reach a frame that did not exist yet).
+
+A local struct passed to a callee by address is the usual shape: an N64 sound library's initialiser fills a voice
+configuration in a loop (`cfg.priority = *(s32 *) ((s8 *) config + 0xC); cfg.fxBus = 0; cfg.unityPitch = 0;`) and the
+target stores the last member first: 60 -> 0 with that statement moved to the front of its run (KMC GCC 2.7.2
+`-G0 -mips3 -mgp32 -mfp32 -O2`). Adjacent swaps alone get there only through a step that scores the same.
 
 Children (`store_run_order`), each only when it differs from the source and every statement it passes commutes with the
 moved one, in this order: each adjacent swap, then each statement moved to the front of its run, then each moved to the
@@ -37,6 +45,7 @@ integer cell types and a value other than 0.
 Hypotheses from three matches, not from the compiler source; the judge decides every child."""
 import re
 
+from .csource import _blank
 from .integer_repair_support import IDENT, edit, view
 from .statement_slide import _runs
 
@@ -188,6 +197,9 @@ class _Parser:
                         self.take()
                 self.take(')')
                 node = ('call', node, args)
+            elif tok == '.' and node[0] == 'name':
+                self.take()
+                node = ('dot', node, self.take()[1])
             elif tok in ('.', '++', '--', '('):
                 raise _Bad
             else:
@@ -230,7 +242,7 @@ def _address(node):
     return None
 
 
-def _cell(node, records):
+def _cell(node, records, aggregates=frozenset()):
     """(base, family, low, high) when `node` is one memory cell of a base pointer, else None. Family `off` is a byte range,
     `member` a member name, `index` an array index."""
     if node[0] == 'deref':
@@ -250,16 +262,19 @@ def _cell(node, records):
                 return where[0], 'off', where[1], where[1] + record[1]
         elif obj[0] == 'name':
             return obj[1], 'member', node[2], node[2]
+    elif node[0] == 'dot' and node[1][1] in aggregates:
+        return node[1][1], 'member', node[2], node[2]
     elif node[0] == 'index' and node[1][0] == 'name' and node[2][0] == 'num':
         return node[1][1], 'index', int(node[2][1].rstrip('uUlL'), 0), 0
     return None
 
 
-def _clash(one, two):
+def _clash(one, two, apart=frozenset()):
     if one[0] == 'v' or two[0] == 'v':
         return one == two
     if one[1] != two[1]:
-        return True  # different bases may be one object; one base in two spellings is not told apart
+        # different bases may be one object, unless `apart` knows them to be two
+        return frozenset((one[1], two[1])) not in apart
     if one[2] != two[2]:
         return True
     if one[2] == 'off':
@@ -271,16 +286,16 @@ class Effects:
     def __init__(self, kind, writes, reads, store=None, value=None):
         self.kind, self.writes, self.reads, self.store, self.value = kind, writes, reads, store, value
 
-    def commutes(self, other):
-        return not (any(_clash(w, k) for w in self.writes for k in other.writes | other.reads)
-                    or any(_clash(w, k) for w in other.writes for k in self.reads))
+    def commutes(self, other, apart=frozenset()):
+        return not (any(_clash(w, k, apart) for w in self.writes for k in other.writes | other.reads)
+                    or any(_clash(w, k, apart) for w in other.writes for k in self.reads))
 
 
 def _key(cell):
     return ('c',) + cell
 
 
-def _read(node, names, records, cells, locals_):
+def _read(node, names, records, cells, locals_, aggregates=frozenset()):
     """Add the locals and cells a pure value reads; False when it is not pure (a call, a global read, an unknown pointer)."""
     kind = node[0]
     if kind == 'num':
@@ -291,18 +306,18 @@ def _read(node, names, records, cells, locals_):
             return True
         return False
     if kind == 'cast':
-        return not node[1].endswith('volatile') and _read(node[2], names, records, cells, locals_)
+        return not node[1].endswith('volatile') and _read(node[2], names, records, cells, locals_, aggregates)
     if kind == 'un':
-        return _read(node[2], names, records, cells, locals_)
+        return _read(node[2], names, records, cells, locals_, aggregates)
     if kind == 'addr':
         return node[1][0] == 'name' and node[1][1] not in names
     if kind == 'bin':
         if node[1] in ('/', '%') and node[3][0] != 'num':
             return False
-        return _read(node[2], names, records, cells, locals_) and _read(node[3], names, records, cells, locals_)
+        return all(_read(part, names, records, cells, locals_, aggregates) for part in node[2:4])
     if kind == 'tern':
-        return all(_read(part, names, records, cells, locals_) for part in node[1:])
-    cell = _cell(node, records)
+        return all(_read(part, names, records, cells, locals_, aggregates) for part in node[1:])
+    cell = _cell(node, records, aggregates)
     if cell:
         cells.add(_key(cell))
         locals_.add(('v', cell[0]))
@@ -310,7 +325,7 @@ def _read(node, names, records, cells, locals_):
     return False
 
 
-def _effects(text, names, records):
+def _effects(text, names, records, aggregates=frozenset()):
     try:
         tree = _Parser(text.strip().rstrip(';')).parse()
     except _Bad:
@@ -319,7 +334,7 @@ def _effects(text, names, records):
         return None
     _, op, left, right = tree
     reads, locals_ = set(), set()
-    if not _read(right, names, records, reads, locals_):
+    if not _read(right, names, records, reads, locals_, aggregates):
         return None
     if left[0] == 'name' and left[1] in names:
         target = ('v', left[1])
@@ -327,7 +342,7 @@ def _effects(text, names, records):
         if op != '=':
             locals_.add(target)
     else:
-        cell = _cell(left, records)
+        cell = _cell(left, records, aggregates)
         if not cell:
             return None
         target = _key(cell)
@@ -356,14 +371,50 @@ def _names(part, source):
     return {name for name in names if not re.search(rf'&\s*{re.escape(name)}\b', body)}
 
 
-def _segments(source, part, names, records):
+def _aggregates(part, header):
+    """The function's local structs (never unions, whose members share their bytes): an inline `struct {..} x;`, or a
+    local of a struct tag or struct typedef declared in the source or header. Nested braces are not read."""
+    types = set()
+    for text in (_blank(header), part.clean):
+        types.update(re.findall(rf'\btypedef\s+struct\s*(?:{IDENT})?\s*\{{[^{{}}]*\}}\s*({IDENT})\s*;', text))
+        types.update(f'struct {tag}' for tag in re.findall(rf'\bstruct\s+({IDENT})\s*\{{[^{{}}]*\}}', text))
+    body = part.clean[part.opening:part.end]
+    found = set(re.findall(rf'(?m)(?:^|(?<=[{{;]))\s*struct(?:\s+{IDENT})?\s*\{{[^{{}}]*\}}\s*({IDENT})\s*;', body))
+    for kind in types:
+        spelled = r'\s+'.join(map(re.escape, kind.split()))
+        found.update(re.findall(rf'(?m)^[ \t]*{spelled}[ \t]+({IDENT})[ \t]*;', body))
+    return frozenset(found)
+
+
+def _apart(source, part, aggregates):
+    """The pairs of bases known to be two objects: each local struct against every other and against every pointer
+    parameter that still holds what the caller passed."""
+    if not aggregates:
+        return frozenset()
+    head = source[:part.opening]
+    signature = head[head.rfind('(') + 1:head.rfind(')')]
+    body = part.clean[part.opening:part.end]
+    kept = set()
+    for piece in signature.split(','):
+        found = re.search(rf'({IDENT})\s*(?:\[\s*\])?\s*$', piece)
+        if not found or len(piece.split()) < 2:
+            continue
+        name = re.escape(found[1])
+        changed = (rf'(?<![\w.>]){name}\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|(?:\+\+|--)\s*{name}\b|'
+                   rf'(?<![\w.>]){name}\s*(?:\+\+|--)|(?<!&)&\s*{name}\b(?!\s*(?:->|\[))')
+        if not re.search(changed, body):
+            kept.add(found[1])
+    return frozenset(frozenset((one, two)) for one in aggregates for two in kept | aggregates if one != two)
+
+
+def _segments(source, part, names, records, aggregates=frozenset()):
     """[[(start, end, effects)]]: runs of two or more consecutive statements the model understands."""
     found = []
     stop = part.clean.rindex('}', part.opening, part.end)
     for run in _runs(part.clean, part.opening + 1, stop, minimum=1):
         group = []
         for start, end in run:
-            effects = _effects(source[start:end], names, records)
+            effects = _effects(source[start:end], names, records, aggregates)
             if effects is None:
                 if len(group) >= 2:
                     found.append(group)
@@ -384,7 +435,7 @@ def _rebuild(source, group, order):
     return child + source[spans[-1][1]:]
 
 
-def _moves(source, group):
+def _moves(source, group, apart=frozenset()):
     """[(rank, order)] of every adjacent swap, move to the front and move to the back that commutes with what it passes."""
     count = len(group)
     effects = [item[2] for item in group]
@@ -393,7 +444,7 @@ def _moves(source, group):
     def move(index, target, kind):
         step = 1 if target > index else -1
         between = range(index + step, target + step, step)
-        if not all(effects[index].commutes(effects[k]) for k in between):
+        if not all(effects[index].commutes(effects[k], apart) for k in between):
             return
         order = list(range(count))
         order.insert(target, order.pop(index))
@@ -412,10 +463,10 @@ def _moves(source, group):
     return found
 
 
-def _order_children(source, segments):
+def _order_children(source, segments, apart=frozenset()):
     ranked = []
     for number, group in enumerate(segments):
-        for rank, distance, order in _moves(source, group):
+        for rank, distance, order in _moves(source, group, apart):
             ranked.append((rank, distance, number, order, group))
     result = []
     for _, _, _, order, group in sorted(ranked, key=lambda item: item[:3]):
@@ -495,8 +546,9 @@ def variants(source, name, header=''):
         return []
     names = _names(part, source)
     records = _records(header + '\n' + source)
-    segments = _segments(source, part, names, records)
-    result = [(FAMILY, child) for child in _order_children(source, segments)]
+    aggregates = _aggregates(part, header)
+    segments = _segments(source, part, names, records, aggregates)
+    result = [(FAMILY, child) for child in _order_children(source, segments, _apart(source, part, aggregates))]
     result += [(FAMILY_CONSTANT, child) for child in _constant_children(source, part, name, names, records)]
     return result
 
