@@ -132,3 +132,19 @@ def test_shifted_counter_in_printed_do_loop_becomes_a_for():
     for unsafe in (source.replace('work();', 'i += 1;'), source.replace('work();', 'work(&i);'),
                    source.replace('work();', 'continue;'), source.replace('i = 0;', 'i = 1;')):
         assert not any('i < 2U' in t for family, t in blocks.variants(unsafe, 'f') if family == blocks.FOR)
+
+
+STATEMENTS_BETWEEN = ('void f(void) {\n    u32 i;\n    s8 pad[2];\n\n    i = 0;\n    pad[0] = read(0);\n    pad[1] = read(1);\n'
+                      '    do {\n        use(pad[i]);\n        i += 1;\n    } while (i < 2U);\n}\n')
+
+
+def test_a_constant_count_takes_its_init_across_unrelated_statements():
+    # N64 pad reader (SN GCC 2.8.1): the loop reads set between `i = 0;` and the `do` (300 -> 0).
+    texts = [t for f, t in blocks.variants(STATEMENTS_BETWEEN, 'f') if f == blocks.FOR]
+    assert any('    pad[1] = read(1);\n    for (i = 0; i < 2U; i++) {\n        use(pad[i]);\n    }\n' in t
+               and 'i = 0;\n    pad[0]' not in t for t in texts)
+    # not when a statement between names the counter, nor when the head test would fail on entry
+    named = STATEMENTS_BETWEEN.replace('read(1)', 'read(i)')
+    assert not any('for (i = 0; i < 2U' in t for f, t in blocks.variants(named, 'f') if f == blocks.FOR)
+    empty = STATEMENTS_BETWEEN.replace('i < 2U', 'i < 0U')
+    assert not any('for (i = 0; i < 0U' in t for f, t in blocks.variants(empty, 'f') if f == blocks.FOR)

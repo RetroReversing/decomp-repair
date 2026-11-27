@@ -13,6 +13,9 @@ by the local pass, so how a draft names and scopes its variables decides which v
   register for all of them. 470 -> 280.
 - `do_while_to_for`: `i = 0; do { ...; i++; } while (c);` becomes `for (i = 0; c; i++) { ... }`, which gcc tests
   at the loop head with no copy of the test before the loop. 1130 -> 770 (with the loop's pointer declared outside).
+  Statements may stand between the init and the loop when the loop counts from a literal to a larger literal and they
+  never name the counter (a stick-to-buttons loop of two passes, SN GCC 2.8.1: 300 -> 0, its last `blez` becoming the
+  target's `blezl`).
   The init is also offered left where it was, as `for (; c; i++)`: gcc emits a header init right before the loop,
   after the pointer declarations in front of it. 80 -> 20.
 
@@ -205,6 +208,23 @@ def _split_temporaries(source, name):
 
 # -- do_while_to_for ---------------------------------------------------------------------------------------------
 
+def _fixed_count(clean, opening, end, var, init, condition, between, body):
+    """Whether statements between `var = INIT;` and the loop may stay in front of a `for` header that takes the init:
+    the loop counts a local from a literal up to a larger literal (so the head test holds on entry), only the step
+    writes the counter, and the statements between never name it and stay in the same block."""
+    first = re.fullmatch(r'\s*(0x[\da-fA-F]+|\d+)[uU]?\s*', init)
+    bound = re.fullmatch(rf'\s*{re.escape(var)}\s*<\s*(0x[\da-fA-F]+|\d+)[uU]?\s*', condition)
+    if not first or not bound or int(first[1], 0) >= int(bound[1], 0):
+        return False
+    if re.search(rf'\b{re.escape(var)}\b|\b(?:goto|case|default|return|break|continue|if|else|for|while|do|switch)\b|[{{}}:]',
+                 between):
+        return False
+    if re.search(rf'(?:\+\+|--|&)\s*{re.escape(var)}\b|\b{re.escape(var)}\s*(?:\+\+|--|(?:<<|>>|[-+*/%&|^])?=(?!=))', body):
+        return False
+    return bool(re.search(rf'(?m)^[ \t]*(?:u32|s32|u16|s16|int|unsigned(?:\s+int)?)\s+{re.escape(var)}\s*;', clean[opening:end])) \
+        and not re.search(rf'(?<!&)&\s*{re.escape(var)}\b(?!\s*[\[.])', clean[opening:end])
+
+
 def _for_loops(source, name):
     part = _body(source, name)
     if not part:
@@ -266,7 +286,8 @@ def _for_loops(source, name):
             continue
         between = before[init.end():]
         if any(not re.fullmatch(r'\s*(?:\{|(?:volatile\s+|const\s+|unsigned\s+)*\w+\s*\*?\s*\w+(?:\s*=[^;]*)?;)?\s*', line)
-               for line in between.split('\n')):
+               for line in between.split('\n')) and not _fixed_count(
+                   clean, opening, end, var, init['init'], condition, between, inner[:step.start()]):
             continue
         init_text = source[opening + init.start('init'):opening + init.end('init')].strip()
         line = clean.rfind('\n', 0, start) + 1

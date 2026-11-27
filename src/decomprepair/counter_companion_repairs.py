@@ -16,8 +16,9 @@ not read after the loop, becomes `INIT + j * S` at its uses (a pointer `T *` thr
 elements of T; `void *` through `(char *)`), with its initialisation and step dropped. The counter must start at an integer constant and step by 1 as another of those last statements.
 A counter that starts at `C` other than 0 gives `INIT + (j - C) * S`, or `j * S` when the companion starts at `C * S`
 (an audio voice loop counted from -4 beside a byte offset from -0x70, SN GCC 2.7.2: 170 -> 0 with `D + i * 0x1C`).
-The initialisations are the statements right before the loop, or (a constant or a symbol's address only) earlier in a
-block that encloses the loop, with nothing between that names the variable. Steps may sit in braces of their own (the
+The initialisations are the statements right before the loop, or (a constant, a symbol's address, a local array or a
+local that is not written afterwards) earlier in a block that encloses the loop, with nothing between that names the
+variable. Steps may sit in braces of their own (the
 plain form of a saved best keeps a fence's block). Offered with every companion rewritten and, when there are several,
 each one alone.
 """
@@ -133,7 +134,7 @@ def _earlier_init(clean, opening, start, var, reads=False):
         return None
     hit = hits[-1]
     value = hit['value'].strip()
-    if _int(value) is None and not re.fullmatch(r'&\s*' + IDENT, value):
+    if _int(value) is None and not re.fullmatch(r'&\s*' + IDENT, value) and not _fixed_base(clean, opening, hit, value, start):
         return None
     if re.search(word, clean[hit.end():start]):
         return None
@@ -142,6 +143,25 @@ def _earlier_init(clean, opening, start, var, reads=False):
             and clean[:block].rstrip()[-1:] in (';', '{', '}'):  # a bare block (a fence's, opened by plain_best)
         block = c_scan.enclosing_block(clean, block, opening)
     return hit if block >= 0 and c_scan.close(clean, block) > start else None
+
+
+def _fixed_base(clean, opening, hit, value, start):
+    """Whether `value` names a local that still holds the same address through the loop at `start`: a local array
+    (`cursor = bytes;`), or a local that nothing after the cursor's start writes or takes the address of
+    (`base = &table; cursor = base;`)."""
+    if not re.fullmatch(IDENT, value):
+        return False
+    declared = re.search(r'(?m)^[ \t]*[A-Za-z_][\w ]*?(?:[ \t]+|[ \t]*\*+[ \t]*)\b' + value + r'[ \t]*(\[[^\]\n]*\])?[ \t]*;',
+                         clean[opening:start])
+    if not declared:
+        return False
+    if declared[1]:
+        return True
+    body = clean.find('{', start)
+    end = close(clean, body, '{', '}') if body >= 0 else None
+    written = (r'(?<![\w.>])' + value + r'\s*(?:(?:[-+*/%&|^]|<<|>>)?=(?!=)|\+\+|--)|(?:\+\+|--)\s*' + value
+               + r'\b|&\s*' + value + r'\b(?!\s*\[)')
+    return bool(end) and not re.search(written, clean[hit.end():end])
 
 
 def variants(source, name):
@@ -157,12 +177,13 @@ def variants(source, name):
     for start, body_open, body_end, cond_open, cond_end in _loops(clean, opening, end):
         body = clean[body_open + 1:body_end - 1]
         steps = _tail(body)
-        counters = [s for s in steps if s[2] is None]
+        # of several words stepped by one, the loop's test names the counter; a byte cursor beside it is a companion
+        counters = [s for s in steps if s[2] is None
+                    and re.search(r'\b' + s[1] + r'\b', clean[cond_open:cond_end])]
         if len(counters) != 1 or len({s[1] for s in steps}) != len(steps):
             continue
         counter = counters[0][1]
-        if not re.search(r'\b' + counter + r'\b', clean[cond_open:cond_end]):
-            continue
+        steps = [(at, name, None if name == counter else stride or '1') for at, name, stride in steps]
         region = INITS.search(clean, opening, start)
         if region and clean[opening:region.start()].rstrip()[-1:] not in (';', '{', '}'):
             region = None
@@ -186,7 +207,8 @@ def variants(source, name):
             word = r'\b' + var + r'\b'
             if (not declared or re.search(word, after) or re.search(word, clean[cond_open:cond_end])
                     or re.search(r'&\s*' + var + r'\b', clean[opening:end])
-                    or re.search(r'(?<![\w.>])' + var + r'\s*(?:[-+*/&|^]|<<|>>)?=(?!=)|(?:\+\+|--)\s*' + var + r'\b|\b'
+                    # `*v = x;` stores through the companion; it does not write the companion itself
+                    or re.search(r'(?<![\w.>*])' + var + r'\s*(?:[-+*/&|^]|<<|>>)?=(?!=)|(?:\+\+|--)\s*' + var + r'\b|\b'
                                  + var + r'\s*(?:\+\+|--)', clean[body_open + 1:body_first])
                     or len(re.findall(word, clean[init.start():start])) != 1):
                 continue

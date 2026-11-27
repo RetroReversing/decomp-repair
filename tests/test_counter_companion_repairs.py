@@ -130,3 +130,58 @@ def test_a_typed_pointer_keeps_its_type():
     assert '((s32 *) (&D_800E6A84) + j * 0xFF8)' in both
     (_, both), _, _ = c.variants(SOURCE.replace('char *k;', 'void *k;'), 'f')
     assert '((char *) (&D_800E6A84) + j * 0xFF8)' in both
+
+
+STACK = '''int pad(void)
+{
+  u8 sp10[4];
+  u8 sp18[2];
+  u8 *base;
+  u8 *out;
+  u8 *held;
+  u8 *stick;
+  s32 odd;
+  u32 i;
+
+  i = 0;
+  odd = 1;
+  stick = sp18;
+  sp18[0] = read(0);
+  out = sp10;
+  base = &D_80100000;
+  held = base;
+  sp18[1] = read(1);
+  do
+  {
+    if (*stick == 0)
+    {
+      sp10[odd] = 0;
+      *out = 0;
+      *held = 0;
+    }
+    odd += 2;
+    stick += 1;
+    held += 2;
+    i += 1;
+    out += 2;
+  }
+  while (i < 2U);
+  return sp10[0];
+}
+'''
+
+
+def test_cursors_over_local_arrays_and_a_byte_cursor_beside_the_counter():
+    # a pad reader's m2c draft: cursors started from stack arrays and a base local, stored through, one stepped by one
+    family, text = c.variants(STACK, 'pad')[0]
+    assert family == 'counter_companion'
+    assert 'if (*((u8 *) (sp18) + i * 1) == 0)' in text
+    assert 'sp10[(1 + i * 2)] = 0;' in text
+    assert '*((u8 *) (sp10) + i * 2) = 0;' in text and '*((u8 *) (base) + i * 2) = 0;' in text
+    assert 'stick = sp18;' not in text and 'out += 2;' not in text and 'held = base;' not in text
+    assert 'base = &D_80100000;' in text and '    i += 1;\n  }' in text
+
+
+def test_a_cursor_whose_base_is_written_again_stays():
+    rewritten = STACK.replace('  sp18[1] = read(1);\n', '  sp18[1] = read(1);\n  base = other();\n')
+    assert all('held = base;' in text for _, text in c.variants(rewritten, 'pad'))
