@@ -27,6 +27,14 @@ global_pointer_read_record
     the compiler and did not invalidate the plain global's load; as `extern struct { void *block; } G;` it did
     (500 -> 240 alone, 0 with the two other edits). One child per global.
 
+global_pointer_base_record
+    m2c's address local for such a global (`void **base; base = &G;` with every use `(*base)`) hides the global from
+    the steps above, which refuse a global whose address is taken. The local is written out (`G` at each use, its
+    declaration and assignment dropped) and `global_pointer_record` or `global_pointer_read_record` applied to the
+    result, as one child. The local's other uses must all be `*base` reads. On an SN gcc 2.8.1 (`-G0 -mips3 -O2 -mfp64`)
+    actor update of 51 instructions the autopilot's best held the pointer this way: 210 -> 50 as the record, and 0 with
+    its one-shot fence then removed.
+
 Hypothesis, read from expr.c's `MEM_IN_STRUCT_P` marking but not traced through
     cse.c: a store marked as a structure member does not invalidate a scalar global's load, a member's load it does.
     The exact judge decides.
@@ -36,7 +44,8 @@ import re
 FAMILY = 'global_pointer_record'
 SCALAR = 'global_scalar_record'
 READ = 'global_pointer_read_record'
-FAMILIES = (FAMILY, SCALAR, READ)
+BASE = 'global_pointer_base_record'
+FAMILIES = (FAMILY, SCALAR, READ, BASE)
 LIMIT = 6
 MEMBER = 'block'
 
@@ -65,7 +74,34 @@ def _written_between(source, name):
     return False
 
 
+def _without_address_locals(source, name):
+    """[source] with each `L = &G;` address local of an extern pointer written out as `G`, one per local."""
+    result = []
+    globals_ = {found.group('name') for found in _EXTERN.finditer(source)}
+    for found in re.finditer(rf'(?m)^[ \t]*(?P<local>{_ID})[ \t]*=[ \t]*&[ \t]*(?P<global>{_ID});[ \t]*\n', source):
+        local, glob = found.group('local'), found.group('global')
+        if glob not in globals_:
+            continue
+        text = source[:found.start()] + source[found.end():]
+        declaration = re.search(rf'(?m)^[ \t]*(?:const )?{_ID}[ \t]*\*[ \t]*\*[ \t]*{local};[ \t]*\n', text)
+        if not declaration:
+            continue
+        text = text[:declaration.start()] + text[declaration.end():]
+        text = re.sub(rf'\(\s*\*\s*{local}\s*\)', f'({glob})', text)
+        text = re.sub(rf'\(\(\s*{glob}\s*\)\)', f'({glob})', text)
+        if not re.search(rf'\b{local}\b', text):
+            result.append(text)
+    return result
+
+
 def variants(source, name, header=''):
+    result = _records(source, header)
+    for inlined in _without_address_locals(source, name):
+        result += [(BASE, child) for family, child in _records(inlined, header) if family in (FAMILY, READ)]
+    return result[:LIMIT]
+
+
+def _records(source, header):
     result = []
     for found in _EXTERN.finditer(source):
         glob = found.group('name')

@@ -61,3 +61,22 @@ def test_a_global_pointer_read_again_after_a_store_becomes_a_record_member():
 
 def test_reads_with_no_store_between_are_left_alone():
     assert variants(READ.replace('M2C_FIELD(obj, u16 *, 2) = M2C_FIELD(gParam, u16 *, 2);', 'g(gParam);'), 'update', '') == []
+
+
+def test_an_address_local_is_written_out_before_the_record():
+    source = '''extern void *gParam;
+
+void update(void)
+{
+    void **base;
+    base = &gParam;
+    (*(s32 *)((char *)((*base)) + 0x20)) = 0;
+    (*(s32 *)((char *)((*base)) + 0x24)) = 0;
+}
+'''
+    found = variants(source, 'update', '')
+    assert [family for family, _ in found] == ['global_pointer_base_record']
+    text = found[0][1]
+    assert text.startswith('extern struct { void *block; } gParam;\n') and 'base' not in text
+    assert '(*(s32 *)((char *)(gParam.block) + 0x24)) = 0;' in text
+    assert variants(source.replace('    (*(s32 *)((char *)((*base)) + 0x20)) = 0;', '    use(base);'), 'update', '') == []
