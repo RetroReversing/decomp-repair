@@ -18,7 +18,24 @@ A 46-instruction N64 matrix routine (SN GCC 2.8.1 `-O2`) reached 0 with this aft
 
 Applies when a `void *` (or byte pointer) parameter is only used by top-level stores to both words of commands 0..N-1,
 in order, by `return p + 8 * N;`, and as the last argument of calls. Between a command's two words only plain local
-assignments that do not name the cursor are allowed. Children (`returned_gfx_cursor`): one.
+assignments that do not name the cursor are allowed.
+
+When a command holds a call, m2c also keeps the next commands' addresses in locals and prints the stores in the
+scheduler's order:
+
+    t2 = arg0 + 8;
+    t3 = t2 + 8;
+    M2C_FIELD(arg0, s32 *, 8) = 0xFE000000;
+    M2C_FIELD(t2, s32 *, 4) = g(a);
+    M2C_FIELD(t3, s32 *, 4) = 0x300000;
+    M2C_FIELD(t2, s32 *, 8) = 0xE3000A01;
+
+Those locals (each assigned once, the cursor or another of them plus a multiple of 8) are read back as offsets from the
+parameter, and a run of nothing but such stores is put in address order, provided the calls keep their order and every
+value that names anything stays on the same side of each of them. An 82-instruction N64 depth-clear display list
+(SN GCC 2.8.1 `-O2`) went from 7174 (the draft) to 250 with this and `or_chain_order` took it to 0.
+
+Children (`returned_gfx_cursor`): one.
 """
 import re
 
@@ -67,6 +84,81 @@ def _drop_parameter(prefix, callee, count):
         return prefix
     kept = ','.join(parts[:-1]) or 'void'
     return prefix[:found.start('list')] + kept + prefix[found.end('list'):]
+
+
+def _top(body, at):
+    return body.count('{', 0, at) - body.count('}', 0, at) == 1
+
+
+def _flatten(source, span, cursor):
+    """`source` with the locals that hold `cursor + 8 * n` read back as offsets and a run of stores in address order,
+    or None when it has no such local or one is used any other way."""
+    clean = _blank(source)
+    opening = clean.find('{', span[0], span[1])
+    body, text = clean[opening:span[1]], source[opening:span[1]]
+    offsets, edits = {cursor: 0}, []
+    for found in re.finditer(rf'(?m)^[ \t]*(?P<name>{IDENT}) = (?P<base>{IDENT}) \+ (?P<add>{NUMBER});[ \t]*\n', body):
+        name, base, add = found['name'], found['base'], int(found['add'], 0)
+        if base not in offsets or name in offsets or add % 8 or not _top(body, found.start()):
+            continue
+        declared = re.search(rf'(?m)^[ \t]*(?:void|u8|s8|char)[ \t]*\*[ \t]*{name};[ \t]*\n', body)
+        if not declared or len(re.findall(rf'(?<![\w.>]){name} =(?!=)', body)) != 1:
+            continue
+        mentions = [m.start() for m in re.finditer(rf'\b{name}\b', body)]
+        if any(at < found.start('name') and not declared.start() <= at < declared.end() for at in mentions):
+            continue
+        offsets[name] = offsets[base] + add
+        edits += [(declared.start(), declared.end(), ''), (found.start(), found.end(), '')]
+    if len(offsets) == 1:
+        return None
+    names = '|'.join(offsets)
+    uses = {name: 2 for name in offsets if name != cursor}  # its declaration and its assignment
+    for found in re.finditer(rf'(?m)^[ \t]*{IDENT} = (?P<base>{names}) \+ (?:{NUMBER});', body):
+        if found['base'] in uses and any(a <= found.start() < b for a, b, _ in edits):
+            uses[found['base']] += 1
+    for found in re.finditer(rf'M2C_FIELD\((?P<base>{names}), (?P<type>[\w ]+\*+), (?P<off>{NUMBER})\)(?= = )', body):
+        if found['base'] != cursor:
+            uses[found['base']] += 1
+            edits.append((found.start(), found.end(),
+                          f'M2C_FIELD({cursor}, {found["type"]}, {offsets[found["base"]] + int(found["off"], 0)})'))
+    for found in re.finditer(rf'\breturn[ \t]+(?P<base>{names})[ \t]*\+[ \t]*(?P<add>{NUMBER})[ \t]*;', body):
+        if found['base'] != cursor:
+            uses[found['base']] += 1
+            edits.append((found.start(), found.end(),
+                          f'return {cursor} + {offsets[found["base"]] + int(found["add"], 0)};'))
+    for name, count in uses.items():
+        if len(re.findall(rf'\b{name}\b', body)) != count:
+            return None
+    for start, end, new in sorted(edits, reverse=True):
+        text = text[:start] + new + text[end:]
+    return source[:opening] + _in_address_order(text, cursor) + source[span[1]:]
+
+
+def _in_address_order(text, cursor):
+    """The function body with its one run of store lines sorted by offset, or as it was when that is not safe."""
+    line = re.compile(rf'[ \t]*M2C_FIELD\({cursor}, [\w ]+\*+, (?P<off>{NUMBER})\) = (?P<value>[^;\n]+);[ \t]*')
+    lines = text.split('\n')
+    at = [k for k, item in enumerate(lines) if line.fullmatch(item)]
+    if not at or any(lines[k].strip() and k not in at for k in range(at[0], at[-1])):
+        return text
+    run = [(line.fullmatch(lines[k]), lines[k]) for k in at]
+    ordered = sorted(run, key=lambda item: int(item[0]['off'], 0))
+
+    def calls(items):
+        seen, out, order = 0, {}, []
+        for found, whole in items:
+            value = re.sub(r'\(\s*(?:[su](?:8|16|32)|int|unsigned|void)[ \t]*\**\s*\)', '', found['value'])
+            called = re.findall(rf'\b(?!sizeof\b){IDENT}(?=\s*\()', value)
+            if re.search(rf'\b(?!0[xX]){IDENT}', value):
+                out[whole] = seen
+            seen += len(called)
+            order += called and [value]
+        return out, order
+
+    if calls(run) != calls(ordered):
+        return text
+    kept = [item for k, item in enumerate(lines) if k not in at and at[0] < k < at[-1]]
+    return '\n'.join(lines[:at[0]] + [whole for _, whole in ordered] + kept + lines[at[-1] + 1:])
 
 
 def _rewrite(source, clean, span, cursor):
@@ -138,6 +230,10 @@ def variants(source, name, header=''):
     result = []
     for parameter in PARAMETER.finditer(head):
         rewritten = _rewrite(source, clean, span, parameter['name'])
+        if not rewritten:
+            flat = _flatten(source, span, parameter['name'])
+            if flat:
+                rewritten = _rewrite(flat, _blank(flat), find(flat, name), parameter['name'])
         if rewritten:
             result.append((FAMILY, rewritten))
     return result
