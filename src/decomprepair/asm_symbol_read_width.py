@@ -13,6 +13,12 @@ asm_symbol_read_width
     identity helper call around such a read (`static` one-parameter function returning its parameter) is dropped. All
     the symbols together first, then each alone.
 
+asm_offset_read_width
+    The same for a record member read as symbol plus constant offset, which m2c spells through its unknown type:
+    `*((M2C_UNK *)((s8 *)&SYM + 0x210A + o))` where the target has `lh ..., %lo(SYM+0x210A)`, or `*(f32 *)(...)` over a
+    halfword the target loads and converts (`lh; mtc1; cvt.s.w`): that one becomes `(f32) *(s16 *)(...)`. Every offset
+    together, then each alone. A KMC GCC 2.7.2 display list builder's machine draft went 1210 -> 0 on it.
+
 float_literal_int_cast
     `(int) 0.0002f` (a float literal cast to `int`, which is 0) written as the literal, the way a search's cast
     scaffolding comes out of `-((int) 0.0002f)`: the target compares with `-0.0002f` (`lui $at, 0xb951`).
@@ -24,7 +30,8 @@ from .csource import _blank, find
 
 FAMILY = 'asm_symbol_read_width'
 FAMILY_CAST = 'float_literal_int_cast'
-FAMILIES = (FAMILY, FAMILY_CAST)
+FAMILY_OFFSET = 'asm_offset_read_width'
+FAMILIES = (FAMILY, FAMILY_OFFSET, FAMILY_CAST)
 LIMIT = 8
 _TYPE = {'lb': 's8', 'lbu': 'u8', 'lh': 's16', 'lhu': 'u16', 'lw': 's32'}
 _INTEGER = r'(?:[su](?:8|16|32)|int|short|char|unsigned\s+(?:int|short|char))'
@@ -76,6 +83,39 @@ def _edits(source, name, sym, kind, helpers):
     return edits
 
 
+def _offset_widths(asm):
+    found = {}
+    for op, sym, off in re.findall(
+            r'\b(lbu|lb|lhu|lh|lw)\s+\$\w+\s*,\s*%lo\(\s*([A-Za-z_]\w*)\s*\+\s*(0x[0-9A-Fa-f]+|\d+)\s*\)', asm or ''):
+        found.setdefault((sym, int(off, 0)), set()).add(op)
+    return {key: _TYPE[ops.pop()] for key, ops in found.items() if len(ops) == 1}
+
+
+def _offset_edits(source, name, widths):
+    """{(symbol, offset): edits} for the dereferences of `(s8 *)&symbol + offset` in the function."""
+    span = find(source, name)
+    if not span:
+        return {}
+    clean = _blank(source)
+    read = re.compile(
+        r'\*\s*(?:\(\s*(?P<outer>\w+)\s*\*\s*\)\s*)?\(\s*(?:\(\s*(?P<inner>\w+)\s*\*\s*\)\s*\(\s*)?'
+        r'\(\s*(?:s8|u8|char)\s*\*\s*\)\s*&\s*(?P<sym>[A-Za-z_]\w*)\s*\+\s*(?P<off>0x[0-9A-Fa-f]+|\d+)\b')
+    found = {}
+    for hit in read.finditer(clean, span[0], span[1]):
+        key = (hit['sym'], int(hit['off'], 0))
+        kind, group = widths.get(key), 'outer' if hit['outer'] else 'inner'
+        if not kind or not hit[group] or hit[group] == kind:
+            continue
+        if hit[group] in ('f32', 'float'):
+            edit = [(hit.start(), hit.start(), '(f32) '), (*hit.span(group), kind)]
+        elif hit[group] == 'M2C_UNK' or re.fullmatch(_INTEGER, hit[group]):
+            edit = [(*hit.span(group), kind)]
+        else:
+            continue
+        found.setdefault(key, []).extend(edit)
+    return found
+
+
 def _apply(source, edits):
     for start, end, text in sorted(edits, reverse=True):
         source = source[:start] + text + source[end:]
@@ -92,6 +132,10 @@ def variants(source, name, asm=''):
         out.append((FAMILY, _apply(source, [e for _, edits in per for e in edits])))
     for _, edits in per:
         out.append((FAMILY, _apply(source, edits)))
+    offsets = _offset_edits(source, name, _offset_widths(asm))
+    if len(offsets) > 1:
+        out.append((FAMILY_OFFSET, _apply(source, [e for edits in offsets.values() for e in edits])))
+    out += [(FAMILY_OFFSET, _apply(source, edits)) for _, edits in sorted(offsets.items())]
     span = find(source, name)
     if span:
         clean = _blank(source)
