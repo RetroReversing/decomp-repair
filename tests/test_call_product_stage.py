@@ -55,3 +55,20 @@ def test_a_live_value_is_not_shifted_in_place():
 
 def test_volatile_and_goto_decline():
     assert variants(SOURCE.replace('s32 vy;', 'volatile s32 vy;'), 'launch') == []
+
+
+def test_a_fence_around_the_arms_is_no_loop():
+    # a weight scope wraps the arms that set `dir`; `dir` is still free at the store after it
+    fenced = SOURCE.replace("    dir = heading(body->x);\n",
+                            "    do {\n    if (speed > 0) {\n        dir = heading(body->x);\n    } else {\n"
+                            "        dir = heading(body->y);\n    }\n")
+    fenced = fenced.replace("    body->y = len >> 12;\n", "    body->y = len >> 12;\n    } while (0);\n")
+    assert any('dir = -vx;' in c for _, c in variants(fenced, 'launch'))
+
+
+def test_a_product_takes_over_a_finished_local():
+    source = SOURCE.replace('    len = wave_y(angle) * speed;', '    vy = wave_y(angle) * speed;')
+    source = source.replace('    dir = heading(body->x);\n', '    len = heading(body->y);\n    dir = heading(body->x) + len;\n')
+    source = source.replace('body->y = len >> 12;', 'body->y = vy >> 12;')
+    assert any('len = wave_y(angle) << 16;' not in c and 'len >>= 12;' in c and 'body->y = len;' in c
+               for _, c in variants(source, 'launch'))
