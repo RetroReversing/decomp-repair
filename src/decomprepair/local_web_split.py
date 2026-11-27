@@ -23,8 +23,15 @@ is a web of its own even when the code in front of the loop used the same local:
 edge into the outer web. (A pointer local tested in front of a loop and taken afresh from a table inside it went 280
 -> 240 on a probe handler once the first web had its own local.)
 
+An assignment that reads the local (`size = SWAP32(size);`) carries the value on, and renaming it apart
+(`size_3 = SWAP32(size_2);`) gives each step a pseudo of its own. A second set of children keeps such a chain in one
+local and splits only where a value starts afresh: an N64 asset loader (sn-n64-281 GCC 2.8.1, `-O2 -mfp64`, 228
+instructions) reused one `size` for the index's length and then for a file's, byte-swapped and rounded in place; two
+locals went 310 -> 40, one per assignment 595.
+
 `variants` gives, labelled `local_web_split`:
   every web of one local renamed (a declaration per web), for each local;
+  the same with self-reading chains kept whole, where that differs;
   every web of every such local at once, with the declarations as written and with `register` dropped (a `register`
   local's pseudo prefers a hard register of its own; the arms' fresh locals match without it).
 """
@@ -115,7 +122,7 @@ def _is_loop(clean, block):
     return bool(re.search(r'\b(?:for|while)\s*$', before[:k]))
 
 
-def _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels):
+def _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels, chained=False):
     """[(assignment span, scope, reads)] webs of `var` after merging, each as (members, edits, ok); None to leave it."""
     pattern = _mentions(var)
     # `&p->member` and `&p[i]` take an address inside what the local points at, not the local's own (only scalars and
@@ -168,6 +175,11 @@ def _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels):
             return None
         owner[r] = max(mine, key=lambda k: assigns[k]['at'])
     web = _Union(len(assigns))
+    if chained:  # `x = f(x);` belongs to the web it reads
+        for k, a in enumerate(assigns):
+            for r, source_web in owner.items():
+                if a['lhs_end'] <= r < a['stmt_end']:
+                    web.join(k, source_web)
     for i, outer in enumerate(assigns):
         for j, inner in enumerate(assigns):
             if i == j or not (outer['stmt_end'] <= inner['at'] < outer['scope_end']) or inner['block'] == outer['block']:
@@ -274,7 +286,7 @@ def variants(source, name):
             continue
         names[m['name']] = names.get(m['name'], 0) + 1
         declarations.setdefault(m['name'], m)
-    plans = []
+    plans, chains = [], []
     for var, decl in declarations.items():
         if names[var] != 1:
             continue
@@ -288,13 +300,19 @@ def variants(source, name):
         if renamed + (1 if renamed < len(webs) else 0) < 2:
             continue
         plans.append((decl, var, webs))
+        if re.search(r'(?<![\w.>])' + re.escape(var) + r'\s*=(?!=)[^;{}]*(?<![\w.>])' + re.escape(var) + r'\b',
+                     clean[opening:end]):
+            joined = _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels, chained=True)
+            kept = sum(1 for w in joined if w[2])
+            if len(joined) < len(webs) and kept + (1 if kept < len(joined) else 0) >= 2:
+                chains.append((decl, var, joined))
     result = []
 
     def emit(text):
         if text != source and text not in [t for _, t in result] and len(result) < LIMIT:
             result.append((FAMILY, text))
 
-    for plan in plans:
+    for plan in chains + plans:
         emit(_apply(source, clean, [plan], False, _identifiers(source)))
     if plans:
         emit(_apply(source, clean, plans, False, _identifiers(source)))
