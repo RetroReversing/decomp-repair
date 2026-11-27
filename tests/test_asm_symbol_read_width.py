@@ -1,5 +1,5 @@
 """Table reads at the width the target loads them with (a 1300-instruction routine, 10695 -> 9925)."""
-from decomprepair.asm_symbol_read_width import FAMILY, FAMILY_CAST, REPAIR, variants
+from decomprepair.asm_symbol_read_width import FAMILY, FAMILY_ADDRESS, FAMILY_CAST, REPAIR, variants
 
 SOURCE = """inline static s8 __repair_inline(s8 a)
 {
@@ -60,3 +60,41 @@ def test_a_record_member_is_read_at_the_targets_width_and_converted_to_float():
     assert '*((s16 *)((s8 *)&D_800DB1B8 + 0x210A + o))' in child
     assert '(f32) *(s16 *)((M2C_UNK *)((s8 *)&D_800DB1B8 + 0x2114 + o)) / 2.0f' in child
     assert len(children) == 3
+
+
+UNKNOWN = """extern char D_800C0000[];
+extern char D_800C0784[];
+
+void copy(void *arg0)
+{
+  u16 id;
+  s32 t;
+  id = *((s32 *)((s8 *)D_800C0000 + (M2C_FIELD(arg0, u16 *, 0x53A) * 2)));
+  t = *(s32 *)((id * 0x10) + D_800C0784 + M2C_FIELD(arg0, u16 *, 0x230)) * 0x10;
+  use(id, t, *(s32 *)(*(s32 *)(D_800C0000 + 4) + 8));
+}
+"""
+
+HELD_ASM = """
+    lhu        $a0, 0x53A($a3)
+    lui        $a2, %hi(D_800C0000)
+    addu       $a2, $a2, $a0
+    lhu        $a2, %lo(D_800C0000)($a2)
+/* 10 80 0C */  lui        $v1, %hi(D_800C0784)
+/* 14 84 24 */  addiu      $v1, $v1, %lo(D_800C0784)
+    sll        $v0, $a2, 4
+    addu       $v0, $v0, $v1
+    lhu        $v1, 0x230($a3)
+    addu       $v0, $v0, $v1
+    lbu        $v0, 0x0($v0)
+"""
+
+
+def test_a_width_followed_through_the_register_that_holds_the_address():
+    found = [child for family, child in variants(UNKNOWN, 'copy', asm=HELD_ASM) if family == FAMILY_ADDRESS]
+    both = found[0]
+    assert 'id = *((u16 *)((s8 *)D_800C0000 + (M2C_FIELD(arg0, u16 *, 0x53A) * 2)));' in both
+    assert 't = *(u8 *)((id * 0x10) + D_800C0784 + M2C_FIELD(arg0, u16 *, 0x230)) * 0x10;' in both
+    # the outer read through a loaded pointer names no table of its own: only the inner read changes
+    assert '*(s32 *)(*(u16 *)(D_800C0000 + 4) + 8)' in both
+    assert len(found) == 3
