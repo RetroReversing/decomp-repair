@@ -48,3 +48,15 @@ def test_no_assembly_no_width_children():
 
 def test_it_declares_itself():
     assert REPAIR['variants'] is variants and 'asm' in REPAIR['needs']
+
+
+def test_a_record_member_is_read_at_the_targets_width_and_converted_to_float():
+    source = ('void f(void)\n{\n  a = *((M2C_UNK *)((s8 *)&D_800DB1B8 + 0x210A + o));\n'
+              '  b = *(f32 *)((M2C_UNK *)((s8 *)&D_800DB1B8 + 0x2114 + o)) / 2.0f;\n}\n')
+    asm = 'lh $s2, %lo(D_800DB1B8 + 0x210A)($s2)\nlh $v1, %lo(D_800DB1B8 + 0x2114)($v1)\n'
+    children = variants(source, 'f', asm)
+    family, child = children[0]
+    assert family == 'asm_offset_read_width'
+    assert '*((s16 *)((s8 *)&D_800DB1B8 + 0x210A + o))' in child
+    assert '(f32) *(s16 *)((M2C_UNK *)((s8 *)&D_800DB1B8 + 0x2114 + o)) / 2.0f' in child
+    assert len(children) == 3
