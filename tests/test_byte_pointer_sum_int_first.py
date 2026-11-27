@@ -41,3 +41,20 @@ def test_a_shifted_index_is_parenthesised_and_several_sites_give_an_all_child():
     assert len(children) == 6
     assert '((idx << 2) + (s32) base)' in children[2][1]
     assert children[2][1].count('(s32) base') == 2
+
+
+THREE = SOURCE.replace('''    *(u16 *)(*(s32 *)(base + idx) + 0x10) = arg1[0];
+''', '''    *(u16 *)(*(s32 *)(base + idx) + 0x10) = arg1[0];
+    *(u16 *)(*(s32 *)(base + D_800B2DB2[off] * 4) + 0x12) = arg1[1];
+    *(u16 *)(*(s32 *)(base + D_800B2DB2[off] * 4) + 0x14) = arg1[2];
+''')
+
+
+def test_a_table_read_times_four_is_the_leading_operand_at_every_site():
+    """A setter whose first store used the hoisted index and whose next two re-read the table: all three matched with
+    the offset first, `idx + (s32) base` and `D_800B2DB2[off] * 4 + (s32) base`."""
+    children = m.variants(THREE, 'f')
+    everything = children[3][1]
+    assert '*(s32 *)(idx + (s32) base)' in everything
+    assert everything.count('*(s32 *)(D_800B2DB2[off] * 4 + (s32) base)') == 2
+    assert 'base + D_800B2DB2' not in everything
