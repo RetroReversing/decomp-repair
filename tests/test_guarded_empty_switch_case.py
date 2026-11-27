@@ -37,3 +37,12 @@ def test_only_a_complete_matching_guard_supports_the_rewrite():
                 ASM.replace('$v0, $v1, 8', '$v0, $v0, 8')):
         assert repair.variants(SOURCE, 'f', asm) == []
     assert repair.variants(SOURCE.replace('case 4:', 'case 7:'), 'f', ASM) == []
+
+
+def test_relabels_outside_empty_case_into_a_missing_guarded_slot():
+    source = SOURCE.replace('    }\n}', '    case 8: break;\n    }\n}')
+    out = repair.variants(source, 'f', ASM)
+    assert {v for _, v in out} == {source.replace('case 8:', f'case {n}:') for n in (2, 3, 5, 6, 7)}
+    assert not repair.variants(source.replace('case 8: break;', 'case 8: g(); break;'), 'f', ASM)
+    assert not repair.variants(source.replace('case 8: break;', 'case 8: break; default: g();'), 'f', ASM)
+    assert not repair.variants(source.replace('case 8: break;', 'case 8: break; case 9: break;'), 'f', ASM)
