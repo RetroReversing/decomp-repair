@@ -13,6 +13,13 @@ input handler: with the folded form the table's address was hoisted into a regis
 Offered for each `COUNTER * K` (K a number above 1) that appears exactly once in the body of a `for` or a `do { } while`
 loop that steps COUNTER, when the loop body has no `continue`: a new `s32` local at the top of the body, set from the
 product, takes its place. A candidate rewrite; the exact judge decides.
+
+`loop_scaled_index_shared` is the same for a multiple the body reads several times (`out[i * 2]`, `out[i * 2 + 1]`,
+`table[i * 2]`, ...): every one becomes the one local, whatever follows it. SN GCC 2.8.1's loop pass reduced each
+address built from the inline product and then rewrote the exit test on one of those pointers (`sltu` against an end
+address, the counter gone); with `s32 j = i * 2;` the local is a derived value it does not reduce ("not worth while")
+that still reads the counter, so the counter and its `sltiu` stay (a 77-instruction pad reader: 965 -> 0). Offered when
+the counter is written only by the loop's step, one child per multiple.
 """
 import re
 
@@ -20,7 +27,8 @@ from .integer_repair_support import IDENT, NUMBER, edit, view
 from .pattern_repairs import close
 
 FAMILY = 'loop_scaled_index_local'
-FAMILIES = (FAMILY,)
+SHARED = 'loop_scaled_index_shared'
+FAMILIES = (FAMILY, SHARED)
 _FOR = re.compile(r'\bfor\s*\(')
 _DO = re.compile(r'\bdo\s*\{')
 
@@ -70,12 +78,43 @@ def variants(source, name):
             local = f'{counter}_x{int(k, 0)}'
             if re.search(rf'\b{local}\b', clean):
                 continue
-            hit = hits[0]
-            at = open_at + 1 + hit.start()
-            indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, open_at) + 1:])[0] + '  '
-            out.append((FAMILY, edit(source, [
-                (open_at + 1, open_at + 1, f'\n{indent}s32 {local} = {counter} * {k};'),
-                (at, open_at + 1 + hit.end(), local)])))
+            out.append((FAMILY, _named(source, counter, k, local, open_at, hits)))
+        out += _shared(source, clean, counter, open_at, body, seen)
+    return out
+
+
+def _named(source, counter, k, local, open_at, hits):
+    """`source` with `local`, set from the product at the top of the body that opens at `open_at`, in place of `hits`."""
+    indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, open_at) + 1:])[0] + '  '
+    return edit(source, [(open_at + 1, open_at + 1, f'\n{indent}s32 {local} = {counter} * {k};')]
+                + [(open_at + 1 + hit.start(), open_at + 1 + hit.end(), local) for hit in hits])
+
+
+def _shared(source, clean, counter, open_at, body, seen):
+    """A child per multiple the body reads more than once: all its readings through one local."""
+    writes = list(re.finditer(rf'(?:\+\+|--)\s*{counter}\b|(?<![\w.>&])\b{counter}\s*(?:\+\+|--|(?:<<|>>|[-+*/%&|^])?=(?!=))',
+                              body))
+    # a `do` loop steps at the end of its body, after every reading; a `for` steps in its header
+    if len(writes) > 1 or (writes and not re.fullmatch(r'[^;{}]*;\s*\}?\s*', body[writes[0].start():])):
+        return []
+    if re.search(rf'(?<![\w&])&\s*{counter}\b', clean):
+        return []
+    # not after an operator that binds the counter first (`a / i * 2`, `~i * 2`, `(u8) i * 2`)
+    pattern = re.compile(rf'(?<![\w.>])\b{counter}\s*\*\s*(?P<k>{NUMBER})\b(?!\s*[\w(\[.])')
+    counts = {}
+    for hit in pattern.finditer(body):
+        if body[:hit.start()].rstrip()[-1:] in ('*', '/', '%', '~', '!', ')'):
+            continue
+        counts.setdefault(hit['k'], []).append(hit)
+    out = []
+    for k, hits in counts.items():
+        local = f'{counter}_x{int(k, 0)}'
+        if len(hits) < 2 or int(k, 0) < 2 or (open_at, k, SHARED) in seen or re.search(rf'\b{local}\b', clean):
+            continue
+        if writes and hits[-1].start() > writes[0].start():
+            continue
+        seen.add((open_at, k, SHARED))
+        out.append((SHARED, _named(source, counter, k, local, open_at, hits)))
     return out
 
 
