@@ -6,6 +6,10 @@
     }                                      base = table;
     return base[index * 24 + 12];          return base[index * 24 + 12];
 
+`char *base = table;` written in the declaration is split: the declaration stays and `base = table;` goes below the
+guard (only declarations may lie between the two). No other family splits an address initialiser, so the table getter
+stayed at 60 written that way.
+
 A search (or the symbol-address family's `__base_SYM = SYM;`) and m2c both leave a local set at the head of the
 function although the path that returns early never reads it. SN64 GCC 2.8.1 then starts the address before the
 compare and leaves the branch's delay slot to another instruction; below the guard the `lui` fills that slot, as the
@@ -26,6 +30,10 @@ FAMILY = 'exit_guard_assignment_sink'
 FAMILIES = (FAMILY,)
 LIMIT = 12
 _ASSIGN = re.compile(rf'(?m)^[ \t]*(?P<var>{IDENT})[ \t]*=(?!=)(?P<rhs>[^;{{}}\n]+);[ \t]*\n')
+_DECLARE = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?!(?:return|else|goto)\b)(?P<type>(?:{IDENT}[ \t]+|{IDENT}[ \t]*\*+[ \t]*)+)'
+                      rf'(?P<var>{IDENT})[ \t]*=(?!=)(?P<rhs>[^;{{}}\n,]+);[ \t]*\n')
+_DECLARATION = re.compile(rf'\s*(?!(?:return|else|goto)\b)(?:{IDENT}[ \t]+|{IDENT}[ \t]*\*+[ \t]*)+{IDENT}\s*(?:\[[^\]]*\]\s*)?'
+                          rf'(?:=(?P<rhs>[^;{{}},]+))?;')
 _EFFECT = re.compile(r'(?<![=!<>])=(?!=)|<<=|>>=|\+\+|--')
 _CALL = re.compile(rf'(?<![\w.>])(?!(?:if|sizeof)\b){IDENT}\s*\(|\)\s*\(\s*(?![\s*]*\))[^()]*,|\]\s*\(')
 _CAST = re.compile(r'\(\s*(?:(?:const|struct|union|unsigned|signed)\s+)*[A-Za-z_]\w*[\s*]*\)')
@@ -78,6 +86,60 @@ def _guard(clean, at, end):
     return clean[head.end() - 1:condition_end], body, stop
 
 
+def _guards(clean, at, end):
+    """The returning guards in a row at `at`."""
+    found = []
+    while (guard := _guard(clean, at, end)) is not None:
+        found.append(guard)
+        at = guard[2]
+    return found
+
+
+def _crossable(guards, names):
+    """How many leading guards an assignment of `names` can move below."""
+    crossed = 0
+    for condition, body, _ in guards:
+        if not _quiet(condition) or re.search(rf'(?<![\w.>])(?:{names})\b', condition + body):
+            break
+        crossed += 1
+    return crossed
+
+
+def _below(source, clean, stop, lines, removals):
+    """`source` with `removals` made and `lines` put on their own lines after the guard ending at `stop`."""
+    if clean[stop:stop + 1] == '\n':
+        stop += 1
+    else:
+        lines = '\n' + lines
+    return edit(source, [*removals, (stop, stop, lines)])
+
+
+def _initialisers(source, part):
+    """Children that split `T x = e;` and put `x = e;` below the returning guards after the declarations."""
+    clean, result = part.clean, []
+    for hit in _DECLARE.finditer(clean, part.opening + 1, part.end):
+        kind, var = hit['type'], hit['var']
+        if clean[:hit.start()].rstrip()[-1:] not in {';', '{'} or re.search(r'\*[\s*]*const\b', kind):
+            continue
+        if re.search(r'\bconst\b', kind) and '*' not in kind:
+            continue
+        if not _quiet(hit['rhs']) or not _local(part, var):
+            continue
+        at = hit.end()
+        while (later := _DECLARATION.match(clean, at, part.end)) is not None:
+            if re.search(rf'(?<![\w.>]){var}\b', later[0]) or not _quiet(later['rhs'] or ''):
+                break
+            at = later.end()
+        guards = _guards(clean, at, part.end)
+        crossed = _crossable(guards, var)
+        for count in dict.fromkeys((crossed, 1)) if crossed else ():
+            line = f"{hit['indent']}{var} ={source[hit.start('rhs'):hit.end('rhs')]};\n"
+            declaration = f"{hit['indent']}{source[hit.start('type'):hit.end('var')]};\n"
+            result.append((FAMILY, _below(source, clean, guards[count - 1][2], line,
+                                          [(hit.start(), hit.end(), declaration)])))
+    return result
+
+
 def variants(source, name):
     part = view(source, name)
     if not part:
@@ -87,10 +149,7 @@ def variants(source, name):
             if clean[:hit.start()].rstrip()[-1:] in {';', '{', '}'}]
     result = []
     for index, last in enumerate(hits):
-        guards, at = [], last.end()
-        while (found := _guard(clean, at, part.end)) is not None:
-            guards.append(found)
-            at = found[2]
+        guards = _guards(clean, last.end(), part.end)
         if not guards:
             continue
         run = [last]
@@ -101,20 +160,12 @@ def variants(source, name):
         for moved in ([last], run) if len(run) > 1 else ([last],):
             if not all(_quiet(hit['rhs']) and _local(part, hit['var']) for hit in moved):
                 continue
-            names = '|'.join(re.escape(hit['var']) for hit in moved)
-            crossed = 0
-            for condition, body, _ in guards:
-                if not _quiet(condition) or re.search(rf'(?<![\w.>])(?:{names})\b', condition + body):
-                    break
-                crossed += 1
+            crossed = _crossable(guards, '|'.join(re.escape(hit['var']) for hit in moved))
             for count in dict.fromkeys((crossed, 1)) if crossed else ():
-                stop = guards[count - 1][2]
-                if clean[stop:stop + 1] == '\n':
-                    stop += 1
-                    lines = ''.join(source[hit.start():hit.end()] for hit in moved)
-                else:
-                    lines = '\n' + ''.join(source[hit.start():hit.end()] for hit in moved)
-                result.append((FAMILY, edit(source, [(moved[0].start(), moved[-1].end(), ''), (stop, stop, lines)])))
+                lines = ''.join(source[hit.start():hit.end()] for hit in moved)
+                result.append((FAMILY, _below(source, clean, guards[count - 1][2], lines,
+                                              [(moved[0].start(), moved[-1].end(), '')])))
+    result += _initialisers(source, part)
     return list(dict.fromkeys(result))[:LIMIT]
 
 
