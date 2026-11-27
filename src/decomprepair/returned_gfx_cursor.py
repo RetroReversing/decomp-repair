@@ -35,6 +35,11 @@ parameter, and a run of nothing but such stores is put in address order, provide
 value that names anything stays on the same side of each of them. An 82-instruction N64 depth-clear display list
 (SN GCC 2.8.1 `-O2`) went from 7174 (the draft) to 250 with this and `or_chain_order` took it to 0.
 
+A draft whose fields were typed as records (`m2c_field_record_view`: `(((Rec_f_arg0 *) arg0)->m4) = v;` with a
+`typedef struct` per pointer) spells the same stores; they are read back as `M2C_FIELD`s first. A 76-instruction N64
+display-list setup routine (SN GCC 2.8.1 `-O2`) went from 3342 (that record-typed draft) to 205 with this, and
+`float_literal_global` took it to 0.
+
 Children (`returned_gfx_cursor`): one.
 """
 import re
@@ -60,6 +65,48 @@ def _stores(body, cursor):
             return None
         found[offset] = (store.start(), store.end(), *store.span('value'))
     return found
+
+
+def _members(declared):
+    """{offset: type} of a record of plain words and pads whose `mHEX` names are its offsets, else None."""
+    at, found = 0, {}
+    for line in filter(None, (part.strip() for part in declared.split(';'))):
+        pad = re.fullmatch(rf'char pad[0-9A-F]+\[(?P<size>{NUMBER})\]', line)
+        if pad:
+            at += int(pad['size'], 0)
+            continue
+        member = re.fullmatch(r'(?P<type>s32|u32|f32|M2C_UNK|M2C_UNK32|void \*)[ \t]*m(?P<at>[0-9A-F]+)', line)
+        if not member or int(member['at'], 16) != at:
+            return None
+        found[at] = member['type']
+        at += 4
+    return found
+
+
+def _plain_fields(source, name):
+    """`source` with the function's record-typed accesses written as `M2C_FIELD`s again, or None when it has none."""
+    span = find(source, name)
+    records = {found['tag']: _members(found['body']) for found in re.finditer(
+        rf'typedef struct \{{(?P<body>[^{{}}]*)\}} (?P<tag>Rec_{IDENT});', _blank(source))}
+    records = {tag: members for tag, members in records.items() if members}
+    if not span or not records:
+        return None
+    access = rf'\(\((?P<tag>Rec_{IDENT}) \*\) (?P<base>{IDENT})\)->m(?P<at>[0-9A-F]+)'
+
+    def field(found):
+        member = records.get(found['tag'], {}).get(int(found['at'], 16))
+        if not member:
+            return found[0]
+        pointer = 'void **' if member.endswith('*') else f'{member} *'
+        return f'M2C_FIELD({found["base"]}, {pointer}, 0x{found["at"]})'
+
+    body = source[span[0]:span[1]]
+    # a store's whole left side keeps m2c's own parentheses, which the line's pattern does not expect
+    text = re.sub(rf'(?m)^(?P<indent>[ \t]*)\({access}\)(?= = )', lambda m: m['indent'] + field(m), body)
+    text = re.sub(access, field, text)
+    if text == body:
+        return None
+    return source[:span[0]] + text + source[span[1]:]
 
 
 def _pure(text, cursor):
@@ -221,9 +268,10 @@ def _rewrite(source, clean, span, cursor):
 
 
 def variants(source, name, header=''):
-    span = find(source, name)
-    if not span:
+    if not find(source, name):
         return []
+    source = _plain_fields(source, name) or source
+    span = find(source, name)
     clean = _blank(source)
     opening = clean.find('{', span[0], span[1])
     head = clean[clean.rfind(name, 0, opening):opening]
