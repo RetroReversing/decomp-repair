@@ -27,7 +27,17 @@ no load through `%lo(G)`) and reads at `K($r)`. The child declares `extern u8 G[
 Third shape (KMC GCC 2.7.2 `-O1`, N64; an 838-instruction menu renderer, 1995 -> 0): a byte the target mostly reads as
 `lui; lbu %lo(G)` but in places builds the address of (`lui $s3; addiu $s3, %lo(G)`) and reads twice as `0($s3)`. The
 scalar reads each carry their own `lui`; the array form gets the held address. The first two tests miss it, since the
-first `lui` in the function is an ordinary scalar read's."""
+first `lui` in the function is an ordinary scalar read's.
+
+Family `reloaded_global_array`: a global the target loads again where a scalar's value would have been kept (SN64 GCC
+2.8.1, `-G0 -mips3 -O2`; a 48-instruction N64 object update, 115 -> 0). The function copies two halfwords and a byte from
+the record a pointer global names into the record its argument names, and the target loads the global three times through
+one `%hi` register. With `extern void *G;` a store to a member of another record (a nonzero offset) leaves the global's
+value in its register, so it is loaded twice; with `extern void *G[];` read `G[0]` the load is a member's too and every
+such store makes the compiler load it again, while reads with no store between still share one load. `volatile` (the
+`reloaded_global` family) reloads at every use, so it only fits a target with as many loads as mentions. The gate: the
+source reads the global at least twice (through `->` and `[` too), and the target has at least two `%lo(G)` loads outside
+`$at`. (The aliasing explanation is a controlled snippet's behaviour, not traced through the compiler's source.)"""
 import re
 
 from .csource import _blank
@@ -35,7 +45,8 @@ from .float_literal_global import _reads
 from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'int_global_array_read'
-FAMILIES = (FAMILY,)
+RELOAD_FAMILY = 'reloaded_global_array'
+FAMILIES = (FAMILY, RELOAD_FAMILY)
 
 MAX_GLOBALS = 4
 MAX_CHILDREN = 24
@@ -114,6 +125,54 @@ def held_address(symbol, asm):
     return False
 
 
+def reloaded(symbol, asm):
+    """True when the assembly loads through `symbol`'s `%lo` two or more times, none through `$at` or `$gp`."""
+    load = re.compile(r'l[bhwd]u?\s+\$\w+\s*,\s*%lo\(\s*' + re.escape(symbol) + r'\s*\)\(\$(?!at\b|gp\b)\w+\)')
+    return sum(1 for code in _code_lines(asm) if load.match(code)) >= 2
+
+
+def _any_reads(part, symbol):
+    """Every read of `symbol` in the function, member and element reads too: [(start, end)], or None when the function
+    writes it, takes its address, calls it or names a member of the same spelling."""
+    out = []
+    for hit in re.finditer(r'(?<![\w.])' + re.escape(symbol) + r'\b', part.clean[part.opening:part.end]):
+        start, end = part.opening + hit.start(), part.opening + hit.end()
+        before, after = part.clean[:start].rstrip(), part.clean[end:].lstrip()
+        if before.endswith(('->', '.', '++', '--')) or (before.endswith('&') and not before.endswith('&&')):
+            return None
+        if after.startswith(('.', '(')) or re.match(r'(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))', after):
+            return None
+        out.append((start, end))
+    return out
+
+
+def _reload_children(source, part, name, header, asm, outside):
+    """`extern T G[];` read `G[0]` for each global the target loads again, one at a time and then all together."""
+    used = set(re.findall(IDENT, source[part.opening:part.end]))
+    plans = []
+    for hit in _DECLARATION.finditer(outside):
+        symbol = hit['name']
+        kind = re.sub(r'\s*\*$', ' *', re.sub(r'\s+', ' ', hit['type']).strip())
+        if len(plans) >= MAX_GLOBALS:
+            break
+        if hit.start() >= part.opening or symbol not in used or symbol == name \
+                or re.search(rf'\b{re.escape(symbol)}\b', header or '') or not reloaded(symbol, asm):
+            continue
+        spans = _any_reads(part, symbol)
+        if not spans or len(spans) < 2:
+            continue
+        uses = len(re.findall(rf'(?<![\w.]){re.escape(symbol)}\b', outside))
+        if uses > len(re.findall(rf'\b{re.escape(symbol)}\b[ \t]*;', outside)):
+            continue
+        space = '' if kind.endswith('*') else ' '
+        plans.append([(hit.start(), hit.end(), f'{hit["indent"]}extern {kind}{space}{symbol}[];')]
+                     + [(a, b, f'{symbol}[0]') for a, b in spans])
+    out = [edit(source, plan) for plan in plans]
+    if len(plans) > 1:
+        out.append(edit(source, [e for plan in plans for e in plan]))
+    return [(RELOAD_FAMILY, child) for child in out]
+
+
 _BYTE_CAST = re.compile(r'\(\s*(?:(?:unsigned|signed)\s+char|[su]8|char|void)\s*\*\s*\)\s*$')
 
 
@@ -164,8 +223,9 @@ def variants(source, name, header='', asm=''):
         if uses > len(re.findall(rf'\b{re.escape(symbol)}\b[ \t]*;', outside)):
             continue
         found.append((symbol, kind, hit, spans, address_taken(symbol, asm)))
+    again = _reload_children(source, part, name, header, asm, outside)
     if not found:
-        return []
+        return again
 
     def plan(entry, form):
         symbol, kind, hit, spans, _ = entry
@@ -197,7 +257,9 @@ def variants(source, name, header='', asm=''):
         for form in ('bytes', 'array'):
             edits = [e for entry in found for e in one(entry, form)]
             out.append((FAMILY, edit(source, edits)))
-    return list(dict.fromkeys(out))[:MAX_CHILDREN]
+    texts = {child for _, child in out}
+    out = list(dict.fromkeys(out))[:MAX_CHILDREN]
+    return out + [pair for pair in again if pair[1] not in texts]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header', 'asm'), 'order': 62,

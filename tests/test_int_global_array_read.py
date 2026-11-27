@@ -126,3 +126,37 @@ def test_a_byte_global_whose_address_is_held_for_two_reads_is_declared_as_an_arr
     clobbered = asm.replace('lbu $a0, 0($s3)\nlbu $a1, ($s3)', 'move $s3, $zero\nlbu $a0, 0($s3)')
     assert not igar.held_address('D_A', clobbered)
     assert not igar.variants(source, 'f', asm='lui $v0, %hi(D_A)\nlbu $a0, %lo(D_A)($v0)')
+
+
+RELOADED = '''extern void *D_80000010;
+
+void func_80015F80(void *arg0) {
+    M2C_FIELD(arg0, u16 *, 0) = M2C_FIELD(D_80000010, u16 *, 0);
+    M2C_FIELD(arg0, u16 *, 2) = M2C_FIELD(D_80000010, u16 *, 2);
+    M2C_FIELD(arg0, s8 *, 0x75) = D_80000010->unk75 + 1;
+}
+'''
+# the global's `lui` once, then loaded again for each read (each right after the `lui` or a store)
+RELOAD_ASM = '''glabel func_80015F80
+/* 0 80015F80 3C038000 */  lui        $v1, %hi(D_80000010)
+/* 4 80015F84 8C620010 */  lw         $v0, %lo(D_80000010)($v1)
+/* 8 80015F88 94420000 */  lhu        $v0, 0x0($v0)
+/* C 80015F8C A4820000 */  sh         $v0, 0x0($a0)
+/* 10 80015F90 8C620010 */  lw         $v0, %lo(D_80000010)($v1)
+'''
+
+
+def test_a_global_the_target_loads_again_is_an_array_read_at_zero():
+    out = igar.variants(RELOADED, NAME, asm=RELOAD_ASM)
+    assert [family for family, _ in out] == ['reloaded_global_array']
+    child = out[0][1]
+    assert 'extern void *D_80000010[];' in child
+    assert child.count('M2C_FIELD(D_80000010[0],') == 2 and 'D_80000010[0]->unk75' in child
+
+
+def test_one_load_a_header_declaration_or_a_store_offers_no_reload_child():
+    one = RELOAD_ASM.rsplit('/* 10', 1)[0]
+    assert igar.variants(RELOADED, NAME, asm=one) == []
+    assert igar.variants(RELOADED, NAME, header='extern void *D_80000010;', asm=RELOAD_ASM) == []
+    stored = RELOADED.replace('\n}\n', '\n    D_80000010 = arg0;\n}\n')
+    assert igar.variants(stored, NAME, asm=RELOAD_ASM) == []
