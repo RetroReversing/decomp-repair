@@ -1,13 +1,13 @@
 """A 64-bit value m2c read as two words: a `(0, 0)` argument pair, and a returned pair stored one word each.
 
-    f(0, 0);                                            ->  ((void (*)()) f)(0ULL);
+    f(0, 0); /* f takes one 64-bit argument */          ->  f(0ULL);
     t = f(); D_80000000 = t; D_80000004 = t;            ->  *(unsigned long long *) &D_80000000 = ((unsigned long long (*)()) f)();
 
 **The argument.** `osSetTime(0)` passes one 64-bit zero in `$a0:$a1`. GCC 2.7.2 loads it with one two-instruction move, which
 cannot fill the call's delay slot, so the last prologue save lands there instead of `move $a1, $zero`. Two `0` arguments are
 two one-instruction moves, and the second takes the slot: the two spellings differ only in that order (1450 -> 300
 -> 10 on a state machine at -O1, with its arms in order). Offered for a call statement whose arguments at an even
-position (a 64-bit argument is aligned to an even register) are a literal `0` and a literal.
+position (a 64-bit argument is aligned to an even register) are a literal `0` and a literal, and its visible prototype proves that argument is a 64-bit integer.
 
 **The result.** The target stores `$v0` to a symbol and `$v1` to the word after it right after the call; m2c reads that
 as one value stored twice (`$v1` as `$v0`'s variable), which stores `$v0` twice. Read from the target and rebuilt as one
@@ -76,13 +76,19 @@ def _arguments(part, header):
         if not after or not clean[after:].lstrip().startswith(';'):
             continue
         args = split_args(part.source[paren + 1:after - 1])
+        declarations = re.findall(rf'\b{re.escape(hit[1])}\s*\(([^;{{}}]*)\)\s*[;{{]', clean[:part.opening] + '\n' + header)
+        if len(declarations) != 1:
+            continue
+        params = split_args(declarations[0])
+        if '...' in declarations[0] or len(params) != len(args) - 1:
+            continue
         for i in range(0, len(args) - 1, 2):
-            if _ZERO.fullmatch(args[i]) and _LITERAL.fullmatch(args[i + 1]):
+            if (i < len(params) and re.fullmatch(r'\s*(?:unsigned\s+long\s+long|u64|uint64_t)(?:\s+[A-Za-z_]\w*)?\s*', params[i])
+                    and _ZERO.fullmatch(args[i]) and _LITERAL.fullmatch(args[i + 1])):
                 low = args[i + 1].rstrip('uUlL')
                 wide = args[:i] + [f'{low}ULL'] + args[i + 2:]
-                text = f'((void (*)()) {hit[1]})({", ".join(wide)})'
-                out.append((ARGUMENT, edit(part.source,
-                                           _declare(part, header, hit[1], 'void') + [(at, after, text)])))
+                text = f'{hit[1]}({", ".join(wide)})'
+                out.append((ARGUMENT, edit(part.source, [(at, after, text)])))
     return out
 
 
