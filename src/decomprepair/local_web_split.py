@@ -264,15 +264,18 @@ def _apply(source, clean, plans, drop_register, taken):
     return source
 
 
-def variants(source, name):
+def plans_of(source, name, chained=False):
+    """(the blanked source, [(declaration match, local, its webs)]) for each local with at least two names to give.
+
+    `chained`: only the locals with an assignment that reads them, whose webs are fewer when such a chain stays whole."""
     span = find(source, name)
     if not span:
-        return []
+        return source, []
     clean = _blank(source)
     opening = clean.find('{', span[0], span[1])
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
-        return []
+        return clean, []
     blocks = _blocks(clean, opening, end)
     parens = _depths(clean, opening, end)
     switches = _switches(clean, opening, end)
@@ -286,7 +289,7 @@ def variants(source, name):
             continue
         names[m['name']] = names.get(m['name'], 0) + 1
         declarations.setdefault(m['name'], m)
-    plans, chains = [], []
+    plans = []
     for var, decl in declarations.items():
         if names[var] != 1:
             continue
@@ -297,15 +300,24 @@ def variants(source, name):
         if not webs:
             continue
         renamed = sum(1 for w in webs if w[2])
+        if chained:
+            if not re.search(r'(?<![\w.>])' + re.escape(var) + r'\s*=(?!=)[^;{}]*(?<![\w.>])' + re.escape(var) + r'\b',
+                             clean[opening:end]):
+                continue
+            split = len(webs)
+            webs = _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels, chained=True)
+            renamed = sum(1 for w in webs if w[2])
+            if len(webs) >= split:
+                continue
         if renamed + (1 if renamed < len(webs) else 0) < 2:
             continue
         plans.append((decl, var, webs))
-        if re.search(r'(?<![\w.>])' + re.escape(var) + r'\s*=(?!=)[^;{}]*(?<![\w.>])' + re.escape(var) + r'\b',
-                     clean[opening:end]):
-            joined = _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels, chained=True)
-            kept = sum(1 for w in joined if w[2])
-            if len(joined) < len(webs) and kept + (1 if kept < len(joined) else 0) >= 2:
-                chains.append((decl, var, joined))
+    return clean, plans
+
+
+def variants(source, name):
+    clean, plans = plans_of(source, name)
+    chains = plans_of(source, name, chained=True)[1]
     result = []
 
     def emit(text):

@@ -181,7 +181,7 @@ def _children(source, part, hit):
         declared = _declared(clean, name)
         kind_read = _read(clean, expression)
         # a read after a step of its own pointer would see the old value once the step moves down
-        if (not declared or declared[1] or kind_read is None or declared[0] not in _HOLDS[kind_read]
+        if (not declared or declared[1] or kind_read is None or declared[0] not in _HOLDS.get(kind_read, ())
                 or stepped & set(re.findall(IDENT, expression))):
             loads, stepped, steps = [], set(), []
             continue
