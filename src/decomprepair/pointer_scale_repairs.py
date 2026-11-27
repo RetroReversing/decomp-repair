@@ -24,7 +24,8 @@ def immediates(asm):
                                               asm or '', re.M)}
 
 
-def variants(source, name, asm):
+def edits(source, name, asm):
+    """Every byte-step site as (start, end, replacement) on `source`, in the order `variants` offers them."""
     span = find(source, name)
     if not span or not asm:
         return []
@@ -62,14 +63,13 @@ def variants(source, name, asm):
             n = int(step['n'], 0)
             if n % size or n == 0 or n not in found or n * size in found:
                 continue
-            at = opening + step.start('n')
-            result.append((FAMILY, source[:at] + str(n // size) + source[opening + step.end('n'):]))
+            result.append((opening + step.start('n'), opening + step.end('n'), str(n // size)))
         for use in re.finditer(r'(?<![\w.>)])\b' + local + r'\s*\+\s*(?P<n>0x[0-9a-fA-F]+|\d+)\b', body):
             n = int(use['n'], 0)
             if n not in found or n * size in found:
                 continue
             at = opening + use.start()
-            result.append((FAMILY, source[:at] + '(s8 *) ' + source[at:]))
+            result.append((at, at, '(s8 *) '))
     # `*((i * 4) + &D)` on a symbol of a 4-byte type scales the index again: an N64 function stored at `i * 16`
     # where the game stored at `i * 4`, exact as `(&D)[i]`
     for use in re.finditer(r'\*\s*\(\s*\(\s*(?P<i>' + IDENT + r'(?:\([^()]*\))?)\s*\*\s*(?P<k>0x[0-9a-fA-F]+|\d+)\s*\)\s*\+\s*&\s*(?P<d>'
@@ -80,5 +80,10 @@ def variants(source, name, asm):
         if not size or k % size:
             continue
         index = use['i'] if k == size else f"{use['i']} * {k // size}"
-        result.append((FAMILY, source[:opening + use.start()] + f"(&{use['d']})[{index}]" + source[opening + use.end():]))
-    return result[:6]
+        result.append((opening + use.start(), opening + use.end(), f"(&{use['d']})[{index}]"))
+    return result
+
+
+def variants(source, name, asm):
+    """One child per site, at most six."""
+    return [(FAMILY, source[:start] + text + source[end:]) for start, end, text in edits(source, name, asm)[:6]]
