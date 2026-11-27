@@ -68,6 +68,19 @@ def variants(source, name, asm):
             continue
         default = re.search(r'(?<![\w])default\s*:', body)
         for count in counts:
+            # Relabel an out-of-range no-op into a missing table slot. Both values
+            # previously take the implicit no-op default, so behavior is unchanged.
+            outside = [v for v in values if v >= count]
+            if len(outside) == 1 and not default:
+                for empty in re.finditer(r'(?<![\w])case\s+(-?(?:0[xX][0-9A-Fa-f]+|\d+))\s*:\s*break\s*;', body):
+                    if int(empty.group(1), 0) != outside[0]:
+                        continue
+                    start, stop = brace + empty.start(1), brace + empty.end(1)
+                    for missing in range(count):
+                        if missing not in values:
+                            out.append((FAMILY, source[:start] + str(missing) + source[stop:]))
+                            if len(out) >= MAX_CHILDREN:
+                                return out
             value = count - 1
             if value in values or max(values) >= value:
                 continue
