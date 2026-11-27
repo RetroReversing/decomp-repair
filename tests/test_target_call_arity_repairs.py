@@ -233,3 +233,25 @@ void f(void) {
     assert not repair.measured_variants(source, 'f', '\n'.join(target), rows, '#define global_pointer get()')
     assert not repair.measured_variants(source.replace('void f(void)', 'void f(void *global_pointer)'),
                                         'f', '\n'.join(target), rows)
+
+
+def test_float_argument_setup_in_delay_slot_is_not_a_missing_integer_argument():
+    source = '''f32 wave(f32);
+void f(f32 x) { wave(x); wave(x); }
+'''
+    asm = '''jal wave
+mov.s $fa0, $fs0
+jal wave
+mov.s $f12, $f20
+'''
+    assert t.calls(asm) == [('wave', {'a0': None}), ('wave', {'a0': None})]
+    assert not any('wave();' in text for _, text in t.variants(source, 'f', asm))
+
+
+def test_declared_float_is_not_dropped_when_it_may_be_carried_in_an_fpu_register():
+    source = '''f32 wave(f32);
+void f(f32 x) { wave(x); }
+'''
+    # No fresh integer setup does not prove an FPU argument was absent: it may already be live in f12.
+    assert not any('wave();' in text for _, text in t.variants(source, 'f', 'jal wave\nnop\n'))
+    assert t.calls('mtc1 $v0, $f12\njal wave\nnop\n') == [('wave', {'a0': None})]
