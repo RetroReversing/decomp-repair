@@ -19,7 +19,13 @@ several subscripts of names, literals and `+ - *`, none of whose names change be
 773-instruction N64 drop-shadow renderer (the same sn-n64-281 -mfp32 profile) the pointer was one long-lived address that
 kept the vertex buffer's `%hi` live over the whole outer loop (one spill more, frame 0xF8 against 0xF0); written through
 the indexed element every member store re-forms the address as the target does: 2566 -> 1080, then 60 -> 0 with the
-members stored in declaration order and the entry pointer of the same loop written the same way."""
+members stored in declaration order and the entry pointer of the same loop written the same way.
+
+A pointer to a scalar element read as `*P` is written as the element the same way, the array possibly a member
+(`p = &record.data[i]; f(*p);` as `f(record.data[i]);`), and a function with several such pointers also gets one child
+with all of them inlined. An SN GCC 2.8.1 `-O2` N64 function queueing sound ids from two stack records kept both record
+addresses in saved registers through the pointer locals (a frame 8 bytes too large); inlined, the target computes
+`addiu $sp, 0x10` at each use. `M2C_FIELD(...)` is a field access, not a call."""
 import re
 
 from .csource import _blank
@@ -28,11 +34,11 @@ from .integer_repair_support import IDENT, edit, view
 FAMILY = 'element_pointer_direct_index'
 FAMILIES = (FAMILY,)
 LIMIT = 8
-SET = re.compile(rf'(?<![\w.>])(?P<p>{IDENT})\s*=\s*&\s*(?P<a>{IDENT})(?P<i>(?:\s*\[[^\[\]();=?,]+\])+)\s*;')
+SET = re.compile(rf'(?<![\w.>])(?P<p>{IDENT})\s*=\s*&\s*(?P<a>{IDENT}(?:\.{IDENT})*)(?P<i>(?:\s*\[[^\[\]();=?,]+\])+)\s*;')
 SUBSCRIPT = re.compile(r'\s*\[\s*([^\[\]]*?)\s*\]')
 PLAIN = re.compile(rf'(?:{IDENT}|0[xX][0-9A-Fa-f]+|\d+)(?:\s*[-+*]\s*(?:{IDENT}|0[xX][0-9A-Fa-f]+|\d+))*')
 NAMES = re.compile(rf'(?<![\w.]){IDENT}')
-KEYWORDS = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'do', 'else'}
+KEYWORDS = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'do', 'else', 'M2C_FIELD'}  # (a field access)
 
 
 def _python_block_end(clean, position, lo, hi):
@@ -68,14 +74,14 @@ def _calls(text):
     return any(m[1] not in KEYWORDS for m in re.finditer(rf'\b({IDENT})\s*\(', text))
 
 
-def variants(source, name, header=''):
+def variants(source, name, header='', every_deref=True):
     part = view(source, name)
     if not part:
         return []
     clean = _blank(source)
     lo, hi = part.opening + 1, part.end - 1
     body = clean[lo:hi]
-    out = []
+    out, derefs = [], []
     for hit in SET.finditer(body):
         pointer, array = hit['p'], hit['a']
         subscripts = SUBSCRIPT.findall(hit['i'])
@@ -83,7 +89,7 @@ def variants(source, name, header=''):
             continue
         index = ']['.join(subscripts)
         names = set(NAMES.findall(index))
-        if pointer in names | {array}:
+        if pointer in names | {array.split('.')[0]}:
             continue
         start, after = lo + hit.start(), lo + hit.end()
         # a local of this function: declared as a pointer in its body
@@ -92,11 +98,12 @@ def variants(source, name, header=''):
         uses = [m.start() for m in re.finditer(rf'(?<![\w.>]){re.escape(pointer)}\b', clean[lo:hi])]
         uses = [lo + u for u in uses]
         declaration = [u for u in uses if re.match(rf'{re.escape(pointer)}\s*;', clean[u:]) and
-                       re.search(r'\*\s*$', clean[lo:u])]
+                       re.search(rf'(?:\A|[;{{}}])\s*{IDENT}\s*\*\s*\Z', clean[lo:u])]
         others = [u for u in uses if u not in declaration and u != start]
         if not others or any(u < after for u in others):
             continue
-        if not all(re.match(rf'{re.escape(pointer)}\s*->\s*{IDENT}', clean[u:]) for u in others):
+        stars = {u: len(clean[lo:u].rstrip()) + lo - 1 for u in others if clean[lo:u].rstrip().endswith('*')}
+        if not all(u in stars or re.match(rf'{re.escape(pointer)}\s*->\s*{IDENT}', clean[u:]) for u in others):
             continue
         end = _block_end(clean, after, after, hi)
         if end is None or others[-1] > end:
@@ -113,6 +120,9 @@ def variants(source, name, header=''):
         if not source[line:start].strip() and source[after:after + 1] == '\n':
             edits = [(line, after + 1, '')]
         for u in others:
+            if u in stars:  # `*p`, the element itself
+                edits.append((stars[u], u + len(pointer), f'{array}[{index}]'))
+                continue
             arrow = re.match(rf'{re.escape(pointer)}\s*->\s*', clean[u:])
             edits.append((u, u + arrow.end(), f'{array}[{index}].'))
         for d in declaration:
@@ -123,6 +133,14 @@ def variants(source, name, header=''):
             if re.fullmatch(rf'\s*{IDENT}\s*\*\s*{re.escape(pointer)}\s*;\s*', text):
                 edits.append((dline, dend + 1, ''))
         out.append((FAMILY, edit(source, edits)))
+        derefs.append(bool(stars))
+    # two arms each with their own element pointer: neither alone need move the score, so all of them in one child too
+    if every_deref and sum(derefs) > 1:
+        every, done = source, 0
+        while done < LIMIT and (children := [child for _, child in variants(every, name, header, every_deref=False)
+                                             if child.count('*') < every.count('*')]):
+            every, done = children[0], done + 1
+        out.insert(0, (FAMILY, every))
     return list(dict.fromkeys(out))[:LIMIT]
 
 

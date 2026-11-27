@@ -23,6 +23,11 @@ of the loop made of `lwl`/`lwr` and `swl`/`swr`. m2c writes all of it out:
 
 No spelling of those loops gives the compiler's block move back (its pointers, the `j` over the aligned loop and the
 tail registers are its own); the one statement `*(Block *)DST = *(Block *)SRC;` with a record of the copied size does.
+A small word-aligned record needs no end pointer in the draft: m2c writes the loop's bound in its test,
+`do { ... } while (var_v0 != (SRC + 0x90));`, after the two pointer copies (in either order). It is the same block
+move, read from that bound (an SN GCC 2.8.1 `-O2` routine that copies two id tables to the stack, 0x90 and 0x78
+bytes; its draft types the two cursors `s32 *` and steps them by 0x10, which only the struct assignment gets right).
+
 Matched on an SN GCC 2.8.1 (`-G0 -mips3 -O2`) N64 save-data routine (84 instructions, raw m2c 9473 -> 0): a
 0x21C-byte copy between two byte buffers, `typedef struct { u8 data[0x21C]; } Block;`.
 
@@ -90,6 +95,47 @@ def _loop(text, pos, dst, src, end):
     return (step, tail.end()) if tail else None
 
 
+_PAIR = re.compile(
+    rf'(?P<indent>[ \t]*)(?P<a>{_ID})\s*=\s*(?P<ainit>{_EXPR})\s*;[ \t]*\n'
+    rf'[ \t]*(?P<b>{_ID})\s*=\s*(?P<binit>{_EXPR})\s*;[ \t]*\n'
+    r'[ \t]*do\s*\{[ \t]*\n')
+
+
+def _plain(expression):
+    return re.sub(r'[\s()&]', '', expression)
+
+
+def _inline_end(text, at):
+    """The block move whose end is written in the loop's test (no end pointer): the same tuple as `_run`."""
+    head = _PAIR.match(text, at)
+    first = head and _STORE.match(text, head.end())
+    if not first:
+        return None
+    inits = {head['a']: head['ainit'].strip(), head['b']: head['binit'].strip()}
+    dst, src = first['l'], first['r']
+    if dst == src or set(inits) != {dst, src}:
+        return None
+    words, pos = _stores(text, head.end(), dst, src)
+    steps = {}
+    while (step := _STEP.match(text, pos)) is not None:
+        steps[step['v']] = int(step['k'], 0)
+        pos = step.end()
+    if set(steps) != {dst, src} or len(set(steps.values())) != 1:
+        return None
+    if [offset for offset, _w in words] != list(range(0, steps[src], 4)) or any(width != 4 for _o, width in words):
+        return None
+    test = re.compile(
+        rf'[ \t]*\}}\s*while\s*\(\s*{re.escape(src)}\s*!=\s*(?P<bound>[^;{{}}\n]+?)\s*\+\s*(?P<n>{_NUM})\s*\)*\s*;'
+        r'[ \t]*\n').match(text, pos)
+    if not test or _plain(test['bound']) not in (_plain(inits[src]), src):
+        return None
+    tail, pos = _stores(text, test.end(), dst, src)
+    size = int(test['n'], 0) + max((o + w for o, w in tail), default=0)
+    if int(test['n'], 0) % steps[src]:
+        return None
+    return head.start(), pos, head['indent'], inits[dst], inits[src], size, False, (dst, src)
+
+
 def _run(text, at):
     """The whole block move starting at the head match `at`: (start, stop, dinit, sinit, size, tested, names)."""
     head = _HEAD.match(text, at)
@@ -144,7 +190,7 @@ def variants(source, name):
         line = clean.find('\n', pos, end)
         if line < 0:
             break
-        run = _run(clean, line + 1)
+        run = _run(clean, line + 1) or _inline_end(clean, line + 1)
         pos = line + 1
         if not run:
             continue
