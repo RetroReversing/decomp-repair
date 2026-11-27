@@ -12,8 +12,8 @@ them: a MIPS function with this loop was 535 and, with every companion written o
 rest of its edits), the target's order of preheader instructions.
 
 Each companion `v` that starts at an expression and steps by a constant `S` as the loop's last statements, and is
-not read after the loop, becomes `INIT + j * S` at its uses (a pointer through `(char *)`), with its initialisation
-and step dropped. The counter must start at an integer constant and step by 1 as another of those last statements.
+not read after the loop, becomes `INIT + j * S` at its uses (a pointer `T *` through `(T *)`, since its step counts
+elements of T; `void *` through `(char *)`), with its initialisation and step dropped. The counter must start at an integer constant and step by 1 as another of those last statements.
 A counter that starts at `C` other than 0 gives `INIT + (j - C) * S`, or `j * S` when the companion starts at `C * S`
 (an audio voice loop counted from -4 beside a byte offset from -0x70, SN GCC 2.7.2: 170 -> 0 with `D + i * 0x1C`).
 The initialisations are the statements right before the loop, or (a constant or a symbol's address only) earlier in a
@@ -115,7 +115,7 @@ def _value(var, base, stride, counter, pointer, first=0):
     if first and start is not None and start == first * int(stride.rstrip('uU'), 0):
         scaled, base = f'{counter} * {stride}', '0'
     if pointer:
-        return f'((char *) ({base}) + {scaled})'
+        return f'(({pointer} *) ({base}) + {scaled})'
     return f'({scaled})' if base in ('0', '0U') else f'({base} + {scaled})'
 
 
@@ -182,7 +182,7 @@ def variants(source, name):
             init = inits.get(var)
             if stride is None or init is None:
                 continue
-            declared = re.search(r'(?m)^[ \t]*[A-Za-z_][\w ]*?(\*?)[ \t]*\b' + var + r'[ \t]*;', clean[opening:init.start()])
+            declared = re.search(r'(?m)^[ \t]*([A-Za-z_][\w ]*?)[ \t]*(\*?)[ \t]*\b' + var + r'[ \t]*;', clean[opening:init.start()])
             word = r'\b' + var + r'\b'
             if (not declared or re.search(word, after) or re.search(word, clean[cond_open:cond_end])
                     or re.search(r'&\s*' + var + r'\b', clean[opening:end])
@@ -190,7 +190,9 @@ def variants(source, name):
                                  + var + r'\s*(?:\+\+|--)', clean[body_open + 1:body_first])
                     or len(re.findall(word, clean[init.start():start])) != 1):
                 continue
-            companions.append((var, stride, init, bool(declared[1])))
+            # a `T *` steps in elements of T, so its value keeps that type (`void *` steps in bytes)
+            pointee = ' '.join(declared[1].split())
+            companions.append((var, stride, init, ('char' if pointee == 'void' else pointee) if declared[2] else ''))
         if not companions:
             continue
         for group in [companions] + ([[c] for c in companions] if len(companions) > 1 else []):
