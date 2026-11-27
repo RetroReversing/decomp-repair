@@ -72,3 +72,38 @@ def test_a_function_without_the_union_is_left_alone():
 
 def test_the_module_declares_itself():
     assert s.REPAIR['families'] == (s.FAMILY,)
+
+
+MASK = '''s32 f(s32 a) {
+  union
+  {
+    unsigned char bytes[12];
+    struct
+    {
+      u32 value;
+    } view_sp10;
+    struct
+    {
+      unsigned char pad[4];
+      s32 value;
+    } view_sp14;
+    struct
+    {
+      unsigned char pad[8];
+      s32 value;
+    } view_sp18;
+  } m2c_initial_frame;
+  m2c_initial_frame.view_sp10.value = a;
+  m2c_initial_frame.view_sp14.value = a;
+  m2c_initial_frame.view_sp18.value = a;
+  return m2c_initial_frame.view_sp10.value & m2c_initial_frame.view_sp14.value & m2c_initial_frame.view_sp18.value;
+}
+'''
+
+
+def test_a_binary_and_keeps_its_operator_and_a_run_is_an_array():
+    texts = [text for _, text in s.variants(MASK, 'f')]
+    assert texts and all(text.count(' & ') == 2 for text in texts)
+    runs = texts[-1]
+    assert 'u32 sp10[3];' in runs and 'sp10[1] = a;' in runs
+    assert 'return sp10[0] & ((s32) sp10[1]) & ((s32) sp10[2]);' in runs

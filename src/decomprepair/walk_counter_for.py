@@ -36,6 +36,9 @@ counter's step) is accepted: the rule is that no stepped variable is read after 
 to the end of the body in the child, where it still reads the iteration's value (a voice loop of a 384-instruction sound
 function, 2696 -> 2387 from its saved best). A companion that is read between its initialisation and the loop (a NULL test
 above it) keeps its initialisation.
+A `char *` (or `u8 *`) cursor started at a local array of wider elements is read as `((char *) a + i * k)`: without the
+cast the child stepped `k` elements, not `k` bytes (a triangle test's walk: 1080 -> 650 once both array cursors kept
+their byte type).
 The counter's own initialisation stays where it was. The `do` form (steps written as the last statements) is a second
 child, since a `for` loop's entry test changes the preheader and the frame. The saved best's fences and scaffolding
 are written out first, as `scaffold_strip` does, when the source has them."""
@@ -213,6 +216,10 @@ def _plan(source, clean, opening, end, loop):
         edits += taken
         scaled = f'{counter} * {step}' if step != 1 else counter
         value_text = value if re.fullmatch(IDENT, value) else f'({value})'
+        # a byte cursor started at an array of wider elements steps in bytes; the array's own name would step in elements
+        if re.search(rf'\b(?:char|u8|s8)\s*\*\s*{name}\s*;', clean[opening:end]) and re.search(
+                rf'\b(?:s16|u16|s32|u32|int|f32)\s+{re.escape(value_text)}\s*\[', clean[opening:end]):
+            value_text = f'(char *) {value_text}'
         for use in re.finditer(r'(?<![\w.>])' + name + r'\b', body):
             if not any(t[0] <= use.start() < t[1] for t in taken) \
                     and not any(a - lo <= use.start() < b - lo for a, b, *_ in steps):

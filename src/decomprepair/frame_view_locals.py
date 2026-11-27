@@ -11,8 +11,14 @@ display-list builder went from 3551 to 335 once its union, goto loops and cursor
 
 The rewrite: a view whose address is taken or that an indexed access lands on starts an array; the views directly after
 it with the same element size become its later elements, and the array runs to the next view (one child) or covers only
-those contiguous views (another child; m2c's views show which slots were touched, not how long an array was). Every other
-view is a scalar local of its own type, named after its offset (`sp94`). Declarations go where the union was, in frame
+those contiguous views (another child; m2c's views show which slots were touched, not how long an array was). A third child
+makes every run of two or more contiguous views of one size an array, address taken or not (`u32` and `s32` views join, with
+the signedness kept by a cast where one is read): m2c writes `x[0]`, `x[1]`, `x[2]` that the original indexes with
+constants as three scalar views, and scalar locals live in registers where the target stores them. A 149-instruction N64
+triangle test (SN GCC 2.8.1 `-O2`) went from 13300 as scalars to 755 as the four arrays of its frame (one function).
+A `&` is the address of a view only where it is the unary operator: `a & m2c_initial_frame.view_sp14.value` reads the view
+(it once lost the `&` and the child did not compile). Every other view is a scalar local of its own type, named after its
+offset (`sp94`). Declarations go where the union was, in frame
 order. An indexed access `((char *) (&(&U.view_X.value)[E])) + K)` becomes `((char *) &Y[E])` for the array Y that starts
 `K` bytes after X, when both have the same element size. Nothing is offered when the union is read through `bytes`, a view
 overlaps another one, an array would take in a view of another size, or an access has a form this does not resolve.
@@ -39,6 +45,24 @@ def _size(kind):
     if kind.endswith('*'):
         return 4
     return SIZES.get(kind)
+
+
+WORDS = {'s32', 'u32', 'int', 'unsigned', 'unsigned int'}
+_CAST = re.compile(r'\(\s*(?:(?:const|volatile|struct|unsigned|signed)\s+)*[A-Za-z_]\w*\s*\*+\s*\)$|'
+                   r'\(\s*(?:s8|u8|s16|u16|s32|u32|s64|u64|f32|f64|int|char|short|long|float|double|unsigned(?:\s+int)?)\s*\)$')
+
+
+def _address_of(before):
+    """Whether `before` (the text up to an operand) ends with the unary `&`: not `&&`, and not the binary `a & x`."""
+    if not before.endswith('&') or before.endswith('&&'):
+        return False
+    left = before[:-1].rstrip()
+    if not left or left.endswith(']'):
+        return not left
+    if left.endswith(')'):
+        return bool(_CAST.search(left))
+    word = re.search(r'[A-Za-z_0-9]+$', left)
+    return not word or word[0] in ('return', 'case')
 
 
 def _base(inner):
@@ -106,18 +130,32 @@ def variants(source, name):
     for hit in access.finditer(masked):
         if int(hit[1], 16) not in views:
             return []
-        before = masked[:hit.start()].rstrip()
-        if before.endswith('&') and not before.endswith('&&'):
+        if _address_of(masked[:hit.start()].rstrip()):
             starts.add(int(hit[1], 16))
     # every access is one of the two forms
     leftover = access.sub('', masked)
     if re.search(rf'\b{frame}\b', leftover):
         return []
     out = []
-    for fill in (True, False):
+    for mode in ('fill', 'tight', 'runs'):
+        fill = mode == 'fill'
+        runs = mode == 'runs'
         arrays = {}
         member = {}
+        head = None
         for offset in order:
+            if runs:
+                if head is not None:
+                    size = _size(views[head])
+                    if offset == head + arrays[head] * size and _size(views[offset]) == size \
+                            and (views[offset] == views[head] or {views[offset], views[head]} <= WORDS):
+                        member[offset] = (head, arrays[head])
+                        arrays[head] += 1
+                        continue
+                head = offset
+                arrays[head] = 1
+                member[offset] = (head, 0)
+                continue
             if offset in starts:
                 arrays[offset] = 1
                 member[offset] = (offset, 0)
@@ -131,6 +169,14 @@ def variants(source, name):
                     member[offset] = (owner, arrays[owner] - 1)
                     continue
             member[offset] = (offset, None)
+        if runs:
+            if any(member[y][0] != y for _, y in indexed_hits):
+                continue
+            for offset in order:
+                owner = member[offset][0]
+                if owner == offset and arrays.get(offset) == 1 and offset not in starts:
+                    del arrays[offset]
+                    member[offset] = (offset, None)
         if fill:
             for owner in arrays:
                 size = _size(views[owner])
@@ -150,12 +196,15 @@ def variants(source, name):
             offset = int(hit[1], 16)
             owner, element = member[offset]
             before = masked[:hit.start()].rstrip()
-            if element == 0 and before.endswith('&') and not before.endswith('&&'):
+            if element == 0 and _address_of(before):
                 amp = len(before) - 1
                 edits.append((body_start + amp, body_start + hit.end(), names[owner]))
                 continue
-            edits.append((body_start + hit.start(), body_start + hit.end(),
-                          names[owner] if element is None else f'{names[owner]}[{element}]'))
+            text = names[owner] if element is None else f'{names[owner]}[{element}]'
+            if element and views[offset] != views[owner] and not _address_of(before) \
+                    and not re.match(r'\s*(?:(?:[-+*/%&|^]|<<|>>)?=(?!=)|\+\+|--)', masked[hit.end():]):
+                text = f'(({views[offset]}) {text})'  # a run of mixed signedness: the read keeps the view's own
+            edits.append((body_start + hit.start(), body_start + hit.end(), text))
         indent = re.search(r'[ \t]*$', clean[:start])[0]
         lines = []
         for offset in order:
