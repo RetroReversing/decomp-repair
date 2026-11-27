@@ -33,6 +33,7 @@ _STEP = re.compile(rf'(?m)^[ \t]*(?P<v>{IDENT})\s*(?:\+=\s*(?P<k>{NUMBER})|\+\+)
 # a start may also stand mid-line, after another statement (a saved best keeps several statements on one line)
 _ASSIGN = re.compile(rf'(?m)(?:^|(?<=[;{{}}]))(?P<lead>[ \t]*)(?:/\*__repair_loop_weight\*/)?(?:do \{{ ?)*(?P<v>{IDENT}) = (?P<init>[^;{{}}]+);(?: ?\}} while \(0\);)*(?:[ \t]*\n|(?=[ \t]*\S))')
 _BYTE = re.compile(r'\b(?:void|char|[su]8)\s*\*\s*$')
+_PRIMARY = re.compile(rf'&?\s*{IDENT}|{NUMBER}')
 
 
 def _declared(clean, name):
@@ -88,7 +89,9 @@ def _plan(part, loop, counter, var, stride):
             or not re.search(rf'\b{var}\b', inside[:stepped_at] + tail['cond'])):
         return None
     type_, star = kind
-    base = f'(char *)({init})' if star and _BYTE.search(type_ + ' ' + star) else f'({init})' if star else init
+    # an integer cursor's start may bind looser than `+`: `p = a & MASK;` is `((a & MASK) + i * 4)`
+    base = (f'(char *)({init})' if star and _BYTE.search(type_ + ' ' + star) else
+            f'({init})' if star or not _PRIMARY.fullmatch(init) else init)
     term = f'{counter} * {stride:#x}' if stride > 9 else f'{counter} * {stride}'
     return start, ('(' + term + ')') if init in ('0', '0U') and not star else f'({base} + {term})'
 
