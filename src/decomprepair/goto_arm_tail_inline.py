@@ -17,6 +17,10 @@ own inside are left alone. A third child copies a label's run that falls into an
 default: return;`) over each `goto L;` that ends an arm, followed by that `return;`/`break;` (`_falls_into_exit`).
 A second child does the same for a label at its arm's own level (`case A: v = x; L: f(v);
 r = 0; break;`): its run up to the arm's `break;` is copied over each `goto L;` that ends another arm (`_arm_level`).
+A label can itself end in a `goto` to a second shared tail: the first copy exposes the second. A bounded
+combined child follows the first safe copy up to four times, so a beam can try the whole chain when its first step
+alone regresses. On one large N64 function, the exact GCC 2.7.2 KMC -G0 -mips3 -mgp32 -mfp32 -O2
+judge scored 54,120 -> 54,655 for the first copy and 51,205 for the combined child (one observation, not a match).
 A candidate rewrite; the exact judge decides.
 """
 import re
@@ -26,6 +30,7 @@ from .pattern_repairs import close
 
 FAMILY = 'goto_arm_tail_inline'
 FAMILIES = (FAMILY,)
+MAX_CHAIN = 4
 _LABEL = re.compile(rf'(?m)(?:^|(?<=[;{{}}]))\s*(?P<l>{IDENT})\s*:(?!:)')
 _GOTO = re.compile(rf'\bgoto\s+(?P<l>{IDENT})\s*;')
 
@@ -76,6 +81,24 @@ def _only_exit_follows(clean, at, limit):
 
 
 def variants(source, name):
+    """Single safe copies, plus their bounded chain when one copy exposes another shared tail."""
+    results = _single_variants(source, name)
+    if not results:
+        return results
+    current = results[0][1]
+    seen = {source, *(text for _, text in results)}
+    for _ in range(MAX_CHAIN - 1):
+        next_steps = _single_variants(current, name)
+        if not next_steps or next_steps[0][1] in seen:
+            break
+        current = next_steps[0][1]
+        seen.add(current)
+    if current != results[0][1]:
+        results.append((FAMILY, current))
+    return results
+
+
+def _single_variants(source, name):
     part = view(source, name)
     if not part:
         return []

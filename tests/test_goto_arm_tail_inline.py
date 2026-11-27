@@ -147,3 +147,31 @@ def test_a_goto_that_does_not_end_an_arm_keeps_the_label():
     source = EXIT_STORE.replace('v = 8;\n      goto block_35;', 'v = 8;\n      goto block_35;\n      g();')
     (_, text), = variants(source, 'run')
     assert 'block_35:' in text and text.count('goto block_35;') == 1
+
+
+CHAIN = '''void step(void) {
+  switch (state) {
+    case 4:
+      if (a) {
+block_86:
+        output = value;
+        goto block_87;
+      } else if (b) {
+block_87:
+        state = 0;
+      }
+      break;
+    case 3:
+      if (c) { goto block_86; }
+      break;
+  }
+}
+'''
+
+
+def test_a_shared_tail_whose_own_tail_is_shared_is_offered_as_one_child():
+    children = [text for _, text in variants(CHAIN, 'step')]
+    assert any('goto block_86' in text and 'goto block_87' not in text for text in children)
+    combined = [text for text in children if 'goto block_86' not in text and 'goto block_87' not in text]
+    assert combined and combined[0].count('output = value;') == 2
+    assert combined[0].count('state = 0;') == 3
