@@ -48,3 +48,22 @@ def test_nothing_for_a_call_an_if_a_lone_sum_or_a_compare():
 def test_it_is_declared_for_the_callers():
     assert registry.problems(registry.get('difference_block_stage')) == []
     assert FAMILY in REPAIR['families']
+
+
+def test_a_subtrahend_is_staged_and_the_blocks_fences_opened_with_it():
+    source = """void f(u32 a, u32 *p, u32 *out) {
+    u32 n;
+    do { n = p[1]; } while (0);
+    out[0] = p[0] - (a - 1);
+}
+"""
+    kids = [text for family, text in variants(source, 'f') if family == 'subtrahend_block_stage']
+    assert len(kids) == 2
+    assert 'u32 span = a - 1;' in kids[0] and 'out[0] = p[0] - span;' in kids[0] and 'while (0)' in kids[0]
+    assert 'u32 span = a - 1;' in kids[1] and 'while (0)' not in kids[1] and '{ n = p[1]; }' in kids[1]
+
+
+def test_no_subtrahend_for_a_sign_a_return_or_a_following_term():
+    for body in ('*o = -(a - 1);', 'return -(a - 1);', '*o = b + (a - 1);', '*o = b - (a - 1) * 2;', '*o = b * -(a - 1);'):
+        source = f'int f(u32 a, u32 b, u32 *o) {{\n    {body}\n    return 0;\n}}\n'
+        assert [family for family, _ in variants(source, 'f') if family == 'subtrahend_block_stage'] == [], body
