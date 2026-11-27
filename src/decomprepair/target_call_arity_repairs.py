@@ -19,6 +19,7 @@ FAMILIES = (FAMILY,)
 IDENT = r'[A-Za-z_]\w*'
 LINE = re.compile(r'^\s*(?:/\*.*?\*/)?\s*(?P<op>[a-z][\w.]*)\s*(?P<args>[^\n]*)$')
 ARGREG = ('a0', 'a1', 'a2', 'a3')
+FLOAT_ARGS = {'f12': 'a0', 'fa0': 'a0', 'f14': 'a1', 'fa1': 'a1'}
 NOT_CALLS = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'M2C_FIELD', 'M2C_ERROR', 'M2C_BITWISE', 'do'}
 
 
@@ -52,6 +53,14 @@ def calls(asm, consumed=False, through=False):
     bases = {}  # register -> symbol whose address it holds (`addiu $s2, $s2, %lo(D)`), for loads through it
     for op, args in _instructions(asm):
         dest = re.match(r'\$(\w+)', args)
+        # Hard-float MIPS passes the first floating arguments in f12/f14, including writes in a call's delay slot.
+        # Treat these as evidence of an argument, not as an absent a0/a1 to be dropped.
+        float_dest = dest[1] if dest and op not in ('swc1', 'sdc1') and not op.startswith(('b', 'j')) else None
+        if op in ('mtc1', 'dmtc1'):
+            moved = re.fullmatch(r'\$\w+\s*,\s*\$(\w+)', args)
+            float_dest = moved[1] if moved else None
+        if float_dest in FLOAT_ARGS:
+            written[FLOAT_ARGS[float_dest]] = None
         if dest and not op.startswith(('s', 'b', 'j')) or op == 'jal':
             held = re.fullmatch(r'\$(\w+)\s*,\s*\$\1\s*,\s*%lo\(\s*(\w+)\s*\)', args) if op == 'addiu' else None
             if held:
@@ -238,6 +247,11 @@ def _variants(source, name, asm, clean, opening, end, jals):
                                                      for k, v in enumerate(missing))))
             elif count < len(args) <= 4 and add == []:
                 drop.append((paren + 1 + _offset(inner, count), closing - 1))
+        # Integer register setup alone cannot disprove a declared floating parameter: its value can arrive in an
+        # FPU register or remain live from earlier. In particular, never turn a float-taking callee into void.
+        float_params = _float_parameters(clean, callee, opening)
+        if any(any(index >= count for index in float_params if index < len(args)) for count, args in call_shapes):
+            drop = []
         mixed_drop = _mixed_drop_safe(clean, call_shapes, len(drop))
         for edits, change in ((add, 'add'), (drop if len(drop) == len(parens) or mixed_drop else None, 'drop')):
             if not edits:
@@ -263,6 +277,15 @@ def _variants(source, name, asm, clean, opening, end, jals):
                             result.append((FAMILY, both))
     return result
 
+
+
+def _float_parameters(clean, callee, opening):
+    """Positions explicitly declared as floating values, not pointers, in a prototype before the function."""
+    proto = re.search(r'(?m)^[^\n;{}]*\b' + re.escape(callee) + r'\s*\(([^()]*)\)\s*;', clean[:opening])
+    if not proto:
+        return set()
+    return {i for i, param in enumerate(proto[1].split(','))
+            if '*' not in param and re.search(r'\b(?:float|double|f32|f64)\b', param)}
 
 def _mixed_drop_safe(clean, shapes, dropped):
     """Some calls already have the measured arity; only drop a plain nonvolatile global pointer at the others."""
