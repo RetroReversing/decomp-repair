@@ -203,6 +203,9 @@ def _terms(e):
         pieces = _split(part, '<<')
         if len(pieces) == 2 and (k := _number(pieces[1])) is not None:
             part, shift = _strip(pieces[0]), k
+        elif len(pieces := _split(part, '*')) == 2 and (k := _number(pieces[1])) is not None and k > 1 \
+                and not k & (k - 1) and len(_split(_strip(pieces[0]), '&')) == 2:
+            part, shift = _strip(pieces[0]), k.bit_length() - 1  # m2c's `(x & 0xF) * 0x10` is `_SHIFTL(x, 4, 4)`
         pieces = _split(part, '&')
         if len(pieces) == 2 and (n := _number(pieces[1])) is not None and (found := _mask(n)):
             low, width = found
@@ -293,6 +296,11 @@ def _fields(word, fields, masked):
     taken = set()
     for text, shift, width in terms:
         field = next((f for f in fields if f[1] == shift and f[0] not in taken), None)
+        if field is None and width is None:
+            # `t << 0x15` is the top field's `(t << 5) << 16`: what the shift pushes past bit 31 is lost either way
+            field = next((f for f in fields if f[1] < shift and f[1] + f[2] == 32 and f[0] not in taken), None)
+            if field is not None:
+                text, shift = f'{_paren(text)} << {shift - field[1]}', field[1]
         if field is None:
             return None
         name, _, size = field

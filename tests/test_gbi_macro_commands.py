@@ -283,3 +283,12 @@ def test_the_trimmed_child_writes_the_same_display_list_as_the_draft(tmp_path):
     assert variants
     for k, (family, text) in enumerate(variants):
         assert run(text, f'variant{k}') == expected, family
+
+
+def test_multiplied_mask_is_a_shifted_field_and_a_high_shift_falls_in_the_top_field():
+    from decomprepair.gbi_macro_commands import TILE_W1, _fields
+
+    never = lambda text, size: False  # noqa: E731
+    assert _fields('((a & 0xF) * 0x10) | ((b & 3) << 0x12)', TILE_W1, never)['masks'] == 'a'
+    top = _fields('t << 0x15', [('s', 16, 16), ('t', 0, 16)], never)
+    assert top['s'] == 't << 5'
