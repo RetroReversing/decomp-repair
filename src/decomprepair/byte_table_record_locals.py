@@ -82,7 +82,8 @@ def _inline_address_locals(body, tables):
         index = partners.pop()
         if len(values.get(index, ())) != 1:
             continue
-        text = pair.sub(lambda _: f'({values[index][0]}) + {table}', body)
+        summed = f'({values[index][0]}) + {table}'
+        text = pair.sub(lambda _, summed=summed: summed, body)
         for gone in (local, index):
             text = re.sub(r'(?<![\w.>\]*])' + gone + r'[ \t]*=(?!=)[^;{}\n]*;[ \t]*\n?', '', text)
             text = _drop_local(text, gone)
