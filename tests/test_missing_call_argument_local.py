@@ -132,3 +132,28 @@ def test_it_declares_itself_with_optional_callees():
     assert repair.arguments({'source': SOURCE, 'name': 'f', 'asm': ASM, 'header': ''}) == {
         'source': SOURCE, 'name': 'f', 'asm': ASM, 'header': ''}
     assert registry.run('missing_call_argument_local', source=SOURCE, name='f', asm=ASM, header='', callees=CALLEE)
+
+
+def test_every_short_call_gets_the_value_at_once():
+    source = '''s32 show();
+
+void f(s32 arg0) {
+    s32 var_s0;
+    u32 temp_a2;
+
+    var_s0 = 0;
+    if (arg0 != 0) {
+        temp_a2 = var_s0 & 0xFFFF;
+        show(arg0, 1);
+    } else {
+        show(arg0, 1);
+    }
+}
+'''
+    block = '''    addiu $a1, $zero, 0x1
+    andi $a2, $s0, 0xFFFF
+    jal show
+    addu $a0, $s1, $zero
+'''
+    out = [text for _, text in mcal.variants(source, 'f', block + block)]
+    assert out[0].count('show(arg0, 1, var_s0 & 0xFFFF);') == 2

@@ -15,7 +15,9 @@ from the locals (or parameters) that carry evidence, one child per candidate:
   written again between that load and the call is never offered;
 - otherwise (a copy or a computation into the register), a variable m2c named after that register (`temp_a0`,
   `var_a1`), assigned before the call.
-A variable already passed to the call is not offered again, and it must be declared in a scope that holds the call. A
+A variable already passed to the call is not offered again, and it must be declared in a scope that holds the call.
+Two or more calls of an unprototyped callee all short of the same argument also get one child that passes the value at
+every one (`_every_site`). A
 missing slot the target sets to a constant or a global gets that value (all of them constants: `target_call_arity`).
 
 The callee's declaration in the source changes with the call: its parameters are the callee's own matched definition's
@@ -212,6 +214,9 @@ def variants(source, name, asm, header='', callees=''):
         sites = [(start, stop) for start, stop in _calls(part, callee)]
         if len(sites) != len(wanted):
             continue
+        every = _every_site(source, part, variables, callee, sites, wanted, header, callees)
+        if every and every not in [t for _, t in result]:
+            result.append((FAMILY, every))
         declaration = re.search(rf'(?m)^[^\n;{{}}#]*\b{re.escape(callee)}\s*\(([^()]*)\)\s*;',
                                 part.clean[:part.opening])
         if declaration and '...' in declaration[1]:
@@ -256,6 +261,61 @@ def variants(source, name, asm, header='', callees=''):
                 if text != source and text not in [t for _, t in result]:
                     result.append((FAMILY, text))
     return result
+
+
+def _plain_value(expression, variables):
+    """`expression` can be written again at another call: locals, literals and operators, no call or memory read."""
+    text = expression.strip()
+    if not re.fullmatch(r'[\w\s&|^+\-<>()]+', text) or re.search(r'\+\+|--|->|\w\s*\(', text):
+        return False
+    return all(word in variables or re.match(r'\d', word) for word in re.findall(r'\b\w+\b', text))
+
+
+def _every_site(source, part, variables, callee, sites, wanted, header, callees):
+    """Two or more calls short of the same argument, all given it at once, or None.
+
+    Copies of one loop in two arms call the callee alike, but m2c names the value in one arm only (the other arm's
+    test reads it written out), so each one-site child leaves the other call short and the second one passes a local
+    that arm never set. An 84-instruction N64 function (SN GCC 2.8.1) passed its loop counter as `sprintf`'s fourth
+    argument in both arms: 45 with the counter narrowed, 25 with the value at both calls, 0 with both together; one
+    call at a time scored worse. The value written is the local's last assignment before the first call when that is
+    made of locals and literals only."""
+    if len(sites) < 2:
+        return None
+    counts = {max((ARGREG.index(r) + 1 for r in regs), default=0) for regs in wanted}
+    if len(counts) != 1:
+        return None
+    count = counts.pop()
+    args = []
+    for start, stop in sites:
+        inner = part.clean[start:stop]
+        args.append([inner[a:b] for a, b in split_args(inner)] if inner.strip() else [])
+    short = {len(a) for a in args}
+    if len(short) != 1 or short.pop() != count - 1 or count > 4:
+        return None
+    register = ARGREG[count - 1]
+    if any(regs.get(register) != wanted[0].get(register) for regs in wanted):
+        return None
+    setup = wanted[0].get(register)
+    if not setup or arity._constant(*setup) is not None or _offset(setup) is not None:
+        return None
+    start = sites[0][0]
+    picks = _candidates(part, variables, args[0], start, count - 1, setup)
+    if not picks:
+        return None
+    declared_at = variables[picks[0]][1]
+    value = _last_assignment(part.clean, picks[0], max(declared_at, part.opening), start).strip()
+    if not value or not _plain_value(value, variables):
+        return None
+    declaration = re.search(rf'(?m)^[^\n;{{}}#]*\b{re.escape(callee)}\s*\(([^()]*)\)\s*;', part.clean[:part.opening])
+    if declaration and ('...' in declaration[1] or declaration[1].strip()):
+        return None  # a prototyped callee: the one-site children widen it
+    header_counts = _declared_count(header, callee)
+    matched = _definition(callees, callee)
+    if header_counts and header_counts != {count} or matched is not None and len(matched) != count:
+        return None
+    added = (', ' if count > 1 else '') + value
+    return edit(source, [(stop, stop, added) for _, stop in sites])
 
 
 def _calls(part, callee):
