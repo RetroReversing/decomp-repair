@@ -59,3 +59,30 @@ def test_a_move_that_would_cross_a_call_or_a_brace_is_refused():
 def test_it_declares_itself_to_the_registry():
     repair = registry.get('identical_statement_comove')
     assert repair is not None and registry.problems(repair) == []
+
+
+THREE_ARMS = '''void f(Node *e, Node *src) {
+    if (a) {
+        e->tag = src->tag;
+        e->kind = 1;
+        e->state = 2;
+    }
+    if (b) {
+        e->tag = src->tag;
+        e->kind = 1;
+        e->state = 3;
+    }
+    if (c) {
+        e->tag = src->tag;
+        e->kind = 1;
+        e->state = 4;
+    }
+}
+'''
+
+
+def test_a_statement_in_three_runs_also_moves_in_all_but_one():
+    texts = [text for _family, text in comove.variants(THREE_ARMS, 'f')]
+    swapped = '        e->kind = 1;\n        e->tag = src->tag;\n'
+    want = THREE_ARMS.replace('        e->tag = src->tag;\n        e->kind = 1;\n', swapped, 2)
+    assert want in texts

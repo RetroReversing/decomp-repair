@@ -9,10 +9,18 @@ the target's order of a halfword store after the stack-run stores took two edits
 arms, 2980 -> 2820, each edit alone leaving the score at 2980 or worse), and the greedy statement-move passes and the library's
 adjacent-swap families stalled there.
 
+The limit must reach the last repeated statement: with 24, a function of three linked constructors (SN GCC 2.8.1) spent
+it all on its first four statements and never offered the move that finished the match (a field store two lines up in
+both arms, 760 -> 0).
+
+A statement three or more runs share is not always moved in all of them: two of the three constructors there wanted the
+field store first and the third wanted it after its copies. Each such statement also gets children that move it in every
+run but one (their own limit, nearest offsets first).
+
 For every one-line statement that appears in two or more straight-line runs of the function (the same text), a child
 moves it by -3 .. +3 positions in every one of those runs by the same amount, when each run has room and every statement
 it crosses is a plain one-line statement (no label, `if`, brace, call or `volatile`). One child per statement and offset,
-at most 24 children. The order of a store relative to its neighbours is a hypothesis about the scheduler read off the
+at most 96 of these. The order of a store relative to its neighbours is a hypothesis about the scheduler read off the
 target, not from the compiler's source: every child is judged."""
 import re
 
@@ -21,7 +29,9 @@ from .integer_repair_support import view
 FAMILY = 'identical_statement_comove'
 FAMILIES = (FAMILY,)
 
-LIMIT = 24
+LIMIT = 96
+PARTIAL_LIMIT = 96
+NEAREST = (-1, 1, -2, 2, -3, 3)
 OFFSETS = (-3, -2, -1, 1, 2, 3)
 _DECL = re.compile(r'^(?:register\s+)?(?:u8|u16|u32|s8|s16|s32|f32|f64|unsigned|int|char|short|long|void|struct|const)\b')
 _CALL = re.compile(r'\b[A-Za-z_]\w*\s*\(')
@@ -49,16 +59,26 @@ def variants(source, name):
     for index in range(begin + 1, min(finish, len(lines))):
         if _plain(lines[index]):
             where.setdefault(lines[index].strip(), []).append(index)
+    shared = [found for found in where.values() if 2 <= len(found) <= 8]
     out = []
-    for text, found in where.items():
-        if len(found) < 2 or len(found) > 8:
-            continue
+    for found in shared:
         for offset in OFFSETS:
             moved = _move_all(lines, found, offset, begin + 1, finish)
-            if moved:
+            if moved and len(out) < LIMIT:
                 out.append((FAMILY, '\n'.join(moved)))
-                if len(out) >= LIMIT:
-                    return out
+    seen = {text for _, text in out}
+    partial = 0
+    for offset in NEAREST:
+        for found in shared:
+            if len(found) < 3:
+                continue
+            for skipped in range(len(found)):
+                moved = _move_all(lines, found[:skipped] + found[skipped + 1:], offset, begin + 1, finish)
+                text = '\n'.join(moved) if moved else None
+                if text and text not in seen and partial < PARTIAL_LIMIT:
+                    seen.add(text)
+                    out.append((FAMILY, text))
+                    partial += 1
     return out
 
 
