@@ -98,3 +98,19 @@ def test_every_guarded_counter_init_is_a_child_and_a_flag_is_never_sunk():
     assert any('if (n > 0)\n  {\n      i = 0;' in t and '  j = 0;\n  if (m > 0)' in t for t in texts)
     assert any('if (m > 0)\n  {\n      j = 0;' in t and '  i = 0;\n  if (n > 0)' in t for t in texts)
     assert all('  v = 1;\n  if (!(c > 0))' in t for t in texts)
+
+
+def test_guard_sink_does_not_move_global_static_or_escaped_stores():
+    samples = [
+        'extern int flag; void f(int c) { flag = 1; if (c) { use(); } }',
+        'void f(int c) { static int flag; flag = 1; if (c) { use(); } }',
+        'void f(int c) { int flag; save(&flag); flag = 1; if (c) { use(); } }',
+    ]
+    for source in samples:
+        assert 'init_sink_into_guard' not in {family for family, _ in m.variants(source, 'f')}
+
+
+def test_guard_sink_accepts_unescaped_comma_declared_locals():
+    source = 'void f(int c) { unsigned int x, y; x = 0; if (c) { use(x); } }'
+    assert any(family == 'init_sink_into_guard' for family, _ in m.variants(source, 'f'))
+    assert not any(family == 'init_sink_into_guard' for family, _ in m.variants(source.replace('x = 0;', 'save(&x); x = 0;'), 'f'))
