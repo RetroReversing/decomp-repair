@@ -35,3 +35,22 @@ def test_nothing_to_add_or_not_a_zero():
 
 def test_declared_to_the_registry():
     assert any(r.module == 'stack_argument_tail' for r in registry.declared())
+
+
+def test_prologue_saves_are_not_arguments_and_a_float_zero_is_a_word():
+    source = 'extern s32 g();\nvoid f(void) {\n    g(1, 2, 3, 4, 5, (float) 0);\n}\n'
+    asm = '''addiu      $sp, $sp, -0x38
+sw         $ra, 0x34($sp)
+sw         $s0, 0x30($sp)
+addiu      $s0, $zero, 0x5
+sw         $s0, 0x10($sp)
+sw         $zero, 0x14($sp)
+sw         $zero, 0x18($sp)
+sw         $zero, 0x1C($sp)
+jal        g
+addu       $a0, $zero, $zero
+lw         $ra, 0x34($sp)
+lw         $s0, 0x30($sp)
+'''
+    children = [out for _, out in s.variants(source, 'f', asm)]
+    assert 'g(1, 2, 3, 4, 5, 0, 0, 0);' in children[0]
