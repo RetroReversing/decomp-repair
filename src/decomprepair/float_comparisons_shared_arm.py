@@ -26,7 +26,7 @@ def evidence(asm):
     """Two MIPS floating comparisons of one register branch to the same target."""
     text = re.sub(r'/\*[^\n]*?\*/', '', asm or '')
     pattern = re.compile(r'(?m)^[ \t]*c\.eq\.s[ \t]+\$(\w+)\s*,\s*\$\w+\s*\n'
-                         r'(?:[ \t]*nop[ \t]*\n){0,4}[ \t]*bc1t[ \t]+(\.L\w+)\b')
+                         r'(?:[ \t]*nop[ \t]*\n){0,4}[ \t]*bc1t(?:l)?[ \t]+(\.L\w+)\b')
     return any(count >= 2 for count in Counter(pattern.findall(text)).values())
 
 

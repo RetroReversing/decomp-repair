@@ -49,3 +49,7 @@ def test_requires_evidence_plain_float_and_private_control_flow():
 def test_generated_labels_do_not_collide_with_header_macros():
     out = repair.variants(SOURCE, 'f', ASM, '#define branch_else_0 existing')
     assert out and 'goto branch_else_1;' in out[0][1]
+
+
+def test_branch_likely_also_proves_shared_target():
+    assert repair.evidence(ASM.replace('bc1t ', 'bc1tl '))
