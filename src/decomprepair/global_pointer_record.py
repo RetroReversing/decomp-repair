@@ -9,8 +9,11 @@ pointer, `extern struct { void *block; } gBlock;`, and read as `gBlock.block`, t
 
 global_pointer_record
     A global pointer the source declares itself (`extern T *G;`, not in the project header) that is the base of at
-    least two stores `*(U *)((char *)(G) + K) = ...;` becomes `extern struct { T *block; } G;` with every use read as
-    `G.block`. One child per global.
+    least two stores `*(U *)((char *)(G) + K) = ...;` or `M2C_FIELD(G, U *, K) = ...;` becomes
+    `extern struct { T *block; } G;` with every use read as `G.block`, an assignment of the pointer included
+    (`G = alloc();` is `G.block = alloc();`). One child per global, none for a global whose address is taken.
+    On an SN gcc 2.8.1 (`-G0 -mips3 -O2 -mfp64`) voice setup of 55 instructions, which stores an allocation in the
+    global and then sets 17 of its fields, the m2c draft with only this change went 1585 -> 0.
 
 global_scalar_record
     The same for a scalar global the source declares itself (`extern s32 G;`) and updates in place (`G += 1;`,
@@ -57,6 +60,11 @@ _EXTERN = re.compile(rf'(?m)^extern (?P<type>(?:const )?{_ID}) \*(?P<name>{_ID})
 def _stores(source, name):
     return len(re.findall(rf'\*\s*\(\s*{_ID}\s*\*\s*\)\s*\(\s*\(\s*char\s*\*\s*\)\s*\(?\s*{re.escape(name)}\s*\)?\s*\+'
                           rf'[^;=]*\)\s*\)?\s*=(?!=)', source))
+
+
+def _field_stores(source, name):
+    """m2c's `M2C_FIELD(G, T *, K) = ...;` stores through the global."""
+    return len(re.findall(rf'(?m)^[ \t]*M2C_FIELD\s*\(\s*{re.escape(name)}\s*,[^;=]*\)\s*=(?!=)', source))
 
 
 _STORE = re.compile(r'(?<![=!<>+\-*/|&^%])(?:[-+*/|&^%]|<<|>>)?=(?!=)|\+\+|--')
@@ -107,7 +115,7 @@ def _records(source, header):
         glob = found.group('name')
         if header and re.search(rf'\b{re.escape(glob)}\b', header):
             continue
-        if _stores(source, glob) < 2 or re.search(rf'&\s*{re.escape(glob)}\b|\b{re.escape(glob)}\s*=(?!=)', source):
+        if _stores(source, glob) + _field_stores(source, glob) < 2 or re.search(rf'&\s*{re.escape(glob)}\b', source):
             continue
         head = source[:found.start()] + f'extern struct {{ {found.group("type")} *{MEMBER}; }} {glob};'
         rest = re.sub(rf'\b{re.escape(glob)}\b(?!\s*\.)', f'{glob}.{MEMBER}', source[found.end():])
@@ -117,7 +125,7 @@ def _records(source, header):
         if header and re.search(rf'\b{re.escape(glob)}\b', header):
             continue
         body = source[found.end():]
-        if _stores(source, glob) >= 2 or not _written_between(body, glob) or re.search(
+        if _stores(source, glob) + _field_stores(source, glob) >= 2 or not _written_between(body, glob) or re.search(
                 rf'&\s*{re.escape(glob)}\b|\b{re.escape(glob)}\s*=(?!=)|(?:\.|->)\s*{re.escape(glob)}\b', body):
             continue
         head = source[:found.start()] + f'extern struct {{ {found.group("type")} *{MEMBER}; }} {glob};'
