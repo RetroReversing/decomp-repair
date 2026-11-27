@@ -21,6 +21,8 @@ def variants(source, name, header=''):
     macros = source + '\n' + (header or '')
     if not part or re.search(r'\b(?:goto|volatile|asm|__asm__)\b', part.body):
         return []
+    if re.search(r'\btypedef\b[^;]*\bvolatile\b[^;]*\b(?:s32|s8|u8)\s*;|(?m:^\s*#\s*(?:define|undef)\s+(?:s32|s8|u8)\b)', macros):
+        return []
     closing = part.clean.rfind('}', part.opening, part.end)
     items = _items(part.clean, part.opening + 1, closing)
     if items is None:

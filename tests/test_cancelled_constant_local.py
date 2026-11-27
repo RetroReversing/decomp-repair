@@ -26,3 +26,8 @@ def test_requires_identical_constant_top_level_assignment_and_no_other_uses():
     assert not repair.variants(SOURCE.replace('    local = 224;', '    if (value) { local = 224; }'), 'f')
     assert not repair.variants(SOURCE.replace('    byte = value;', '    use(local);\n    byte = value;'), 'f')
     assert not repair.variants(SOURCE.replace('u8 byte;', 'volatile u8 byte;'), 'f')
+
+
+def test_rejects_volatile_typedefs_and_type_macros():
+    assert not repair.variants(SOURCE, 'f', 'typedef volatile int s32;')
+    assert not repair.variants(SOURCE, 'f', '#define u8 volatile char')
