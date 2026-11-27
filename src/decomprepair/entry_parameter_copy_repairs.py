@@ -126,7 +126,7 @@ def variants(source, name):
     places = _insertions(part)
     body = part.body
     for where, param, kind in _parameters(part):
-        if (len(re.findall(rf'(?<![\w.>]){param}\b', body)) < 2 or re.search(rf'&\s*{param}\b', body)
+        if (len(re.findall(rf'(?<![\w.>]){param}\b', body)) < 2 or re.search(rf'&\s*{param}\b(?!\s*(?:->|\[))', body)
                 or re.search(rf'\b{param}_in\b', part.clean)):
             continue
         own, own_clobbers = [], []

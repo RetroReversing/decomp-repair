@@ -118,7 +118,9 @@ def _is_loop(clean, block):
 def _analyse(clean, var, decl, opening, end, blocks, parens, switches, labels):
     """[(assignment span, scope, reads)] webs of `var` after merging, each as (members, edits, ok); None to leave it."""
     pattern = _mentions(var)
-    if re.search(r'&\s*' + re.escape(var) + r'\b', clean[opening:end]):
+    # `&p->member` and `&p[i]` take an address inside what the local points at, not the local's own (only scalars and
+    # pointers come here: an array declaration is skipped).
+    if re.search(r'&\s*' + re.escape(var) + r'\b(?!\s*(?:->|\[))', clean[opening:end]):
         return None
     mentions = [m for m in pattern.finditer(clean, opening + 1, end) if not decl.start() <= m.start() < decl.end()]
     assigns, reads = [], []
