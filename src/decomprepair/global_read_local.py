@@ -10,7 +10,9 @@ pointer to a pair of neighbouring globals).
 
 A store to a member (`p->x = ..;`, or the typed draft's `((Rec *) p)->x = ..;`) is such a store too. A
 78-instruction N64 effect spawner (SN GCC 2.8.1 `-G0 -mips3 -O2`) read a serial-number global twice after nine member
-stores, where the target loads it once above the first of them (705 -> 300).
+stores, where the target loads it once above the first of them (705 -> 300). The same holds for m2c's expanded field
+stores (`(*(s16 *)((char *)(p) + 2)) = 0;`): a 59-instruction N64 effect spawner (SN GCC 2.8.1 `-G0 -mips3 -O2`)
+read its serial-number global twice after them (850 -> 240).
 
 A proposal takes a run of simple statements (consecutive lines of one block that open and close no brace) that holds a
 store through a pointer (`*p = ...;`, `*p += ...;`, `p[k] = ...;`, `p->x = ...;`) and, after the first such store, two or more
@@ -28,7 +30,8 @@ LIMIT = 8
 
 _ID = r'[A-Za-z_]\w*'
 _EXTERN = re.compile(rf'(?m)^[ \t]*extern\s+((?:(?:unsigned|signed|const|volatile)\s+)*(?:[su](?:8|16|32)|char|short|int|long))\s+({_ID})\s*;')
-_STORE = re.compile(rf'^[ \t]*(?:\*\s*\(*\s*{_ID}|{_ID}\s*\[[^\]\n]*\])[^=\n;]*?(?<![=!<>])(?:[-+|&^*]|<<|>>)?=(?!=)')
+# m2c's expanded field spelling, `(*(s16 *)((char *)(p) + 2)) = 0;`, is a store through a pointer too.
+_STORE = re.compile(rf'^[ \t]*(?:\(\s*\*\s*\(|\*\s*\(*\s*{_ID}|{_ID}\s*\[[^\]\n]*\])[^=\n;]*?(?<![=!<>])(?:[-+|&^*]|<<|>>)?=(?!=)')
 # A store to a member (`p->x = ..;`, `((Rec *) p)->x |= ..;`) is a store through a pointer too.
 _MEMBER_STORE = re.compile(rf'^[ \t]*[^=;\n]*->\s*{_ID}[\s)]*(?:\[[^\]\n]*\])?[\s)]*(?<![=!<>])(?:[-+|&^*]|<<|>>)?=(?!=)')
 _CALL = re.compile(rf'\b(?!(?:sizeof|if|while|for|switch|return)\b){_ID}\s*\(')
