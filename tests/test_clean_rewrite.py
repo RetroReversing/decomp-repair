@@ -245,4 +245,5 @@ def test_inline_helper_arguments_keep_the_parameter_pointer_type(tmp_path):
     """A `char *` helper handed an `s16 *` steps by bytes; written in place without the cast it stepped by halfwords."""
     text = dict(c.levels(STRIDE_HELPER, 'stride'))[c.SCAFFOLD]
     assert 'add_bytes' not in text
-    assert run(tmp_path, text, ['stride()']) == run(tmp_path, STRIDE_HELPER, ['stride()'])
+    # four bytes, as the call stepped; the source itself needs the old compiler's leniency, so only the rewrite runs
+    assert run(tmp_path, text, ['stride()']) == '4\n'
