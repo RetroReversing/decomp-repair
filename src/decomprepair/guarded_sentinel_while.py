@@ -29,6 +29,14 @@ guarded_sentinel_while
     are two or more. Hypothesis from the match, not from the compiler source: the entry test of a `while` is copied by
     the loop-test duplication in jump.c, after the cse that would otherwise join its constant with the guard's.
 
+guard_first_test_while
+    The loop's first test written into the guard with the counter's start value substituted, as m2c writes a `while`
+    whose first iteration it could fold: `if (G && t[8] == 0) { i = 0; do { B } while (t[8 + i] == 0 && i < 4); R }`
+    becomes `if (G) { i = 0; while (t[8 + i] == 0 && i < 4) { B } R }`. The other loop operands must hold at the start
+    value (`i < K`, K above it) and every statement R after the loop must repeat the one just before the `if`, since R
+    then also runs when the first test fails. Measured on a KMC gcc 2.7.2 (`-O1`) digit-filling loop: 2000 -> 1575
+    alone, 1020 -> 730 after four other repairs.
+
 The exact judge decides every child; nothing here proves it is the compiler's reason.
 """
 import re
@@ -38,7 +46,8 @@ from .integer_repair_support import edit, view
 
 FAMILY = 'guarded_sentinel_while'
 PREFIX = 'guard_prefix_while'
-FAMILIES = (FAMILY, PREFIX)
+FIRST = 'guard_first_test_while'
+FAMILIES = (FAMILY, PREFIX, FIRST)
 LIMIT = 8
 _IF = re.compile(r'\bif\s*\(')
 _DO = re.compile(r'\s*do\b\s*')
@@ -140,6 +149,68 @@ def _pairs(clean, source, low, high):
     return found
 
 
+_START = re.compile(r'\s*\{\s*([A-Za-z_]\w*)\s*=\s*(0)\s*;\s*do\b\s*')
+
+
+def _at_start(text, counter, value):
+    """`text` with the counter at its start value, whitespace and `+ 0` dropped."""
+    text = re.sub(rf'\b{re.escape(counter)}\b', value, text)
+    return re.sub(r'\+0(?![\w.])|(?<![\w.])0\+', '', re.sub(r'\s+', '', text))
+
+
+def _first_tests(clean, source, low, high):
+    """(start, end, replacement) for each guard that spells the do-while's first test with the counter folded."""
+    found = []
+    for hit in _IF.finditer(clean, low, high):
+        opening = hit.end() - 1
+        closing = close(clean, opening, '(', ')')
+        if closing < 0 or _IMPURE.search(clean[opening + 1:closing]):
+            continue
+        brace = closing + 1 + len(clean[closing + 1:]) - len(clean[closing + 1:].lstrip())
+        if clean[brace:brace + 1] != '{':
+            continue
+        block_end = close(clean, brace)
+        start = _START.match(clean, brace)
+        if block_end < 0 or not start or clean[start.end():start.end() + 1] != '{':
+            continue
+        body_close = close(clean, start.end())
+        tail = _WHILE.match(clean, body_close + 1) if body_close > 0 else None
+        if not tail:
+            continue
+        test_open = tail.end() - 1
+        test_close = close(clean, test_open, '(', ')')
+        after = re.match(r'\s*;', clean[test_close + 1:]) if test_close > 0 else None
+        if not after:
+            continue
+        test = clean[test_open + 1:test_close]
+        if _IMPURE.search(test) or _BLOCKED.search(clean[start.end():body_close]):
+            continue
+        counter, value = start[1], start[2]
+        guards = _conjuncts(clean, opening + 1, closing)
+        loop = _conjuncts(clean, test_open + 1, test_close)
+        if len(guards) < 2:
+            continue
+        first = _at_start(clean[loop[0][0]:loop[0][1]], counter, value)
+        others = [clean[a:b].strip() for a, b in loop[1:]]
+        bounds = [re.fullmatch(rf'{re.escape(counter)}\s*<\s*(\d+)', other) for other in others]
+        if (_at_start(clean[guards[-1][0]:guards[-1][1]], counter, value) != first
+                or not all(b and int(b[1]) > int(value) for b in bounds)):
+            continue
+        rest_start = test_close + 1 + after.end()
+        before = normal(clean[:hit.start()])
+        repeats = [part for part in clean[rest_start:block_end].split(';') if part.strip()]
+        if any(not re.fullmatch(r'\s*[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\s*', part)
+               or not before.endswith(normal(part) + ';') for part in repeats):
+            continue
+        if re.match(r'\s*else\b', clean[block_end + 1:]):
+            continue
+        guard = source[opening + 1:guards[-2][1]].strip()
+        replacement = (f'if ({guard}) {{ {counter} = {value}; while ({source[test_open + 1:test_close].strip()}) '
+                       f'{source[start.end():body_close + 1]}{source[rest_start:block_end]}}}')
+        found.append((hit.start(), block_end + 1, replacement))
+    return found[:LIMIT]
+
+
 def variants(source, name, header=''):
     part = view(source, name)
     if not part:
@@ -152,6 +223,8 @@ def variants(source, name, header=''):
         same = [p[:3] for p in pairs if p[3] == family]
         if len(same) > 1:
             children.append((family, edit(source, same)))
+    for found in _first_tests(part.clean, source, part.opening + 1, part.end):
+        children.append((FIRST, edit(source, [found])))
     return children
 
 
