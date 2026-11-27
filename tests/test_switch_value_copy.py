@@ -43,3 +43,10 @@ def test_loop_and_goto_are_not_rewritten():
 
 def test_conditional_initialization_is_not_copied():
     assert not variants(SOURCE.replace('    x = read(p);', '    if (y)\n        x = read(p);'), 'f')
+
+
+def test_later_arm_and_fallthrough():
+    text = SOURCE.replace('other(x);', 'other(x, x);')
+    assert any('other(x_copy, x_copy)' in child for _, child in variants(text, 'f'))
+    assert not any('other(x_copy, x_copy)' in child for _, child in variants(text.replace('        break;\n    case 2:', '        if (y) break;\n    case 2:'), 'f'))
+    assert not any('other(x_copy, x_copy)' in child for _, child in variants(text.replace('        break;\n    case 2:', '    case 2:'), 'f'))
