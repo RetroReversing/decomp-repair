@@ -18,6 +18,7 @@ wider type, divided by its size (`&D - 0x20` on an `s16`: the game stepped 0x20 
 import re
 
 from .csource import _blank, find
+from .else_if_guard_thread import _statement_end
 from .mips_returns import instructions
 from .pattern_repairs import close
 
@@ -41,6 +42,28 @@ def _statement_start(body, at):
         if depth == 0 and ch in ';{}':
             start = i + 1
     return start
+
+
+_LABELS = re.compile(r'(?:(?:case\b[^:;{}?]*|default|[A-Za-z_]\w*)\s*:\s*)+')
+
+
+def _use_site(body, first, last_use):
+    """Where the pointer can be set before the statement at `first`: (offset, end of the braces it needs, or None).
+
+    Set between a `}` and its `else` the child doesn't compile, so an `else if (D ...)` gets braces around the rest of
+    its chain with the pointer set first in them. None when a later use is outside those braces (it would read the
+    pointer unset). After a `case` or a label, not before it: a jump there would skip the set.
+    """
+    at = first + len(re.match(r'\s*', body[first:])[0])
+    labels = _LABELS.match(body, at)
+    if labels:
+        at = labels.end()
+    if not re.match(r'else\b', body[at:]):
+        return at, None
+    at += 4
+    at += len(re.match(r'\s*', body[at:])[0])
+    end = _statement_end(body, at)
+    return None if end is None or last_use >= end else (at, end)
 
 
 def _reads_through(body, use):
@@ -136,11 +159,14 @@ def variants(source, name, asm=''):
         indent = re.match(r'\s*', body[first:])[0].split('\n')[-1] or '    '
         size = SIZES.get(kind.split()[-1], 1)
         steps = [None] + ([size] if size > 1 else [])
+        site = _use_site(body, first, uses[-1].start())
         # (a global pointer tested and cleared through its address while its fields are read through the value: an N64
         # function was exact only with `M2C_FIELD(D, ...)` left naming the global, gcc reloading it with %hi/%lo)
         through = [_reads_through(body, m) for m in uses]
         keeps = [False, True] if not array and any(through) and not all(through) else [False]  # lists: Cython compiles it
         for placement, scale, keep in [(p, k, e) for p in ('use', 'top') for k in steps for e in keeps]:
+            if placement == 'use' and not site:
+                continue
             text = source
             # replacements back to front so the offsets stay valid
             for m, inner in reversed(list(zip(uses, through))):
@@ -160,8 +186,12 @@ def variants(source, name, asm=''):
                 text = text[:at] + new + text[stop:]
             set_line = f'{local} = {address};\n'
             if placement == 'use':
-                at = opening + first + len(re.match(r'\s*', body[first:])[0])
-                text = text[:at] + set_line + indent + text[at:]
+                at, braced = opening + site[0], site[1]
+                if braced is None:
+                    text = text[:at] + set_line + indent + text[at:]
+                else:  # (every use is inside, so what follows the braces is as it was in the source)
+                    stop = len(text) - (len(source) - opening - braced)
+                    text = text[:at] + '{\n' + indent + set_line + indent + text[at:stop] + '\n' + indent + '}' + text[stop:]
                 text = text[:opening + 1] + f'\n    {pointer}{local};' + text[opening + 1:]
             else:
                 declarations = re.match(r'\{(?:\s*(?:register\s+)?[\w ]+?[\s*]+' + IDENT + r'(?:\s*\[[^]]*\])?\s*;)*', body)

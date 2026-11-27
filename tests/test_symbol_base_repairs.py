@@ -67,3 +67,48 @@ def test_left_alone_otherwise():
     assert b.variants(TABLE.replace('(temp_v1 * 4) + D_800E4290', 'D_800E4290[temp_v1 * 4]')
                       .replace('D_800E4290 + 0x20', '&D_800E4290[0x20]'), 'f') == []
     assert b.variants(SCALAR.replace('        D_8010968C = 0;\n', ''), 'f') == []
+
+
+ELSE_IF = '''extern u32 D_80100000;
+
+void f(s32 arg0) {
+    if (arg0 != 4) {
+        g(0);
+    } else if (D_80100000 < 0xCU) {
+        h(1);
+        D_80100000 += 4;
+    }
+}
+'''
+
+
+def test_first_use_in_an_else_if_condition_is_braced_with_the_pointer_set_first():
+    first = b.variants(ELSE_IF, 'f')[0][1]
+    assert '''} else {
+ __base_D_80100000 = &D_80100000;
+ if ((*__base_D_80100000) < 0xCU) {''' in first
+    assert first.rstrip().endswith('}\n }\n}')
+    assert '__base_D_80100000 = &D_80100000;\n else' not in first
+
+
+def test_a_use_after_the_else_chain_leaves_only_the_pointer_set_at_the_top():
+    source = ELSE_IF.replace('        D_80100000 += 4;\n    }\n', '    }\n    D_80100000 += 4;\n')
+    children = [text for _, text in b.variants(source, 'f')]
+    assert children
+    assert all(text.index('__base_D_80100000 = &') < text.index('if (arg0') for text in children)
+
+
+def test_the_pointer_is_set_after_a_case_label_not_before_it():
+    source = '''extern s32 D_80100000;
+
+void f(s32 arg0) {
+    switch (arg0) {
+    case 1:
+        g(D_80100000);
+        D_80100000 = 0;
+        break;
+    }
+}
+'''
+    first = b.variants(source, 'f')[0][1]
+    assert first.index('case 1:') < first.index('__base_D_80100000 = &')
