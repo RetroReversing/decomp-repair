@@ -19,6 +19,11 @@ which `float_local_merge` and `default_into_then` finished the match. So the two
 `if (c) { return X; }` when `c` names neither `V` nor `X` and nothing reads `V` before the next time it is set. `V` is
 a plain local of the function's own return type, so no conversion is lost. `return_local_inline_flip`: the same, with
 a closing `if (c) { return A; } return B;` also written `if (!c) { return B; } return A;`.
+
+`two_arm_result_return`: m2c's closing `if (c) { v = A; } else { t = E; v = t & 0xFF; } return v;` written as two returns,
+in both orders, `E` put where `t` was. On an N64 table-insertion function (SN GCC 2.8.1, `-O2 -mips3`) the result local
+kept a branch of the other sense and the exit's mask a register off; `if (!c) { return E & 0xFF; } return A;` was the
+last step to the exact match.
 """
 import re
 
@@ -28,7 +33,8 @@ from .pattern_repairs import close, negate
 
 FAMILY = 'return_local_inline'
 FLIPPED = 'return_local_inline_flip'
-FAMILIES = (FAMILY, FLIPPED)
+ARMS = 'two_arm_result_return'
+FAMILIES = (FAMILY, FLIPPED, ARMS)
 
 IDENT = r'[A-Za-z_]\w*'
 TYPE = r'(?:(?:unsigned|signed)\s+)?[A-Za-z_]\w*[\s*]+'
@@ -122,7 +128,45 @@ def _flip(source, name):
                            (tail.start('b'), tail.end('b'), a)])
 
 
+def _two_arms(source, name):
+    part = view(source, name)
+    if not part:
+        return []
+    clean = _blank(source)
+    tail = re.search(rf'\bif\s*\((?P<c>[^{{}};]*)\)\s*{{\s*(?P<v>{IDENT})\s*=(?!=)\s*(?P<a>[^;{{}}]+);\s*}}\s*else\s*{{'
+                     rf'(?:\s*(?P<t>{IDENT})\s*=(?!=)\s*(?P<e>[^;{{}}]+);)?\s*(?P=v)\s*=(?!=)\s*(?P<b>[^;{{}}]+);\s*}}'
+                     rf'\s*return\s+(?P=v)\s*;(?=\s*}}\s*$)', clean[:part.end])
+    if not tail or tail.start() < part.opening or not clean[:tail.start()].rstrip().endswith((';', '{', '}')):
+        return []
+    v, t = tail['v'], tail['t']
+    found = _locals(source, clean, name, part.opening, part.end)
+    if v not in found or _depth(clean[part.opening:tail.start()]) != 1:
+        return []
+    text = {k: source[tail.start(k):tail.end(k)].strip() for k in ('c', 'a', 'b')}
+    other = text['b']
+    if t:
+        # `t` has to be a local of the same type (no conversion lost), read exactly once in the other arm's value
+        uses = list(re.finditer(rf'(?<![\w.>]){t}\b', tail['b']))
+        if t == v or t not in found or len(uses) != 1 or re.search(rf'\b{t}\b', tail['e']):
+            return []
+        value = source[tail.start('e'):tail.end('e')].strip()
+        other = re.sub(rf'(?<![\w.>]){t}\b', lambda _: f'({value})', other)
+    if re.search(rf'\b{v}\b', tail['a'] + tail['b'] + tail['c']):
+        return []
+    inverse = negate(text['c'])
+    out = []
+    for test, first, second in ((inverse, other, text['a']), (text['c'], text['a'], other)):
+        if test:
+            replacement = f'if ({test})\n    {{\n        return {first};\n    }}\n    return {second};'
+            out.append((ARMS, source[:tail.start()] + replacement + source[tail.end():]))
+    return out
+
+
 def variants(source, name):
+    return _two_arms(source, name) + _inline(source, name)
+
+
+def _inline(source, name):
     part = view(source, name)
     if not part:
         return []

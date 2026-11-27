@@ -47,6 +47,9 @@ asm_byte_table_deref_width
     200 -> 0. A scalar cast in front of the dereference does not give the load a width (`(u16) *(index * 2 + TABLE)`
     still loads a byte and widens it), so that read is typed too: the second of two reads of one halfword table in an N64
     entity chain routine (sn-n64-281 GCC 2.8.1), 725 -> 530 after the first.
+    A search's base local counts as the table (`char *p; p = TABLE; ... *((i * 4) + p)`, `p` written no other way):
+    inlining the base first scores no better while the loads are bytes, so no chain took the two steps. On an N64
+    table insertion (sn-n64-281, 81 instructions) a saved best read its word table through such a local.
 
 The width is read off the target's own loads; the exact judge decides every child."""
 import re
@@ -296,6 +299,18 @@ def _index_edits(source, name, widths):
     return found
 
 
+def _aliases(body, sym):
+    """Byte pointers that only ever hold the table's address: `char *p; ... p = TABLE;` and no other write of `p`."""
+    found = []
+    for declared in re.finditer(r'(?m)^[ \t]*(?:char|s8|u8)\s*\*\s*(?P<p>[A-Za-z_]\w*)\s*;', body):
+        p = declared['p']
+        writes = re.findall(rf'(?<![\w.>*])\b{p}\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)\s*([^;]*);', body)
+        if (writes and all(value.strip() == sym for value in writes)
+                and not re.search(rf'(?:\+\+|--)\s*{p}\b|\b{p}\s*(?:\+\+|--)|[(,=]\s*&\s*{p}\b', body)):
+            found.append(p)
+    return found
+
+
 def _deref_edits(source, name, widths):
     """{symbol: edits}: each plain `*(index + TABLE)` of a byte table written at the wider width the target loads."""
     span = find(source, name)
@@ -310,12 +325,14 @@ def _deref_edits(source, name, widths):
         if kind not in ('s16', 'u16', 's32') or not re.search(
                 rf'\bextern\s+(?:char|s8|u8)\s+{re.escape(sym)}\s*\[\s*\]\s*;', clean):
             continue
+        names = [sym, *_aliases(clean[span[0]:span[1]], sym)]
         for hit in read.finditer(clean, span[0], span[1]):
             end = _closing(clean, hit.end())
             if end is None:
                 continue
             inner = clean[hit.end() + 1:end - 1]
-            if re.match(r'\s*\(?\s*[A-Za-z_]\w*(?:\s+\w+)*\s*\*+\s*\)', inner) or not _index_of(inner, sym):
+            if (re.match(r'\s*\(?\s*[A-Za-z_]\w*(?:\s+\w+)*\s*\*+\s*\)', inner)
+                    or not any(_index_of(inner, table) for table in names)):
                 continue  # a cast in front of the sum already names a type
             found.setdefault(sym, []).append((hit.end(), hit.end(), f'({kind} *)'))
     return found

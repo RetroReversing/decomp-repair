@@ -11,15 +11,36 @@ word and the mask as two locals. `masked_counter_loop` handles the shape whose t
 an entry guard; this is the one whose test reads the copy (`copy != 4`), with no guard and often an empty `do {} while
 (0)` wrapper, and the counter is read nowhere else. A byte loop with a `* 4` offset local went 200 -> 0 with the merge
 alone. `masked_copy_counter_merge`. Offered when the word counter appears only in its declaration, one `= N;`, its
-`+= 1;` (or `++`) and the `copy = word & MASK;` right after, and the copy starts at the same N."""
+`+= 1;` (or `++`) and the `copy = word & MASK;` right after, and the copy starts at the same N.
+
+`countdown_copy_merge` is the same pair counting down, with the decrement hoisted above the body's reads:
+
+    var_s0 = 9; ... var_v0 = 9 & 0xFFFF;             var_s0 = 9; ...
+    do { a = var_v0 * 4;                             do { a = var_s0 * 4;
+         var_s0 -= 1;                         ->          t[var_s0] = t[var_s0 - 1];
+         t[var_v0] = t[var_v0 - 1];                       var_s0 -= 1;
+         var_v0 = var_s0 & 0xFFFF;                   } while (i < var_s0);
+    } while (i < (var_s0 & 0xFFFF));
+
+The reads of the copy see the counter's old value, so they become the counter and the decrement moves to where the copy
+was. A counter still declared a word is narrowed to the mask's type when every read of it is masked. An N64
+shift-the-table loop (SN GCC 2.8.1, `-O2 -mips3`, 81 instructions) needed this among five steps to its exact match."""
 import re
 
 from .integer_repair_support import IDENT, edit, view
+from .pattern_repairs import close
 
 FAMILY = 'masked_copy_counter_merge'
-FAMILIES = (FAMILY,)
+COUNTDOWN = 'countdown_copy_merge'
+FAMILIES = (FAMILY, COUNTDOWN)
 MASKS = {'0xff': 'u8', '255': 'u8', '0xffff': 'u16', '65535': 'u16'}
 WORD = r'(?:s32|u32|int|unsigned int|s16|u16|u8)'
+MASK_NUMBER = r'(?:0[xX][fF]{2}(?:[fF]{2})?|255|65535)\b'
+NUMBER = r'(?:0[xX][0-9a-fA-F]+|\d+)[uU]?'
+
+
+def _depth(text):
+    return text.count('{') - text.count('}')
 
 
 def _line(clean, start, end):
@@ -30,7 +51,84 @@ def _line(clean, start, end):
     return (a, b) if not (clean[a:start] + clean[end:b]).strip() else (start, end)
 
 
+def _countdown(source, name):
+    part = view(source, name)
+    if not part or re.search(r'\bgoto\b', part.body):
+        return []
+    clean, out = part.clean, []
+    base, end = part.opening, part.end
+    for loop in re.finditer(r'\bdo\s*\{', clean[base:end]):
+        brace = base + loop.end() - 1
+        stop = close(clean, brace, '{', '}')
+        if not stop:
+            continue
+        tail = re.compile(rf'(?<![\w.>])(?P<c>{IDENT})\s*=\s*(?P<w>{IDENT})(?:\s*&\s*(?P<m>{MASK_NUMBER}))?\s*;'
+                          rf'(?=\s*\}}$)').search(clean, brace, stop)
+        if not tail:
+            continue
+        c, w = tail['c'], tail['w']
+        body = clean[brace:stop]
+        steps = list(re.finditer(rf'(?<![\w.>]){w}\s*(?:-=\s*1\s*;|--\s*;)', body))
+        if c == w or len(steps) != 1 or len(re.findall(rf'(?<![\w.>])(?:{c}|{w})\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|'
+                                                      rf'(?<![\w.>]){c}\s*(?:\+\+|--)|(?:\+\+|--)\s*(?:{c}|{w})\b|'
+                                                      rf'(?<![\w.>]){w}\s*\+\+|&\s*(?:{c}|{w})\b', body)) != 2:
+            continue
+        step_at = brace + steps[0].start()
+        step_end = brace + steps[0].end()
+        if (_depth(clean[brace:step_at]) != 1 or step_end > tail.start()
+                or re.search(rf'(?<![\w.>]){w}\b|\b(?:break|continue)\b', clean[step_end:tail.start()])
+                or not clean[:step_at].rstrip().endswith((';', '{', '}'))):
+            continue
+        init = re.search(rf'(?<![\w.>]){c}\s*=\s*(?P<n>{NUMBER})(?:\s*&\s*(?:{MASK_NUMBER}))?\s*;(?=\s*$)',
+                         clean[base:brace - len(loop[0]) + 1])
+        if not init:
+            continue
+        init_at, init_end = base + init.start(), base + init.end()
+        writes = list(re.finditer(rf'(?<![\w.>]){w}\s*=(?!=)\s*(?P<v>[^;]*);', clean[base:init_at]))
+        if not writes or not re.fullmatch(NUMBER, writes[-1]['v'].strip()) \
+                or int(writes[-1]['v'].strip().rstrip('uU'), 0) != int(init['n'].rstrip('uU'), 0):
+            continue
+        later = re.search(rf'(?<![\w.>]){c}\b', clean[stop:end])
+        if later and not re.match(rf'{c}\s*=(?!=)', clean[stop + later.start():end]):
+            continue
+        decl = re.search(rf'(?m)^(?P<lead>[ \t]*)(?P<type>{WORD})[ \t]+{w}[ \t]*;', clean[base:end])
+        if not decl:
+            continue
+        mask = tail['m']
+        kind = MASKS.get(mask.lower()) if mask else None
+        if mask and not kind:
+            continue
+        if kind is None and decl['type'] not in ('u8', 'u16'):
+            continue
+        kind = kind or decl['type']
+        edits = [(init_at, init_end, ''), (step_at, step_end, ''), (tail.start(), tail.end(), f'{w} -= 1;')]
+        masked = re.compile(rf'\(\s*{w}\s*&\s*(?:{MASK_NUMBER})\s*\)|(?<![\w.>]){w}\s*&\s*(?:{MASK_NUMBER})')
+        whole = [m for m in masked.finditer(clean, base, end) if not tail.start() <= m.start() < tail.end()
+                 and MASKS.get(re.findall(MASK_NUMBER, m[0])[-1].lower()) == kind]
+        if decl['type'] != kind:
+            # every read of a word counter has to be masked, or narrowing it changes a value
+            reads = [m.start() for m in re.finditer(rf'(?<![\w.>]){w}\b', clean[base:end])]
+            allowed = [(m.start(), m.end()) for m in whole]
+            allowed += [(step_at, step_end), (tail.start(), tail.end()), (base + decl.start(), base + decl.end())]
+            allowed += [(base + m.start(), base + m.end()) for m in
+                        re.finditer(rf'(?<![\w.>]){w}\s*=(?!=)\s*{NUMBER}\s*;', clean[base:end])]
+            if any(not any(a <= base + at < b for a, b in allowed) for at in reads):
+                continue
+            edits.append((base + decl.start(), base + decl.end(), f'{decl["lead"]}{kind} {w};'))
+        edits += [(m.start(), m.end(), w) for m in whole]
+        edits += [(brace + m.start(), brace + m.end(), w) for m in re.finditer(rf'(?<![\w.>]){c}\b', body)
+                  if not tail.start() <= brace + m.start() < tail.end()]
+        if any(a < b2 and b > a2 for i, (a, b, _) in enumerate(edits) for a2, b2, _ in edits[i + 1:]):
+            continue
+        out.append((COUNTDOWN, edit(source, edits)))
+    return out[:3]
+
+
 def variants(source, name):
+    return _countup(source, name) + _countdown(source, name)
+
+
+def _countup(source, name):
     part = view(source, name)
     if not part:
         return []
