@@ -20,7 +20,16 @@ m2c_halfword_byte_table
     `*(u16 *)((i * 2) + table)` (and `s16`, or a word with `* 4`). This changes what the C reads, back to the load the
     cast and the scale name.
 
-From 510, `statement_slide` and `narrow_widening` reach 0. Candidate rewrites; the exact judge decides each.
+From 510, `statement_slide` and `narrow_widening` reach 0.
+
+m2c_goto_arm_chain
+    The same ladder with no default: every arm, the last one too, picks a value and ends in the labelled statements
+    (`if (a) { v = 1; goto L; } .. if (z) { v = 3; L: X = v; }`). Written as `if (a) { v = 1; X = v; } else if ..
+    else if (z) { v = 3; X = v; }`, and, when the local only carries the constant to the join, as `X = 1;` in each arm
+    (gcc 2.8.1 merges the stores again and keeps the address's `lui` in each arm; measured on a 92-instruction N64
+    mode setup, 910 -> 190, and `carried_store_arms` from there reached 0).
+
+Candidate rewrites; the exact judge decides each.
 """
 import re
 
@@ -30,7 +39,8 @@ from .pattern_repairs import close
 SAVED = 'm2c_saved_register_local'
 LADDER = 'm2c_goto_join_ladder'
 TABLE = 'm2c_halfword_byte_table'
-FAMILIES = (SAVED, LADDER, TABLE)
+CHAIN = 'm2c_goto_arm_chain'
+FAMILIES = (SAVED, LADDER, TABLE, CHAIN)
 LIMIT = 8
 
 _SAVED_NAME = re.compile(r'\bsaved_reg_(s[0-7]|f\d{1,2}|fp)\b')
@@ -119,6 +129,63 @@ def _goto_join(body):
     return results
 
 
+def _carried(arms, join, body):
+    """The arms with `v = CONST;` and the join's `X = v;` as `X = CONST;`, or None when `v` does more than carry it."""
+    use = re.fullmatch(r'(?P<target>[^;=]+?)\s*=\s*(?P<value>[A-Za-z_]\w*)\s*;', join)
+    if not use:
+        return None
+    value = use['value']
+    setter = re.compile(rf'\b{value}\s*=\s*(-?(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*)\s*;\s*$')
+    found = [setter.search(statements) for statements in arms]
+    if not all(found) or re.search(rf'\b{value}\b', use['target']):
+        return None
+    # its declaration, one assignment per arm and the join's read are the only places it is named
+    if len(re.findall(rf'\b{value}\b', _blank(body))) != len(arms) + 2:
+        return None
+    return [f"{statements[:match.start()]}{use['target']} = {match[1]};" for statements, match in zip(arms, found)]
+
+
+def _goto_arm_chain(body):
+    """Arms that jump into the last arm's closing statements, as an `else if` chain that writes them in every arm."""
+    clean = _blank(body)
+    blocks = _blocks(clean)
+    results = []
+    for end, (start, condition, inner, inner_end) in blocks.items():
+        labelled = re.search(r'(?<![\w?])([A-Za-z_]\w*)\s*:(?!:)\s*((?:[^;{}:?]*;\s*)+)$', clean[inner:inner_end])
+        if not labelled or labelled[1] in ('case', 'default'):
+            continue
+        label = labelled[1]
+        if re.search(r'\bgoto\b', labelled[2]):
+            continue
+        join = body[inner + labelled.start(2):inner_end].strip()
+        first, arms, cursor = start, [], len(clean[:start].rstrip())
+        while cursor in blocks:
+            arm_start, arm_condition, arm_inner, arm_end = blocks[cursor]
+            jump = re.search(rf'\bgoto\s+{label}\s*;\s*$', clean[arm_inner:arm_end])
+            if not jump or re.search(r'\belse\s*$', clean[:arm_start]):
+                break
+            arms.append((arm_condition, body[arm_inner:arm_inner + jump.start()].rstrip()))
+            first, cursor = arm_start, len(clean[:arm_start].rstrip())
+        if not arms or len(arms) != len(re.findall(rf'\bgoto\s+{label}\b', clean)):
+            continue
+        if re.search(r'\belse\s*$', clean[:start]):
+            continue
+        arms.reverse()
+        arms.append((condition, body[inner:inner + labelled.start()].rstrip()))
+        indent = body[body.rfind('\n', 0, first) + 1:first]
+        if indent.strip():
+            indent = ''
+        inside = indent + '    '
+        texts = [statements for _, statements in arms]
+        copied = [f'{statements}\n{inside}{join}' for statements in texts]
+        carried = _carried(texts, join, body)
+        for written in ([[text.rstrip() for text in carried]] if carried else []) + [copied]:
+            chain = [f'if ({body[c0:c1]}) {{{statements}\n{indent}}}'
+                     for ((c0, c1), _), statements in zip(arms, written)]
+            results.append(body[:first] + ' else '.join(chain) + body[end:])
+    return results
+
+
 def _halfword_table(body, declarations):
     """`(u16) *(index * 2 + table)` over a byte array as the halfword load of that address."""
     clean = _blank(body)
@@ -155,6 +222,7 @@ def variants(source, name, header=''):
     children = [(SAVED, text) for text in renamed[:LIMIT]]
     for base in [body, *renamed[:LIMIT]]:
         children += [(LADDER, text) for text in _goto_join(base)]
+        children += [(CHAIN, text) for text in _goto_arm_chain(base)]
     children += [(TABLE, text) for text in _halfword_table(body, f'{header}\n{source}')[:LIMIT]]
     return list(dict.fromkeys((family, head + text + tail) for family, text in children))
 

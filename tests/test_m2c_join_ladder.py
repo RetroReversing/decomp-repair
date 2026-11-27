@@ -1,4 +1,5 @@
 """m2c's join ladder over an unset saved register, and its halfword read of a byte table (1820 -> 510 on one update)."""
+from decomprepair.m2c_join_ladder import CHAIN as ARM_CHAINS
 from decomprepair.m2c_join_ladder import LADDER, SAVED, TABLE, variants
 
 SOURCE = """extern u8 table[];
@@ -76,3 +77,59 @@ def test_a_halfword_cast_of_a_byte_table_reads_the_halfword():
     assert 'obj->model = *(u16 *)((obj->slot * 2) + table);' in child
     assert children(SOURCE.replace('extern u8 table[];', 'extern u16 table[];'), TABLE) == []
     assert children(SOURCE.replace('obj->slot * 2', 'obj->slot'), TABLE) == []
+
+
+ARM_CHAIN = """extern s32 total;
+
+void setup(s32 mode)
+{
+    s32 var_v0;
+
+    if (mode == 0) {
+        var_v0 = 0x1F40;
+        goto block_14;
+    }
+    if (mode == 1) {
+        var_v0 = 0x2EE0;
+        goto block_14;
+    }
+    if (mode == 2) {
+        var_v0 = 0x3E80;
+block_14:
+        total = var_v0;
+    }
+}
+"""
+
+
+def chain_children(source):
+    return [text for family, text in variants(source, 'setup') if family == ARM_CHAINS]
+
+
+def test_arms_jumping_into_the_last_arm_write_its_statement_themselves():
+    carried, copied = chain_children(ARM_CHAIN)
+    assert """    if (mode == 0) {
+        total = 0x1F40;
+    } else if (mode == 1) {
+        total = 0x2EE0;
+    } else if (mode == 2) {
+        total = 0x3E80;
+    }
+}""" in carried
+    assert """    if (mode == 0) {
+        var_v0 = 0x1F40;
+        total = var_v0;
+    } else if (mode == 1) {""" in copied
+    assert 'goto' not in carried + copied
+
+
+def test_a_local_read_again_is_not_replaced_by_its_constant():
+    source = ARM_CHAIN.replace('        total = var_v0;\n    }\n', '        total = var_v0;\n    }\n    use(var_v0);\n')
+    only, = chain_children(source)
+    assert 'total = var_v0;' in only and 'use(var_v0);' in only
+
+
+def test_a_jump_from_elsewhere_keeps_the_label():
+    source = ARM_CHAIN.replace('    if (mode == 0) {', '    if (mode > 9) {\n        goto block_14;\n    }\n'
+                               '    work();\n    if (mode == 0) {', 1)
+    assert not chain_children(source)
