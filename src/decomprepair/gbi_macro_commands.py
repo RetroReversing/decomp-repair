@@ -32,6 +32,13 @@ that still held them at the call), the locals stay in use and no run is private;
 arguments from every call of that callee and from its prototype in the source, and rewrites the runs. On a
 638-instruction N64 texture loader (SN gcc 2.8.1) whose draft had all three, the family wrote no child before and
 took the draft from 38349 to 30574 after.
+
+A cursor the caller passes by address (`void **arg0`, read once from `*arg0` and stored back at the end) is read the
+same way and written on a block-local `Gfx *` copy (`gbi_macro_param_cursor`). m2c reuses registers there: a derived
+pointer assigned again is a new version of it, and in straight-line code a parameter or local assigned again after a
+word read it gets a name of its own, so the words moved to the end of the run still read what they stored. Fast3D and
+F3DEX texture rectangles (G_RDPHALF 0xB4/0xB3) become `gSPTextureRectangleF3D`. On a 153-instruction N64 text-glyph
+builder (KMC gcc 2.7.2, -O1) this took a draft from 9775 to 1585.
 """
 import re
 
@@ -45,7 +52,8 @@ RUN_FAMILY = 'gbi_macro_run'
 LOCAL_FAMILY = 'gbi_macro_local'
 LOCAL_RUN_FAMILY = 'gbi_macro_local_run'
 TRIM_FAMILY = 'gbi_macro_args_trim'
-FAMILIES = (FAMILY, LOCAL_FAMILY, RAW_FAMILY, RUN_FAMILY, LOCAL_RUN_FAMILY, TRIM_FAMILY)
+PARAMETER_FAMILY = 'gbi_macro_param_cursor'
+FAMILIES = (FAMILY, LOCAL_FAMILY, RAW_FAMILY, RUN_FAMILY, LOCAL_RUN_FAMILY, TRIM_FAMILY, PARAMETER_FAMILY)
 LIMIT = 10
 NUMBER = r'0[xX][0-9a-fA-F]+|\d+'
 
@@ -60,7 +68,7 @@ CONTROL = re.compile(r'\b(?:goto|return|case|default|break|continue)\b|^\s*\w+\s
 CAST = re.compile(r'^\(\s*(?:(?:unsigned|signed)\s+)?(?:s32|u32|int|long|unsigned|s16|u16|short)\s*\)\s*')
 
 
-RAW_LHS = re.compile(rf'\*(?:s32|u32|int|unsigned|unsignedint)\*(?:char\*)?(?P<p>{IDENT})(?:\+(?P<off>{NUMBER}))?')
+RAW_LHS = re.compile(rf'\*(?:s32|u32|int|unsigned|unsignedint)\*(?:char\*)?(?P<p>{IDENT})(?:\+(?P<off>{NUMBER}))?(?:\+(?P<more>{NUMBER}))?')
 
 
 def _store(text, records):
@@ -70,7 +78,9 @@ def _store(text, records):
     if sep and not value.startswith('=') and not re.search(r'[-+*/|&^<>!]$', lhs.rstrip()):
         flat = re.sub(r'[\s()]', '', lhs)
         if (m := RAW_LHS.fullmatch(flat)) and (m['off'] or flat.count('*') == 1 or 'char' not in flat):
-            return m['p'], int(m['off'] or '0', 0), value.rstrip().rstrip(';').strip()
+            # `(char *) (p + 8) + 4`: m2c folded an advanced pointer into the store
+            offset = int(m['off'] or '0', 0) + int(m['more'] or '0', 0)
+            return m['p'], offset, value.rstrip().rstrip(';').strip()
     if m := M2C_STORE.match(text):
         return m['p'], int(m['off'], 0), m['v']
     if m := DEREF_STORE.match(text):
@@ -372,7 +382,9 @@ def _rectangle(commands, masked):
     """gSPTextureRectangle(Flip) for an E4/E5 command and the RDPHALF_1/2 pair that follows it, else None."""
     (w0, w1), (h0, h1), (g0, g1) = commands
     op = (_number(w0) or 0) >> 24 if _number(w0) is not None else _opcode(w0)
-    if op not in (0xE4, 0xE5) or _number(h0) != 0xE1000000 or _number(g0) != 0xF1000000:
+    # RDPHALF_1/2 are 0xE1/0xF1 in F3DEX2 and 0xB4/0xB3 in Fast3D and F3DEX
+    halves = (_number(h0), _number(g0))
+    if op not in (0xE4, 0xE5) or halves not in ((0xE1000000, 0xF1000000), (0xB4000000, 0xB3000000)):
         return None
     a = _fields(w0, [('op', 24, 8), ('xh', 12, 12), ('yh', 0, 12)], masked)
     b = _fields(w1, [('tile', 24, 3), ('xl', 12, 12), ('yl', 0, 12)], masked)
@@ -381,6 +393,8 @@ def _rectangle(commands, masked):
     if not (a and b and c and d):
         return None
     name = 'gSPTextureRectangle' if op == 0xE4 else 'gSPTextureRectangleFlip'
+    if halves[0] == 0xB4000000:
+        name += 'F3D'
     return name, [_arg(x) for x in (b['xl'], b['yl'], a['xh'], a['yh'], b['tile'], c['s'], c['t'], d['dsdx'], d['dtdy'])]
 
 
@@ -430,6 +444,8 @@ DEFINITIONS = {
     'gSPTexture': '#define gSPTexture(pkt, s, t, level, tile, on) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = (_SHIFTL(0xD7, 24, 8) | _SHIFTL(0, 16, 8) | _SHIFTL((level), 11, 3) | _SHIFTL((tile), 8, 3) | _SHIFTL((on), 1, 7)); _g->words.w1 = (_SHIFTL((s), 16, 16) | _SHIFTL((t), 0, 16)); }',
     'gSPTextureRectangle': '#define gSPTextureRectangle(pkt, xl, yl, xh, yh, tile, s, t, dsdx, dtdy) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = (_SHIFTL(0xE4, 24, 8) | _SHIFTL(xh, 12, 12) | _SHIFTL(yh, 0, 12)); _g->words.w1 = (_SHIFTL(tile, 24, 3) | _SHIFTL(xl, 12, 12) | _SHIFTL(yl, 0, 12)); gImmp1(pkt, 0xE1, (_SHIFTL(s, 16, 16) | _SHIFTL(t, 0, 16))); gImmp1(pkt, 0xF1, (_SHIFTL(dsdx, 16, 16) | _SHIFTL(dtdy, 0, 16))); }',
     'gSPTextureRectangleFlip': '#define gSPTextureRectangleFlip(pkt, xl, yl, xh, yh, tile, s, t, dsdx, dtdy) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = (_SHIFTL(0xE5, 24, 8) | _SHIFTL(xh, 12, 12) | _SHIFTL(yh, 0, 12)); _g->words.w1 = (_SHIFTL(tile, 24, 3) | _SHIFTL(xl, 12, 12) | _SHIFTL(yl, 0, 12)); gImmp1(pkt, 0xE1, (_SHIFTL(s, 16, 16) | _SHIFTL(t, 0, 16))); gImmp1(pkt, 0xF1, (_SHIFTL(dsdx, 16, 16) | _SHIFTL(dtdy, 0, 16))); }',
+    'gSPTextureRectangleF3D': '#define gSPTextureRectangleF3D(pkt, xl, yl, xh, yh, tile, s, t, dsdx, dtdy) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = (_SHIFTL(0xE4, 24, 8) | _SHIFTL(xh, 12, 12) | _SHIFTL(yh, 0, 12)); _g->words.w1 = (_SHIFTL(tile, 24, 3) | _SHIFTL(xl, 12, 12) | _SHIFTL(yl, 0, 12)); gImmp1(pkt, 0xB4, (_SHIFTL(s, 16, 16) | _SHIFTL(t, 0, 16))); gImmp1(pkt, 0xB3, (_SHIFTL(dsdx, 16, 16) | _SHIFTL(dtdy, 0, 16))); }',
+    'gSPTextureRectangleFlipF3D': '#define gSPTextureRectangleFlipF3D(pkt, xl, yl, xh, yh, tile, s, t, dsdx, dtdy) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = (_SHIFTL(0xE5, 24, 8) | _SHIFTL(xh, 12, 12) | _SHIFTL(yh, 0, 12)); _g->words.w1 = (_SHIFTL(tile, 24, 3) | _SHIFTL(xl, 12, 12) | _SHIFTL(yl, 0, 12)); gImmp1(pkt, 0xB4, (_SHIFTL(s, 16, 16) | _SHIFTL(t, 0, 16))); gImmp1(pkt, 0xB3, (_SHIFTL(dsdx, 16, 16) | _SHIFTL(dtdy, 0, 16))); }',
 }
 NEEDS = {'gDPLoadSync': ['gDPNoParam'], 'gDPPipeSync': ['gDPNoParam'], 'gDPTileSync': ['gDPNoParam'],
          'gDPFullSync': ['gDPNoParam'], 'gSPEndDisplayList': ['gDPNoParam'], 'gSPDisplayList': ['gDma1p'],
@@ -437,7 +453,8 @@ NEEDS = {'gDPLoadSync': ['gDPNoParam'], 'gDPPipeSync': ['gDPNoParam'], 'gDPTileS
          'gDPSetDepthImage': ['gSetImage'], 'gDPSetFillColor': ['gDPSetColor'], 'gDPSetTileSize': ['gDPLoadTileGeneric'],
          'gDPLoadTile': ['gDPLoadTileGeneric'], 'gDPLoadBlock': ['MIN'], 'gDPSetEnvColor': ['DPRGBColor'],
          'gDPSetBlendColor': ['DPRGBColor'], 'gDPSetFogColor': ['DPRGBColor'], 'DPRGBColor': ['gDPSetColor'],
-         'gSPTextureRectangle': ['gImmp1'], 'gSPTextureRectangleFlip': ['gImmp1']}
+         'gSPTextureRectangle': ['gImmp1'], 'gSPTextureRectangleFlip': ['gImmp1'],
+         'gSPTextureRectangleF3D': ['gImmp1'], 'gSPTextureRectangleFlipF3D': ['gImmp1']}
 GFX = 'typedef union { struct { unsigned int w0; unsigned int w1; } words; long long force_structure_alignment; } Gfx;'
 
 
@@ -536,7 +553,10 @@ def _plan(clean, spans, cursor, size, records, start):
             continue
         if (d := DERIVED.match(text)) and d['y'] != cursor:
             run, parent = owner(d['x'])
-            if run is not None and d['y'] not in live:
+            if run is not None:
+                previous, _ = owner(d['y'])
+                if previous is not None:
+                    previous['until'][d['y']] = a  # a local m2c reused: what follows is the new pointer
                 key = live[d['y']] = f"{d['y']}#{index}"
                 run['base'][key] = ('from', parent, int(d['k'], 0))
                 run['names'].add(d['y'])
@@ -874,6 +894,74 @@ def _trim_arguments(source, name, cursor):
     return edit(source, edits)
 
 
+PARAMETER = re.compile(rf'(?:void|s32|u32|int|Gfx)\s*\*\s*\*\s*(?P<name>{IDENT})\s*(?=[,)])')
+PARAMETER_CURSOR = '__repair_cursor'
+
+
+def _parameter_cursor(source, name, header=''):
+    """A display-list cursor the caller passes by address (`void **arg0`): read once from `*arg0`, advanced through
+    locals and stored back at the end. The run is read as a global cursor's and written on a block-local `Gfx *` copy
+    (`{ Gfx *gfx = ...; gDPPipeSync(gfx++); ... }`), which is what the pointer argument's functions keep it in."""
+    part = view(source, name)
+    if not part or PARAMETER_CURSOR in source:
+        return []
+    source = _split_reused(source, name)
+    part = view(source, name)
+    head = part.clean.rfind('\n', 0, part.clean.rfind(name, 0, part.opening)) + 1
+    result = []
+    for found in PARAMETER.finditer(part.clean, head, part.opening):
+        param = found['name']
+        deref = rf'\*\s*{re.escape(param)}\b'
+        reads = rf'\b{IDENT}\s*=\s*{deref}\s*;'
+        body = part.clean[part.opening:part.end]
+        if not re.search(reads, body) or not re.search(deref + r'\s*=(?!=)', body):
+            continue
+        edits = [(part.opening + m.start(), part.opening + m.end(), PARAMETER_CURSOR)
+                 for m in re.finditer(rf'(?<![\w)\]]){deref}|(?<=[=(,] ){deref}', body)]
+        declaration = f'extern void *{PARAMETER_CURSOR};\n'
+        shadow = edit(source, edits + [(head, head, declaration)])
+        for family, text in _variants(shadow, name, header):
+            if family not in (LOCAL_FAMILY, LOCAL_RUN_FAMILY):
+                continue
+            text = text.replace(f'extern Gfx *{PARAMETER_CURSOR};\n', '')
+            result.append((PARAMETER_FAMILY, text.replace(PARAMETER_CURSOR, f'(*(Gfx **) {param})')))
+    return result
+
+
+def _split_reused(source, name):
+    """A parameter or scalar local that m2c assigns again after reading it (a register reused), with each later web under
+    a name of its own, so a run's words still read the values they stored when the run is written at its end. Only for a
+    function without control flow, where renaming from an assignment on cannot change what any statement reads."""
+    part = view(source, name)
+    if not part or re.search(r'\b(?:if|else|for|while|do|switch|goto)\b', part.clean[part.opening:part.end]):
+        return source
+    head = part.clean[part.clean.rfind('\n', 0, part.clean.rfind(name, 0, part.opening)) + 1:part.end]
+    spans = _statements(part.clean, part.opening + 1, part.end - 1)
+    assign = re.compile(rf'(?P<v>{IDENT})\s*=(?!=)')
+    names, seen, edits, declared = {}, set(), [], []
+    for a, b in spans:
+        text = part.clean[a:b]
+        found = assign.match(text)
+        kind = found and re.search(rf'\b(?P<t>(?:unsigned\s+)?(?:char|short|int|long)|[su](?:8|16|32))\s+{found["v"]}\s*[,;)]', head)
+        rhs = found.end() if found else 0
+        for m in re.finditer(rf'(?<![\w.>])(?:{"|".join(map(re.escape, names)) or "(?!)"})\b', text[rhs:]):
+            edits.append((a + rhs + m.start(), a + rhs + m.end(), names[m[0]]))
+        if kind and found['v'] in seen:
+            new = f"{found['v']}_w{len(declared) + 2}"
+            if new in part.clean:
+                return source
+            names[found['v']] = new
+            declared.append(f"\n    {kind['t']} {new};")
+            edits.append((a, a + len(found['v']), new))
+        elif found and found['v'] in names:
+            edits.append((a, a + len(found['v']), names[found['v']]))
+        if not re.fullmatch(rf'(?:{IDENT}\s+)+\**\s*{IDENT}\s*;', text):
+            seen.update(re.findall(IDENT, text[rhs:]))
+    if not declared:
+        return source
+    return edit(source, edits + [(part.opening + 1, part.opening + 1, ''.join(declared))])
+
+
 def variants(source, name, header=''):
     part = view(source, name)
     if not part:
@@ -888,7 +976,7 @@ def variants(source, name, header=''):
         if trimmed != source:
             result += [(TRIM_FAMILY, text) for family, text in _variants(trimmed, name, header)
                        if family == FAMILY][:max(0, LIMIT - len(result))]
-    return result
+    return result + _parameter_cursor(source, name, header)[:max(0, LIMIT - len(result))]
 
 
 def _variants(source, name, header=''):
@@ -920,7 +1008,7 @@ def _variants(source, name, header=''):
             others = {i for r in runs for i in r['statements']}
             for run in chosen:
                 commands, removed = _inline(clean, spans, run, others, body, start)
-                for index in removed:
+                for index in sorted(set(removed)):  # a value inlined into two words is removed once
                     edits.append((*_whole_line(source, *spans[index]), ''))
                 macros = _macros(commands, masked, raw)
                 used.update(m for m, _ in macros)
