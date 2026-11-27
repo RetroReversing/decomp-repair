@@ -389,6 +389,13 @@ if _scan is not None:
         return [arg.strip() for arg in _scan.top_pieces(text, ',', 2)]
 
 
+def _as_pointer(argument, kind):
+    """`argument` with the cast to the pointer type `kind`, unless it is already a name so cast, offset or not."""
+    cast = r'\(\s*' + r'\s*'.join(map(re.escape, re.findall(r'\w+|\*', kind))) + r'\s*\)\s*' + IDENT
+    already = rf'(?:{cast}|\(\s*{cast}\s*\))(?:\s*[+-]\s*\w+)?'
+    return argument if re.fullmatch(already, argument.strip()) else f'({kind}) ({argument})'
+
+
 def _inline_helpers(source, name):
     """Calls of one-`return` inline helpers written as the expression, helpers nothing calls removed."""
     text = source
@@ -397,13 +404,15 @@ def _inline_helpers(source, name):
             continue
         ret = helper['ret'].strip()
         params = [] if helper['params'].strip() in ('', 'void') else [p.strip() for p in helper['params'].split(',')]
-        names = []
+        names, pointers = [], {}
         for param in params:
             m = re.fullmatch(r'([\w\s*]+?)\s*\b(' + IDENT + r')', param)
             if not m or ('*' not in m[1] and NARROW.search(m[1])):
                 names = None
                 break
             names.append(m[2])
+            if '*' in m[1]:
+                pointers[m[2]] = m[1].strip()
         if names is None or ('*' not in ret and re.search(r'\b(?:float|double|f32|f64)\b', ret)):
             continue
         expr = helper['expr'].strip()
@@ -432,7 +441,9 @@ def _inline_helpers(source, name):
                 if len(args) != len(names) or any(uses[p] > 1 and not PURE.match(a) for p, a in zip(names, args)):
                     bad = True
                     break
-                given = dict(zip(names, args))
+                # a call converts its argument to the parameter's type; written in place, the cast has to do it, or
+                # pointer arithmetic in the body steps by the argument's own element size
+                given = {p: _as_pointer(a, pointers[p]) if p in pointers else a for p, a in zip(names, args)}
                 body = re.sub(r'\b(' + '|'.join(map(re.escape, names)) + r')\b', lambda w, given=given: f'({given[w[1]]})',
                               expr) if names else expr
                 edits.append((m.start(), stop, f'(({ret}) ({body}))'))
