@@ -43,8 +43,8 @@ FAMILY = 'reload_temp_inline'
 FAMILIES = (FAMILY,)
 LIMIT = 12  # a 1337-instruction function had eight inlinable temporaries; the one that paid was the eighth
 _DEF = re.compile(r'(?P<t>[A-Za-z_]\w*) = (?P<e>[^;]*);')
-_EFFECT = re.compile(r'[A-Za-z_]\w*\s*\(|\+\+|--|\bvolatile\b|(?<![=!<>])=(?!=)')
-_CALL = re.compile(r'[A-Za-z_]\w*\s*\(')
+_EFFECT = re.compile(r'\b(?!M2C_(?:FIELD|BITWISE)\b)[A-Za-z_]\w*\s*\(|\+\+|--|\bvolatile\b|(?<![=!<>])=(?!=)')
+_CALL = re.compile(r'\b(?!M2C_(?:FIELD|BITWISE)\b)[A-Za-z_]\w*\s*\(')  # m2c's field macros read, not call
 _HEADER = re.compile(r'(?:if|while|for)\s*\(.*\)|else(?:\s+if\s*\(.*\))?|do')
 _TYPES = frozenset('''s8 u8 s16 u16 s32 u32 s64 u64 f32 f64 int char short long unsigned signed float double register'''.split())
 _DECL = re.compile(r'(?:[A-Za-z_]\w*[ \t]+)+\**[ \t]*[A-Za-z_]\w*(?:[ \t]*,[ \t]*\**[ \t]*[A-Za-z_]\w*)*;')

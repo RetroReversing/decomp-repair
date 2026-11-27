@@ -20,7 +20,7 @@ FAMILIES = (FAMILY,)
 
 _STORE = re.compile(r'(?m)(?<=[;{}\n])(?P<ind>[ \t]*)(?P<lhs>(?:\*|\(|[A-Za-z_])[^;={}\n]*?)\s*=(?!=)\s*(?P<rhs>[^;={}\n]+);')
 _CAST = re.compile(r'\(\s*(?:s32|u32|int|long|unsigned|signed|unsigned int|signed int|unsigned long)\s*\)\s*')
-_CALL = re.compile(r'(?<![\w.])(?!sizeof\b)[A-Za-z_]\w*\s*\(|\+\+|--')
+_CALL = re.compile(r'(?<![\w.])(?!sizeof\b|M2C_(?:FIELD|BITWISE)\b)[A-Za-z_]\w*\s*\(|\+\+|--')
 _TERM = r'(?:-?(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d+f?)?)[uUlL]*|[A-Za-z_]\w*(?:(?:->|\.)\w+)*)'
 _TAIL = re.compile(r'(?P<op>[-+|&^])(?P<k>.+)\Z', re.S)
 LIMIT = 8

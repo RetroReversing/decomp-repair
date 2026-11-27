@@ -40,7 +40,7 @@ MOVE = 3
 PAIR_LIMIT = 96
 
 _ASSIGN = re.compile(r'^(?P<lhs>[^=;{}]+?)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)\s*(?P<rhs>[^;{}]+);$')
-_CALL = re.compile(r'\b(?!sizeof\b)[A-Za-z_]\w*\s*\(')
+_CALL = re.compile(r'\b(?!sizeof\b|M2C_(?:FIELD|BITWISE)\b)[A-Za-z_]\w*\s*\(')
 _IDENT = re.compile(r'[A-Za-z_]\w*')
 _TYPES = frozenset('s8 u8 s16 u16 s32 u32 s64 u64 f32 f64 char short int long float double unsigned signed void '
                    'const volatile struct union enum register static extern'.split())

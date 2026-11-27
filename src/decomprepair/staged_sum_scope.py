@@ -36,7 +36,7 @@ FAMILIES = (GUARDED, STAGED)
 LIMIT = 8
 EARLIER = 3
 _JUMP = re.compile(r'\b(?:return|goto|break|continue|if|else|for|while|do|switch|case|asm|__asm__)\b')
-_CALL = re.compile(rf'\b{IDENT}\s*\(\s*(?!\s*(?:\w+\s*)+\**\s*\))')
+_CALL = re.compile(rf'\b(?!M2C_(?:FIELD|BITWISE)\b){IDENT}\s*\(\s*(?!\s*(?:\w+\s*)+\**\s*\))')
 _SCALAR = r'(?:unsigned\s+|signed\s+)?(?:char|short|int|long|[su](?:8|16|32))'
 
 
