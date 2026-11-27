@@ -98,3 +98,36 @@ def test_a_width_followed_through_the_register_that_holds_the_address():
     # the outer read through a loaded pointer names no table of its own: only the inner read changes
     assert '*(s32 *)(*(u16 *)(D_800C0000 + 4) + 8)' in both
     assert len(found) == 3
+
+
+FLAG = ('extern char D_table[];\nextern u8 D_slot;\n\n'
+        's32 held(void)\n{\n  return *(s32 *)(D_slot + D_table) != 0;\n}\n')
+FLAG_ASM = '''
+    lui        $v1, %hi(D_table)
+    lui        $v0, %hi(D_slot)
+    lbu        $v0, %lo(D_slot)($v0)
+    addiu      $v1, $v1, %lo(D_table)
+    addu       $v0, $v0, $v1
+    lbu        $v0, 0x0($v0)
+'''
+
+
+def test_a_byte_table_read_wide_through_index_plus_table_becomes_an_element_read():
+    family, child = variants(FLAG, 'held', FLAG_ASM)[0]
+    assert family == 'asm_table_index_read'
+    assert 'extern u8 D_table[];' in child and 'return D_table[D_slot] != 0;' in child
+    assert 'extern u8 D_slot;' in child
+
+
+def test_table_first_sums_and_signed_loads():
+    source = FLAG.replace('D_slot + D_table', 'D_table + (D_slot * 2)')
+    child = dict(variants(source, 'held', FLAG_ASM.replace('lbu        $v0, 0x0', 'lb         $v0, 0x0')))
+    assert 'return D_table[(D_slot * 2)] != 0;' in child['asm_table_index_read']
+    assert 'extern s8 D_table[];' in child['asm_table_index_read']
+
+
+def test_a_table_the_target_loads_as_words_or_a_looser_sum_is_left_alone():
+    for source, asm in ((FLAG, FLAG_ASM.replace('lbu        $v0, 0x0', 'lw         $v0, 0x0')),
+                        (FLAG.replace('D_slot + D_table', 'D_slot & 3 + D_table'), FLAG_ASM),
+                        (FLAG.replace('extern char D_table[];', 'extern s32 D_table[];'), FLAG_ASM)):
+        assert 'asm_table_index_read' not in [family for family, _ in variants(source, 'held', asm)]
