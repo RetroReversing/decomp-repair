@@ -25,6 +25,14 @@ m2c's second allocation is often exactly that shape: `temp_v0 = alloc(); ...; te
 argument or a real one. On an 82-instruction N64 function (SN64 GCC 2.8.1 `-G0 -mips3 -O2`) one variable for both
 puts both pointers in `$a0`, as the target does (75 -> 0, the last of five edits).
 
+A `s16` or `s8` temporary whose every assignment is a signed read of that width (`M2C_FIELD(p, s16 *, 8)`,
+`*(s16 *) p`, `(s16) (..)`) joins an `s32` group of its base name: the value is the same once sign-extended, and m2c
+types the load's temporary by the load, so one register's `x` reads came out as two types. A 149-instruction N64 triangle
+test (SN GCC 2.8.1 `-O2`) went 30 -> 0 when the third edge's `lh` temporary became the one `s32` the other reads use (one
+function). It never names the merged variable: the run keeps an `s32` one. When several runs are of one register file
+(`temp_a1` and `temp_a2`), a child merges those runs together and leaves the others: on that function all four runs at
+once scored 30 where the two `temp_a` runs were exact.
+
 Only MIPS. The candidate is never a verdict: the judge decides."""
 import re
 
@@ -78,6 +86,39 @@ def _loops(clean, lo, hi):
     return spans
 
 
+_WIDE = {'s16': 's32', 's8': 's32'}
+
+
+def _whole(text, opening):
+    """Whether the group opening at `opening` closes at the end of `text`."""
+    return opening < len(text) and text[opening] == '(' and close(text, opening, '(', ')') == len(text) - 1
+
+
+def _signed_read(value, kind):
+    """Whether `value` is one signed read of the type `kind` and nothing else."""
+    value = value.strip()
+    field = re.match(r'M2C_FIELD\s*(?=\()', value)
+    if field:
+        return _whole(value, field.end()) and re.search(rf',\s*{kind}\s*\*\s*,[^,]*\)$', value) is not None
+    cast = re.match(rf'(?:\*\s*\(\s*{kind}\s*\*\s*\)|\(\s*{kind}\s*\))\s*', value)
+    if not cast:
+        return False
+    rest = value[cast.end():]
+    return re.fullmatch(r'[A-Za-z_]\w*', rest) is not None or _whole(rest, 0)
+
+
+def _widens(clean, kind, spots):
+    """Whether the narrow temporary at `spots` only ever holds signed reads of its own width."""
+    for _, end in spots:
+        after = clean[end:].lstrip()
+        if re.match(r'(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)=)', after) or re.search(r'(?:\+\+|--)\s*$', clean[:end].rstrip()):
+            return False
+        write = re.match(r'=(?!=)\s*([^;{}]*);', after)
+        if write and not _signed_read(write[1], kind):
+            return False
+    return True
+
+
 def _runs(part):
     """[[(name, first, last, mentions, declaration span)]]: the temporaries to merge, one list per base name and type,
     each a run whose neighbours are disjoint, in order of first mention."""
@@ -89,6 +130,9 @@ def _runs(part):
     for hit in _DECL.finditer(clean, lo, hi):
         declared.setdefault(hit['name'], []).append((hit, re.sub(r'\s+', '', hit['type'])))
     groups = {}
+    narrow = set()
+    wide_bases = {_NAME.fullmatch(name)['base'] for name, found in declared.items()
+                  if len(found) == 1 and found[0][1] == 's32' and _NAME.fullmatch(name)}
     for name, found in declared.items():
         match = _NAME.fullmatch(name)
         if len(found) != 1 or not match:
@@ -102,21 +146,25 @@ def _runs(part):
         before = clean[:first[0]].rstrip()
         if not re.match(r'=(?!=)', clean[first[1]:].lstrip()) or not (before[-1:] in ';{}' or before.endswith(('else', 'do'))):
             continue
+        if kind in _WIDE and match['base'] in wide_bases and _widens(clean, kind, spots):
+            narrow.add(name)
+            kind = _WIDE[kind]
         groups.setdefault((match['base'], kind), []).append((name, first[0], spots[-1][1], spots, hit.span()))
     runs = []
     for members in groups.values():
         members.sort(key=lambda member: member[1])
-        run = [members[0]]
-        for member in members[1:]:
-            previous = run[-1]
-            together = any(any(a <= x < b for x, _ in previous[3]) and any(a <= x < b for x, _ in member[3])
-                           for a, b in loops)
-            if (previous[2] <= member[1] or _passed_on(clean, previous, member)) and not together:
-                run.append(member)
-            else:
+        run = []
+        for member in members:
+            if run:
+                previous = run[-1]
+                together = any(any(a <= x < b for x, _ in previous[3]) and any(a <= x < b for x, _ in member[3])
+                               for a, b in loops)
+                if (previous[2] <= member[1] or _passed_on(clean, previous, member)) and not together:
+                    run.append(member)
+                    continue
                 if len(run) > 1:
                     runs.append(run)
-                run = [member]
+            run = [] if member[0] in narrow else [member]  # the run's name is an `s32` one
         if len(run) > 1:
             runs.append(run)
     return sorted(runs, key=lambda run: run[0][1])
@@ -176,6 +224,12 @@ def variants(source, name):
     if not runs:
         return []
     plans = [[run] for run in runs]
+    # the runs of one register file at once (`temp_a1` with `temp_a2`): merging every run can undo the gain, since the
+    # `temp_v*` values the compiler would have named anyway take other registers once they share a variable
+    files = {}
+    for run in runs:
+        files.setdefault(re.sub(r'\d+$', '', _NAME.fullmatch(run[0][0])['base']), []).append(run)
+    plans += [group for group in files.values() if 1 < len(group) < len(runs)]
     if len(runs) > 1:
         plans.append(runs)
     for run in runs:
