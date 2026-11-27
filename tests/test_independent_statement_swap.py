@@ -58,3 +58,32 @@ def test_the_family_is_registered():
     from decomprepair import registry
     assert any(entry.module.endswith('independent_statement_swap') for entry in registry.declared())
     assert independent_statement_swap.REPAIR['needs'] == ('source', 'name')
+
+
+DRAFT = """#ifndef M2C_DEFINES
+#define M2C_DEFINES
+#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))
+#endif
+extern u8 flag;
+extern char table[];
+
+void init(void *arg0) {
+    M2C_FIELD(arg0, s8 *, 0x71) = 8;
+    flag = 1;
+    *((M2C_FIELD(arg0, u8 *, 0x6E) * 2) + table) = 1;
+    play(0x42);
+}
+"""
+
+
+def test_an_m2c_draft_with_its_macros_is_read():
+    texts = [_flat(text) for _, text in variants(DRAFT, 'init')]
+    assert any('*((M2C_FIELD(arg0, u8 *, 0x6E) * 2) + table) = 1; flag = 1;' in text for text in texts)
+
+
+def test_field_macros_that_share_bytes_stay_in_order():
+    assert independent('M2C_FIELD(p, s32 *, 0x10) = 0;', 'M2C_FIELD(p, s32 *, 0x14) = 0;')
+    assert not independent('M2C_FIELD(p, s32 *, 0x10) = 0;', 'M2C_FIELD(p, s16 *, 0x12) = 1;')
+    assert not independent('M2C_FIELD(p, u8 *, 0x6E) = 2;', 'table[M2C_FIELD(p, u8 *, 0x6E)] = 1;')
+    assert not independent('M2C_FIELD(p, s32 *, 0) = 0;', 'M2C_FIELD(p, s32 *, 4) = f(1);')
+    assert variants('void f(s32 *p) {\n#if 0\n    p[0] = 1;\n#endif\n    p[1] = 2;\n    p[2] = 3;\n}\n', 'f') == []
