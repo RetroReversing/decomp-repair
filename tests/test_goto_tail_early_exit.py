@@ -84,5 +84,30 @@ def test_declines():
     assert goto_tail_early_exit.variants(DRAFT.replace('void update', 's32 update'), 'update') == []
 
 
+def test_a_guard_already_holding_the_tail_joins_the_exit():
+    source = """void spawn(Obj *arg0) {
+    if (level >= 6U) {
+        if (gBusy != 0) {
+            arg0->timer = 0;
+            return;
+        }
+        if (gPlayer == NULL) {
+            goto block_7;
+        }
+        arg0->timer += 1;
+        return;
+    }
+block_7:
+    arg0->timer = 0;
+}
+"""
+    merged = goto_tail_early_exit.variants(source, 'spawn')[0][1]
+    assert 'if (level < 6U || gBusy != 0 || gPlayer == NULL) {\n        arg0->timer = 0;\n        return;\n    }\n'           '    arg0->timer += 1;\n}' in merged
+    assert 'goto' not in merged
+    # a guard that does something else is part of the work, and then nothing leaves by the label from the head
+    other = source.replace('            arg0->timer = 0;\n            return;', '            arg0->timer = 1;\n            return;')
+    assert goto_tail_early_exit.variants(other, 'spawn') == []
+
+
 def test_registered():
     assert any(r.module == 'goto_tail_early_exit' for r in registry.declared())

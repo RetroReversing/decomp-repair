@@ -18,6 +18,10 @@ branches over the exit to the work (`bne` past a `j end; sb`) where the draft br
 (`beq`). On a 67-instruction N64 function this edit took the saved best from 405 to 15 and, with the caller's leading
 argument passed on (`leading_argument_widen`), to 0.
 
+A test at the head may also hold the tail itself instead of jumping (`if (C) { TAIL return; }` before the `goto`
+one): it joins the same exit. On a 62-instruction N64 function (SN GCC 2.8.1) that merge took the saved best from 690
+to 100 and `narrow_widening` finished it.
+
 Variants, for a `if (A) { if (B) goto L; REST return; } L: TAIL` at the function's own level, `L` used only by those
 guards (one or more of them, at the head of the block):
 
@@ -44,21 +48,41 @@ DECLARES = re.compile(r'^\s*(?:(?:const|volatile|static|register|unsigned|signed
                       r'(?!return\b|goto\b|else\b)[A-Za-z_]\w*(?:\s+|\s*\*+\s*)[A-Za-z_]\w*\s*(?:\[[^\]]*\]\s*)?[=;]')
 
 
-def _guards(source, clean, start, end):
-    """The `if (B) goto L;` tests at the head of a block: ([B], L, where the rest of the block starts)."""
-    tests, label, at = [], None, start
+def _exit_text(text):
+    """An exit's statements without layout or a closing bare `return;`, to compare a guard's copy with the tail."""
+    return re.sub(r'return;\Z', '', re.sub(r'\s+', '', text))
+
+
+def _guards(source, clean, start, end, label, tail):
+    """The tests at the head of a block that leave through `label`: ([B], how many by `goto`, where the rest starts).
+
+    A test either jumps (`if (B) goto L;`) or already holds the tail (`if (B) { TAIL return; }`), as m2c writes the
+    first of two exits when the other one is a jump."""
+    tests, jumps, at = [], 0, start
     while match := GUARD.match(clean, at, end):
         opening = match.end() - 1
         closing = close(clean, opening)
-        jump = closing and JUMP.match(clean, closing, end)
-        if not jump:
+        if not closing:
             break
-        target = jump['braced'] or jump['bare']
-        if label not in (None, target) or re.compile(r'\s*else\b').match(clean, jump.end()):
+        jump = JUMP.match(clean, closing, end)
+        if jump:
+            if (jump['braced'] or jump['bare']) != label:
+                break
+            stop = jump.end()
+            jumps += 1
+        else:
+            brace = re.compile(r'\s*\{').match(clean, closing, end)
+            stop = brace and close(clean, brace.end() - 1, '{', '}')
+            if not stop:
+                break
+            body = clean[brace.end():stop - 1]
+            if not body.rstrip().endswith('return;') or _exit_text(source[brace.end():stop - 1]) != _exit_text(tail):
+                break
+        if re.compile(r'\s*else\b').match(clean, stop):
             break
         tests.append(source[opening + 1:closing - 1].strip())
-        label, at = target, jump.end()
-    return tests, label, at
+        at = stop
+    return tests, jumps, at
 
 
 def _loose(condition):
@@ -108,8 +132,9 @@ def variants(source, name):
         if not labelled:
             continue
         label = labelled['label']
-        tests, target, rest_start = _guards(source, clean, brace.end(), block_end - 1)
-        if target != label or len(re.findall(rf'\bgoto\s+{label}\b', clean[opening:end])) != len(tests):
+        tests, jumps, rest_start = _guards(source, clean, brace.end(), block_end - 1, label,
+                                           source[labelled.end():body_end])
+        if not jumps or len(re.findall(rf'\bgoto\s+{label}\b', clean[opening:end])) != jumps:
             continue
         rest, rest_clean = source[rest_start:block_end - 1], clean[rest_start:block_end - 1]
         last = LAST_RETURN.search(rest_clean)
