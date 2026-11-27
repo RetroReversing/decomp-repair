@@ -35,3 +35,24 @@ def test_a_symbol_accessed_two_ways_is_left_alone():
 def test_nothing_without_the_target():
     assert variants(SOURCE, 'spin') == []
     assert REPAIR['needs'] == ('source', 'name', 'asm')
+
+
+BYTES = """extern char D_80100200[];
+extern u8 D_80100204[];
+void reset(s32 o)
+{
+  D_80100200[o] = 0;
+  D_80100204[o] = 0;
+  use(&D_80100200[o], D_80100200[o + 4]);
+}
+"""
+
+
+def test_a_byte_array_element_the_target_stores_as_a_word():
+    asm = 'sw $zero, %lo(D_80100200)($at)\nsb $zero, %lo(D_80100204)($at)\n'
+    [(family, child)] = variants(BYTES, 'reset', asm=asm)
+    assert family == FAMILY
+    assert '*(s32 *)&D_80100200[o] = 0;' in child
+    assert 'D_80100204[o] = 0;' in child and '*(u8 *)&D_80100204' not in child
+    assert 'use(&D_80100200[o], *(s32 *)&D_80100200[o + 4]);' in child
+    assert 'extern char D_80100200[];' in child

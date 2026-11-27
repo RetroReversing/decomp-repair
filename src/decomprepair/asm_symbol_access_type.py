@@ -9,7 +9,11 @@ object update's machine draft this was the whole of its float and byte rows.
 
 For each symbol the target accesses through `%lo(SYM)` in one class only (all `lwc1`/`swc1`, all `lw`/`sw`, halfword or
 byte), every `*(T *)(...)` whose address names that symbol alone is written with the target's type: all the symbols
-together first, then each alone. The exact judge decides every child."""
+together first, then each alone. The exact judge decides every child.
+
+The same holds for a byte array the draft declared for a symbol it could not type (`extern char D_802038EC[];` ...
+`D_802038EC[offset] = 0;`) where the target stores a word: the element is written as `*(s32 *)&D_802038EC[offset]`.
+On a KMC 2.7.2 -O1 state reset those two word stores were all that was left after the other repairs (400 -> 0)."""
 import re
 
 from .asm_symbol_read_width import _apply, _closing, _without_nested_reads
@@ -47,12 +51,45 @@ def _types(asm):
     return found
 
 
+_BYTE_ARRAY = r'\bextern\s+(?:volatile\s+)?(?:(?:signed|unsigned)\s+char|char|[su]8|M2C_UNK8)\s+{}\s*\[\s*\]\s*;'
+_WIDE = ('f32', 's32', 's16', 'u16')
+
+
+def _subscript(text, start):
+    """The index just past the `]` that closes the subscript opening at `start`."""
+    depth = 0
+    for index in range(start, len(text)):
+        depth += (text[index] == '[') - (text[index] == ']')
+        if depth == 0:
+            return index + 1
+    return None
+
+
+def _elements(clean, span, types):
+    """{symbol: edits} for the elements of a byte array the target accesses wider than a byte."""
+    found = {}
+    for sym, wanted in types.items():
+        if wanted not in _WIDE or not re.search(_BYTE_ARRAY.format(re.escape(sym)), clean):
+            continue
+        for hit in re.finditer(rf'(?<![\w.>]){re.escape(sym)}\s*(?=\[)', clean[:span[1]]):
+            if hit.start() < span[0]:
+                continue
+            end = _subscript(clean, hit.end())
+            # an address already, or an expression a cast in front of it would bind differently
+            if end is None or re.search(r'(?<!&)&\s*$', clean[:hit.start()]):
+                continue
+            if re.match(r'\s*(?:\+\+|--|\[|\.|->)', clean[end:]):
+                continue
+            found.setdefault(sym, []).append((hit.start(), hit.start(), f'*({wanted} *)&'))
+    return found
+
+
 def _edits(source, name, types):
     span = find(source, name)
     if not span:
         return {}
     clean = _blank(source)
-    found = {}
+    found = _elements(clean, span, types)
     for hit in _ACCESS.finditer(clean, span[0], span[1]):
         end = _closing(clean, hit.end())
         if end is None:
