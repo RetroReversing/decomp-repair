@@ -2,6 +2,7 @@
 from decomprepair import (
     element_member_walk,
     helper_live_arguments,
+    pointer_in_loop_counter,
     registry,
     scale_scratch_reuse,
     shift_store_interleave,
@@ -102,5 +103,16 @@ def test_stored_field_read_uses_the_local():
 def test_the_families_are_declared():
     declared = str(registry.declared())
     for module in (shift_store_interleave, scale_scratch_reuse, helper_live_arguments, element_member_walk,
-                   step_into_both_arms, stored_field_local_value):
+                   step_into_both_arms, stored_field_local_value, pointer_in_loop_counter):
         assert module.FAMILY in declared
+
+
+def test_a_pointer_rides_in_the_later_counter():
+    source = function("    unsigned char *entry;\n    int m;\n    entry = obj->data + 4;\n"
+                      "    obj->count = entry[0];\n    w = entry[1];\n    for (m = 0; m < 3; m++) {\n        h = m;\n    }\n")
+    [(_, child)] = pointer_in_loop_counter.variants(source, 'f', 'mips')
+    assert 'm = (u32) (obj->data + 4);' in child
+    assert 'obj->count = ((unsigned char *) m)[0];' in child
+    assert 'unsigned char *entry;' not in child
+    late = source.replace("        h = m;\n", "        h = entry[m];\n")
+    assert pointer_in_loop_counter.variants(late, 'f', 'mips') == []
