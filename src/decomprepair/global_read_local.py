@@ -8,8 +8,12 @@ store of the run, and each read of the global in the run turned into the local (
 heightmap filter, KMC GCC 2.7.2; the saved best read the loop counter global four times after three stores through a
 pointer to a pair of neighbouring globals).
 
+A store to a member (`p->x = ..;`, or the typed draft's `((Rec *) p)->x = ..;`) is such a store too. A
+78-instruction N64 effect spawner (SN GCC 2.8.1 `-G0 -mips3 -O2`) read a serial-number global twice after nine member
+stores, where the target loads it once above the first of them (705 -> 300).
+
 A proposal takes a run of simple statements (consecutive lines of one block that open and close no brace) that holds a
-store through a pointer (`*p = ...;`, `*p += ...;`, `p[k] = ...;`) and, after the first such store, two or more
+store through a pointer (`*p = ...;`, `*p += ...;`, `p[k] = ...;`, `p->x = ...;`) and, after the first such store, two or more
 statements that read the same `extern` integer global, with no call and no write to the global in the run. The local
 (`held_G`) is declared at the top of the function and set just above the first store (or above the first read, when
 one comes before it). One proposal for every read of the run and one for each shorter run ending at a later store (the reads after it stay
@@ -25,6 +29,8 @@ LIMIT = 8
 _ID = r'[A-Za-z_]\w*'
 _EXTERN = re.compile(rf'(?m)^[ \t]*extern\s+((?:(?:unsigned|signed|const|volatile)\s+)*(?:[su](?:8|16|32)|char|short|int|long))\s+({_ID})\s*;')
 _STORE = re.compile(rf'^[ \t]*(?:\*\s*\(*\s*{_ID}|{_ID}\s*\[[^\]\n]*\])[^=\n;]*?(?<![=!<>])(?:[-+|&^*]|<<|>>)?=(?!=)')
+# A store to a member (`p->x = ..;`, `((Rec *) p)->x |= ..;`) is a store through a pointer too.
+_MEMBER_STORE = re.compile(rf'^[ \t]*[^=;\n]*->\s*{_ID}[\s)]*(?:\[[^\]\n]*\])?[\s)]*(?<![=!<>])(?:[-+|&^*]|<<|>>)?=(?!=)')
 _CALL = re.compile(rf'\b(?!(?:sizeof|if|while|for|switch|return)\b){_ID}\s*\(')
 
 
@@ -79,7 +85,7 @@ def variants(source, name, header=''):
     out = []
     used = set(re.findall(_ID, part.clean[part.opening:part.end]))
     for run in _runs(_lines(part.clean, part.opening, part.end)):
-        stores = [index for index, item in enumerate(run) if _STORE.match(item[3])]
+        stores = [index for index, item in enumerate(run) if _STORE.match(item[3]) or _MEMBER_STORE.match(item[3])]
         if not stores:
             continue
         first = stores[0]

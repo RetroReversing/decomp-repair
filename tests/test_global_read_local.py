@@ -60,3 +60,33 @@ def test_a_global_read_before_the_first_store_and_after_it_is_held_from_the_firs
 def test_the_family_declares_itself_to_the_registry():
     [repair] = [item for item in registry.declared() if FAMILY in item.families]
     assert registry.problems(repair) == []
+
+
+MEMBERS = '''typedef unsigned short u16;
+typedef int s32;
+extern u16 gSerial;
+typedef struct { char pad[8]; u16 tag; char pad2[2]; s32 id; char state; } Item;
+
+void f(void *item)
+{
+    (((Item *) item)->state) = 3;
+    (((Item *) item)->tag) = (u16) gSerial;
+    (((Item *) item)->id) = (s32) (gSerial & 0xFFFF);
+}
+'''
+
+
+def test_a_member_store_is_a_store_through_a_pointer():
+    for code in (MEMBERS, MEMBERS.replace('((Item *) item)->', 'rec->')):
+        [(_, child)] = variants(code, 'f')
+        text = squash(child)
+        assert 'u16 held_gSerial;' in text
+        assert text.index('held_gSerial = gSerial;') < text.index('->state) = 3;')
+        assert '(u16) held_gSerial;' in text and '(held_gSerial & 0xFFFF)' in text
+
+
+def test_a_member_read_into_a_local_is_not_a_store():
+    code = MEMBERS.replace('(((Item *) item)->state) = 3;', 's32 s;\n    s = ((Item *) item)->state;')
+    code = code.replace('(((Item *) item)->tag) = (u16) gSerial;', 's += gSerial;').replace(
+        '(((Item *) item)->id) = (s32) (gSerial & 0xFFFF);', 's += gSerial & 3;')
+    assert variants(code, 'f') == []
