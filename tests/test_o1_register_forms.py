@@ -51,3 +51,31 @@ def test_a_local_assigned_after_a_case_label_can_be_borrowed():
                             '    switch (y) {\n    case 2:\n        n = i + 1;\n        draw(n);\n        break;\n    }\n    {')
     out = [child for family, child in forms.variants(source, 'f') if family == 'subterm_into_idle_local']
     assert len(out) == 1
+
+
+STEP = '''void f(s32 i) {
+    Rect *r;
+    s32 n;
+
+    n = i;
+    r = (Rect *) &config;
+    height = r->y1 - r->y0;
+    object[i].alpha += 1.0f;
+    object[i].fade -= 1.0f;
+    object[i].width += 1.5f;
+    r = find(i);
+}
+'''
+
+
+def test_a_fence_follows_a_pointer_set_from_an_address_only():
+    out = [child for family, child in forms.variants(STEP, 'f') if family == 'address_then_fence']
+    assert len(out) == 1
+    assert 'r = (Rect *) &config; do { } while (0);' in out[0]
+
+
+def test_a_float_step_of_one_becomes_a_postfix_step():
+    out = [child for family, child in forms.variants(STEP, 'f') if family == 'float_step_postfix']
+    assert len(out) == 2
+    assert 'object[i].alpha++;' in out[0]
+    assert 'object[i].fade--;' in out[1]

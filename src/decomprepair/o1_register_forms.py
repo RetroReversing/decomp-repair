@@ -1,4 +1,4 @@
-"""Two spellings GCC 2.7.2 at `-O1` keeps apart that leave what the function does unchanged.
+"""Spellings GCC 2.7.2 at `-O1` keeps apart that leave what the function does unchanged.
 
 `empty_cse_fence`: cse follows a table's address from a test (`if (t[i] != 0)`) into the calls after it and keeps
 it in a saved register, where the target forms it again at each use. The notes of an empty `do { } while (0);` end
@@ -10,13 +10,20 @@ allocation may overwrite it in its source register. Written into a local that an
 that local becomes one pseudo of the whole function, allocated by global.c instead, and the other block's use stops
 being tied to it. A 734-instruction N64 function went from 15 to 0 with it. Only a local every read of which follows an
 assignment in the read's own block is borrowed, and never between the two.
+
+`address_then_fence`: cse folds a constant address assigned to a pointer straight into the reads that follow it, one
+`lui` each. An empty fence after the assignment keeps the register as the base of both field reads. A 933-instruction
+N64 display-list function ended with it.
+
+`float_step_postfix`: `x += 1.0f` on a float field forwards the stored sum to the next read of the field, where
+`x++` makes the compiler load it again. A 1145-instruction N64 menu state machine went from 400 to 0 with it.
 """
 import re
 
 from .integer_repair_support import IDENT, edit, view
 from .pattern_repairs import close
 
-FAMILIES = ('empty_cse_fence', 'subterm_into_idle_local')
+FAMILIES = ('empty_cse_fence', 'subterm_into_idle_local', 'address_then_fence', 'float_step_postfix')
 FENCE = 'do { } while (0);'
 LIMIT = 48
 _STATEMENT = re.compile(rf'(?<=[;{{}}])\s*({IDENT})\s*\(')
@@ -123,12 +130,41 @@ def borrowed(source, part):
     return result[:LIMIT]
 
 
+def address_fences(source, part):
+    """A fence after each `pointer = <address, no call>;` of a pointer local."""
+    clean = part.clean
+    body = clean[part.opening:part.end]
+    pointers = set(re.findall(rf'(?m)^\s*{IDENT}\s*\*\s*({IDENT})\s*;', body))
+    result = []
+    for match in re.finditer(rf'(?<=[;{{}}])\s*({IDENT})\s*=(?!=)([^;{{}}]*);', body):
+        value = match[2].strip()
+        if match[1] not in pointers or not (value.startswith(('&', '(')) or value.isupper()):
+            continue
+        if re.search(r'[\w\]]\s*\(', value):
+            continue
+        site = part.opening + match.end()
+        if not clean[site:].lstrip().startswith(FENCE):
+            result.append(edit(source, [(site, site, ' ' + FENCE)]))
+    return result[:LIMIT]
+
+
+def float_steps(source, part):
+    """`x += 1.0f;` as `x++;` and `x -= 1.0f;` as `x--;`, each statement alone."""
+    result = []
+    for match in re.finditer(r'\s*([-+])=\s*1(?:\.0*)?[fF]\s*(?=;)', part.clean[part.opening:part.end]):
+        start, stop = part.opening + match.start(), part.opening + match.end()
+        result.append(edit(source, [(start, stop, match[1] * 2)]))
+    return result[:LIMIT]
+
+
 def variants(source, name, header=''):
     part = view(source, name)
     if not part or '__LINE__' in source + header:
         return []
     return ([(FAMILIES[0], child) for child in fences(source, part)]
-            + [(FAMILIES[1], child) for child in borrowed(source, part)])
+            + [(FAMILIES[1], child) for child in borrowed(source, part)]
+            + [(FAMILIES[2], child) for child in address_fences(source, part)]
+            + [(FAMILIES[3], child) for child in float_steps(source, part)])
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header')}
