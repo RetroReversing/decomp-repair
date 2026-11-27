@@ -2,7 +2,7 @@
 
 m2c writes `M2C_UNK f(...); /* extern */` for a callee it knows nothing about. A caller that drops the result compiles
 the same call either way, but a value-returning call also sets `$v0` as far as the allocator and the scheduler are
-concerned, so the registers and the order around it differ (a 46-instruction N64 matrix routine, SN GCC 2.8.1 `-O3`:
+concerned, so the registers and the order around it differ (a 46-instruction N64 matrix routine, SN GCC 2.8.1 `-O2`:
 1180 -> 940 alone, and the last 570 -> 0 with its other repairs).
 
 Only prototypes written in the candidate itself are changed, and only when every mention of the callee in the function

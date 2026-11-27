@@ -13,7 +13,7 @@ The macro is `{ Gfx *_g = (Gfx *)(gfx++); _g->words.w0 = w0; _g->words.w1 = w1; 
 before the words are computed, which gives the target's `move` and the delayed first store. A copy m2c saw still in an
 argument register becomes a trailing argument of a later call, which the callee never takes; with the cursor advanced it
 would pass another value, so it is dropped (from the call and from the candidate's own prototype) in the same child.
-A 46-instruction N64 matrix routine (SN GCC 2.8.1 `-O3`) reached 0 with this after `discarded_result_void` and
+A 46-instruction N64 matrix routine (SN GCC 2.8.1 `-O2`) reached 0 with this after `discarded_result_void` and
 `address_global_pointer` (1180 -> 920 -> 680 -> 0).
 
 Applies when a `void *` (or byte pointer) parameter is only used by top-level stores to both words of commands 0..N-1,
