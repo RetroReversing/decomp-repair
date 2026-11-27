@@ -81,7 +81,8 @@ def _terms(text):
     if parts is None:
         return None
     if len(parts) == 1:
-        return [_term(parts[0])]
+        term = _term(parts[0])
+        return None if term is None else [term]
     out = []
     for part in parts:
         inner = _terms(part)
