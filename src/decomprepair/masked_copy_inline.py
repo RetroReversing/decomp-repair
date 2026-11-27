@@ -22,7 +22,12 @@ game's code never had. A KMC GCC 2.7.2 `-O1` list walk of 142 instructions (`-G0
 A local is a copy when it is declared as a word, every assignment to it is `V = X & MASK;` for one `u8`/`u16` local or
 parameter `X` of that width, neither is address-taken, and no read of `V` follows (in the text) an assignment to `X`
 that no new copy came after. All the copies of one variable are written back together, as one child; a second child
-writes back the copies of every variable. `masked_copy_inline`."""
+writes back the copies of every variable. `masked_copy_inline`.
+
+A word parameter nothing writes has the same copies when the draft kept it `s32` and re-masked it at every join
+(`var_v1 = arg0 & 0xFF;` on each path, `temp_a1 = arg0 & 0xFF;` ahead): each copy is written as `(arg0 & 0xFF)`. On a
+132-instruction N64 input-sequence routine (SN64 GCC, `-O2 -mips3 -mfp64`) this removed the copies and left only empty
+join labels, one step of a chain to an exact match."""
 import re
 
 from .integer_repair_support import IDENT, edit, view
@@ -41,8 +46,8 @@ def _whole_lines(clean, start, end):
     return (a, b) if not (clean[a:start] + clean[end:b]).strip() else (start, end)
 
 
-def _copy(source, clean, part, variable, kind, local):
-    """The edits that write `local` as `variable`, or None when it is not a plain masked copy of it."""
+def _copy(source, clean, part, variable, kind, local, written=None):
+    """The edits that write `local` as `written` (default: `variable`), or None when it is not a plain masked copy of it."""
     body = clean[part.opening:part.end]
     base = part.opening
     declared = re.search(rf'(?m)^[ \t]*{WORD}[ \t]+{local}[ \t]*;', body)
@@ -70,7 +75,21 @@ def _copy(source, clean, part, variable, kind, local):
         if last[2] == 'changed' and ';' in body[last[1]:read.start()]:
             return None
     edits = [(base + a, base + b, '') for a, b in (_whole_lines(body, *span) for span in inside)]
-    return edits + [(base + m.start(), base + m.end(), variable) for m in reads]
+    return edits + [(base + m.start(), base + m.end(), written or variable) for m in reads]
+
+
+def _word_parameters(clean, part, signature):
+    """(parameter, width, `(parameter & mask)`, the locals that copy it so) for each word parameter nothing writes."""
+    body = clean[part.opening:part.end]
+    found = []
+    for variable in re.findall(rf'(?<![\w.>]){WORD}[ \t]+({IDENT})(?=\s*[,)])', signature):
+        if re.search(rf'(?<![\w.>]){variable}\s*(?:=(?!=)|[-+*/%&|^]=|<<=|>>=|\+\+|--)|(?:\+\+|--)\s*{variable}\b', body):
+            continue
+        for kind, mask in MASKS.items():
+            hits = list(re.finditer(rf'(?<![\w.>])({IDENT})\s*=\s*{variable}\s*&\s*({mask})\s*;', body))
+            if hits:
+                found.append((variable, kind, f'({variable} & {hits[0][2]})', dict.fromkeys(h[1] for h in hits)))
+    return found
 
 
 def variants(source, name):
@@ -90,6 +109,13 @@ def variants(source, name):
         for local in dict.fromkeys(copies):
             if local != variable:
                 edits += _copy(source, clean, part, variable, kind, local) or []
+        if edits:
+            out.append((FAMILY, edit(source, edits)))
+            every += edits
+    for variable, kind, written, copies in _word_parameters(clean, part, scope[:part.opening - start]):
+        edits = []
+        for local in copies:
+            edits += _copy(source, clean, part, variable, kind, local, written) or []
         if edits:
             out.append((FAMILY, edit(source, edits)))
             every += edits

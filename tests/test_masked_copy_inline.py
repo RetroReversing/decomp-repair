@@ -55,3 +55,24 @@ def test_declines_copies_that_are_not_the_variable():
                  'x = a & 0xFF; h(&x); g(x);', 'x = a & 0xFF; h(&a); g(x);'):
         assert copies.variants('void f(u8 a) {\n    s32 x;\n\n    ' + body + '\n}\n', 'f') == [], body
     assert copies.variants('void f(u8 a) {\n    u8 x;\n\n    x = a & 0xFF; g(x);\n}\n', 'f') == []
+
+
+def test_copies_of_a_word_parameter_nothing_writes_are_written_as_its_mask():
+    source = """void pick(s32 arg0) {
+    s32 kind;
+
+    if (arg0 & 0xFF) {
+        kind = arg0 & 0xFF;
+    } else {
+        kind = arg0 & 0xFF;
+    }
+    if (kind == 2) {
+        use(kind);
+    }
+}
+"""
+    children = [text for _, text in copies.variants(source, 'pick')]
+    assert len(children) == 1
+    assert 'if ((arg0 & 0xFF) == 2)' in children[0] and 'use((arg0 & 0xFF));' in children[0]
+    assert 'kind =' not in children[0]
+    assert copies.variants(source.replace('use(kind);', 'arg0 = 0; use(kind);'), 'pick') == []
