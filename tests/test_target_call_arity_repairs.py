@@ -255,3 +255,10 @@ void f(f32 x) { wave(x); }
     # No fresh integer setup does not prove an FPU argument was absent: it may already be live in f12.
     assert not any('wave();' in text for _, text in t.variants(source, 'f', 'jal wave\nnop\n'))
     assert t.calls('mtc1 $v0, $f12\njal wave\nnop\n') == [('wave', {'a0': None})]
+
+
+def test_a_constant_copied_into_the_next_argument_register_counts():
+    """`addiu $a1, $zero, 0x40` then `addu $a2, $a1, $zero` passes the same literal twice (SN GCC 2.8.1)."""
+    from decomprepair.target_call_arity_repairs import calls
+    asm = 'addiu $a1, $zero, 0x40\naddu $a2, $a1, $zero\njal target\nmove $a3, $a2\n'
+    assert calls(asm) == [('target', {'a1': 64, 'a2': 64, 'a3': 64})]

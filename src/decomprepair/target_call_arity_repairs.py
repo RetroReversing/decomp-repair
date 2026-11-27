@@ -69,7 +69,7 @@ def calls(asm, consumed=False, through=False):
                 bases.pop(dest[1], None)
         if pending is not None:  # the delay slot
             if dest and dest[1] in ARGREG and not op.startswith(('s', 'b', 'j')):
-                written[dest[1]] = _constant(op, args, bases)
+                written[dest[1]] = _argument(op, args, bases, written)
             found.append((pending, written))
             pending, written = None, {}
             continue
@@ -97,8 +97,21 @@ def calls(asm, consumed=False, through=False):
         if dest and dest[1] in ARGREG and not store and not (consumed and op.startswith(('b', 'j'))):
             # (a branch reads its first register, never writes it; the ordinary reading keeps counting it, as the
             # family always did, so only the alternative one changes)
-            written[dest[1]] = _constant(op, args, bases)
+            written[dest[1]] = _argument(op, args, bases, written)
     return found
+
+
+def _argument(op, args, bases, written):
+    """The value an argument register is given: `_constant`, or the constant another argument register already got when
+    this one is its copy (`addiu $a1, $zero, 0x40` then `addu $a2, $a1, $zero`: the same literal passed twice, SN GCC
+    2.8.1; an N64 object update's call was left one argument short without it)."""
+    value = _constant(op, args, bases)
+    copied = re.fullmatch(r'\$\w+\s*,\s*\$(a[0-3])(?:\s*,\s*\$zero)?', args) if op in ('addu', 'or', 'daddu', 'move') \
+        else None
+    if value is None and copied and (op == 'move') == (args.count('$') == 2):
+        held = written.get(copied[1])
+        value = held if isinstance(held, int) else None
+    return value
 
 
 def _constant(op, args, bases=None):
