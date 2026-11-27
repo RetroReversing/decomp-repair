@@ -8,8 +8,10 @@ sb $s5, 0x2c($sp)
 jal post
 nop
 addiu $a1, $sp, 0x20
+sh $v0, 0x20($sp)
+sw $s1, 0x24($sp)
 jal post
-nop
+sw $v1, 0x28($sp)
 '''
 SOURCE = '''void f(void *queue, void *voice, int value) {
     s32 sp20;
@@ -56,3 +58,8 @@ def test_requires_repeated_target_address_and_all_field_stores():
 def test_rejects_shadows_and_member_name_collisions():
     assert not repair.variants(SOURCE.replace('    if (value)', '    { int sp24; use(sp24); }\n    if (value)'), 'f', ASM)
     assert not repair.variants(SOURCE.replace('sp24 = voice;', 'sp24 = obj->sp24;', 1), 'f', ASM)
+
+
+def test_rejects_global_stores_that_do_not_belong_to_both_posts():
+    assert not repair.variants(SOURCE, 'f', ASM.replace('sw $s1, 0x24($sp)\njal post', 'nop\njal post', 1))
+    assert not repair.variants(SOURCE, 'f', ASM.replace('jal post', 'jal other', 1))

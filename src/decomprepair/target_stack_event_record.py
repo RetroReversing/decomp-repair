@@ -17,6 +17,7 @@ _NUM = r'(?:0[xX][0-9A-Fa-f]+|\d+)'
 
 def target_bases(asm):
     lines = [re.sub(r'\s+', ' ', re.sub(r'/\*.*?\*/', '', line).strip()) for line in (asm or '').splitlines()]
+    lines = [line for line in lines if line and not line.endswith(':') and not line.startswith(('glabel ', 'endlabel ', 'nonmatching '))]
     values = []
     for line in lines:
         hit = re.fullmatch(r'addiu \$a1,\s*\$sp,\s*(' + _NUM + r')', line)
@@ -31,7 +32,26 @@ def target_bases(asm):
             hit = re.fullmatch(r'(sh|sw|sb) \$\w+,\s*(' + _NUM + r')\(\$sp\)', line)
             if hit:
                 stores.add((hit[1], int(hit[2], 0)))
-        if all(item in stores for item in (('sh', base), ('sw', base + 4), ('sw', base + 8), ('sb', base + 12))):
+        if not all(item in stores for item in (('sh', base), ('sw', base + 4), ('sw', base + 8), ('sb', base + 12))):
+            continue
+        calls = []
+        for index, line in enumerate(lines):
+            address = re.fullmatch(r'addiu \$a1,\s*\$sp,\s*(' + _NUM + r')', line)
+            if not address or int(address[1], 0) != base:
+                continue
+            nearby = lines[index + 1:index + 9]
+            call = next((i for i, text in enumerate(nearby) if re.fullmatch(r'jal \w+', text)), None)
+            if call is None:
+                continue
+            prefix = nearby[:call + 2]  # the last word can be the call's delay slot
+            observed = set()
+            for text in prefix:
+                hit = re.fullmatch(r'(sh|sw|sb) \$\w+,\s*(' + _NUM + r')\(\$sp\)', text)
+                if hit:
+                    observed.add((hit[1], int(hit[2], 0)))
+            if all(item in observed for item in (('sh', base), ('sw', base + 4), ('sw', base + 8))):
+                calls.append(nearby[call])
+        if any(calls.count(call) >= 2 for call in calls):
             found.append(base)
     return found
 
