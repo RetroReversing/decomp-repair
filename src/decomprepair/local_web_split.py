@@ -252,15 +252,16 @@ def _apply(source, clean, plans, drop_register, taken):
     return source
 
 
-def variants(source, name):
+def plans_of(source, name):
+    """(the blanked source, [(declaration match, local, its webs)]) for each local with at least two names to give."""
     span = find(source, name)
     if not span:
-        return []
+        return source, []
     clean = _blank(source)
     opening = clean.find('{', span[0], span[1])
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
-        return []
+        return clean, []
     blocks = _blocks(clean, opening, end)
     parens = _depths(clean, opening, end)
     switches = _switches(clean, opening, end)
@@ -288,6 +289,11 @@ def variants(source, name):
         if renamed + (1 if renamed < len(webs) else 0) < 2:
             continue
         plans.append((decl, var, webs))
+    return clean, plans
+
+
+def variants(source, name):
+    clean, plans = plans_of(source, name)
     result = []
 
     def emit(text):
