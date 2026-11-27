@@ -14,7 +14,12 @@ in the one block that uses it (`global_pointer_local`).
 
 Preconditions: the local is declared in the function as a plain pointer, assigned exactly once, from `&SYM`, and every
 other occurrence is a dereference `*P` (not `P[i]`, `P->f`, `P + k` or `P` passed on). The child replaces each `*P`
-with `SYM` (parenthesised forms `(*P)` too), and drops the declaration and the assignment."""
+with `SYM` (parenthesised forms `(*P)` too), and drops the declaration and the assignment.
+
+The assignment may stand inside braces or one-shot loops that hold nothing else (`do { P = &SYM; } while (0);`,
+`{ P = &SYM; }`), as a search or its stripped form leaves it; the empty wrapper goes with it. A KMC/SN-compiled N64
+routine's counted loop read its bound through such a pointer, which held the symbol's address in a saved register
+where the target keeps only the `lui` half: 570 -> 60 with this, 0 after `pointer_local_reuse`."""
 import re
 
 from .csource import _blank, find
@@ -23,6 +28,20 @@ FAMILY = 'symbol_base_unwrap'
 FAMILIES = (FAMILY,)
 
 IDENT = r'[A-Za-z_]\w*'
+# `P = &SYM;` at the start of a line, perhaps behind the openers of wrappers
+SETTING = re.compile(rf'(?m)^[ \t]*(?P<open>(?:(?:do\b\s*)?\{{\s*)*)(?P<p>{IDENT})\s*=\s*&\s*(?P<sym>{IDENT})\s*;')
+
+
+def _setting_end(body, setting):
+    """Where the setting statement ends once every wrapper it opened is closed around it alone, or None."""
+    end = setting.end()
+    for opener in reversed(re.findall(r'(?:do\b\s*)?\{', setting['open'])):
+        closer = r'\s*\}\s*while\s*\(\s*0\s*\)\s*;' if opener.startswith('do') else r'\s*\}'
+        found = re.compile(closer).match(body, end)
+        if not found:
+            return None
+        end = found.end()
+    return re.compile(r'[ \t]*\n?').match(body, end).end()
 
 
 def variants(source, name):
@@ -35,8 +54,11 @@ def variants(source, name):
         return []
     body = clean[opening:span[1]]
     out = []
-    for setting in re.finditer(rf'(?m)^[ \t]*(?P<p>{IDENT})\s*=\s*&\s*(?P<sym>{IDENT})\s*;[ \t]*\n?', body):
+    for setting in SETTING.finditer(body):
         p, sym = setting['p'], setting['sym']
+        end = _setting_end(body, setting)
+        if end is None:
+            continue
         declaration = re.search(rf'(?m)^[ \t]*(?:const\s+|volatile\s+)*{IDENT}\s*\*+\s*(?:const\s+)?{p}\s*;[ \t]*\n?',
                                 body)
         if not declaration or p == sym:
@@ -44,7 +66,7 @@ def variants(source, name):
         mentions = [m for m in re.finditer(rf'(?<![\w.>]){p}\b', body)]
         others = [m for m in mentions
                   if not (declaration.start() <= m.start() < declaration.end()
-                          or setting.start() <= m.start() < setting.end())]
+                          or setting.start() <= m.start() < end)]
         if not others:
             continue
         derefs = []
@@ -65,7 +87,7 @@ def variants(source, name):
             continue
         text = source
         edits = [(opening + a, opening + b, sym) for a, b in derefs]
-        edits += [(opening + setting.start(), opening + setting.end(), ''),
+        edits += [(opening + setting.start(), opening + end, ''),
                   (opening + declaration.start(), opening + declaration.end(), '')]
         for a, b, new in sorted(edits, reverse=True):
             text = text[:a] + new + text[b:]
