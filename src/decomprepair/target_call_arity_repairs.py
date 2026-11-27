@@ -20,6 +20,8 @@ IDENT = r'[A-Za-z_]\w*'
 LINE = re.compile(r'^\s*(?:/\*.*?\*/)?\s*(?P<op>[a-z][\w.]*)\s*(?P<args>[^\n]*)$')
 ARGREG = ('a0', 'a1', 'a2', 'a3')
 FLOAT_ARGS = {'f12': 'a0', 'fa0': 'a0', 'f14': 'a1', 'fa1': 'a1'}
+STORES = ('sb', 'sh', 'sw', 'sd', 'sc', 'scd', 'swl', 'swr', 'sdl', 'sdr', 'swc1', 'sdc1', 'swc2', 'sdc2', 's.s', 's.d')
+COPIES = ('move', 'addu', 'or', 'daddu')
 NOT_CALLS = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'M2C_FIELD', 'M2C_ERROR', 'M2C_BITWISE', 'do'}
 
 
@@ -30,12 +32,33 @@ def _instructions(asm):
             yield m['op'], m['args'].strip()
 
 
+def _writes(op):
+    """Whether an instruction's first operand is a register it writes: not a store, branch or jump. (The shifts,
+    `subu` and `slt` start with `s` too: an N64 allocator's first argument, `sll $a0, $a2, 1` in the delay slot, was
+    read as a store and left out.)"""
+    return op not in STORES and not op.startswith(('b', 'j'))
+
+
+def _scratch(op, args, written):
+    """An argument register that arithmetic reads into an earlier one before the call held that argument's working
+    value: `mult; mflo $a2; sll $a0, $a2, 1` passes one doubled product, not the product as a third argument. A plain
+    copy (the same value passed twice) and a load (the register as a base) are left alone."""
+    registers = re.findall(r'\$(\w+)', args)
+    if len(registers) < 2 or registers[0] not in ARGREG or not _writes(op) or op.startswith(('l', 'm')):
+        return
+    if op == 'move' or op in COPIES and 'zero' in registers[1:]:
+        return
+    for read in registers[1:]:
+        if read in ARGREG and ARGREG.index(read) > ARGREG.index(registers[0]):
+            written.pop(read, None)
+
+
 def calls(asm, consumed=False, through=False):
     """[(callee, {register: constant or None})] for each `jal`, in order: the argument registers written since the
     previous call or branch target, and in the delay slot.
 
-    With `consumed`, an argument register whose value was stored (`sb $a0, D`) or compared by a branch (`beq $a0,
-    $v0`) before the call counts as not set up for it: a value m2c saw left in `$a0` and passed on. Three N64
+    With `consumed`, an argument register whose value was stored (`sb $a0, D`), compared by a branch (`beq $a0,
+    $v0`) or shifted or added into an earlier argument register (`_scratch`) before the call counts as not set up for it: a value m2c saw left in `$a0` and passed on. Three N64
     functions passed such a leftover (a byte just stored, a switch's selector, a word copied through `$a1`) to a
     callee that takes fewer arguments, and each was exact without it. A value can be both used and passed, so this
     is only an alternative reading, offered beside the ordinary one.
@@ -61,14 +84,16 @@ def calls(asm, consumed=False, through=False):
             float_dest = moved[1] if moved else None
         if float_dest in FLOAT_ARGS:
             written[FLOAT_ARGS[float_dest]] = None
-        if dest and not op.startswith(('s', 'b', 'j')) or op == 'jal':
+        if dest and _writes(op) or op == 'jal':
             held = re.fullmatch(r'\$(\w+)\s*,\s*\$\1\s*,\s*%lo\(\s*(\w+)\s*\)', args) if op == 'addiu' else None
             if held:
                 bases[held[1]] = held[2]
             elif dest and op != 'lui':
                 bases.pop(dest[1], None)
         if pending is not None:  # the delay slot
-            if dest and dest[1] in ARGREG and not op.startswith(('s', 'b', 'j')):
+            if consumed:
+                _scratch(op, args, written)
+            if dest and dest[1] in ARGREG and _writes(op):
                 written[dest[1]] = _argument(op, args, bases, written)
             found.append((pending, written))
             pending, written = None, {}
@@ -82,6 +107,7 @@ def calls(asm, consumed=False, through=False):
             if base and base[1] in ARGREG:
                 written.pop(base[1], None)
         if consumed:
+            _scratch(op, args, written)
             operands = re.findall(r'\$(\w+)', args)
             if store and operands and op not in ('swc1', 'sdc1'):
                 written.pop(operands[0], None)  # (the stored value; the base register stays an argument)
@@ -265,7 +291,7 @@ def _variants(source, name, asm, clean, opening, end, jals):
         float_params = _float_parameters(clean, callee, opening)
         if any(any(index >= count for index in float_params if index < len(args)) for count, args in call_shapes):
             drop = []
-        mixed_drop = _mixed_drop_safe(clean, call_shapes, len(drop))
+        mixed_drop = _mixed_drop_safe(clean, call_shapes, len(drop), _plain_locals(clean[opening:end]))
         for edits, change in ((add, 'add'), (drop if len(drop) == len(parens) or mixed_drop else None, 'drop')):
             if not edits:
                 continue
@@ -300,8 +326,19 @@ def _float_parameters(clean, callee, opening):
     return {i for i, param in enumerate(proto[1].split(','))
             if '*' not in param and re.search(r'\b(?:float|double|f32|f64)\b', param)}
 
-def _mixed_drop_safe(clean, shapes, dropped):
-    """Some calls already have the measured arity; only drop a plain nonvolatile global pointer at the others."""
+def _plain_locals(body):
+    """The function body's non-volatile scalar locals: reading one has no effect, so dropping it as an argument is safe."""
+    found = set()
+    for m in re.finditer(r'(?m)^[ \t]*((?:(?:unsigned|signed|struct|const|volatile|register)\s+)*' + IDENT
+                         + r')[ \t]+\**[ \t]*(' + IDENT + r')\s*;', body):
+        if m[1] not in ('return', 'goto', 'else') and not m[1].startswith('volatile') and ' volatile' not in m[1]:
+            found.add(m[2])
+    return found
+
+
+def _mixed_drop_safe(clean, shapes, dropped, plain=()):
+    """Some calls already have the measured arity; at the others only drop one plain local, or one nonvolatile global
+    pointer."""
     counts = {count for count, _ in shapes}
     if len(counts) != 1 or not dropped or dropped == len(shapes):
         return False
@@ -312,6 +349,8 @@ def _mixed_drop_safe(clean, shapes, dropped):
         if len(args) == count:
             continue
         extra = args[-1].strip()
+        if extra in plain:
+            continue
         if (not re.fullmatch(IDENT, extra)
                 or not re.search(rf'\bextern\s+void\s*\*\s*{re.escape(extra)}\s*;', clean)
                 or re.search(rf'\bvolatile\b[^;]*\b{re.escape(extra)}\b', clean)

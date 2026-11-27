@@ -262,3 +262,40 @@ def test_a_constant_copied_into_the_next_argument_register_counts():
     from decomprepair.target_call_arity_repairs import calls
     asm = 'addiu $a1, $zero, 0x40\naddu $a2, $a1, $zero\njal target\nmove $a3, $a2\n'
     assert calls(asm) == [('target', {'a1': 64, 'a2': 64, 'a3': 64})]
+
+
+def test_a_shift_in_the_delay_slot_writes_its_argument():
+    """`sll` and `subu` start with `s` as the stores do: the delay slot's write must still count."""
+    assert t.calls('jal take\nsll $a0, $v0, 1\n') == [('take', {'a0': None})]
+    assert t.calls('jal take\nsubu $a1, $v0, $v1\n') == [('take', {'a1': None})]
+    assert t.calls('jal take\nsw $a0, 0($sp)\n') == [('take', {})]
+
+
+def test_a_product_shifted_into_the_first_argument_is_not_a_third_one():
+    """m2c passed the product left in $a2 by `mflo` as a third argument; the calls with two stay as they are."""
+    source = '''s32 take();
+
+void f(void) {
+    s32 area;
+
+    area = W * H;
+    D_A = take(area * 2, 6, area);
+    D_B = take(0x100, 6);
+}
+'''
+    asm = '''mult $v1, $v0
+addiu $a1, $zero, 6
+mflo $a2
+jal take
+sll $a0, $a2, 1
+addiu $a0, $zero, 0x100
+jal take
+addiu $a1, $zero, 6
+'''
+    assert t.calls(asm, consumed=True)[0] == ('take', {'a1': 6, 'a0': None})
+    assert any('take(area * 2, 6);' in text and 'take(0x100, 6);' in text for _, text in t.variants(source, 'f', asm))
+
+
+def test_a_copied_argument_stays_beside_its_copy():
+    asm = 'addiu $a1, $zero, 0x40\naddu $a0, $a1, $zero\njal take\nnop\n'
+    assert t.calls(asm, consumed=True) == [('take', {'a1': 64, 'a0': 64})]
