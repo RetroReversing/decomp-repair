@@ -361,6 +361,9 @@ def _decode(op, w0, w1, masked):
         return 'gDPSetDepthImage', [_strip(w1)]
     if op == 0xF7 and n0 == 0xF7000000:
         return 'gDPSetFillColor', [_strip(w1)]
+    if op == 0xF6 and (a := _fields(w0, [('op', 24, 8), ('lrx', 14, 10), ('lry', 2, 10)], masked)) \
+            and (b := _fields(w1, [('ulx', 14, 10), ('uly', 2, 10)], masked)) and not (n1 is not None and n1 & 0xFF000003):
+        return 'gDPFillRectangle', [_arg(b['ulx']), _arg(b['uly']), _arg(a['lrx']), _arg(a['lry'])]
     if op == 0xFC and (a := _fields(w0, [('op', 24, 8), ('muxs0', 0, 24)], masked)):
         return 'gDPSetCombine', [_arg(a['muxs0']), _strip(w1)]
     if op in (0xE2, 0xE3) and n0 is not None:
@@ -448,6 +451,7 @@ DEFINITIONS = {
     'gDPSetDepthImage': '#define gDPSetDepthImage(pkt, i) gSetImage(pkt, 0xFE, 0, 0, 1, i)',
     'gDPSetColor': '#define gDPSetColor(pkt, c, d) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = _SHIFTL(c, 24, 8); _g->words.w1 = (unsigned int)(d); }',
     'gDPSetFillColor': '#define gDPSetFillColor(pkt, d) gDPSetColor(pkt, 0xF7, d)',
+    'gDPFillRectangle': '#define gDPFillRectangle(pkt, ulx, uly, lrx, lry) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = (_SHIFTL(0xF6, 24, 8) | _SHIFTL((lrx), 14, 10) | _SHIFTL((lry), 2, 10)); _g->words.w1 = (_SHIFTL((ulx), 14, 10) | _SHIFTL((uly), 2, 10)); }',
     'gDPSetCombine': '#define gDPSetCombine(pkt, muxs0, muxs1) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = _SHIFTL(0xFC, 24, 8) | _SHIFTL(muxs0, 0, 24); _g->words.w1 = (unsigned int)(muxs1); }',
     'gSPSetOtherMode': '#define gSPSetOtherMode(pkt, cmd, sft, len, data) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = (_SHIFTL(cmd, 24, 8) | _SHIFTL(32 - (sft) - (len), 8, 8) | _SHIFTL((len) - 1, 0, 8)); _g->words.w1 = (unsigned int)(data); }',
     'gDPSetTile': '#define gDPSetTile(pkt, fmt, siz, line, tmem, tile, palette, cmt, maskt, shiftt, cms, masks, shifts) { Gfx *_g = (Gfx *)(pkt); _g->words.w0 = _SHIFTL(0xF5, 24, 8) | _SHIFTL(fmt, 21, 3) | _SHIFTL(siz, 19, 2) | _SHIFTL(line, 9, 9) | _SHIFTL(tmem, 0, 9); _g->words.w1 = _SHIFTL(tile, 24, 3) | _SHIFTL(palette, 20, 4) | _SHIFTL(cmt, 18, 2) | _SHIFTL(maskt, 14, 4) | _SHIFTL(shiftt, 10, 4) | _SHIFTL(cms, 8, 2) | _SHIFTL(masks, 4, 4) | _SHIFTL(shifts, 0, 4); }',
@@ -840,7 +844,7 @@ def _explicit_reads(source, name, cursor, kind='void'):
     clean = part.clean
     start, end = part.opening + 1, part.end - 1
     mention = re.compile(rf'\b{re.escape(cursor)}\b')
-    write = re.compile(rf'{re.escape(cursor)}\s*=(?!=)')
+    write = re.compile(rf'{re.escape(cursor)}\s*[+-]?=(?!=)')  # `cursor += 8` advances it: never read through a local
     edits, decls, current, previous = [], [], None, None
     for a, b in _statements(clean, start, end):
         text = clean[a:b]
