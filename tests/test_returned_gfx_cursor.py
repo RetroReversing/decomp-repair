@@ -108,3 +108,37 @@ def test_derived_pointers_used_another_way_or_reordered_calls_are_left_alone():
     moved = CHAINED.replace('M2C_FIELD(temp_s0_2, s32 *, 4) = 0x300000;', 'M2C_FIELD(temp_s0_2, s32 *, 4) = g(2);')
     moved = moved.replace('M2C_FIELD(temp_s0, s32 *, 8) = (s32)', 'M2C_FIELD(temp_s0, s32 *, 8) = (s32)', 1)
     assert returned_gfx_cursor.variants(moved, 'f') == []
+
+
+def test_record_typed_fields_are_read_as_the_same_stores():
+    source = '''typedef struct {
+    s32 m0;
+    void *m4;
+    s32 m8;
+} Rec_f_arg0;
+typedef struct {
+    char pad0[0x4];
+    s32 m4;
+} Rec_f_temp;
+s32 h(s32);
+extern s32 D_80070000;
+
+s32 f(void *arg0) {
+    void *temp;
+
+    temp = arg0 + 8;
+    (((Rec_f_arg0 *) arg0)->m4) = &D_80070000;
+    (((Rec_f_arg0 *) arg0)->m0) = 0xDC080008;
+    (((Rec_f_arg0 *) arg0)->m8) = 0xDB060000;
+    (((Rec_f_temp *) temp)->m4) = h(D_80070000);
+    return temp + 8;
+}
+'''
+    children = returned_gfx_cursor.variants(source, 'f')
+    assert len(children) == 1
+    text = children[0][1]
+    assert '_g->w0 = 0xDC080008;\n        _g->w1 = (unsigned int)(&D_80070000);' in text
+    assert '_g->w0 = 0xDB060000;\n        _g->w1 = (unsigned int)(h(D_80070000));' in text
+    assert 'M2C_FIELD' not in text and 'return arg0;' in text
+    # a record whose member names are not its offsets is somebody's own struct, left alone
+    assert returned_gfx_cursor.variants(source.replace('s32 m8;', 's32 m10;'), 'f') == []
