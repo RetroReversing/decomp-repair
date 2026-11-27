@@ -1,4 +1,4 @@
-from decomprepair.neighbour_symbol_rebase import variants
+from decomprepair.neighbour_symbol_rebase import REBASE, variants
 
 SOURCE = '''extern unsigned short D_80100010;
 extern unsigned char D_80100008;
@@ -28,3 +28,23 @@ def test_a_neighbour_is_read_from_the_array():
 def test_far_symbols_and_taken_addresses_are_left_alone():
     source = 'extern int D_80100000;\nextern int D_80200000[];\nvoid g(int *);\nvoid f(void) { g(&D_80100000); D_80200000[0] = 1; }\n'
     assert variants(source, 'f') == []
+
+
+def test_a_run_of_neighbouring_references_is_rebased_together():
+    source = """extern unsigned char D_80000010[];
+extern unsigned short D_8000003C[];
+
+void f(void)
+{
+    if (D_80000010[0] != 0) {
+        D_80000010[0]--;
+    }
+    use(D_80000010[0]);
+    use(D_80000010[0] + D_8000003C[0]);
+}
+"""
+    rebased = '(*(unsigned char *)((char *)D_8000003C - 0x2c))'
+    children = [text for family, text in variants(source, 'f') if family == REBASE]
+    run = source.replace('if (D_80000010[0] != 0) {\n        D_80000010[0]--;',
+                         f'if ({rebased} != 0) {{\n        {rebased}--;')
+    assert run in children

@@ -15,7 +15,9 @@ Two families:
   `D_x[0]`, and one with all of them;
 - `neighbour_symbol_rebase`: one child per reference to a scalar `D_x` whose address is within 0x40 bytes of an
   unsized array `D_y`, rewritten `*(TYPE *)((char *)D_y - K)` (one reference at a time: a target often rebases only
-  some of them), and one with every reference of one symbol.
+  some of them), one with every reference of one symbol, and each run of two or three neighbouring references (a
+  137-instruction N64 menu handler, `-O1`: the test and the decrement of one block reached the byte as `-0x2c($s0)` off a
+  neighbouring array held in `$s0`, the later blocks by its own name; 991 -> 10, then `initializer_placement` -> 0).
 
 The program reads and writes the same addresses: the offsets come from the symbols' own names."""
 import re
@@ -27,7 +29,8 @@ UNSIZED = 'unsized_extern_array'
 REBASE = 'neighbour_symbol_rebase'
 FAMILIES = (UNSIZED, REBASE)
 REACH = 0x40
-LIMIT = 60
+LIMIT = 90
+RUN = 3  # the longest run of references rebased together
 SCALAR = r'(?:(?:volatile|unsigned|signed)\s+)*(?:char|short|int|long|float|double|[su](?:8|16|32|64)|f(?:32|64))'
 _DECL = re.compile(rf'^[ \t]*extern[ \t]+(?P<type>{SCALAR})[ \t]+(?P<name>D_(?P<at>[0-9A-Fa-f]{{8}}))[ \t]*(?P<array>\[[^\]\n]*\])?[ \t]*;', re.M)
 
@@ -69,7 +72,7 @@ def _unsized(source, part, declared):
 
 def _rebased(source, part, declared):
     arrays = [hit for hit in declared.values() if hit['array'] is not None and re.search(rf'\b{hit["name"]}\b', part.body)]
-    results = []
+    results, runs = [], []
     for symbol, hit in declared.items():
         if hit['array'] is not None and hit['array'].strip('[] \t') != '':
             continue
@@ -89,7 +92,11 @@ def _rebased(source, part, declared):
                 results.append((REBASE, _edit(source, [(start, end, text)])))
             if len(places) > 1:
                 results.append((REBASE, _edit(source, [(start, end, text) for start, end in places])))
-    return results
+            # a run of neighbouring references: one block reaches the object through the base, the rest by name
+            for size in range(2, min(len(places), RUN + 1)):
+                for first in range(len(places) - size + 1):
+                    runs.append((REBASE, _edit(source, [(start, end, text) for start, end in places[first:first + size]])))
+    return results + runs
 
 
 def variants(source, name):
