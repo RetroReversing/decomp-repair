@@ -31,6 +31,14 @@ asm_address_read_width
     nested read) is written with it: all the symbols together first, then each alone. An N64 game's m2c draft of a
     three-table copy needed it before `linear_subscript_view` could make it exact.
 
+asm_table_index_read
+    A byte table the draft declared as bytes but reads wide, through the sum of an index and the table:
+    `extern char TABLE[]; ... *(s32 *)(INDEX_BYTE + TABLE) != 0`, where the target makes the table's address
+    (`lui; addiu %lo(TABLE)`), adds the index and loads `lbu 0($v0)`. The index is often another global, so the sum
+    names two symbols and `asm_address_read_width` can't tell which is the table; the one whose address the target
+    takes is. The table is declared at the loaded width and read as `TABLE[INDEX]`, which also puts the table's
+    `lui` first. An N64 flag test went 235 -> 0 in this one step.
+
 The width is read off the target's own loads; the exact judge decides every child."""
 import re
 
@@ -40,7 +48,8 @@ FAMILY = 'asm_symbol_read_width'
 FAMILY_CAST = 'float_literal_int_cast'
 FAMILY_OFFSET = 'asm_offset_read_width'
 FAMILY_ADDRESS = 'asm_address_read_width'
-FAMILIES = (FAMILY, FAMILY_OFFSET, FAMILY_CAST, FAMILY_ADDRESS)
+FAMILY_INDEX = 'asm_table_index_read'
+FAMILIES = (FAMILY, FAMILY_OFFSET, FAMILY_CAST, FAMILY_ADDRESS, FAMILY_INDEX)
 LIMIT = 8
 _TYPE = {'lb': 's8', 'lbu': 'u8', 'lh': 's16', 'lhu': 'u16', 'lw': 's32'}
 _INTEGER = r'(?:[su](?:8|16|32)|int|short|char|unsigned\s+(?:int|short|char))'
@@ -205,6 +214,78 @@ def _address_edits(source, name, widths):
     return found
 
 
+def _table_widths(asm):
+    """{symbol: 's8' or 'u8'} for tables only read as bytes through a register made from their address."""
+    found, held = {}, {}
+    for line in (asm or '').splitlines():
+        text = re.sub(r'/\*.*?\*/', '', line).strip()
+        made = re.match(r'addiu\s+(\$\w+)\s*,\s*\$\w+\s*,\s*%lo\(\s*([A-Za-z_]\w*)\s*\)', text)
+        if made:
+            held[made[1]] = made[2]
+            continue
+        added = re.match(r'addu\s+(\$\w+)\s*,\s*(\$\w+)\s*,\s*(\$\w+)', text)
+        if added:
+            sym = held.get(added[2]) or held.get(added[3])
+            held.pop(added[1], None)
+            if sym:
+                held[added[1]] = sym
+            continue
+        load = re.match(r'(lbu|lb|lhu|lh|lw)\s+(\$\w+)\s*,\s*(.*)\((\$\w+)\)', text)
+        if load and held.get(load[4]):
+            found.setdefault(held[load[4]], set()).add(load[1])
+        written = re.match(r'(?!s[bhw]\b|b|j)[a-z][\w.]*\s+(\$\w+)\s*,', text)
+        if written:
+            held.pop(written[1], None)
+    return {sym: _TYPE[next(iter(ops))] for sym, ops in found.items() if ops in ({'lb'}, {'lbu'})}
+
+
+def _index_of(address, sym):
+    """The other term of `index + sym` or `sym + index`, or None when the sum is not that simple."""
+    name = re.escape(sym)
+    last = re.fullmatch(rf'\s*(?P<index>.+?)\s*\+\s*{name}\s*', address, re.S)
+    first = re.fullmatch(rf'\s*{name}\s*\+\s*(?P<index>.+?)\s*', address, re.S)
+    hit = last or first
+    if not hit or re.search(rf'\b{name}\b', hit['index']):
+        return None
+    top = hit['index']
+    while True:
+        inner = re.sub(r'\([^()]*\)|\[[^\[\]]*\]', '_', top)
+        if inner == top:
+            break
+        top = inner
+    if not re.fullmatch(r'[\w\s.*+\-]+' if last else r'[\w\s.*+]+', top):
+        return None  # a looser operator, or unbalanced brackets: the sum is not `index + table`
+    return hit.span('index')
+
+
+def _index_edits(source, name, widths):
+    """{symbol: edits}: the declaration at the loaded width and each wide read of the table as `TABLE[index]`."""
+    span = find(source, name)
+    if not span:
+        return {}
+    clean = _blank(source)
+    found = {}
+    read = re.compile(rf'\*\s*\(\s*(?:{_INTEGER}|M2C_UNK8?)\s*\*\s*\)\s*(?=\()')
+    for sym, kind in widths.items():
+        declared = re.search(rf'\bextern\s+(?P<t>char|s8|u8)\s+{re.escape(sym)}\s*\[\s*\]\s*;', clean)
+        if not declared:
+            continue
+        edits = []
+        for hit in read.finditer(clean, span[0], span[1]):
+            end = _closing(clean, hit.end())
+            if end is None:
+                continue
+            at = _index_of(clean[hit.end() + 1:end - 1], sym)
+            if at:
+                index = source[hit.end() + 1 + at[0]:hit.end() + 1 + at[1]]
+                edits.append((hit.start(), end, f'{sym}[{index}]'))
+        if edits:
+            if declared['t'] != kind:
+                edits.append((*declared.span('t'), kind))
+            found[sym] = edits
+    return found
+
+
 def _apply(source, edits):
     for start, end, text in sorted(edits, reverse=True):
         source = source[:start] + text + source[end:]
@@ -213,6 +294,10 @@ def _apply(source, edits):
 
 def variants(source, name, asm=''):
     out = []
+    tables = _index_edits(source, name, _table_widths(asm))
+    if len(tables) > 1:
+        out.append((FAMILY_INDEX, _apply(source, [e for edits in tables.values() for e in edits])))
+    out += [(FAMILY_INDEX, _apply(source, edits)) for _, edits in sorted(tables.items())]
     widths = _widths(asm)
     helpers = _identity_helpers(source)
     per = [(sym, _edits(source, name, sym, kind, helpers)) for sym, kind in sorted(widths.items())]
