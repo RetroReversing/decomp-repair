@@ -10,6 +10,7 @@ chooses whether the compiler's register and branch layout is closer.
 import re
 
 from .csource import find
+from .float_local_safety import unshadowed
 from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'float_negation_branch_order'
@@ -43,6 +44,8 @@ def variants(source, name, asm, header=''):
     hits += [(hit, True) for hit in _EXPLICIT_ELSE.finditer(part.clean, part.opening + 1, part.end)]
     for hit, explicit in hits:
         dst, src = hit['dst'], hit['src']
+        if not unshadowed(part.clean, part.opening, part.end, dst, src):
+            continue
         if dst == src or re.match(r'\s*else\b', part.clean[hit.end():part.end]):
             continue
         if re.search(r'/[*/]|#', source[hit.start():hit.end()]):

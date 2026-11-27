@@ -7,6 +7,7 @@ Staging that constant in the result local in both arms improved the O1 diagnosti
 import re
 
 from .csource import find
+from .float_local_safety import unshadowed
 from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'float_literal_local_stage'
@@ -26,6 +27,8 @@ def variants(source, name, header=''):
     by_shape = {}
     for hit in _PAIR.finditer(part.clean, part.opening + 1, part.end):
         dst, src = hit['dst'], hit['src']
+        if not unshadowed(part.clean, part.opening, part.end, dst, src):
+            continue
         if (dst == src or len(re.findall(r'(?m)^\s*f32\s+' + re.escape(dst) + r'\s*;', part.clean[part.opening:part.end])) != 1
                 or len(re.findall(r'\bf32\s+' + re.escape(src) + r'\b', part.clean[span[0]:part.end])) != 1
                 or any(re.search(r'&\s*\(*\s*' + re.escape(n) + r'\b', part.clean[span[0]:part.end])
