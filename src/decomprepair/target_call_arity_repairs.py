@@ -268,6 +268,9 @@ def _variants(source, name, asm, clean, opening, end, jals):
     for callee, parens in sites.items():
         wanted = targets[callee]
         if len(parens) != len(wanted):
+            text = _tail_merged(source, name, clean, callee, parens, wanted)
+            if text and text not in [t for _, t in result]:
+                result.append((FAMILY, text))
             continue
         add, drop = [], []
         call_shapes = []
@@ -316,6 +319,40 @@ def _variants(source, name, asm, clean, opening, end, jals):
                             result.append((FAMILY, both))
     return result
 
+
+
+def _tail_merged(source, name, clean, callee, parens, wanted):
+    """The C's calls the compiler merged into fewer `jal`s (cross-jumping: every arm of a chain ends in the same
+    call), all passing the same stray trailing arguments past what each of the target's calls sets up.
+
+    m2c reads the one merged call's registers as arguments, and once the call is written in each arm again
+    (`call_into_arms`) there are many calls to one `jal`: an SN GCC 2.8.1 N64 routine's seventeen
+    `load(name, count, index, ids)` were the target's one two-argument call, the index and the table's address only
+    still held in `$a2`/`$a3`. Offered when the target's calls agree on one count and every C call passes that many
+    plus the same trailing expressions, none with an effect of its own."""
+    if len(parens) < len(wanted) or not wanted:
+        return None
+    counts = {max((ARGREG.index(r) + 1 for r in regs), default=0) for regs in wanted}
+    if len(counts) != 1 or not (count := counts.pop()):
+        return None
+    edits, extras = [], set()
+    for paren in parens:
+        inner = clean[paren + 1:close(clean, paren) - 1]
+        args = m2cfix._split_top_level(inner) if inner.strip() else []
+        if not count < len(args) <= 4:
+            return None
+        extras.add(tuple(arg.strip() for arg in args[count:]))
+        edits.append((paren + 1 + _offset(inner, count), close(clean, paren) - 1))
+    if len(extras) != 1 or any(not re.fullmatch(r'&?\s*[A-Za-z_][\w.]*|-?(?:0[xX][0-9A-Fa-f]+|\d+)', arg)
+                               for arg in extras.pop()):
+        return None
+    opening = clean.find('{', find(source, name)[0])
+    if _float_parameters(clean, callee, opening):
+        return None
+    text = source
+    for a, b in sorted(edits, reverse=True):
+        text = text[:a] + text[b:]
+    return _prototype(text, callee, name, 'drop', edits, clean, parens)
 
 
 def _float_parameters(clean, callee, opening):

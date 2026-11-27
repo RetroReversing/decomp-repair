@@ -60,6 +60,10 @@ _WORD = rf'M2C_FIELD\(\s*(?P<{{0}}>{_ID})\s*,\s*(?P<{{0}}t>[su](?:8|16|32))\s*\*
 _STORE = re.compile(
     r'[ \t]*' + _WORD.format('l') + r'\s*=\s*(?:\(\s*[su](?:8|16|32)\s*\)\s*)?'
     r'(?P<un>M2C_UNALIGNED(?:16|32)\(\s*)?' + _WORD.format('r') + r'\s*\)?\s*;[ \t]*\n')
+# m2c spells the member at offset 0 as a plain dereference: `*(s32 *)var_v1 = *(s32 *)var_v0;`
+_ZERO = re.compile(
+    rf'[ \t]*\*\(\s*(?P<lt>[su](?:8|16|32))\s*\*\s*\)\s*(?P<l>{_ID})\s*=\s*(?:\(\s*[su](?:8|16|32)\s*\)\s*)?'
+    rf'\*\(\s*(?P<rt>[su](?:8|16|32))\s*\*\s*\)\s*(?P<r>{_ID})\s*;[ \t]*\n')
 _STEP = re.compile(rf'[ \t]*(?P<v>{_ID})\s*\+=\s*(?P<k>{_NUM})\s*;[ \t]*\n')
 _WIDTH = {'8': 1, '16': 2, '32': 4}
 
@@ -67,10 +71,12 @@ _WIDTH = {'8': 1, '16': 2, '32': 4}
 def _stores(text, pos, dst, src):
     """The run of copy stores at `pos` from `src` to `dst` at equal offsets: ([(offset, width)], end) ."""
     found = []
-    while (m := _STORE.match(text, pos)) is not None:
-        if (m['l'], m['r']) != (dst, src) or m['lo'] != m['ro'] or m['lt'][1:] != m['rt'][1:]:
+    while (m := _STORE.match(text, pos) or _ZERO.match(text, pos)) is not None:
+        plain = m.re is _ZERO
+        offset = '0' if plain else m['lo']
+        if (m['l'], m['r']) != (dst, src) or (not plain and offset != m['ro']) or m['lt'][1:] != m['rt'][1:]:
             break
-        found.append((int(m['lo'], 0), _WIDTH[m['lt'][1:]]))
+        found.append((int(offset, 0), _WIDTH[m['lt'][1:]]))
         pos = m.end()
     return found, pos
 
@@ -97,25 +103,25 @@ def _loop(text, pos, dst, src, end):
 
 _PAIR = re.compile(
     rf'(?P<indent>[ \t]*)(?P<a>{_ID})\s*=\s*(?P<ainit>{_EXPR})\s*;[ \t]*\n'
-    rf'[ \t]*(?P<b>{_ID})\s*=\s*(?P<binit>{_EXPR})\s*;[ \t]*\n'
-    r'[ \t]*do\s*\{[ \t]*\n')
+    rf'[ \t]*(?P<b>{_ID})\s*=\s*(?P<binit>{_EXPR})\s*;[ \t]*\n')
+_TEST = re.compile(r'[ \t]*if\s*\((?P<c>[^{};\n]*)&\s*3\s*\)\s*\)?\s*\{[ \t]*\n')
+_DO = re.compile(r'[ \t]*do\s*\{[ \t]*\n')
 
 
 def _plain(expression):
     return re.sub(r'[\s()&]', '', expression)
 
 
-def _inline_end(text, at):
-    """The block move whose end is written in the loop's test (no end pointer): the same tuple as `_run`."""
-    head = _PAIR.match(text, at)
-    first = head and _STORE.match(text, head.end())
+def _bounded(text, pos, inits):
+    """One `do { stores; steps } while (src != SRC + N);` at `pos`: (dst, src, step, N, end) or None."""
+    opened = _DO.match(text, pos)
+    first = opened and (_STORE.match(text, opened.end()) or _ZERO.match(text, opened.end()))
     if not first:
         return None
-    inits = {head['a']: head['ainit'].strip(), head['b']: head['binit'].strip()}
     dst, src = first['l'], first['r']
     if dst == src or set(inits) != {dst, src}:
         return None
-    words, pos = _stores(text, head.end(), dst, src)
+    words, pos = _stores(text, opened.end(), dst, src)
     steps = {}
     while (step := _STEP.match(text, pos)) is not None:
         steps[step['v']] = int(step['k'], 0)
@@ -127,13 +133,34 @@ def _inline_end(text, at):
     test = re.compile(
         rf'[ \t]*\}}\s*while\s*\(\s*{re.escape(src)}\s*!=\s*(?P<bound>[^;{{}}\n]+?)\s*\+\s*(?P<n>{_NUM})\s*\)*\s*;'
         r'[ \t]*\n').match(text, pos)
-    if not test or _plain(test['bound']) not in (_plain(inits[src]), src):
+    if not test or _plain(test['bound']) not in (_plain(inits[src]), src) or int(test['n'], 0) % steps[src]:
         return None
-    tail, pos = _stores(text, test.end(), dst, src)
-    size = int(test['n'], 0) + max((o + w for o, w in tail), default=0)
-    if int(test['n'], 0) % steps[src]:
+    return dst, src, steps[src], int(test['n'], 0), test.end()
+
+
+def _inline_end(text, at):
+    """The block move whose end is written in the loop's test (no end pointer): the same tuple as `_run`.
+
+    A copy of a record that may be unaligned keeps the run-time `& 3` test around two such loops."""
+    head = _PAIR.match(text, at)
+    if not head:
         return None
-    return head.start(), pos, head['indent'], inits[dst], inits[src], size, False, (dst, src)
+    inits = {head['a']: head['ainit'].strip(), head['b']: head['binit'].strip()}
+    test = _TEST.match(text, head.end())
+    loop = _bounded(text, test.end() if test else head.end(), inits)
+    if not loop:
+        return None
+    dst, src, step, bound, pos = loop
+    if test:
+        middle = re.compile(r'[ \t]*\}\s*else\s*\{[ \t]*\n').match(text, pos)
+        other = middle and _bounded(text, middle.end(), inits)
+        closing = other and re.compile(r'[ \t]*\}[ \t]*\n').match(text, other[4])
+        if not closing or other[:4] != loop[:4]:
+            return None
+        pos = closing.end()
+    tail, pos = _stores(text, pos, dst, src)
+    size = bound + max((o + w for o, w in tail), default=0)
+    return head.start(), pos, head['indent'], inits[dst], inits[src], size, bool(test), (dst, src)
 
 
 def _run(text, at):
