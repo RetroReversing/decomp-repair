@@ -24,7 +24,7 @@ or a variable set from X (`var_fs0 = temp_fv0;` before the check). Children:
 - `sqrt_nan_fallback_double`: the double square root (`sqrt.d` in the target). There the draft usually names both the
   root and the retry after the project's symbol for the C library (`v = func_X(a); if (v != v) { v = func_X(); }`), so
   the root's callee is written `sqrt` too, every block is removed and `double sqrt(double);` declared. On a 70-instruction
-  N64 model-radius function (SN GCC 2.8.1, -mfp32) the saved best went 965 -> 720 and its plain form 910 -> 245.
+  N64 model-radius function (SN GCC 2.8.1, -mfp32) the saved best went 965 -> 720 and its plain form 500 -> 245.
 The judge decides; the rewrite is gated on `sqrt.s` and the retry call both being in the target, so it never fires on a
 function that did not use the builtin."""
 import re
