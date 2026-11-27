@@ -127,3 +127,15 @@ def test_a_variable_the_tail_does_not_list_is_folded_last_not_a_crash(monkeypatc
         return found
     monkeypatch.setattr(arm_inline, '_private_regions', with_extra)
     arm_inline.variants(ONE_SITE, 'f')
+
+
+def test_a_volatile_write_after_the_join_does_not_switch_the_family_off():
+    after = ONE_SITE.rstrip().removesuffix('}') + '  *(volatile s32 *)0xA4500008 = 1;\n}\n'
+    children = arm_inline.variants(after, 'f')
+    assert children and all('*(volatile s32 *)0xA4500008 = 1;' in text for _, text in children)
+
+
+def test_a_volatile_read_in_a_rewritten_arm_still_declines():
+    inside = ONE_SITE.replace('value = D_a;', 'value = *(volatile s32 *)0xA4500004;')
+    assert arm_inline.variants(ONE_SITE, 'f')
+    assert not arm_inline.variants(inside, 'f')
