@@ -83,3 +83,23 @@ def test_a_sum_read_after_the_guard_or_a_counter_written_again_is_left_alone():
                                                                    'base = base + (temp_v0_7 << 6); used = 3;')))
     assert not _found(SOURCE.replace('void f(unsigned char *arg0, int idx, int idx2)\n{\n',
                                      'void f(unsigned char *arg0, int idx, int idx2)\n{\n  int count;\n  unsigned int used;\n'))
+
+
+def test_a_reset_after_the_sums_last_read_still_sinks_the_increment():
+    source = """void step(s32 pad) {
+    s32 next;
+
+    next = gStep + 1;
+    if (pad & table[gStep]) {
+        gStep = next;
+        if (next == 10) {
+            gDone = 1;
+            gStep = 0;
+        }
+    }
+}
+"""
+    children = [text for _, text in variants(source, 'step')]
+    assert children and 'gStep++;' in children[0] and 'if (gStep == 10)' in children[0]
+    assert variants(source.replace('gStep = 0;\n', 'gStep = 0;\n            use(next);\n'), 'step') == []
+    assert variants(source.replace('gStep = 0;', 'gStep = 3;'), 'step') == []

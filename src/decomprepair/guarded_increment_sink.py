@@ -19,7 +19,9 @@ hypothesis read from the output (reorg.c fills the slot from the fall-through), 
 `guarded_increment_sink` offers, for `V = G + 1;` (G a global, read through casts or `*(T *) &G`) right before
 `if (COND) {` where the arm assigns `G = V;` and V is read nowhere but in that arm, the function with `G++;` first in
 the arm, V replaced by G after it and the early sum gone; `guarded_increment_sink_inlined` also folds the arm's plain
-copies (`a = b;` with `a` read once, in the arm) into their use and unwraps identity inline helpers there. Each is
+copies (`a = b;` with `a` read once, in the arm) into their use and unwraps identity inline helpers there. The arm may reset the counter after (`if (v == LIMIT) { G = 0; }`)
+when no read of V follows the reset: a 132-instruction N64 input-sequence routine (SN64 GCC, `-O2 -mips3 -mfp64`, three
+such counters) needed it as one of its steps (730 -> 0 with the table read's width). Each is
 offered for every site alone and for all sites at once. The judge decides.
 """
 import re
@@ -71,6 +73,15 @@ def _top_statements(clean, start, end):
     return [(a + len(clean[a:b]) - len(clean[a:b].lstrip()), b) for a, b in out if clean[a:b].strip()]
 
 
+def _only_resets(after, g, v):
+    """Whether every later write of `g` in the arm is a reset to zero that no read of `v` follows (a bounded
+    counter wraps with `if (v == LIMIT) { g = 0; }`): up to there `g` still holds what `v` did."""
+    writes = list(re.finditer(rf'(?<![\w.>]){re.escape(g)}\s*(?:[-+*/|&^]?=(?!=)|\+\+|--)', after))
+    if not all(re.match(rf'{re.escape(g)}\s*=\s*0\s*;', after[w.start():]) for w in writes):
+        return False
+    return not writes or not _words(after[writes[0].end():], v)
+
+
 def _sites(part, defined):
     clean, sites = part.clean, []
     body = clean[part.opening:part.end]
@@ -97,7 +108,7 @@ def _sites(part, defined):
             continue
         before = clean[b_open + 1:store[0]]
         after = clean[store[1]:b_close]
-        if _words(before, g) or _words(before, v) or re.search(rf'(?<![\w.>]){re.escape(g)}\s*(?:[-+*/|&^]?=(?!=)|\+\+|--)', after):
+        if _words(before, g) or _words(before, v) or not _only_resets(after, g, v):
             continue
         sites.append(dict(g=g, v=v, sum=(hit.start(), hit.end()), open=b_open, close=b_close, store=store,
                           statements=statements))
