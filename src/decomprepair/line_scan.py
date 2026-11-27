@@ -9,7 +9,7 @@ callers: they only match lines of the exact shapes they name.
 import re
 from dataclasses import dataclass
 
-from .integer_repair_support import edit
+from .integer_repair_support import edit, view
 
 KEYWORDS = frozenset('''auto break case char const continue default do double else enum extern float for goto if int
 long register return short signed sizeof static struct switch typedef union unsigned void volatile while'''.split())
@@ -43,6 +43,47 @@ def lines(part, source):
         result.append(Line(pos, end, part.clean[pos:end].rstrip('\n'), source[pos:end].rstrip('\n')))
         pos = end
     return result
+
+
+_TRAILING = re.compile(r'(?P<indent>[ \t]*)(?P<head>(?=[^ \t]).*?(?:\)|\belse|\bdo))[ \t]*\{[ \t]*')
+_ELSE = re.compile(r'(?P<indent>[ \t]*)\}[ \t]*(?P<else>else\b.*)')
+
+
+def relaid(source, name):
+    """The source with the function's trailing braces on lines of their own (`if (c) {` and `} else {`), the layout
+    the line scan reads. A draft is written that way; C written by hand or by an agent usually isn't, and every
+    family built on the scan declined it. A source already in that layout comes back unchanged."""
+    part = view(source, name)
+    if not part:
+        return source
+    out = []
+    changed = False
+    pos = source.find('\n', part.opening) + 1
+    if pos <= 0:
+        return source
+    stop = part.end - 1
+    out.append(source[:pos])
+    while pos < stop:
+        nxt = source.find('\n', pos)
+        end = stop if nxt < 0 or nxt >= stop else nxt + 1
+        text = source[pos:end]
+        clean = part.clean[pos:end].rstrip('\n')
+        newline = '\n' if text.endswith('\n') else ''
+        # a line with a comment or a string in it is left as written
+        if clean == text.rstrip('\n'):
+            closing = _ELSE.fullmatch(clean)
+            if closing:
+                text = f"{closing['indent']}}}\n{closing['indent']}{closing['else']}{newline}"
+                clean = text.rstrip('\n').split('\n')[-1]
+                changed = True
+            trailing = _TRAILING.fullmatch(clean)
+            if trailing:
+                head = text.rstrip('\n').rsplit('{', 1)[0].rstrip()
+                text = f"{head}\n{trailing['indent']}{{{newline}"
+                changed = True
+        out.append(text)
+        pos = end
+    return ''.join(out) + source[pos:] if changed else source
 
 
 def block_end(body, index):

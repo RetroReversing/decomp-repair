@@ -21,11 +21,16 @@ local before reading it), and a lone `else { x = default; }` moved up in front o
 branch out differently (which block is out of line): in a KMC GCC 2.7.2 N64 function a halfword's value read from an
 `if (m != 0xFF)` guard went 95 -> 80 written with the default as the then arm, and 15 -> 0 once the rest of the function
 was in place (the arm order of `default_into_else` alone changed nothing).
+
+The braces may be written either way (`line_scan.relaid`): a 919-instruction function in typed hand-written C (KMC GCC
+2.7.2 -O1) was one register short at 180 with `pick = 0; if (n != 1) { pick = f() % n; }`, and exact as
+`if (n == 1) { pick = 0; } else { ... }`: the label between the test and the call keeps cse from sharing the extended
+divisor with the test. The module had offered nothing there, because the `{` ended the `if`'s line.
 """
 import re
 
 from .integer_repair_support import view
-from .line_scan import apply, block_end, block_open, block_start, lines, mentions, reads_first
+from .line_scan import apply, block_end, block_open, block_start, lines, mentions, reads_first, relaid
 from .pattern_repairs import negate
 
 FAMILY = 'default_into_else'
@@ -64,6 +69,7 @@ def _top_level_set(inside, x):
 
 
 def variants(source, name):
+    source = relaid(source, name)
     part = view(source, name)
     if not part:
         return []
