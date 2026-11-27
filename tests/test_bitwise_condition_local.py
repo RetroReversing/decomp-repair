@@ -52,3 +52,27 @@ def test_a_short_circuit_or_a_call_in_the_condition_is_left_alone():
 def test_the_module_declares_itself():
     assert REPAIR['families'] == (FAMILY_LOCAL, FAMILY_SWAP)
     assert registry.problems(registry.get('bitwise_condition_local')) == []
+
+
+MACHINE = """void func_800D0424(void *arg0) {
+    s32 var_a0;
+    u16 temp_v0;
+
+    temp_v0 = (*(u16 *)((s8 *)arg0 + 0x14)) + 1;
+    (*(u16 *)((s8 *)arg0 + 0x14)) = temp_v0;
+
+    if ((D_800FFC70 != 1) & (((s16) temp_v0) < 0xA0)) {
+        (*(u16 *)((s8 *)arg0 + 0x14)) = 0xA0U;
+        var_a0 = 0xA0;
+    }
+    if (var_a0 < 0x1B) {
+        step(arg0);
+    }
+}
+"""
+
+
+def test_a_flag_already_first_still_gets_the_narrowed_value_in_the_phi_local():
+    # a 142-instruction N64 counter (KMC GCC 2.7.2 -O1): 330 -> 0 with the local set above the test, flag first
+    found = [c for f, c in variants(MACHINE, 'func_800D0424') if f == FAMILY_LOCAL]
+    assert any('var_a0 = (s16) temp_v0;\n    if ((D_800FFC70 != 1) & (var_a0 < 0xA0))' in c for c in found)
