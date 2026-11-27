@@ -6,6 +6,10 @@ inside the `if` and exact with it in a local before the test. Offered for a poin
 `if`'s block whose base the function never assigns, and for one read in the condition after a store the condition
 makes (m2c's `(c) || (p->n = v, …, M2C_FIELD(M2C_FIELD(arg0, void **, 0x20), …))`): gcc 2.7.2 won't move that load
 above the store, where the game read it first (96.0% -> exact).
+
+Only a read is hoisted. A field the code writes (`M2C_FIELD(p, ...) = v;`, `+=`, `++`, `&`) is a place, not a value: replacing
+it with the local turned a store into an assignment to the local, so the store vanished and a search kept the source
+because the target's instructions around it still fit. A load after an earlier write of the same field is left too.
 """
 import re
 
@@ -16,6 +20,14 @@ FAMILY = 'field_load_hoist'
 FAMILIES = (FAMILY,)
 
 I = r'[A-Za-z_]\w*'
+
+
+def _written(clean, first, last):
+    """True when the field at `clean[first:last]` is a place (assigned, stepped or its address taken), not a value."""
+    if re.match(r'\s*(?:(?:<<|>>|[-+*/%&|^])?=(?!=)|\+\+|--)', clean[last:]):
+        return True
+    before = clean[:first].rstrip()
+    return before.endswith(('++', '--')) or (before.endswith('&') and not before.endswith('&&'))
 
 
 def variants(source, name):
@@ -49,6 +61,11 @@ def variants(source, name):
             base = load['base']
             if base not in params or re.search(r'(?<![=!<>])\b' + base + r'\s*=(?!=)', clean[opening:end]):
                 continue
+            if _written(clean, at + load.start(), at + load.end()):
+                continue
+            same = re.escape(load.group())
+            if re.search(same + r'\s*(?:(?:<<|>>|[-+*/%&|^])?=(?!=)|\+\+|--)', clean[start:at + load.start()]):
+                continue  # written first: read before the test, it is the old value
             pointee = load['type'].strip()[:-1].strip()
             expr = source[at + load.start():at + load.end()]
             ind = cond['ind']
