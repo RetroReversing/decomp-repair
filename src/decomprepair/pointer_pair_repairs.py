@@ -274,14 +274,28 @@ def reuse(source,name,header=''):
     flow=local_flow.analyze(source,name,declarations=ds)
     if not flow:return []
     ds=[d for d in ds if initialized(flow,d['name'])]
-    out=[]
-    for index,left in enumerate(ds):
-        for right in ds[index+1:]:
-            if ''.join(left['type'].split())!=''.join(right['type'].split()) or not local_flow.disjoint(flow,left,right):continue
-            if not refs(part,left) or not refs(part,right):continue
-            out.append(('pointer_local_reuse',edit(source,[(right.start(),right.end(),'')]+[(h.start(),h.end(),left['name']) for h in refs(part,right)])))
-            if len(out)==3:return out
+    pairs = []
+    for index, left in enumerate(ds):
+        for right in ds[index + 1:]:
+            if ''.join(left['type'].split()) != ''.join(right['type'].split()) or not local_flow.disjoint(flow, left, right):
+                continue
+            if not refs(part, left) or not refs(part, right):
+                continue
+            # Search-created phase names are useful early merge candidates:
+            # dropping them can restore the original register lifetimes.
+            phase = any(d['name'].startswith('__repair_') for d in (left, right))
+            pairs.append((not phase, left, right))
+    out = []
+    for _, left, right in sorted(pairs, key=lambda item: item[0]):
+        # Both declarations can own the merged value. Their source positions
+        # can produce different compiler allocation orders.
+        for keep, remove in ((left, right), (right, left)):
+            out.append(('pointer_local_reuse', edit(source, [(remove.start(), remove.end(), '')] +
+                                                    [(h.start(), h.end(), keep['name']) for h in refs(part, remove)])))
+            if len(out) >= LIMIT:
+                return out
     return out
+
 
 
 def variants(source,name,header=''):
