@@ -23,6 +23,10 @@ draft saw). The symbol is read as m2c read it, so no data is needed. One result 
 
 symbol_stack_block_copy
     One child with every run of the function rewritten (the runs share the array, so they go together).
+
+A function that copies two constant tables into two buffers of their own (an N64 sound loader, SN GCC 2.8.1: two
+tables of four address and size pairs, each eight words read back through a pointer) has two bases; each becomes its
+own array.
 """
 import re
 
@@ -71,21 +75,10 @@ def _runs(copies, declared):
     return runs
 
 
-def variants(source, name):
-    part = view(source, name)
-    if not part or 'M2C_FIELD(&' not in source:
-        return []
-    clean, low, high = part.clean, part.opening, part.end
-    declared = {}
-    for hit in _DECL.finditer(clean, low, high):
-        declared[int(hit['slot'], 16)] = hit
-    runs = _runs(list(_COPY.finditer(clean, low, high)), declared)
-    if not runs or len({base for base, _, _ in runs}) != 1:
-        return []
-    base = runs[0][0]
-    longest = max(size for _, size, _ in runs)
+def _buffer(source, clean, low, high, declared, base, longest, runs):
+    """The edits that make the stack buffer at `base` one array filled by block copies, or None."""
     if base not in declared or base % 4:
-        return []
+        return None
     inside = sorted(slot for slot in declared if base <= slot < base + longest)
     copies = [copy for _, _, run in runs for copy in run]
     # every one of those locals is only copied to by these runs; the first may also be passed on as the buffer
@@ -98,7 +91,7 @@ def variants(source, name):
                 continue
             after = clean[low + use.end():].lstrip()[:1]
             if slot != base or after in ('[', '=', '.') or after == '+' or after == '-':
-                return []
+                return None
             uses.append((at, low + use.end(), local))
     later = sorted({int(m, 16) for m in _ANY_SLOT.findall(clean[low:high])})
     following = [slot for slot in later if slot >= base + longest]
@@ -113,7 +106,32 @@ def variants(source, name):
         first = run[0]
         edits.append((first.start(), run[-1].end(),
                       f'{first["indent"]}__builtin_memcpy({local}, &{first["symbol"]}, {size});\n'))
-    edits += uses
+    return edits + uses
+
+
+def variants(source, name):
+    part = view(source, name)
+    if not part or 'M2C_FIELD(&' not in source:
+        return []
+    clean, low, high = part.clean, part.opening, part.end
+    declared = {}
+    for hit in _DECL.finditer(clean, low, high):
+        declared[int(hit['slot'], 16)] = hit
+    runs = _runs(list(_COPY.finditer(clean, low, high)), declared)
+    if not runs:
+        return []
+    # each buffer is rewritten on its own; every one must pass, since a draft with half of them still copies by word
+    edits = []
+    bases = sorted({base for base, _, _ in runs})
+    for number, base in enumerate(bases):
+        own = [run for run in runs if run[0] == base]
+        longest = max(size for _, size, _ in own)
+        if number + 1 < len(bases) and base + longest > bases[number + 1]:
+            return []
+        found = _buffer(source, clean, low, high, declared, base, longest, own)
+        if found is None:
+            return []
+        edits += found
     return [(FAMILY, edit(source, edits))]
 
 
