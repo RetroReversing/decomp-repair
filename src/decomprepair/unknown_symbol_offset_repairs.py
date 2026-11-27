@@ -6,6 +6,8 @@ such a symbol `extern M2C_UNK D_800C0784;` (`M2C_UNK` is `s32`), so C multiplies
 offset m2c meant, the compiler deciding between them:
 - element offsets: the byte multiplier divided by the symbol's size (`arg2 * 0x10` -> `arg2 * 4`), in place or in
   the one assignment of a temporary used only as such an offset. An N64 game's function matched this way.
+Addresses that are only passed or stored (`f(&D + 0x10)`, a table of 16-byte rows given to a spawn routine) get the
+byte form too, all at once.
 - byte offsets: `*(M2C_UNK *)((s8 *)&D + temp)`, also with the temporary folded into each use.
 Only symbols the source itself declares `M2C_UNK`, `M2C_UNK32` or `M2C_UNK16`; an offset that isn't a multiple of
 the size gets the byte form only.
@@ -70,6 +72,22 @@ def _edit(source, edits):
     return source
 
 
+def _address_values(source, clean, low, high, declared):
+    """`&D + 0x10` passed or stored (not read through): m2c's byte offset, scaled by the symbol's drafted type."""
+    edits = []
+    for symbol, kind in declared.items():
+        for hit in re.finditer(r'(?<![&*])&' + symbol + r'\s*\+\s*(' + NUMBER + r')\b(?=\s*[,);])', clean[low:high]):
+            start, end = low + hit.start(), low + hit.end()
+            # an argument or an assigned value only: `*(&D + 8)` and `*(T *)(&D + 8)` are the dereference rewrites'
+            if re.search(r'(?:,|(?<![=!<>])=|(?<![\w])(?!(?:if|while|switch|return|sizeof)\b)[A-Za-z_]\w*\()\s*\Z', clean[:start]):
+                edits.append((start, end, f'({kind} *)((s8 *)&{symbol} + {hit[1]})'))
+    if not edits:
+        return []
+    for start, end, text in sorted(edits, reverse=True):
+        source = source[:start] + text + source[end:]
+    return [(FAMILY, source)]
+
+
 def variants(source, name, header=''):
     span = find(source, name)
     if not span:
@@ -83,9 +101,10 @@ def variants(source, name, header=''):
     symbols = {symbol: SIZES[kind] for symbol, kind in declared.items()}
     if not symbols:
         return []
+    values = _address_values(source, clean, opening + 1, span[1], declared)
     sites = _sites(clean, opening + 1, span[1], symbols)
     if not sites:
-        return []
+        return values
     body = clean[opening + 1:span[1]]
     element, byte, folded = [], [], []
     temps = {}
@@ -140,4 +159,4 @@ def variants(source, name, header=''):
     result.append((FAMILY, _edit(source, byte)))
     if folded:
         result.append((FAMILY, _edit(source, fold_byte)))
-    return result
+    return result + [child for child in values if child not in result]
