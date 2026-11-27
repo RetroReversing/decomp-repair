@@ -240,3 +240,28 @@ def test_a_web_that_ends_in_a_goto_past_every_mention_is_split():
 def test_a_web_whose_goto_lands_where_the_local_is_read_stays():
     reads = GOTO_EXIT.replace('    done(rec);', '    done(rec, scratch);')
     assert not [t for label, t in w.variants(reads, 'h') if label == w.FAMILY and 'scratch_2' in t]
+
+
+def test_a_self_reading_chain_stays_one_local_where_a_value_starts_afresh():
+    source = '''void f(Entry *entry, s32 count) {
+    u32 size;
+
+    if (count != 0) {
+        size = count * 0x28;
+        load(entry, size);
+    }
+    if (entry != 0) {
+        size = entry->size;
+        size = swap(size);
+        size = round_up(size);
+        load(entry, size);
+    }
+}
+'''
+    out = children(source)
+    chain = out[0]
+    assert 'size_1 = count * 0x28;' in chain and 'size_2 = entry->size;' in chain
+    assert 'size_2 = swap(size_2);' in chain and 'size_2 = round_up(size_2);' in chain
+    assert 'size_3' not in chain
+    # the split at every assignment is still offered
+    assert any('size_3 = swap(size_2);' in text for text in out)
