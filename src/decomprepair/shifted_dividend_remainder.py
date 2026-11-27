@@ -11,7 +11,11 @@ The draft is not the program (for a negative value `x / 10 != (x >> 1) / 5`), an
 more bit and moves the `mult` and its registers. On a 94-instruction N64 object update (SN64 GCC 2.8.1,
 `-G0 -mips3 -O2`) the saved best scored 705 and writing both sites as `%` was exact (705 -> 0).
 
-Shape: `A - P * N` where A is `X >> k`, P is `Y / M`, `M == N << k`, N no power of two, and Y is X (the same text, casts
+An unsigned dividend comes out the same way through `multu`, with a further shift left outside the quotient:
+`h = x / 6; ... (x >> 2) - ((h >> 3) * 0xC)` is `(x >> 2) % 12` (6 << 3 == 12 << 2). On a 92-instruction N64 object
+update (same compiler, `-G0 -mips3 -O2`) that site alone took the machine draft from 1045 to 230.
+
+Shape: `A - P * N` where A is `X >> k`, P is `Y / M` (or `(Y / M0) >> s` with `M == M0 << s`), `M == N << k`, N no power of two, and Y is X (the same text, casts
 aside), or one of them is a local assigned once with the other. A, the product and the quotient may each sit in such a
 local. Children: every site written `A' % N` at once, then each site alone. The judge decides.
 """
@@ -106,13 +110,31 @@ def _number(text):
     return int(text.rstrip('uUlL'), 0) if re.fullmatch(NUMBER, text) else None
 
 
+_FIELD_CAST = re.compile(r'\(\s*(u8|u16|u32)\s*\)\s*(?=M2C_FIELD\s*\([^;]*?,\s*\1\s*\*\s*,)')
+
+
 def _same(body, left, right):
-    keys = [{_key(value)} for value in (left, right)]
+    # a cast to the type the field already has (`(u8) M2C_FIELD(p, u8 *, 9)`) is the field itself
+    keys = [{_key(_FIELD_CAST.sub('', _operand(value)))} for value in (left, right)]
     for found, value in zip(keys, (left, right)):
         defined = _definition(body, _operand(value))
         if defined is not None:
-            found.add(_key(defined))
+            found.add(_key(_FIELD_CAST.sub('', _operand(defined))))
     return bool(keys[0] & keys[1])
+
+
+def _quotient(body, text):
+    """(dividend, divisor) of the quotient `text`: `Y / M`, or `(Y / M0) >> s`, which m2c leaves of an unsigned
+    division whose magic multiply it read with a smaller shift (`M == M0 << s`)."""
+    division = _binary(body, text, '/')
+    if division:
+        return division[0], _number(division[1])
+    shift = _binary(body, text, '>>')
+    if shift:
+        bits, division = _number(shift[1]), _binary(body, shift[0], '/')
+        if division and bits is not None and 0 < bits < 16 and (divisor := _number(division[1])):
+            return division[0], divisor << bits
+    return None
 
 
 def _site(body, text):
@@ -132,8 +154,8 @@ def _site(body, text):
         divisor = _number(factor)
         if divisor is None or divisor < 3 or not divisor & (divisor - 1):
             continue
-        division = _binary(body, quotient, '/')
-        if not division or _number(division[1]) != divisor << bits or not _same(body, shift[0], division[0]):
+        division = _quotient(body, quotient)
+        if not division or division[1] != divisor << bits or not _same(body, shift[0], division[0]):
             continue
         kept = _unwrapped(left)
         if not re.fullmatch(IDENT, kept):
