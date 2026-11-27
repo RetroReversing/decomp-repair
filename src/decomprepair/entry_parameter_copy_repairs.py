@@ -134,12 +134,13 @@ def variants(source, name):
             # A read ahead of the copy sees the parameter, not the local the copy has not filled yet.
             earlier = [(part.opening + 1 + hit.start(), part.opening + 1 + hit.end(), f'{param}_in')
                        for hit in re.finditer(rf'(?<![\w.>]){param}\b', part.clean[part.opening + 1:place])]
-            edits = [(where, where + len(param), f'{param}_in'),
-                     (part.opening + 1, part.opening + 1, f'\n  {kind} {param};'),
-                     (place, place, f'\n  {param} = {param}_in;')] + earlier
-            own.append((FAMILY, edit(source, edits)))
-            edits[2] = (place, place, f'\n  {param} = {param}_in;\n  {param}_in = 0;')
-            own_clobbers.append((CLOBBER, edit(source, edits)))
+            declaration, copy = f'\n  {kind} {param};', f'\n  {param} = {param}_in;'
+            for family, text, found_here in ((FAMILY, copy, own), (CLOBBER, f'{copy}\n  {param}_in = 0;', own_clobbers)):
+                # With no declarations of its own the copy lands where the declaration goes: two edits at one position
+                # are ordered by their text, which put `str = str_in;` above `u8 *str;` and no child compiled.
+                added = ([(place, place, declaration + text)] if place == part.opening + 1 else
+                         [(part.opening + 1, part.opening + 1, declaration), (place, place, text)])
+                found_here.append((family, edit(source, [(where, where + len(param), f'{param}_in')] + added + earlier)))
         plain.append(own)
         clobbers.append(own_clobbers)
     return _interleaved(plain)[:PER_FAMILY] + _interleaved(clobbers)[:PER_FAMILY]
