@@ -12,6 +12,19 @@ merge picks. Neither half of that is enough alone, so one child does all of it:
    where `t` is not read again.
 
 `conditional_store_arms` does both, `conditional_store_arms_keep_goto` only the second.
+
+`conditional_store_tested_arms` is the case where the test reads the temporary itself, so the temporary stays and only
+the store moves into the arms:
+
+    t = f(x);                              t = f(x);
+    if (t == 0) { t = 0x3000; }      ->    if (t == 0) { p->limit = 0x3000; } else { p->limit = t; }
+    p->limit = t;
+
+Its first value may be anything, a call too: that statement is kept. An N64 object update (SN GCC 2.8.1, `-G0 -mips3
+-O2 -mfp64`, 63 instructions) was exact with this one edit (415 -> 0 from a typed rewrite, 765 -> 490 from the saved
+best): the default went into `$v0` in a branch-likely's delay slot, one `sw` followed and the field was read back,
+where the temporary's form moved the result into `$v1` and stored it later. Why the store is not forwarded to the
+read in the two-arm form (cse running before the arms' stores are merged) is a hypothesis.
 """
 import re
 
@@ -22,7 +35,8 @@ from .pattern_repairs import close
 
 FAMILY = 'conditional_store_arms'
 KEEP_FAMILY = 'conditional_store_arms_keep_goto'
-FAMILIES = (FAMILY, KEEP_FAMILY)
+TESTED_FAMILY = 'conditional_store_tested_arms'
+FAMILIES = (FAMILY, KEEP_FAMILY, TESTED_FAMILY)
 
 IDENT = r'[A-Za-z_]\w*'
 NARROW = {'u8': 'u8', 's8': 's8', 'char': 's8', 'u16': 'u16', 's16': 's16', 'short': 's16',
@@ -167,6 +181,62 @@ def _sites(source, name, flow):
     return found
 
 
+def _tested_sites(source, name, flow):
+    """[(start, end, replacement)] for `if (t ..) { t = X; } store = t;`: one store in each arm."""
+    parsed = _function(source, name)
+    if not parsed or flow is None:
+        return []
+    clean, body = parsed
+    found = []
+    for block in blocks(body):
+        for test, store in zip(block, block[1:]):
+            if store.kind != 'simple' or test.kind != 'if' or test.parts['other'] is not None:
+                continue
+            hit = re.fullmatch(r'\s*([^;={}]+?)\s*=(?!=)\s*((?:\(\s*[A-Za-z_][\w ]*\**\s*\)\s*)?)(' + IDENT + r')\s*;',
+                               clean[store.start:store.end], re.S)
+            if not hit:
+                continue
+            var, cast = hit[3], hit[2]
+            lhs = source[store.start + hit.start(1):store.start + hit.end(1)].strip()
+            declared = next((d for d in flow.locals if d['name'] == var), None)
+            if declared is None or _uses(lhs, var) or not _pure(lhs):
+                continue
+            if not lhs.startswith(('*', '(*')) and not re.search(r'[\[.]|->', lhs) and any(
+                    d['name'] == lhs for d in flow.locals):
+                continue
+            inner = test.parts['then']['stmts']
+            chosen = _assignment(clean, source, inner[0], var) if len(inner) == 1 else None
+            condition = source[slice(*test.parts['cond'])].strip()
+            if not chosen or not _uses(condition, var) or not _pure(condition):
+                continue
+            other = chosen[1]
+            if _uses(other, var) or not _pure(other) or not _dead_after(flow, var, store.start):
+                continue
+            narrow = NARROW.get(' '.join(declared['type'].split()))
+            if narrow and not cast and not re.fullmatch(r'0|[1-9]\d?|0x[0-7]?[0-9A-Fa-f]', other):
+                other = f'({narrow}) ({other})'
+            if cast and not re.fullmatch(r'\w+', other):
+                other = f'({other})'
+            text = f'if ({condition}) {{ {lhs} = {cast}{other}; }} else {{ {lhs} = {cast}{var}; }}'
+            found.append((test.start, store.end, text))
+            if len(found) >= MAX_SITES:
+                return found
+    return found
+
+
+def _tested(source, name):
+    """One child per site and, with several, one with all of them."""
+    sites = _tested_sites(source, name, local_flow.analyze(source, name))
+    groups = [[site] for site in sites] + ([sites] if len(sites) > 1 else [])
+    out = []
+    for group in groups:
+        text = source
+        for start, end, new in sorted(group, reverse=True):
+            text = text[:start] + new + text[end:]
+        out.append((TESTED_FAMILY, text))
+    return out
+
+
 def _byte_store(source, lhs, narrow):
     """`*p = t;` where `p` is declared a pointer no wider than the temporary: the store narrows by itself."""
     hit = re.fullmatch(r'\*\s*(' + IDENT + r')', lhs)
@@ -207,7 +277,7 @@ def variants(source, name):
     text = _rewrite(source, name)
     if text:
         result.append((KEEP_FAMILY if inlined != source else FAMILY, text))
-    return result
+    return result + _tested(source, name)
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}
