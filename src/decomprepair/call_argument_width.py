@@ -11,6 +11,11 @@ call_argument_width_local
     sign-extends (`sll`/`sra $aN`) is declared at that width: all of them together, then one at a time.
 call_argument_width_prototype
     The candidate's own prototype of such a callee takes those positions at that width.
+call_argument_width_cast
+    An argument that is an expression (`f(base + i)`), where there is no local to retype and the callee's prototype may
+    be the shared header's, is cast to that width at the call: all of them together, then one at a time. On a KMC gcc
+    2.7.2 (`-O2`) controller pak routine whose block address was a word sum, the missing `andi $a2,$a2,0xffff` before the
+    read was the last difference (160 -> 0).
 
 Evidence is the target's own assembly; the exact judge decides every child.
 """
@@ -21,9 +26,12 @@ from .repair_preflight import _PROTO
 
 LOCAL = 'call_argument_width_local'
 PROTOTYPE = 'call_argument_width_prototype'
-FAMILIES = (LOCAL, PROTOTYPE)
+CAST = 'call_argument_width_cast'
+FAMILIES = (LOCAL, PROTOTYPE, CAST)
 LIMIT = 8
 WORD = {'s32', 'u32', 'int', 'signed int', 'unsigned int'}
+# a name or a number, however it is cast: nothing to wrap (a local is retyped instead)
+_SIMPLE = re.compile(r'(?:\(\s*[\w ]+\)\s*)*-?\w+')
 _COMMENT = re.compile(r'/\*.*?\*/')
 _CALL = re.compile(r'^jal\s+(' + IDENT + r')\b')
 _BRANCH = re.compile(r'^(?:j|jr|jal|jalr|b[a-z0-9]*)\s')
@@ -64,7 +72,7 @@ def variants(source, name, asm=''):
     if not part or not evidence or re.search(r'^\s*#', part.clean, re.M):
         return []
     declared = {d['name']: d for d in locals_for(part) if ' '.join(d['type'].split()) in WORD}
-    retypes, prototypes = {}, []
+    retypes, prototypes, casts = {}, [], []
     for callee, positions in evidence.items():
         for start, end in calls(part, callee):
             args = split_args(part.clean[start:end])
@@ -75,6 +83,11 @@ def variants(source, name, asm=''):
                 bare = re.fullmatch(r'\s*(?:\(\s*[\w ]+\)\s*)*(' + IDENT + r')\s*', part.clean[start + low:start + high])
                 if bare and bare[1] in declared:
                     retypes.setdefault(bare[1], kind)
+                text = part.clean[start + low:start + high]
+                expression = text.strip()
+                if expression and not _SIMPLE.fullmatch(expression) and not re.match(rf'\(\s*{kind}\s*\)', expression):
+                    at = start + low + len(text) - len(text.lstrip())
+                    casts.append((at, at + len(expression), f'({kind}) ({source[at:at + len(expression)]})'))
         prototype = [p for p in _PROTO.finditer(part.clean[:part.opening]) if p[1] == callee]
         if len(prototype) != 1:
             continue
@@ -95,7 +108,12 @@ def variants(source, name, asm=''):
         children.append((PROTOTYPE, edit(source, prototypes)))
     if len(changes) > 1:
         children += [(LOCAL, edit(source, [change])) for change in changes[:LIMIT]]
-    return children[:LIMIT + 2]
+    children = children[:LIMIT + 2]
+    if casts:
+        children.append((CAST, edit(source, casts)))
+    if len(casts) > 1:
+        children += [(CAST, edit(source, [change])) for change in casts[:LIMIT]]
+    return children
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'asm'), 'archs': ('mips',)}

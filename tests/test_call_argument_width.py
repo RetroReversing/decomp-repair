@@ -39,6 +39,17 @@ def test_no_witness_no_child():
     assert repair.variants(SOURCE, 'f', '') == []
 
 
+def test_an_expression_argument_is_cast_at_the_call():
+    source = SOURCE.replace('draw(0, x, y);', 'draw(0, x0 + y, y);')
+    casts = [child for family, child in repair.variants(source, 'f', ASM) if family == repair.CAST]
+    assert casts == [source.replace('draw(0, x0 + y, y);', 'draw(0, (u16) (x0 + y), y);')]
+    both = source.replace('draw(0, x0 + y, y);', 'draw(0, x0 + y, y + 1);')
+    casts = [child for family, child in repair.variants(both, 'f', ASM) if family == repair.CAST]
+    assert 'draw(0, (u16) (x0 + y), (u8) (y + 1));' in casts[0] and len(casts) == 3
+    done = source.replace('x0 + y', '(u16) (x0 + y)')
+    assert repair.CAST not in dict(repair.variants(done, 'f', ASM))
+
+
 FOLDED = '''void f(u8 flag, s32 a) {
     u16 t[16];
     s32 i;
