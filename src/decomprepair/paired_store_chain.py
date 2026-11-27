@@ -22,7 +22,7 @@ LIMIT = 6
 IDENT = r'[A-Za-z_]\w*'
 PAIR = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<first>[^;{{}}\n=][^;{{}}\n]*?)\s=\s(?P<value>{IDENT});[ \t]*\n'
                   rf'[ \t]*(?P<second>[^;{{}}\n=][^;{{}}\n]*?)\s=\s(?P=value);[ \t]*\n')
-CALL = re.compile(rf'\b{IDENT}\s*\(')
+CALL = re.compile(rf'\b(?!M2C_(?:FIELD|BITWISE)\b){IDENT}\s*\(')  # m2c's field macros read, not call
 
 
 def _target(text):

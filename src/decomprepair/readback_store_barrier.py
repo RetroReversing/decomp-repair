@@ -20,7 +20,7 @@ FAMILY = 'readback_store_barrier'
 FAMILIES = (FAMILY,)
 LIMIT = 6
 _STORE = re.compile(r'^(?P<indent>[ \t]*)(?P<lhs>[^;{}=\n]*?[^;{}=!<>\s][^;{}=\n]*?)\s*=(?!=)\s*(?P<rhs>[^;{}\n]+);[ \t]*$')
-_CALL = re.compile(r'\b[A-Za-z_]\w*\s*\(')
+_CALL = re.compile(r'\b(?!M2C_(?:FIELD|BITWISE)\b)[A-Za-z_]\w*\s*\(')  # m2c's field macros read, not call
 _COMPOUND = re.compile(r'[-+*/%&|^<>!]$')
 
 
