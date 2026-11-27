@@ -225,3 +225,24 @@ def test_every_level_runs_the_same(tmp_path, source, name, calls):
     assert found
     for _, text in found:
         assert run(tmp_path, prelude + text, calls) == expected
+
+
+STRIDE_HELPER = """inline static char *add_bytes(char *base, int off)
+{
+  return base + off;
+}
+
+s32 stride(void)
+{
+  static s16 pool[8];
+  return (s32) (add_bytes(pool, 4) - (char *) pool);
+}
+"""
+
+
+@host
+def test_inline_helper_arguments_keep_the_parameter_pointer_type(tmp_path):
+    """A `char *` helper handed an `s16 *` steps by bytes; written in place without the cast it stepped by halfwords."""
+    text = dict(c.levels(STRIDE_HELPER, 'stride'))[c.SCAFFOLD]
+    assert 'add_bytes' not in text
+    assert run(tmp_path, text, ['stride()']) == run(tmp_path, STRIDE_HELPER, ['stride()'])
