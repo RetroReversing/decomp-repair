@@ -27,16 +27,16 @@ def children(source, **kwargs):
     return dict(wide.variants(source, 'run', **kwargs))
 
 
-def test_zero_pair_becomes_one_wide_argument():
-    text = children(SOURCE)[wide.ARGUMENT]
-    assert 'extern void set_time();' in text
-    assert '((void (*)()) set_time)(0ULL);' in text
+def test_zero_pair_becomes_one_wide_argument_with_prototype():
+    text = children(SOURCE, header='void set_time(unsigned long long value);')[wide.ARGUMENT]
+    assert 'set_time(0ULL);' in text
+    assert '(*)' not in text
 
 
-def test_declared_callee_is_only_cast():
-    text = children(SOURCE, header='void set_time(s32, s32);')[wide.ARGUMENT]
-    assert 'extern void set_time' not in text
-    assert '((void (*)()) set_time)(0ULL);' in text
+def test_unknown_and_incompatible_prototypes_are_left_alone():
+    assert wide.ARGUMENT not in children(SOURCE)
+    assert wide.ARGUMENT not in children(SOURCE, header='void set_time(s32, s32);')
+    assert wide.ARGUMENT not in children(SOURCE, header='void set_time(unsigned long long, ...);')
 
 
 def test_odd_position_is_left_alone():
