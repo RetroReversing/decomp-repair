@@ -52,3 +52,22 @@ def test_a_call_keeps_its_parentheses_and_stays_a_barrier():
 }
 """
     assert all(text.index('a = g') < text.index('s32 *, 8') for text in _children(call))
+
+
+def test_a_global_field_in_m2c_spelling_passes_other_globals():
+    source = '''void f(void *arg0) {
+    M2C_FIELD(&D_80007C00, u8 *, 0) = (u8) M2C_FIELD(arg0, u8 *, 0x71);
+    D_80007B00 = 0;
+    D_80007B04 = 0;
+    M2C_FIELD(&D_80007C00, u8 *, 2) = (u8) M2C_FIELD(arg0, u8 *, 0x73);
+}
+'''
+    children = [child for _, child in module.variants(source, 'f')]
+    assert any(child.index('0x73') < child.index('D_80007B00') for child in children)
+
+
+def test_a_global_field_does_not_pass_a_store_to_the_same_memory():
+    store = '    M2C_FIELD(&D_80007C00, u8 *, 2) = 1;'
+    for other in ('D_80007C00 = 0;', 'D_80007C02 = 0;'):
+        assert not module.commutes(store, other)
+    assert module.commutes(store, 'D_80007C04 = 0;')
