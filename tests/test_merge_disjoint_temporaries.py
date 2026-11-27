@@ -112,3 +112,32 @@ def test_a_fence_around_a_jump_stays():
     source = SAVED.replace('do { temp_s0_2 = g(arg0, 3); } while (0);', 'do { temp_s0_2 = g(arg0, 3); goto out; } while (0);')
     out = _children(source)
     assert out and all('goto out; } while (0);' in s for s in out)
+
+
+def test_a_temporary_passed_to_the_call_that_sets_the_next_is_merged():
+    source = """void *a();
+void f(void) {
+    void *temp_v0;
+    void *temp_v0_2;
+    temp_v0 = a();
+    if (temp_v0 != 0) {
+        g(temp_v0);
+    }
+    temp_v0_2 = a(temp_v0);
+    g(temp_v0_2);
+}
+"""
+    assert any('temp_v0 = a(temp_v0); g(temp_v0);' in child for child in _children(source))
+
+
+def test_a_temporary_changed_by_the_statement_that_sets_the_next_is_left_alone():
+    source = """void f(void) {
+    s32 temp_v0;
+    s32 temp_v0_2;
+    temp_v0 = a();
+    g(temp_v0);
+    temp_v0_2 = a(temp_v0++);
+    g(temp_v0_2);
+}
+"""
+    assert variants(source, 'f') == []
