@@ -83,3 +83,40 @@ def test_a_subscript_name_changed_in_between_or_a_call_in_a_subscript_keeps_the_
     assert direct.variants(VERTS.replace('vt->flag = 0;', 'gBase++;\n        vt->flag = 0;'), 'g') == []
     assert direct.variants(VERTS.replace('vt->flag = 0;', 'vt->flag = k++;'), 'g') == []
     assert direct.variants(VERTS.replace('[gBase + k];', '[next(k)];'), 'g') == []
+
+
+LOADER = '''typedef struct { u32 data; u8 pad[0x14]; } Slot;
+extern Slot gSlots[];
+extern s32 gCount;
+Slot *f(u32 dst) {
+    Slot *obj;
+    Slot *result;
+
+    result = 0;
+    obj = &gSlots[gCount];
+    obj->data = dst;
+    if (load(obj, 0) != 0) {
+        gSlots[gCount].data = 0;
+    } else {
+        result = &gSlots[gCount];
+        gCount++;
+    }
+    return result;
+}
+'''
+
+
+def test_a_pointer_handed_to_the_next_call_is_written_as_the_element_address():
+    (family, text), = direct.variants(LOADER, 'f')
+    assert family == direct.FAMILY
+    assert 'obj' not in text
+    assert '    gSlots[gCount].data = dst;\n    if (load(&gSlots[gCount], 0) != 0) {\n' in text
+
+
+def test_a_passed_pointer_read_after_the_call_or_after_another_call_is_kept():
+    after = LOADER.replace('        gSlots[gCount].data = 0;', '        obj->data = 0;')
+    assert direct.variants(after, 'f') == []
+    earlier = LOADER.replace('    obj->data = dst;\n', '    obj->data = dst;\n    gCount = next();\n')
+    assert direct.variants(earlier, 'f') == []
+    nested = LOADER.replace('load(obj, 0)', 'load(obj, next())')
+    assert direct.variants(nested, 'f') == []
