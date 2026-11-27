@@ -9,6 +9,11 @@ The `((Field_f32 *) (((char *) base) + 0x14))->v` cells that m2c's drafts for th
 1137-instruction player-update routine (KMC GCC 2.7.2, `-G0 -mips3 -mgp32 -mfp32 -O2`) `!(field < locals.vec58[1])`
 written `!(locals.vec58[1] > field)` loaded the two floats in the target's order (570 -> 550 and a row less).
 
+A scalar cast moves with its operand, and a cast bare name (`(u32) global`) is an operand. One child also swaps
+every comparison at once: a 118-instruction N64 enemy-respawn routine (SN64 GCC 2.8.1, `-G0 -mips3 -O2`) tested three
+table bytes and one global in one `&&` chain, each written `field >= limit` by m2c where the game compared
+`limit <= field`; the four swaps together were 1385 -> 1135.
+
 Every comparison is offered (a cap of four once left the later ones unreachable), and a comparison repeated with only
 its numbers changed (unrolled vector components, `a[0] < b[0]`, `a[1] < b[1]`, ...) also gets one child that swaps
 all of its copies: a 144-instruction three-component bounds update (`-O1`) needed nine swaps, 90 -> 0 in three.
@@ -25,6 +30,7 @@ IDENT = r'[A-Za-z_]\w*'
 FIELD_TYPE = r'Field_[A-Za-z_]\w*'
 FLIP = {'<': '>', '>': '<', '<=': '>=', '>=': '<=', '==': '==', '!=': '!='}
 LIMIT = 32  # single swaps offered
+SCALAR_CASTS = r'(?:\(\s*(?:[su](?:8|16|32)|f32)\s*\)\s*)*'  # a cast belongs to its operand and moves with it
 
 
 def _operand_end(text, start):
@@ -66,7 +72,12 @@ def variants(source, name):
         if left_start is None:
             continue
         right_start = opening + op.end()
-        right_end = _operand_end(clean, right_start)
+        left_start = opening + re.search(SCALAR_CASTS + r'\Z', clean[opening:left_start]).start()
+        cast = re.match(r'\s*' + SCALAR_CASTS, clean[right_start:])
+        right_end = _operand_end(clean, right_start + cast.end())
+        if right_end is None and cast[0].strip():  # `(u32) global`: a bare name is an operand once it is cast
+            bare = re.compile(IDENT + r'(?![\w(])').match(clean, right_start + cast.end())
+            right_end = bare.end() if bare else None
         if right_end is None or re.match(r'\s*[-+*/&|^]', clean[right_end:]) or re.search(r'[-+*/&|^]\s*$', clean[:left_start]):
             continue
         left = source[left_start:left_end].strip()
@@ -78,6 +89,8 @@ def variants(source, name):
         groups.setdefault(swap[3], []).append(swap)
     # the repeated comparisons first: one child for all the copies, then each comparison alone
     chosen = [group for group in groups.values() if len(group) > 1] + [[swap] for swap in swaps[:LIMIT]]
+    if len(groups) > 1:  # then every comparison at once: a `&&` chain whose last test has another shape
+        chosen.insert(len(chosen) - len(swaps[:LIMIT]), swaps)
     result, seen = [], set()
     for group in chosen:
         text = source
