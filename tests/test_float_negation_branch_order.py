@@ -44,3 +44,10 @@ def test_rejects_missing_evidence_volatile_names_and_else():
                for _, text in repair.variants(SOURCE, 'f', ASM, '#define x side_effect()'))
     assert repair.variants(SOURCE.replace('if (!(x > 0.0f)) { a = -x; }',
                                          'if (!(x > 0.0f)) { a = -x; } else { other(); }'), 'f', ASM)[0][1].count('a = x;') == 1
+
+
+def test_negative_initialization_can_be_written_as_an_explicit_else():
+    source = "void f(void) {\n    f32 a;\n    f32 x;\n    a = -x;\n    if (x > 0.0f) {\n        a = x;\n    }\n}\n"
+    asm = "c.lt.s $f0, $f2\nbc1t .L1\nneg.s $f0, $f2\n"
+    out = repair.variants(source, 'f', asm)
+    assert len(out) == 1 and '} else {' in out[0][1] and 'a = -x;' in out[0][1]

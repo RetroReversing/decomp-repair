@@ -21,6 +21,12 @@ _PATTERN = re.compile(
     rf'(?P=dst)\s*=\s*-\s*(?P=src)\s*;\s*\}}'
 )
 
+_EXPLICIT_ELSE = re.compile(
+    rf'(?m)^(?P<indent>[ \t]*)(?P<dst>{IDENT})\s*=\s*-\s*(?P<src>{IDENT})\s*;[ \t]*\n'
+    rf'[ \t]*if\s*\(\s*(?P=src)\s*>\s*0\.0[fF]\s*\)\s*\{{\s*'
+    rf'(?P=dst)\s*=\s*(?P=src)\s*;\s*\}}'
+)
+
 
 def variants(source, name, asm, header=''):
     if not all(re.search(pattern, asm or '') for pattern in (r'\bc\.lt\.s\b', r'\bbc1t\b', r'\bneg\.s\b')):
@@ -33,7 +39,9 @@ def variants(source, name, asm, header=''):
             or re.search(r'(?m)^\s*#\s*(?:define|undef)\s+f32\b', macros)):
         return []
     edits = []
-    for hit in _PATTERN.finditer(part.clean, part.opening + 1, part.end):
+    hits = [(hit, False) for hit in _PATTERN.finditer(part.clean, part.opening + 1, part.end)]
+    hits += [(hit, True) for hit in _EXPLICIT_ELSE.finditer(part.clean, part.opening + 1, part.end)]
+    for hit, explicit in hits:
         dst, src = hit['dst'], hit['src']
         if dst == src or re.match(r'\s*else\b', part.clean[hit.end():part.end]):
             continue
@@ -43,8 +51,12 @@ def variants(source, name, asm, header=''):
                or re.search(rf'(?m)^\s*#\s*(?:define|undef)\s+{re.escape(var)}\b', macros) for var in (dst, src)):
             continue
         indent = hit['indent']
-        replacement = (f'{indent}{dst} = -{src};\n{indent}if ({src} > 0.0f) {{\n'
-                       f'{indent}    {dst} = {src};\n{indent}}}')
+        if explicit:
+            replacement = (f'{indent}if ({src} > 0.0f) {{\n{indent}    {dst} = {src};\n'
+                           f'{indent}}} else {{\n{indent}    {dst} = -{src};\n{indent}}}')
+        else:
+            replacement = (f'{indent}{dst} = -{src};\n{indent}if ({src} > 0.0f) {{\n'
+                           f'{indent}    {dst} = {src};\n{indent}}}')
         edits.append((hit.start(), hit.end(), replacement))
         if len(edits) >= LIMIT:
             break
