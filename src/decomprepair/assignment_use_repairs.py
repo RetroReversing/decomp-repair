@@ -11,6 +11,10 @@ a call's arguments is computed with them. Two N64 functions matched so, each 98-
     temp_s1 = arg1 + arg3;
     g(temp_s0 + D, temp_s1);                     g(temp_s0 + D, temp_s1 = arg1 + arg3);
 
+A field read in m2c's `M2C_FIELD(p, s32 *, 0x80)` spelling is such a load too (the call test used to take the macro for
+a call and offer nothing): a 112-instruction N64 object update (SN GCC 2.8.1) loads a record's field right before the
+`if` that tests it, five statements and one call below where m2c put it.
+
 Offered: the assignment moved to just before the statement that first uses it, and written into that use. A
 hypothesis: what lies between may change the value (a store through an aliasing pointer), which the judge settles.
 """
@@ -45,7 +49,9 @@ def variants(source, name):
     result = []
     for hit in ASSIGN.finditer(clean, opening + 1, end):
         var, value = hit['var'], hit['value']
-        if var not in declared or re.search(IDENT + r'\s*\(', value) or re.search(r'\b' + var + r'\b', value):
+        # `M2C_FIELD(p, type, off)` is m2c's spelling of a load, not a call
+        if var not in declared or re.search(IDENT + r'\s*\(', re.sub(r'\bM2C_FIELD\s*\(', '(', value)) \
+                or re.search(r'\b' + var + r'\b', value):
             continue
         # the next statements of the same block, until the first that mentions the variable
         line_start = hit.end()

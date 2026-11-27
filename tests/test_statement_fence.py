@@ -52,5 +52,19 @@ def test_calls_volatile_and_goto_are_left_alone():
 
 def test_it_is_registered_and_bounded():
     repair = registry.get('statement_fence')
-    assert repair and registry.problems(repair) == [] and set(REPAIR['families']) == {FAMILY_RUN, FAMILY_DEEP}
+    assert repair and registry.problems(repair) == [] and set(REPAIR['families']) == {FAMILY_RUN, FAMILY_DEEP, 'fence_store_before_call'}
     assert len(variants(SOURCE, 'f')) <= LIMIT
+
+
+def test_a_store_right_before_a_call_is_fenced():
+    source = """void f(Obj *o) {
+    s32 value;
+
+    value = get(o);
+    M2C_FIELD(o, s32 *, 0x34) = value;
+    next(o);
+    o->n = 0;
+}
+"""
+    out = [child for family, child in variants(source, 'f') if family == 'fence_store_before_call']
+    assert len(out) == 1 and 'do { M2C_FIELD(o, s32 *, 0x34) = value; } while (0);\n    next(o);' in out[0]
