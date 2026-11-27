@@ -23,6 +23,7 @@ offers, for each ordered pair of locals that share a statement (v, w), the state
 one to three for all of them at once, the same with each one a step lighter or at depth one, and the depth-one shapes
 with one of the next statements pinned once in a scope of its own, fewest wrappers first. The judge decides, and no
 child is a verdict."""
+import bisect
 import re
 
 from .integer_repair_support import IDENT, edit, view
@@ -127,42 +128,57 @@ def _wrap(text, depth):
     return 'do { ' * depth + text.strip() + ' } while (0);' * depth
 
 
-def ladders(found):
-    """[(wrappers, {unit index: depth})]. For each ordered pair of locals (v, w) that share a statement: the statements
-    that name v and not w, each depth for all of them, with each one a step lighter or at depth one, and those lighter
-    shapes with one of the next statements pinned once (the schedule moves with the scopes)."""
+def ladders(found, limit=None):
+    """Rank distinct wrapper sets by count, size and positions, retaining only the first `limit` when given.
+
+    The local lane uses at most LIMIT children. A large function can have millions of possible sets, so keeping and
+    sorting every discarded set consumed gigabytes before even the first child could be judged. A set outside the
+    current best limit can never become one of the best later; keep only the best keys while enumerating.
+    """
     names = {n for _, _, _, counts in found for n in counts}
-    out, seen = [], set()  # out: ((wrappers, units, the picks sorted), (wrappers, picks)), sorted on the first
+    containing = {name: {i for i, (_, _, _, counts) in enumerate(found) if name in counts} for name in names}
+    ranked, selected = [], set()
+
+    def offer(shape, total, pin=None):
+        length = len(shape) + (pin is not None)
+        cost = total + (pin is not None)
+        if limit and len(ranked) >= limit and (cost, length) > ranked[-1][:2]:
+            return
+        picks = shape if pin is None else {**shape, pin: 1}
+        key = tuple(sorted(picks.items()))
+        rank = (cost, length, key)
+        if rank in selected or (limit and len(ranked) >= limit and rank >= ranked[-1]):
+            return
+        bisect.insort(ranked, rank)
+        selected.add(rank)
+        if limit and len(ranked) > limit:
+            selected.remove(ranked.pop())
+
     for v in sorted(names):
         for w in sorted(names - {v}):
-            if not any(v in counts and w in counts for _, _, _, counts in found):
+            if containing[v].isdisjoint(containing[w]):
                 continue
-            indexes = [i for i, (_, _, _, counts) in enumerate(found) if v in counts and w not in counts]
+            indexes = sorted(containing[v] - containing[w])
             if not indexes:
                 continue
             for depth in DEPTHS:
-                shapes = [({i: depth for i in indexes}, False)]
+                shape = {i: depth for i in indexes}
+                total = depth * len(indexes)
+                offer(shape, total)
                 if depth > 1 and len(indexes) > 1:
                     for light in indexes:
-                        shapes.append(({**{i: depth for i in indexes}, light: depth - 1}, False))
+                        lighter = {**shape, light: depth - 1}
+                        offer(lighter, total - 1)
                         if depth > 2:
-                            shapes.append(({**{i: depth for i in indexes}, light: 1}, True))
-                for shape, pinned in shapes:
-                    pins = [None]
-                    if pinned:
-                        pins += [p for p in range(len(found)) if p not in shape
-                                 and any(0 < p - i <= PIN_REACH for i in shape)]
-                    for pin in pins:
-                        picks = dict(shape)
-                        if pin is not None:
-                            picks[pin] = 1
-                        key = tuple(sorted(picks.items()))
-                        if key not in seen:
-                            seen.add(key)
-                            total = sum(picks.values())
-                            out.append(((total, len(picks), key), (total, picks)))  # `key` is the sorted picks already
-    out.sort(key=lambda item: item[0])
-    return [item[1] for item in out]
+                            lighter = {**shape, light: 1}
+                            light_total = total - depth + 1
+                            offer(lighter, light_total)
+                            if not limit or len(ranked) < limit or (light_total + 1, len(indexes) + 1) <= ranked[-1][:2]:
+                                pins = sorted({p for i in indexes for p in range(i + 1, min(len(found), i + PIN_REACH + 1))
+                                               if p not in lighter})
+                                for pin in pins:
+                                    offer(lighter, light_total, pin)
+    return [(total, dict(key)) for total, _, key in ranked]
 
 
 def variants(source, name):
@@ -172,13 +188,21 @@ def variants(source, name):
         found, _ = units(base, name)
         if len(found) < 2:
             continue
-        for _, picks in ladders(found):
-            text = edit(base, [(found[i][0], found[i][1], _wrap(found[i][2], depth)) for i, depth in picks.items()])
-            if text not in seen:
-                seen.add(text)
-                result.append((FAMILY, text))
-                if len(result) >= LIMIT:  # the rest were thrown away: stop building them
-                    return result
+        count = LIMIT
+        while True:
+            shapes = ladders(found, count)
+            for _, picks in shapes:
+                text = edit(base, [(found[i][0], found[i][1], _wrap(found[i][2], depth)) for i, depth in picks.items()])
+                if text not in seen:
+                    seen.add(text)
+                    result.append((FAMILY, text))
+                    if len(result) >= LIMIT:
+                        return result
+            if len(shapes) < count:
+                break
+            # Equal edits can collapse to one text. Ask for more ranks until the child limit is filled or exhausted.
+            count *= 2
+
     return result
 
 
