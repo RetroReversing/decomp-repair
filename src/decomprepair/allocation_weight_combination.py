@@ -22,7 +22,7 @@ These are hypotheses for the exact judge, never equivalence claims."""
 import itertools
 import re
 
-from .integer_repair_support import IDENT, edit, view
+from .integer_repair_support import IDENT, edit, locals_for, view
 from .pattern_repairs import close
 
 FAMILIES = ('weight_scope_unwrap', 'spill_slot_copy_collapse', 'init_sink_into_guard', 'weight_combination')
@@ -116,7 +116,17 @@ def _collapse_edits(part, source):
 def _sink_edits(part):
     clean = part.clean
     out = []
+    local_names = {decl['name'] for decl in locals_for(part)}
+    # A non-escaping automatic pointer is also local; never sink an observable global or static store.
+    pointer_decls = list(re.finditer(rf'(?m)^\s*(?:s32|u32|int|char|void)\s*\*\s*({IDENT})\s*;', part.body))
+    for decl in pointer_decls:
+        name = decl[1]
+        if (sum(d[1] == name for d in pointer_decls) == 1
+                and not re.search(rf'&\s*{re.escape(name)}\b', part.body)):
+            local_names.add(name)
     for hit in re.finditer(rf'(?<![\w.>])({IDENT})\s*=\s*({CONSTANT})\s*;(\s*)if\s*\(', clean[part.opening+1:part.end]):
+        if hit[1] not in local_names:
+            continue
         base = part.opening+1
         opening = base+hit.end()-1
         stop = close(clean, opening)
