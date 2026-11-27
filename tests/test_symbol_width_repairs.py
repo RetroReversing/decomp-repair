@@ -128,3 +128,28 @@ void f(int i) {
     assert not w.measured_halfword_update_variants(source, 'f', '#define fields get()', target, rows)
     assert not w.measured_halfword_update_variants(source.replace('int i)', 'int i, char *fields)'), 'f', '', target, rows)
     assert not w.measured_halfword_update_variants(source, 'f', '', target + '\nlbu $v0, %lo(fields)($v0)', rows)
+
+
+PER_SITE = '''extern char D_801688C4[];
+
+void f(s32 off) {
+    draw(*(D_801688C4 + off));
+    probe(*(D_801688C4 + off));
+    hit(*(D_801688C4 + off));
+}
+'''
+PER_SITE_ASM = '''lwc1       $fv0, %lo(D_801688C4)($at)
+lw         $a1, %lo(D_801688C4)($a1)
+lw         $a1, %lo(D_801688C4)($a1)
+'''
+
+
+def test_two_views_of_one_word_are_typed_site_by_site():
+    # An N64 spawn loop: a position loaded `lwc1` for one call and `lw` for two more; one width for all left it
+    # at 3090, typed site by site it was exact.
+    (family, out), = w.variants(PER_SITE, 'f', PER_SITE_ASM)
+    assert family == 'symbol_access_width'
+    assert 'draw(*(f32 *)(D_801688C4 + off));' in out
+    assert out.count('*(s32 *)(D_801688C4 + off)') == 2
+    # accesses that don't pair off with the sites: no answer
+    assert w.variants(PER_SITE, 'f', PER_SITE_ASM + 'lwc1 $f0, %lo(D_801688C4)($at)\n') == []

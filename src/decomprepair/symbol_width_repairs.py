@@ -44,19 +44,25 @@ def variants(source, name, asm):
         word = {t for t in types if t not in ('s8', 'u8')}
         if not types or len(types) != len(word):
             continue  # byte accesses too, or none: the draft's char is as good a guess as any
-        kind = 'u16' if word == {'u16', 's16'} else word.pop() if len(word) == 1 else None
-        if kind is None:
-            continue
-        edits = []
+        kind = 'u16' if word == {'u16', 's16'} else next(iter(word)) if len(word) == 1 else None
+        hits = []
         for hit in re.finditer(r'\*\s*\(\s*' + re.escape(symbol) + r'\s*\+', clean[opening:end]):
             star = opening + hit.start()
-            paren = clean.find('(', star)
-            if not close(clean, paren):
+            if not close(clean, clean.find('(', star)):
                 break
-            edits.append((star + 1, star + 1, f'({kind} *)'))
+            hits.append(star)
         else:
-            if edits:
-                groups.append(edits)
+            if kind is None:
+                # Two types of one size are two views of one datum (`lwc1` passed to a float parameter, then `lw`
+                # of the same word passed in an integer register): type each site as the target's access in turn,
+                # only when there are exactly as many accesses as sites.
+                kinds = _accesses(asm, symbol)
+                if len(kinds) != len(hits):
+                    continue
+            else:
+                kinds = [kind] * len(hits)
+            if hits:
+                groups.append([(star + 1, star + 1, f'({each} *)') for star, each in zip(hits, kinds)])
     result = []
 
     def apply(chosen):
