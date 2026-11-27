@@ -26,6 +26,9 @@ back as the product first (the loop's `goto`s stay for the goto families):
     off = i * 2;
     if (i < 16) goto loop;
 
+The record's base is the lowest address read rounded down to the widest member, so each member keeps its address:
+a table whose lowest field is a byte at +1 is the record at the word before it (`D_80100000[i].m1`).
+
 A table that no access scales by the record size is another table and stays as it is, as long as it lies outside the
 record. A member of a small array that the target names by no `%lo` and the source does not cast takes the width of
 its own subscript. Such a 97-instruction N64 initialiser went from a 5200 draft to this form (820, and exact with the
@@ -233,7 +236,13 @@ def variants(source, name, header='', asm=''):
     accesses = [a for a in accesses if a not in others]
     if len(accesses) < 3 or any(a[4] is None for a in accesses):
         return []
-    base = min(a[3] for a in accesses)
+    # The record starts where every member is aligned in it: the lowest address read can be a byte field in the
+    # middle of the first word (a state byte at +1), and a base there puts the halfwords and words at odd offsets,
+    # which the compiler pads to other addresses.
+    align = max(_SIZE[a[4]] for a in accesses)
+    base = min(a[3] for a in accesses) // align * align
+    if stride % align or any((a[3] - base) % _SIZE[a[4]] for a in accesses):
+        return []
     if any(base <= a[3] < base + stride for a in others):
         return []
     rows = f'D_{base:08X}'

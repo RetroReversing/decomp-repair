@@ -119,3 +119,42 @@ def test_a_table_inside_the_record_that_no_record_index_reaches_is_declined():
     inside = CARRIED.replace('*(off + D_80200000)', '*(off + D_80100010)').replace(
         'extern u16 D_80200000[];', 'extern u16 D_80100010[];')
     assert records.variants(inside, 'f', '', CARRIED_ASM) == []
+
+
+def test_a_table_read_from_a_byte_inside_its_first_word_starts_at_that_word():
+    source = '''typedef int M2C_UNK;
+extern M2C_UNK D_80100001;
+extern M2C_UNK D_80100010;
+extern M2C_UNK D_80100018;
+
+void f(void) {
+    s32 off;
+    u16 i;
+
+    off = i * 0x64;
+    if (*(&D_80100001 + off) == 2) {
+        *(&D_80100018 + off) = 0;
+    }
+    i = *(&D_80100010 + off);
+}
+'''
+    asm = '''
+    lbu        $v0, %lo(D_80100001)($at)
+    lhu        $a1, %lo(D_80100010)($at)
+    swc1       $f0, %lo(D_80100018)($at)
+'''
+    [(_, out)] = records.variants(source, 'f', '', asm)
+    assert 'extern IndexedRow D_80100000[];' in out
+    assert 'D_80100000[i].m1 == 2' in out and 'D_80100000[i].m18 = 0;' in out and 'i = D_80100000[i].m10;' in out
+    assert 'u8 m1;' in out and 'u16 m10;' in out and 'f32 m18;' in out
+
+
+def test_declines_members_that_no_record_base_can_align():
+    source = '''extern char D_80100000[];
+void f(s32 i) {
+    *(s16 *)(D_80100000 + (i * 0x10)) = 1;
+    *(s32 *)(D_80100000 + (i * 0x10) + 6) = 2;
+    *(s32 *)(D_80100000 + (i * 0x10) + 8) = 3;
+}
+'''
+    assert records.variants(source, 'f') == []
