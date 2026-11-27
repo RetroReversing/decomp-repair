@@ -90,7 +90,7 @@ def variants(source, name):
         return []
     result = []
     named = any(run[0]['sym'] for run in runs)
-    for constant in ((True, False) if named else (False,)):
+    for constant in ([True, False] if named else [False]):
         text = source
         for run in reversed(runs):
             text = text[:run[0].start()] + _line(source, run, constant) + text[run[-1].end():]
