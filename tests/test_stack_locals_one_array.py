@@ -88,3 +88,10 @@ def test_a_hole_wider_than_the_limit_is_not_bridged():
 def test_declared_in_the_registry():
     from decomprepair import registry
     assert 'stack_locals_one_array' in {f for m in registry.declared() for f in getattr(m, 'families', ())} or True
+
+
+def test_an_array_only_passed_by_name_does_not_stop_the_family():
+    # (a block copy writes the array by name, with no literal index: compacting it had no slot for it and raised)
+    source = ('void f(void)\n{\n    s32 sp20[8];\n    s32 sp40;\n    s32 sp44;\n\n    fill(sp20);\n'
+              '    g(&sp40, &sp44);\n}\n')
+    r.variants(source, 'f')

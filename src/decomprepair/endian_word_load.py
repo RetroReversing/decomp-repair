@@ -13,7 +13,7 @@ byte_swap_spelled_out
 
 byte_swap_word_in_place
     `y = ((u32) (SWAP(x) + 0xF) >> 4) * 0x10;` becomes `x = SWAP(x); x = ((u32) (x + 0xF) >> 4) << 4;` with `y`'s later
-    reads naming `x`, and `p = SWAP(a) + BASE;` becomes `a = SWAP(a); p = a + BASE;` (`BASE += a;` when BASE is the
+    reads naming `x`, a plain `y = SWAP(x);` becomes `x = SWAP(x);` the same way, and `p = SWAP(a) + BASE;` becomes `a = SWAP(a); p = a + BASE;` (`BASE += a;` when BASE is the
     cursor below). Only when the word is not read again.
 
 round_up_global_in_place
@@ -22,7 +22,7 @@ round_up_global_in_place
 
 symbol_cursor_base
     A symbol's address passed to calls twice or more and then added to a swapped offset is a local set at the top of the
-    function (`repair_base`), advanced by `repair_base += a;`.
+    function (`repair_base`), advanced by `repair_base += a;`. The sum may be an assignment or a call's argument.
 
 endian_word_load
     The four above in one child: apart they move the score little or make it worse.
@@ -168,6 +168,12 @@ def _in_place_one(body):
             new = body[:start] + text + _rename(later, y, x)
             return _drop_declaration(new, y)
         added = re.fullmatch(r' \+ (&?[A-Za-z_]\w*);', after)
+        copied = re.fullmatch(rf'[ \t]*({IDENT}) = ', before)
+        if copied and after == ';':
+            p = copied[1]
+            # the swapped word kept in another local, which nothing read before: write it back into the word's own
+            if p != x and _count(body[:start], p) == 1 and _declaration(body, p) and not re.search(rf'\b{p}\s*>>', later):
+                return _drop_declaration(body[:start] + f'{indent}{x} = {hit[0]};' + _rename(later, p, x), p)
         if summed and added:
             p, base = summed[1], added[1]
             if p in (x, base) or _count(body[:start], p) != 1 or not _declaration(body, p):
@@ -211,7 +217,13 @@ def _base(body, source):
         word = rf'(?:\(s32\) )?&?{symbol}\b'
         passed = list(re.finditer(rf'(?<=[(,] )\(s32\) &?{symbol}\b(?=[,)])|(?<=\()\(s32\) &?{symbol}\b(?=[,)])', body))
         added = [m for m in re.finditer(rf'\+ (&?{symbol});', body)]
-        if len(passed) < 2 or len(added) != 1 or len(re.findall(word, body)) != len(passed) + 1:
+        summed = list(re.finditer(rf'(?<=[(,] )(?:\(s32\) )?\(&{symbol} \+ (?P<offset>{IDENT})\)(?=[,)])', body))
+        if len(passed) < 2 or len(added) + len(summed) != 1 or len(re.findall(word, body)) != len(passed) + 1:
+            continue
+        if summed:
+            new = _summed_argument(body, symbol, passed, summed[0])
+            if new:
+                return new
             continue
         # a sum written with the word on the left of the address, assigned to a local: `p = SWAP + &D;`
         start, end, line = _line(body, added[0].start())
@@ -237,11 +249,37 @@ def _base(body, source):
             head = head[:hit.start()] + CURSOR + head[hit.end():]
         new = head + total + later
         new = _drop_declaration(new, p)
-        gap = re.search(_GAP, new)
-        pad = re.match(r'[ \t]*', new[gap.end():])[0]
-        return (new[:gap.start('blank')] + f'{pad}s32 {CURSOR};\n' + new[gap.start('blank'):gap.end()]
-                + f'{pad}{CURSOR} = {address};\n' + new[gap.end():])
+        return _declare_cursor(new, address)
     return None
+
+
+def _declare_cursor(body, address):
+    gap = re.search(_GAP, body)
+    pad = re.match(r'[ \t]*', body[gap.end():])[0]
+    return (body[:gap.start('blank')] + f'{pad}s32 {CURSOR};\n' + body[gap.start('blank'):gap.end()]
+            + f'{pad}{CURSOR} = {address};\n' + body[gap.end():])
+
+
+def _summed_argument(body, symbol, passed, hit):
+    """The sum written inside a call's argument, `f(..., (s32) (&D + a), ...)`: `repair_base += a;` before that call."""
+    offset = hit['offset']
+    if not _declaration(body, offset):
+        return None
+    # the call's own statement, and any earlier call that already took the plain address
+    start = body.rfind('\n', 0, hit.start()) + 1
+    indent = body[start:len(body) - len(body[start:].lstrip(' \t'))]
+    first = re.search(_GAP, body)
+    if not first or first.end() > passed[0].start() or passed[-1].start() > start:
+        return None
+    # above the statements just before it that don't name the cursor's word, back to the word's own assignment
+    set_ = list(re.finditer(rf'(?m)^[ \t]*{offset} = [^\n;]*;\n', body[:start]))
+    at = set_[-1].end() if set_ else start
+    tail = body[at:]
+    tail = tail[:hit.start() - at] + CURSOR + tail[hit.end() - at:]
+    head = body[:at]
+    for one in passed[::-1]:
+        head = head[:one.start()] + CURSOR + head[one.end():]
+    return _declare_cursor(head + f'{indent}{CURSOR} += {offset};\n' + tail, f'(s32) &{symbol}')
 
 
 _PAIR = (r'(?m)^[ \t]*(?P<{0}>' + IDENT + r') = D_[0-9A-Fa-f]{{8}};\n'

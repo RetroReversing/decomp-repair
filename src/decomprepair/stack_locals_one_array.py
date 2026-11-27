@@ -169,7 +169,10 @@ def _children(source, opening, body, bare, block, hole):
                 s, e = opening + use.start(), opening + use.end()
                 if count:
                     if use[2] is None:
-                        slot = slots[(off, 0)]
+                        slot = slots.get((off, 0))
+                        if slot is None:  # an array only passed by name: compacting would leave it no slot
+                            ok = False
+                            break
                         edits.append((s, e, buf if slot == 0 else f'&{buf}[{slot}]'))
                         continue
                     slot = slots.get((off, int(use[2])))
