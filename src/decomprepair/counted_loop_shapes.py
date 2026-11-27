@@ -9,7 +9,9 @@ table, one of them inside the other) went 99 -> 0 through the steps below; none 
 matching source put the score back to a nonzero number, from 5 to 210). The mechanisms are hypotheses from measured
 frames and cc1's `-dl -dg` tables, not read from the compiler's source:
 
-* `counted_for_loop`: `i = 0; if (n != 0) { do { ...; i += 1; } while (i < n); }` as `for (i = 0; i < n; i += 1)`.
+* `counted_for_loop`: `i = 0; if (n != 0) { do { ...; i += 1; } while (i < n); }` as `for (i = 0; i < n; i += 1)`
+  (a signed counter only under a `n > 0` guard, the `for`'s own test at zero: a 104-instruction N64 directory search
+  went 2819 -> 24 -> 0 with the `goto` loop made a `do` and then this).
   Each pre-test loop of the matching source added eight bytes to the frame with no `sp` access (cc1 listed an
   unallocated temporary with no uses, a spill slot reload had reserved), so four loops were the 0x20 bytes the draft
   had been padding with an unused array. `counted_for_loop_frame` converts every loop and drops that array as one
@@ -247,9 +249,17 @@ def _guard_matches(loop):
     return False
 
 
+def _positive_guard(loop):
+    """The guard is `bound > 0` (or `0 < bound`): the test of `for (i = 0; i < bound; ...)` at zero for a signed counter
+    too, where `if (bound)` and `bound != 0` also run the loop's body once for a negative bound."""
+    guard = re.sub(r'\s+', '', loop.guard)
+    guard = re.sub(r'^\((.*)\)$', r'\1', guard)
+    return bool(re.search(r'(?<![->])>0$', guard) or guard.startswith('0<') and not guard.startswith(('0<<', '0<=')))
+
+
 def for_edits(loop):
     """Edits that write one guarded loop as a `for`, or None."""
-    if loop.kind != 'guarded' or not _unsigned_counter(loop) or not _guard_matches(loop):
+    if loop.kind != 'guarded' or not _guard_matches(loop) or not (_unsigned_counter(loop) or _positive_guard(loop)):
         return None
     clean = loop.part.clean
     inside = clean[loop.body_start:loop.body_end]
