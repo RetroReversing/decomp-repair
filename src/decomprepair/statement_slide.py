@@ -18,6 +18,12 @@ the other way round) put the load where a 1315-instruction sound-sequence interp
 no `andi` of the local (KMC GCC 2.7.2 `-O2`, 5475 -> 5025). The move is a hypothesis for the scheduler; the judge decides. Bounded to `LIMIT` children,
 shortest slides first.
 
+A field spelled through a record cast, `((Emitter *) arg0)->owner = ((Emitter *) arg0)->owner;`, is compared by the
+member's byte interval too, laid out from the struct in the source or header. The app's typed m2c drafts write every
+field that way, so none of their stores could move: a 78-instruction N64 effect spawner (SN GCC 2.8.1 `-G0 -mips3
+-O2`) needed the owner copy of each new record above two constant stores (300 -> 120 -> 0, one arm a step), after
+1668 automatic trials had offered nothing.
+
 A statement that only works on a plain local no call can reach (declared, never address-taken, not `volatile`) also
 passes a statement with a call that does not name it, and `x += K;` counts as a statement on `x`: the call is a
 barrier to the scheduler, so the order against it is the one thing the source decides (a 1133-instruction effect
@@ -39,6 +45,7 @@ statement_slide_far
 """
 import re
 
+from .field_offsets import Types
 from .integer_repair_support import IDENT, view
 
 FAMILY = 'statement_slide'
@@ -70,6 +77,26 @@ GLOBAL = '__global_'
 DEREF_FIELD = re.compile(rf'\*\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(\s*\(\s*{BYTE}\s*\*\s*\)\s*'
                          rf'(?:\(\s*(?P<wrapped>{IDENT})\s*\)|(?P<bare>{IDENT}))\s*\+\s*(?P<off>0[xX][0-9a-fA-F]+|\d+)\s*\)')
 WRAPPED_FIELD = re.compile(r'(?P<call>\w\s*)?\(\s*(?P<field>M2C_FIELD\([^()]*\))\s*\)')  # (a call's parentheses stay)
+
+
+# A member read or written through a record cast, `((Emitter *) arg0)->owner`: the way an m2c draft types its pointers
+# once its fields are written as structs. The record's layout says which bytes it is.
+RECORD_CELL = re.compile(rf'\(\s*\(\s*(?P<type>(?:struct\s+)?{IDENT})\s*\*\s*\)\s*(?:\(\s*(?P<wrapped>{IDENT})\s*\)|(?P<bare>{IDENT}))'
+                         rf'\s*\)\s*->\s*(?P<member>{IDENT})(?!\s*(?:\.|\[|->))')
+CELL_KINDS = {1: 'u8', 2: 'u16', 4: 'u32'}
+
+
+def _record_cells(text, types):
+    """`text` with each `((T *) p)->m` of a 1, 2 or 4 byte member of a struct `T` written as its `M2C_FIELD` cell, for
+    reading what the statement touches (the statement itself keeps its spelling). Anything unsized stays as it is, and
+    its `->` then keeps the statement from moving."""
+    def cell(found):
+        record = types.struct(found['type'])
+        member = next((m for m in record.members if m.name == found['member']), None) if record else None
+        if member is None or member.dims or member.size not in CELL_KINDS:
+            return found[0]
+        return f'M2C_FIELD({found["wrapped"] or found["bare"]}, {CELL_KINDS[member.size]} *, {member.offset})'
+    return RECORD_CELL.sub(cell, text)
 
 
 def _cells(text):
@@ -215,16 +242,18 @@ def variants(source, name, header=''):
         return []
     found = []
     safe = _locals(part)
+    types = Types(source, header) if '->' in part.clean else None
     for run in _runs(part.clean, part.opening + 1, part.clean.rindex('}', part.opening, part.end)):
         texts = [source[s:e] for s, e in run]
-        for index, text in enumerate(texts):
+        read = [_record_cells(text, types) if types else text for text in texts]  # what each statement touches
+        for index, text in enumerate(read):
             for step in range(1, REACH + 1):
                 for sign in (1, -1):
                     target = index + sign * step
                     if not 0 <= target < len(texts):
                         continue
                     lo, hi = sorted((index, target))
-                    between = [texts[k] for k in range(lo, hi + 1) if k != index]
+                    between = [read[k] for k in range(lo, hi + 1) if k != index]
                     if all(commutes(text, other) or commutes_past_call(text, other, safe) for other in between):
                         order = list(range(len(texts)))
                         order.insert(target, order.pop(index))
