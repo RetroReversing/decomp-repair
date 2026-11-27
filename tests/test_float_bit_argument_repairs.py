@@ -51,6 +51,14 @@ def test_left_alone_where_the_argument_would_move_or_change():
     assert none(SOURCE.replace('s32 g(s32, s32, f32, void *);', 's32 g(s32, void *, f32, void *);'))  # a pointer
 
 
+def test_sn_n64_flags_without_an_abi_are_o32():
+    """SN GCC 2.7.2's N64 profile names no ABI (`-mgas -meb`); an N64 callee took `5.0f` in `$a1` (5 -> 0)."""
+    sn = ['-G0', '-mips3', '-O1', '-mgas', '-meb', '-mhard-float']
+    assert any('g(0, 250.0f' in o for _, o in fba.variants(SOURCE, 'f', '', 'mips', sn))
+    assert any('g(0, 250.0f' in o for _, o in fba.variants(SOURCE, 'f', '', 'mips', ['-G8', '-mips2', '-O2']))
+    assert not fba.variants(SOURCE, 'f', '', 'mips', ['-G0', '-mips3', '-O2', '-mabi=eabi', '-meb'])
+
+
 def test_propose_finds_the_family():
     from decomprepair.propose import propose
     report = propose(SOURCE, 'f', arch='mips', flags=O32, header='')

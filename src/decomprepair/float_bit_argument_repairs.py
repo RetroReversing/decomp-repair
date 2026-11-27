@@ -26,6 +26,11 @@ FAMILIES = (FAMILY,)
 LIMIT = 4
 INTEGER_PARAMETER = re.compile(r'\s*(?:(?:signed|unsigned|const)\s+)*(?:s32|u32|int|long|M2C_UNK|M2C_UNK32|unsigned)'
                                r'(?:\s+' + IDENT + r')?\s*')
+# Flags that say the o32 argument rules hold: the ABI named, a 32-bit ISA (MIPS I and II have no other ABI), or a
+# big-endian GCC 2.7.2 build for the N64 (SN's `-G0 -mips3 -O1 -mgas -meb -mhard-float` names no ABI and is o32: an N64
+# function passed `5.0f` to an `(s32, f32)` callee in `$a1`, 5 -> 0 once the literal was a float; the PS2's EE builds,
+# little-endian and EABI, never pass `-meb`).
+O32 = {'-mgp32', '-mabi=32', '-mips1', '-mips2', '-meb'}
 TYPE_WORDS = {'signed', 'unsigned', 'const', 's32', 'u32', 'int', 'long', 'M2C_UNK', 'M2C_UNK32'}
 FLOATING = re.compile(r'\b(?:f32|f64|float|double)\b')
 # (an integer cast on the literal is a permuter leftover, `(short)0x3CA3D70A`: the call still passes all the bits)
@@ -63,7 +68,7 @@ def _prototypes(clean, span):
 
 def variants(source, name, header='', arch='mips', flags=()):
     flags = set(flags)
-    if arch != 'mips' or not flags & {'-mgp32', '-mabi=32'} or flags & {'-m64', '-mgp64', '-mabi=64', '-mabi=n32', '-mabi=eabi'}:
+    if arch != 'mips' or not flags & O32 or flags & {'-m64', '-mgp64', '-mabi=64', '-mabi=n32', '-mabi=eabi'}:
         return []
     span = find(source, name)
     if not span:
