@@ -7,7 +7,7 @@ as `lhu` and widens it with `sll; sra` whatever the C says, so a signed read of 
 freely. In an N64 function that built display-list commands from a screen-size global, the plain `s16` global (read
 as `D - 1` and as `D & 0x3FF`: `lh` for the first, which needs the sign, and `lhu` for the second, which combine
 narrows) was one of the four changes between a draft of 1825 and the byte-identical source (declared volatile it
-scored 1110 with everything else right, and as `u16` 400). The family offers the global without `volatile` and its
+scored 1110 with everything else right, and as `u16` 400). A float global is the same (it has no flip). The family offers the global without `volatile` and its
 accesses written plainly (`volatile_global_plain`), and the same with the opposite signedness
 (`volatile_global_plain_flip`). One global at a time; the judge decides.
 """
@@ -19,7 +19,8 @@ FAMILY = 'volatile_global_plain'
 FLIP_FAMILY = 'volatile_global_plain_flip'
 FAMILIES = (FAMILY, FLIP_FAMILY)
 LIMIT = 6
-SPELLING = r'(?:unsigned\s+(?:char|short|int)|signed\s+(?:char|short|int)|[su](?:8|16|32)|char|short|int)'
+SPELLING = (r'(?:unsigned\s+(?:char|short|int)|signed\s+(?:char|short|int)|[su](?:8|16|32)|char|short|int'
+            r'|f32|f64|float|double)')
 DECLARATION = re.compile(rf'(?m)^[ \t]*extern\s+(?:volatile\s+(?P<a>{SPELLING})|(?P<b>{SPELLING})\s+volatile)\s+'
                          rf'(?P<name>{IDENT})\s*;')
 FLIP = {'u8': 's8', 's8': 'u8', 'u16': 's16', 's16': 'u16', 'u32': 's32', 's32': 'u32',
