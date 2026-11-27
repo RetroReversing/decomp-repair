@@ -4,8 +4,12 @@ gcc 2.7.2 evaluates the first operand first, so `limit - 2 < p[4]` and `p[4] > l
 order differently, and so do `p[4] += d` and `p[4] = d + p[4]` (which register the sum lands in). `comparison_sides`
 only swaps two loads. Each took the last rows of a 76-instruction KMC `-O1` easing routine (80 to 20 to 0).
 
-Only side-effect free operands: a name and a literal offset against an element, field or dereference of a name; an
-added value with no call or assignment in it.
+A narrowing cast is computed too (a shift pair): `(s16) (w + 0x4000) < obj->x` computes the sum before the load, and
+`obj->x > (s16) (w + 0x4000)` loads first. It took the last two rows of an 81-instruction SN64 GCC 2.8.1 function
+(60 to 0). The load there may also be m2c's `M2C_FIELD(p, T *, K)` or `*(T *)...`.
+
+Only side-effect free operands: a name and a literal offset, or a narrowing cast of one, against an element, field or
+dereference of a name; an added value with no call or assignment in it.
 """
 import re
 
@@ -19,11 +23,16 @@ FAMILIES = (COMPARE, ADD)
 FLIP = {'<': '>', '>': '<', '<=': '>=', '>=': '<=', '==': '==', '!=': '!='}
 LOAD = rf'{IDENT}(?:\s*\[\s*(?:{NUMBER}|{IDENT})\s*\]|\s*->\s*{IDENT})'
 COMPUTED = rf'{IDENT}\s*[-+]\s*{NUMBER}'
+CAST = rf'\(\s*[su](?:8|16)\s*\)\s*(?:{IDENT}\b(?!\s*[\[(.-])|\(\s*{IDENT}\s*[-+]\s*{NUMBER}\s*\))'
+FIELD = (rf'M2C_FIELD\(\s*{IDENT}\s*,\s*{IDENT}\s*\*\s*,\s*{NUMBER}\s*\)'
+         rf'|\*\s*\(\s*{IDENT}\s*\*\s*\)\s*(?:{IDENT}|\(\s*\(\s*{IDENT}\s*\*\s*\)\s*{IDENT}\s*\+\s*{NUMBER}\s*\))')
 ORDER = r'(?P<op><=|>=|==|!=|<|>)'
 EDGE = r'(?<=[(&|])\s*'
 CLOSE = r'(?=\s*(?:\)|&&|\|\|))'
 COMPARISONS = (re.compile(rf'{EDGE}(?P<a>{COMPUTED})\s*{ORDER}\s*(?P<b>{LOAD}){CLOSE}'),
-               re.compile(rf'{EDGE}(?P<a>{LOAD})\s*{ORDER}\s*(?P<b>{COMPUTED}){CLOSE}'))
+               re.compile(rf'{EDGE}(?P<a>{LOAD})\s*{ORDER}\s*(?P<b>{COMPUTED}){CLOSE}'),
+               re.compile(rf'{EDGE}(?P<a>{CAST})\s*{ORDER}\s*(?P<b>{LOAD}|{FIELD}){CLOSE}'),
+               re.compile(rf'{EDGE}(?P<a>{LOAD}|{FIELD})\s*{ORDER}\s*(?P<b>{CAST}){CLOSE}'))
 COMPOUND = re.compile(rf'(?<=[;{{}}])\s*(?P<lv>{LOAD}|\*\s*{IDENT})\s*\+=\s*(?P<value>[^;{{}}]+);')
 
 
