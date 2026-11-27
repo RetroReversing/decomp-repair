@@ -175,3 +175,23 @@ def test_a_shared_tail_whose_own_tail_is_shared_is_offered_as_one_child():
     combined = [text for text in children if 'goto block_86' not in text and 'goto block_87' not in text]
     assert combined and combined[0].count('output = value;') == 2
     assert combined[0].count('state = 0;') == 3
+
+
+def test_a_break_is_not_copied_out_of_its_switch_into_a_loop():
+    source = '''void step(void)
+{
+  do
+  {
+    if (c) { goto finish; }
+    switch (state)
+    {
+      case 1:
+        finish:
+        done = 0;
+        break;
+    }
+    i += 1;
+  } while (i < n);
+}
+'''
+    assert not variants(source, 'step')

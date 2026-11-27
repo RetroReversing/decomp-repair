@@ -159,6 +159,20 @@ def _switch_opener(clean, part, at):
     return None
 
 
+def _break_target(clean, part, at):
+    """The open brace of the switch or loop a `break` written at `at` would leave, or None."""
+    stack = []
+    for brace in re.finditer(r'[{}]', clean[part.opening + 1:at]):
+        if brace[0] == '{':
+            stack.append(part.opening + 1 + brace.start())
+        elif stack:
+            stack.pop()
+    for pos in reversed(stack):
+        if re.search(r'(?:\b(?:switch|for|while)\s*\([^{}]*\)|\bdo)\s*$', clean[max(part.opening, pos - 300):pos]):
+            return pos
+    return None
+
+
 def _falls_into_exit(source, clean, part):
     """Labels at an arm's own level whose run falls into an arm that only leaves, copied over each `goto`.
 
@@ -245,7 +259,9 @@ def _arm_level(source, clean, part):
         replaced = 0
         for goto in gotos:
             at = part.opening + goto.end()
-            if re.compile(r'\s*(?:case\b|default\b|\})').match(clean, at):
+            # the copied `break` must leave the label's switch: a `goto` from outside it would leave a loop instead
+            if (re.compile(r'\s*(?:case\b|default\b|\})').match(clean, at)
+                    and _break_target(clean, part, part.opening + goto.start()) == opener):
                 edits.append((part.opening + goto.start(), at, statements))
                 replaced += 1
         if replaced and replaced == len(gotos):
