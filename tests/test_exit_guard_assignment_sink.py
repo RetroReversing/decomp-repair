@@ -48,6 +48,31 @@ def test_a_run_moves_together_and_crosses_a_row_of_guards():
     assert any('x = a + 1; if (a == 0)' in child and 'return 2; y = b;' in child for child in children)
 
 
+DECLARED = SOURCE.replace('    char *base;\n\n    base = gRows;\n', '    char *base = gRows;\n    int other;\n\n')
+
+
+def test_splits_a_declaration_initialiser():
+    [(family, child)] = variants(DECLARED, 'pick')
+    assert family == FAMILY
+    assert 'char *base; int other;' in _flat(child)
+    assert 'return 0U; } base = gRows; return *' in _flat(child)
+
+
+@pytest.mark.parametrize('edit', [
+    ('int other;', 'int other = *base;'),  # a later declaration reads it
+    ('char *base = gRows;', 'static char *base = gRows;'),
+    ('char *base = gRows;', 'char *const base = gRows;'),  # cannot be assigned later
+    ('char *base = gRows;', 'char *base = next();'),
+    ('int other;', 'int other = next();'),  # the call would now run before the read
+    ('if (index >= (unsigned int) gCount)', 'if (base != 0)'),
+    ('int other;\n', 'int other;\n    other = 1;\n'),  # a statement before the guard
+])
+def test_keeps_a_declaration_initialiser_the_move_could_change(edit):
+    source = DECLARED.replace(*edit)
+    declaration = next(line for line in source.splitlines() if 'base = ' in line)
+    assert all(declaration in child for _, child in variants(source, 'pick'))  # (`other` may still move)
+
+
 @pytest.mark.parametrize('edit', [
     ('if (index >= (unsigned int) gCount)', 'if (index >= limit())'),  # the call may change what is read
     ('if (index >= (unsigned int) gCount)', 'if (base != 0)'),  # the condition reads it
