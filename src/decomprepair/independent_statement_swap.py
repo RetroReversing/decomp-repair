@@ -10,7 +10,13 @@ N64 object spawner (`-G0 -mips3 -mgp32 -mfp32 -O2`) `*arg0 = rec; ((R *) rec)->f
 declaration, control flow, label, `case`, `asm` or `volatile`) and swaps the pair when neither statement assigns a name the
 other mentions, neither holds a call, and, if both write through memory, their left sides differ and neither reads memory
 through the other's left side. One child per pair, at most `LIMIT`, the pairs that sit in the most-referenced blocks first.
-The judge decides, and no child is a verdict."""
+The judge decides, and no child is a verdict.
+
+m2c's own drafts were never read: they open with `#ifndef M2C_DEFINES` (a directive anywhere above the function refused
+it) and spell every field `M2C_FIELD(base, type *, offset)`, which looked like a call. Directives now refuse only inside
+the function, and the field macro is a cell: it trades places unless the other statement touches overlapping bytes of the
+same base. A 52-instruction N64 pickup initialiser (SN GCC 2.8.1 `-G0 -mips3 -O2`) wanted `G = 1; T[M2C_FIELD(..)] = 1;`
+written the other way round (1060 -> 820 on the m2c draft; 0 with the table retyped by `scaled_byte_table_element`)."""
 import re
 
 from .integer_repair_support import IDENT, edit, view
@@ -21,7 +27,10 @@ FAMILIES = (FAMILY,)
 LIMIT = 80
 _NAME = re.compile(IDENT)
 _CALL = re.compile(rf'(?<![\w.>])(?!(?:if|while|for|switch|return|sizeof)\b){IDENT}\s*\(')
-_NEUTRAL = re.compile(r'\b(?:inline_fn\d*|__repair_\w+)\b')
+_NEUTRAL = re.compile(r'\b(?:inline_fn\d*|__repair_\w+|M2C_FIELD)\b')
+_FIELD = re.compile(r'\bM2C_FIELD\(\s*([^,]+?)\s*,\s*([^,()]+?)\s*,\s*(-?(?:0[xX][0-9a-fA-F]+|\d+))\s*\)')
+_WIDTHS = {'s8': 1, 'u8': 1, 'char': 1, 's16': 2, 'u16': 2, 'short': 2, 's32': 4, 'u32': 4, 'int': 4, 'f32': 4,
+           'float': 4, 's64': 8, 'u64': 8, 'f64': 8, 'double': 8}
 
 
 def _left(text):
@@ -37,6 +46,27 @@ def _assigned(text):
     return set(), bool(left)
 
 
+def _cell(hit):
+    """(base, first byte, end) of one `M2C_FIELD`; an unknown type is taken to be 8 bytes wide."""
+    spelled = hit[2].strip()
+    if spelled.count('*') > 1:
+        width = 4
+    else:
+        width = _WIDTHS.get(spelled.rstrip('* ').split()[-1], 8)
+    start = int(hit[3], 0)
+    return re.sub(r'\s+', '', hit[1]), start, start + width
+
+
+def _field_clash(first, second):
+    """Whether the field `first` stores to shares bytes with one `second` reads or writes through the same base."""
+    hit = _FIELD.fullmatch(_left(first))
+    if not hit:
+        return False
+    base, start, end = _cell(hit)
+    return any(other == base and start < stop and begin < end
+               for other, begin, stop in map(_cell, _FIELD.finditer(second)))
+
+
 def independent(first, second):
     """Whether two simple statements may trade places: a hypothesis about the program, which the judge then tests."""
     first, second = first.strip(), second.strip()
@@ -48,6 +78,8 @@ def independent(first, second):
     if (written_a & set(_NAME.findall(second))) or (written_b & set(_NAME.findall(first))):
         return False
     if memory_a and memory_b and _left(first) == _left(second):
+        return False
+    if _field_clash(first, second) or _field_clash(second, first):
         return False
     right_a, right_b = first[len(_left(first)):], second[len(_left(second)):]
     if memory_a and not memory_b and re.search(r'\*|->', right_b):
@@ -66,7 +98,8 @@ def independent(first, second):
 
 def variants(source, name):
     part = view(source, name)
-    if not part or re.search(r'\b(?:asm|__asm__|volatile|setjmp|longjmp)\b|^\s*#', part.clean[:part.end], re.M):
+    if (not part or re.search(r'\b(?:asm|__asm__|volatile|setjmp|longjmp)\b', part.clean[:part.end])
+            or re.search(r'^\s*#', part.clean[part.opening:part.end], re.M)):
         return []
     clean = part.clean
     pairs = []
