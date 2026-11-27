@@ -19,3 +19,8 @@ def test_inline_only_when_local_is_dead_after_call():
     used = 'void f(void) {\n    f32 x;\n    x = 1.0f;\n    call(x);\n    use(x);\n}\n'
     assert not inline.variants(used, 'f')
     assert not inline.variants(source.replace('call(x);', 'call(&x);', 1), 'f')
+
+
+def test_cube_rejects_a_shadowed_source():
+    source = 'void f(void) {\n    f32 x;\n    f32 y;\n    { int x; y = x * x * x; }\n}\n'
+    assert not cube.variants(source, 'f', 'mul.s\nmul.s')

@@ -33,6 +33,10 @@ def variants(source, name, asm, header=''):
                              or re.search(r'(?m)^\s*#\s*(?:define|undef)\s+[^\n]*\b' + re.escape(n) + r'\b', macros)
                              for n in (src, dst)):
             continue
+        if any(len(re.findall(r'(?m)(?:^|[;{}])\s*[A-Za-z_]\w*(?:[ \t]+[A-Za-z_]\w*)?[ \t]+\**\s*' + re.escape(n)
+                              + r'\s*(?=[;=,\[])', part.clean[span[0]:part.end])) != 1
+               or re.search(r'(?:\.|->)\s*' + re.escape(n) + r'\b', part.clean[span[0]:part.end]) for n in (src, dst)):
+            continue
         text = f'{pad}{fresh} = {src} * {src};\n{pad}{dst} = {fresh} * {src};'
         out.append((FAMILY, edit(source, [(part.opening + 1, part.opening + 1, f'\n    f32 {fresh};'),
                                          (hit.start(), hit.end(), text)])))
