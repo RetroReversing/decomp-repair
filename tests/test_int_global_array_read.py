@@ -113,3 +113,16 @@ def test_the_offset_shape_needs_two_reads_the_addiu_address_and_no_load_through_
     assert igar.variants(one, 'func_8000C43C', asm=OFFSET_ASM) == []
     loaded = OFFSET_ASM + '/* D04C 0 */  lw         $a0, %lo(D_800BD0E0)($v1)\n'
     assert igar.variants(OFFSET_SOURCE, 'func_8000C43C', asm=loaded) == []
+
+
+def test_a_byte_global_whose_address_is_held_for_two_reads_is_declared_as_an_array():
+    source = 'extern u8 D_A;\nvoid f(void) {\n    put(0xFF - D_A);\n    put2(D_A, 0xFF - D_A);\n}\n'
+    asm = '\n'.join(['lui $v0, %hi(D_A)', 'lbu $a0, %lo(D_A)($v0)', 'jal put', 'nop', 'lui $s3, %hi(D_A)',
+                     'addiu $s3, $s3, %lo(D_A)', 'lbu $a0, 0($s3)', 'lbu $a1, ($s3)'])
+    [(family, child)] = int_global_array_read.variants(source, 'f', asm=asm)
+    assert family == int_global_array_read.FAMILY
+    assert 'extern u8 D_A[];' in child and '*(u8 *) D_A' in child
+    assert int_global_array_read.held_address('D_A', asm)
+    clobbered = asm.replace('lbu $a0, 0($s3)\nlbu $a1, ($s3)', 'move $s3, $zero\nlbu $a0, 0($s3)')
+    assert not int_global_array_read.held_address('D_A', clobbered)
+    assert not int_global_array_read.variants(source, 'f', asm='lui $v0, %hi(D_A)\nlbu $a0, %lo(D_A)($v0)')
