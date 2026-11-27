@@ -14,7 +14,10 @@ from the locals (or parameters) that carry evidence, one child per candidate:
   assignment before the call reads the same offset (`temp_a0 = M2C_FIELD(arg0, s32 *, 0xC4)`), so a variable
   written again between that load and the call is never offered;
 - otherwise (a copy or a computation into the register), a variable m2c named after that register (`temp_a0`,
-  `var_a1`), assigned before the call.
+  `var_a1`), assigned before the call;
+- and for a plain register copy (`move $a1, $s0`), a variable named after the register copied *from* (`temp_s0`):
+  an N64 pairwise collision test (SN GCC 2.8.1) called its callee with the two element pointers in either order, m2c
+  kept the pair at the first call and passed only one at the second (1941 -> 1931, the first step of a match).
 A variable already passed to the call is not offered again, and it must be declared in a scope that holds the call.
 Two or more calls of an unprototyped callee all short of the same argument also get one child that passes the value at
 every one (`_every_site`). A
@@ -40,6 +43,8 @@ LIMIT = 4  # children per call
 ARGREG = arity.ARGREG
 LOAD = re.compile(r'\$(?P<reg>\w+)\s*,\s*(?P<offset>-?(?:0x[0-9A-Fa-f]+|\d+))?\(\$\w+\)$')
 LOADS = ('lw', 'lh', 'lhu', 'lb', 'lbu', 'lwu', 'ld')
+MOVES = ('move', 'addu', 'daddu', 'or')
+COPY = re.compile(r'\$\w+\s*,\s*\$(?P<source>[stv]\d)(?:\s*,\s*\$(?:zero|0))?\s*$')
 QUALIFIER = r'(?:(?:const|volatile|unsigned|signed|struct|union|enum)\s+)'
 DECLARATION = re.compile(rf'(?P<type>{QUALIFIER}*{IDENT}(?:\s+|\s*(?:\*\s*)+))(?P<name>{IDENT})\s*(?=[;=])')
 NOT_TYPES = {'return', 'goto', 'case', 'else', 'do', 'sizeof', 'typedef', 'extern', 'static'}
@@ -147,6 +152,8 @@ def _candidates(part, variables, args, at, slot, setup):
     passed = {a.strip() for a in args}
     offset = _offset(setup)
     register = ARGREG[slot]
+    copy = setup and setup[0] in MOVES and COPY.match(setup[1])
+    copied = copy['source'] if copy else None
     ranked = []
     for name, (kind, declared, scope) in variables.items():
         if name in passed or not scope[0] <= at <= scope[1] or '[' in kind:
@@ -158,6 +165,8 @@ def _candidates(part, variables, args, at, slot, setup):
                 ranked.append((0, name))
         elif re.search(rf'_{register}$', name) and (last or is_param):
             ranked.append((1, name))
+        elif copied and re.search(rf'_{copied}(?:_\d+)?$', name) and (last or is_param):
+            ranked.append((2, name))
     return [name for _, name in sorted(ranked)]
 
 
