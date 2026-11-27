@@ -4,6 +4,8 @@ A 99-instruction N64 setup routine (`gcc-2.7.2-kmc -O1`) was exact from its mach
 others:
 
 - `extern M2C_UNK D;` read only as `*(&D + i)` and `M2C_FIELD(&D, u8 *, k)` is `extern u8 D[];`, `D[i]`, `D[k]`;
+  a store `*(&D + i) = (s16) x` is a halfword one, `*(s16 *) (D + i) = (s16) x` (a vertex-coordinate updater's loop
+  stored `sh` at stride 16; reading it as a byte left its draft's chain at 620, with the width kept it reached 0);
 - inside `if (G == 1)`, a `v != G` of the dispatch is `v != 1`: m2c named the register that still held G's value;
 - the dispatch, whose leaves return when the value is not theirs, is a `switch`:
 
@@ -56,7 +58,11 @@ def _byte_arrays(source, clean, span):
         taken.append(name)
         edits.append((declaration.start(), declaration.end(), f'extern u8 {name}[];'))
         edits += [(span[0] + h.start(), span[0] + h.end(), f'{name}[{h[1]}]') for h in fields]
-        edits += [(span[0] + start, span[0] + end, f'{name}[{index}]') for start, end, index in indexed]
+        for start, end, index in indexed:
+            # `*(&D + i) = (s16) x`: the cast says the store is a halfword at byte offset i, not a byte
+            wide = re.match(r'\s*=\s*\(\s*([su]16)\s*\)', body[end:])
+            text = f'*({wide[1]} *) ({name} + {index})' if wide else f'{name}[{index}]'
+            edits.append((span[0] + start, span[0] + end, text))
     if not taken:
         return None
     # m2c's `(u8)` before a byte it now reads from a byte table

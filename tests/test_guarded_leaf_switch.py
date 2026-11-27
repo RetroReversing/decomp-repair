@@ -63,3 +63,21 @@ def test_a_table_that_is_also_indexed_is_not_split_into_variables():
 
     refined = refine_draft(DRAFT, 'func_80000000', '')
     assert 'D_80002001' not in refined and 'extern char D_80002000[];' in refined
+
+
+def test_a_halfword_store_through_an_unknown_global_keeps_its_width():
+    source = '''extern M2C_UNK D_80004000;
+
+void func_80000000(s32 x) {
+    s32 i;
+
+    i = 0;
+    do {
+        *(&D_80004000 + (i * 0x10)) = (s16) (s32) x;
+        i += 1;
+    } while (i < 6);
+}
+'''
+    _, text = gls.variants(source, 'func_80000000')[0]
+    assert 'extern u8 D_80004000[];' in text
+    assert '*(s16 *) (D_80004000 + (i * 0x10)) = (s16) (s32) x;' in text
