@@ -36,6 +36,10 @@ Two more rules, from one N64 function (KMC GCC 2.7.2, 10 -> 100 for the passthro
 - GCC joins the calls both arms of an `if ... else { ... }` make, so the C has two calls where the target has one
   `jal`: the calls of sibling arms count as one site, and all of them get the passthrough.
 
+The registers a call sets are also read along its own routes: an early arm that writes `$a0` and jumps past the
+call is not this call's setup (a 53-instruction N64 function, SN GCC 2.8.1: `open_it(index)` whose target loads the
+index into `$a1` and never sets `$a0` there, one register row, 5 -> 0 as `open_it(arg0, index)`).
+
 No child for a varargs callee or caller, a callee whose prototype, header declaration or matched definition
 (`callees`) has another number of parameters, a header declaring the caller with other parameters than the child
 gives it, a parameter the body assigns, or a call whose arguments already include the parameter. MIPS only. Judged
@@ -162,6 +166,17 @@ def _stray_drops(part, header, callees, per_callee, skip, constants):
     return found
 
 
+def _readings(asm, callee, site, written):
+    """The argument registers set up for this `jal`, as `arity.calls` reads them and, when different, without the
+    ones every route from the entry still has the caller's own value in. `arity.calls` reads in file order, so another
+    arm's write of `$a0`, before its `j` past this call, counts for this one."""
+    yield written
+    path = {reg: value for reg, value in written.items()
+            if not passthrough._entry_arguments_reach(asm, callee, (ARGREG.index(reg),), site=site)}
+    if len(path) != len(written):
+        yield path
+
+
 def variants(source, name, asm, header='', callees=''):
     part = view(source, name)
     if not part or not asm:
@@ -184,7 +199,8 @@ def variants(source, name, asm, header='', callees=''):
         found = _groups(part, callee)
         if len(found) != len(sites):
             continue
-        for index, regs in enumerate(sites):
+        for index, regs in ((i, each) for i, written in enumerate(sites)
+                            for each in _readings(asm, callee, i, written)):
             if len(result) >= LIMIT:
                 return result
             count = max((ARGREG.index(r) + 1 for r in regs), default=0)

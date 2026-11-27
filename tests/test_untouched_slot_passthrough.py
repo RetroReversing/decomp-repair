@@ -209,3 +209,49 @@ def test_an_extra_call_that_is_not_the_other_arm_of_an_else_gives_nothing():
                           '            go(arg0, 0x13, 0x80);\n        }\n',
                           '        go(arg0, 0xD, 0x80);\n        go(arg0, 0x13, 0x80);\n')
     assert _texts(source, ARMS_ASM) == []
+
+
+# SN GCC 2.8.1, 53 instructions: the early arm writes $a0 and jumps to the end, then the other arm loads only $a1.
+ARM_SOURCE = '''s32 open_it();
+extern s32 D_80100000;
+extern s32 D_80100004;
+extern s32 D_80100010[];
+
+void f(void) {
+    if (D_80100000 != 0) {
+        D_80100010[D_80100004] = 0;
+        D_80100004 += 1;
+        return;
+    }
+    D_80100010[D_80100004] = open_it(D_80100004);
+}
+'''
+ARM_ASM = '''glabel f
+/* 0 80001000 3C028010 */  lui        $v0, %hi(D_80100000)
+/* 4 80001004 8C420000 */  lw         $v0, %lo(D_80100000)($v0)
+/* 8 80001008 27BDFFE8 */  addiu      $sp, $sp, -0x18
+/* C 8000100C AFBF0014 */  sw         $ra, 0x14($sp)
+/* 10 80001010 10400004 */  beqz       $v0, .L1
+/* 14 80001014 AFB00010 */  sw         $s0, 0x10($sp)
+/* 18 80001018 8CA40004 */  lw         $a0, %lo(D_80100004)($a1)
+/* 1C 8000101C 24840001 */  addiu      $a0, $a0, 0x1
+/* 20 80001020 08000410 */  j          .L2
+/* 24 80001024 ACA40004 */  sw         $a0, %lo(D_80100004)($a1)
+.L1:
+/* 28 80001028 3C108010 */  lui        $s0, %hi(D_80100004)
+/* 2C 8000102C 0C00C310 */  jal        open_it
+/* 30 80001030 8E050004 */  lw         $a1, %lo(D_80100004)($s0)
+/* 34 80001034 8E030004 */  lw         $v1, %lo(D_80100004)($s0)
+/* 38 80001038 AC620010 */  sw         $v0, 0x10($v1)
+.L2:
+/* 3C 8000103C 8FBF0014 */  lw         $ra, 0x14($sp)
+/* 40 80001040 8FB00010 */  lw         $s0, 0x10($sp)
+/* 44 80001044 03E00008 */  jr         $ra
+/* 48 80001048 27BD0018 */  addiu      $sp, $sp, 0x18
+'''
+
+
+def test_another_arms_write_of_a0_is_not_this_calls_setup():
+    texts = _texts(ARM_SOURCE, ARM_ASM)
+    assert texts == [ARM_SOURCE.replace('void f(void)', 'void f(s32 arg0)')
+                     .replace('open_it(D_80100004)', 'open_it(arg0, D_80100004)')]
