@@ -70,3 +70,41 @@ def test_two_commands_and_other_uses():
     assert returned_gfx_cursor.variants(source, 'f')[0][1].count('RepairGfxWords *_g') == 2
     assert returned_gfx_cursor.variants(source.replace('0x10;', '8;'), 'f') == []
     assert returned_gfx_cursor.variants(source.replace('return', 'q(p->x);\n    return'), 'f') == []
+
+
+CHAINED = '''s32 g(s32);
+extern s16 D_80070000;
+
+s32 f(void *arg0, s32 arg1) {
+    void *temp_s0;
+    void *temp_s0_2;
+
+    temp_s0 = arg0 + 8;
+    temp_s0_2 = temp_s0 + 8;
+    M2C_FIELD(arg0, s32 *, 0) = 0xE7000000;
+    M2C_FIELD(arg0, s32 *, 4) = 0;
+    M2C_FIELD(arg0, s32 *, 8) = 0xFE000000;
+    M2C_FIELD(temp_s0, s32 *, 4) = g(arg1);
+    M2C_FIELD(temp_s0_2, s32 *, 4) = 0x300000;
+    M2C_FIELD(temp_s0, s32 *, 8) = (s32) (((D_80070000 - 1) & 0xFFF) | 0xFF100000);
+    return temp_s0_2 + 8;
+}
+'''
+
+
+def test_derived_command_pointers_become_offsets_in_address_order():
+    children = returned_gfx_cursor.variants(CHAINED, 'f')
+    assert len(children) == 1
+    text = children[0][1]
+    assert 'temp_s0' not in text
+    assert text.count('RepairGfxWords *_g') == 3
+    assert text.index('0xFF100000') < text.index('0x300000')
+    assert 'return arg0;' in text
+
+
+def test_derived_pointers_used_another_way_or_reordered_calls_are_left_alone():
+    assert returned_gfx_cursor.variants(CHAINED.replace('return', 'g(temp_s0->x);\n    return'), 'f') == []
+    # a value naming a global would move to the other side of the call
+    moved = CHAINED.replace('M2C_FIELD(temp_s0_2, s32 *, 4) = 0x300000;', 'M2C_FIELD(temp_s0_2, s32 *, 4) = g(2);')
+    moved = moved.replace('M2C_FIELD(temp_s0, s32 *, 8) = (s32)', 'M2C_FIELD(temp_s0, s32 *, 8) = (s32)', 1)
+    assert returned_gfx_cursor.variants(moved, 'f') == []
