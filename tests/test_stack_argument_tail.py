@@ -54,3 +54,37 @@ lw         $s0, 0x30($sp)
 '''
     children = [out for _, out in s.variants(source, 'f', asm)]
     assert 'g(1, 2, 3, 4, 5, 0, 0, 0);' in children[0]
+
+
+CONSTANT = '''s32 g(s32 *, s32, s32, s32);
+void f(s32 *p, s32 c) {
+    if (c) {
+        g(p, 1, 2, 3);
+    } else {
+        g(&D_1, 4, 5, 6);
+    }
+}
+'''
+CONSTANT_ASM = '''addiu      $sp, $sp, -0x20
+sw         $ra, 0x18($sp)
+lw         $ra, 0x18($sp)
+addiu      $a1, $zero, 0x1
+addiu      $v0, $zero, 0x46
+jal        g
+sw         $v0, 0x10($sp)
+addiu      $v0, $zero, 0x46
+sw         $v0, 0x10($sp)
+jal        g
+nop
+'''
+
+
+def test_a_constant_fifth_word_is_appended_and_the_prototype_widened():
+    (_, out), = s.variants(CONSTANT, 'f', CONSTANT_ASM)[:1]
+    assert 'g(p, 1, 2, 3, 0x46);' in out
+    assert 's32 g(s32 *, s32, s32, s32, s32);' in out
+
+
+def test_a_word_loaded_from_elsewhere_is_not_guessed():
+    asm = CONSTANT_ASM.replace('addiu      $v0, $zero, 0x46', 'lw         $v0, 0x20($sp)')
+    assert s.variants(CONSTANT, 'f', asm) == []

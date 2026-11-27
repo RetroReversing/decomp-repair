@@ -15,6 +15,12 @@ sign_bias_shift_divide
     its type is X's own). X is a name, optionally with member accesses and constant-free subscripts; anything with a
     side effect or a call is left alone, and so is a site whose neighbours would bind to the new `/` differently from
     to the shift. One child per site and one with every site. The judge decides each child.
+
+    The same for a narrow value, where the sign bit sits in the top of a shifted copy: `(s32) ((s16) H + T) >> K` with
+    the bias `T = (u32) (H << 0x10) >> 0x1F;` stated first (or inline as `((u32) (H << 0x10) >> 0x1F)`), 0x18 and
+    `(s8)` for a byte, becomes `(s16) H / 2^K` and the bias statement goes (its local stays declared). On a KMC GCC
+    2.7.2 `-O1 -g` N64 function with two switches of three halving arms each (430 points; the halfword field read as
+    `u16` first) the two divisions `(u16) ((s16) H / 2)` were exact, the bias spelled out was 1130 even inline.
 """
 import re
 
@@ -64,11 +70,56 @@ def _sites(part):
     return found
 
 
+_SHIFTS = {'s16': ('0x10', '16'), 's8': ('0x18', '24')}
+BIAS_TEXT = (r'\(\s*(?:u32|unsigned(?:\s+int)?)\s*\)\s*\(\s*(?P<h{n}>' + ATOM + r')\s*<<\s*(?P<s{n}>0[xX]1[08]|16|24)\s*\)'
+             r'\s*>>\s*(?:0[xX]1[fF]|31)')
+SUM = (r'\(\s*s32\s*\)\s*\(\s*\(\s*(?P<c>s16|s8)\s*\)\s*(?P<x>' + ATOM + r')\s*\+\s*(?P<t>{t})\s*\)\s*>>\s*'
+       r'(?P<k>0[xX][0-9a-fA-F]+|\d+)')
+STATEMENT = re.compile(r'(?P<tv>' + IDENT + r')\s*=\s*' + BIAS_TEXT.format(n='') + r'\s*;\s*'
+                       r'(?P<lead>' + IDENT + r'\s*=\s*(?:\(\s*(?:u16|s16|s32|u32|s8|u8)\s*\)\s*)?)\(?\s*'
+                       + SUM.format(t=IDENT) + r'\s*\)?\s*;')
+INLINE = re.compile(SUM.format(t=r'\(\s*' + BIAS_TEXT.format(n='2') + r'\s*\)'))
+
+
+def _narrow_text(hit, h):
+    k = int(hit['k'], 0)
+    if not 1 <= k <= 30:
+        return None
+    divisor = 1 << k
+    text = f'{divisor:#x}' if divisor > 0x10 else str(divisor)
+    return f"({hit['c']}) {' '.join(h.split())} / {text}"
+
+
+def _narrow_sites(part):
+    """The narrow value's bias statements and inline sums: (start, end, text) in the clean source."""
+    clean = part.clean
+    found = []
+    for hit in STATEMENT.finditer(clean, part.opening + 1, part.end - 1):
+        if not _same(hit['h'], hit['x']) or hit['s'] not in _SHIFTS[hit['c']]:
+            continue
+        if re.sub(r'\s+', '', hit['t']) != re.sub(r'\s+', '', hit['tv']):
+            continue
+        quotient = _narrow_text(hit, hit['x'])
+        if quotient is None:
+            continue
+        lead = hit['lead'].rstrip()
+        wrapped = lead.endswith(')')
+        text = f"{lead} ({quotient});" if wrapped else f"{lead} {quotient};"
+        found.append((hit.start(), hit.end(), text))
+    for hit in INLINE.finditer(clean, part.opening + 1, part.end - 1):
+        if not (_same(hit['h2'], hit['x']) and hit['s2'] in _SHIFTS[hit['c']]):
+            continue
+        quotient = _narrow_text(hit, hit['x'])
+        if quotient is not None:
+            found.append((hit.start(), hit.end(), quotient))
+    return found
+
+
 def variants(source, name):
     part = view(source, name)
     if not part or not part.body.strip():
         return []
-    edits = _sites(part)[:LIMIT]
+    edits = (_sites(part) + _narrow_sites(part))[:LIMIT]
     if not edits:
         return []
     out = [edit(source, [one]) for one in edits]

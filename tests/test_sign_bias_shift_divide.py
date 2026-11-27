@@ -40,3 +40,36 @@ def test_different_operands_or_a_tighter_neighbour_are_left_alone():
     assert not children(SOURCE.replace('((u32) D_1 >>', '((u32) D_2 >>'))
     assert not children(SOURCE.replace(', (s32) (D_1', ', 3 + (s32) (D_1'))
     assert not children(SOURCE.replace(' >> 1,', ' >> 1 + 2,'))
+
+
+NARROW = '''void f(void *arg0, s16 arg1) {
+    u16 temp_v1_2;
+    u16 temp;
+    u32 temp2;
+    temp_v1_2 = M2C_FIELD(arg0, u16 *, 4);
+    temp2 = (u32) (temp_v1_2 << 0x10) >> 0x1F;
+    temp = (u16) ((s32) ((s16) temp_v1_2 + temp2) >> 1);
+    M2C_FIELD(arg0, s16 *, 0xE) = (s16) (arg1 + temp);
+}
+'''
+
+
+def test_a_halfword_bias_statement_becomes_the_signed_division():
+    (child,) = children(NARROW)
+    assert 'temp = (u16) ((s16) temp_v1_2 / 2);' in child
+    assert '>> 0x1F' not in child
+
+
+def test_the_inline_halfword_bias_and_a_byte():
+    inline = NARROW.replace('    temp2 = (u32) (temp_v1_2 << 0x10) >> 0x1F;\n', '').replace(
+        '+ temp2)', '+ ((u32) (temp_v1_2 << 0x10) >> 0x1F))')
+    (child,) = children(inline)
+    assert 'temp = (u16) ((s16) temp_v1_2 / 2);' in child
+    byte = NARROW.replace('<< 0x10', '<< 0x18').replace('(s16) temp_v1_2', '(s8) temp_v1_2').replace('>> 1)', '>> 2)')
+    (child,) = children(byte)
+    assert '(s8) temp_v1_2 / 4' in child
+
+
+def test_a_bias_of_another_value_or_width_is_left_alone():
+    assert not children(NARROW.replace('<< 0x10', '<< 0x18'))
+    assert not children(NARROW.replace('+ temp2)', '+ temp)'))

@@ -81,6 +81,12 @@ def _forms(source, clean, opening, end):
     return result
 
 
+def _written(part, q, t, power, n):
+    """`part` with the quotient `q` read as `t / power` (and `t - (q << n)` as `t % power`)."""
+    part = re.sub(r'\(\s*' + t + r'\s*-\s*\(\s*' + q + r'\s*<<\s*' + n + r'\s*\)\s*\)', f'({t} % {power})', part)
+    return re.sub(r'(?<![\w.>])' + q + r'\b', f'({t} / {power})', part)
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -97,8 +103,16 @@ def variants(source, name):
             continue
         q, t, power = hit['q'], hit['t'], f'0x{1 << n:X}'
         rest = source[hit.end():end]
-        rest = re.sub(r'\(\s*' + t + r'\s*-\s*\(\s*' + q + r'\s*<<\s*' + hit['n'] + r'\s*\)\s*\)', f'({t} % {power})', rest)
-        rest = re.sub(r'(?<![\w.>])' + q + r'\b', f'({t} / {power})', rest)
+
+        # a later `q = ...` starts a new value (one temporary shared by two divisions): its right side still reads the
+        # old quotient, nothing after it does
+        again = re.search(r'(?m)^[ \t]*' + q + r'\s*=(?!=)[^;]*;', _blank(source)[hit.end():end])
+        if again:
+            assign = rest[again.start():again.end()]
+            cut = assign.index('=') + 1
+            rest = _written(rest[:again.start()], q, t, power, hit['n']) + assign[:cut] + _written(assign[cut:], q, t, power, hit['n']) + rest[again.end():]
+        else:
+            rest = _written(rest, q, t, power, hit['n'])
         text = source[:hit.start()] + rest + source[end:]
         declared = re.search(r'(?m)^[ \t]*[\w ]+?\s+' + q + r'\s*;[ \t]*\n', text[opening:])
         if declared and not re.search(r'(?<![\w.>])' + q + r'\b', text[opening + declared.end():]):
