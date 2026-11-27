@@ -88,3 +88,42 @@ def test_a_block_declaration_neither_hides_the_locals_above_it_nor_takes_a_merge
     assert any('f32 t;' not in text and 't = p[i] * 2.0f;' not in text and 'r = p[k + 1] / sign;' in text
                or 'f32 r;' not in text and 't = p[i] * 2.0f;' in text for text in found)
     assert all(text.count('f32 sign;') == 1 and 'sign = p[i]' not in text and 'sign = 0.0f' not in text for text in found)
+
+
+PITCH = '''f32 g(f32);
+void f(f32 *p, f32 bend) {
+    f32 base;
+    f32 sum;
+    f32 result;
+
+    base = p[0];
+    if (p[1] != 0.0f) {
+        base = p[2] + base;
+    }
+    sum = base + (bend + p[3]);
+    if (sum != p[4]) {
+        p[4] = sum;
+        result = g(sum);
+        p[5] = result;
+    }
+}
+'''
+
+
+def test_a_value_made_from_the_one_it_replaces_and_the_chain_of_three():
+    # one child writes all three as the first name: each merge alone was no better on the function this comes from
+    out = _children(PITCH)
+    assert any('base = base + (bend + p[3]);' in t and 'result = g(base);' in t for t in out)
+    assert any('base = base + (bend + p[3]);' in t and 'base = g(base);' in t and 'f32 sum;' not in t
+               and 'f32 result;' not in t for t in out)
+
+
+def test_a_value_read_again_after_the_sum_keeps_its_name():
+    again = PITCH.replace('p[5] = result;', 'p[5] = result + base;')
+    assert not any('base = base + (bend + p[3]);' in t for t in _children(again))
+
+
+def test_a_value_carried_into_a_loop_is_not_consumed():
+    looped = PITCH.replace('    sum = base + (bend + p[3]);\n',
+                           '    while (p[6] != 0.0f) {\n        sum = base + p[3];\n        p[6] = sum;\n    }\n    sum = 1.0f;\n')
+    assert not any('base = base + p[3];' in t for t in _children(looped))

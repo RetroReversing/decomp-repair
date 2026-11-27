@@ -12,9 +12,14 @@ does not change the program.
 `variants` reads the function's `f32`/`float`/`f64`/`double` locals (comma lists too; no initialisers, arrays, pointers
 or address-taken names), and pairs an earlier local A with a later B of the same type when A's last mention comes before
 B's first, B's first mention is a plain `B = ...;`, and, when both sit in one loop, A's first mention in that loop is a
-plain assignment too and B is not named after the loop (so neither value is carried round it). One child per pair,
-nearest first, then the pairs of two such merges with four different names. A hypothesis about the original's
-variables; the judge decides."""
+plain assignment too and B is not named after the loop (so neither value is carried round it). B's first assignment
+may also be what reads A for the last time (`B = A + x;`, which becomes `A = A + x;`): the value is made from the one it
+replaces. One child per pair, nearest first, then the chains (B and a later C both written as A), then the pairs of two
+merges with four different names.
+
+A 69-instruction N64 pitch update (KMC GCC 2.7.2 `-O2 -mfp32`) held one pitch in three m2c names: the value read, the
+sum made from it and the call's result. Each merge alone stayed at 75 (register rows only); the chain of all three was
+exact, a controlled 75 -> 0. A hypothesis about the original's variables; the judge decides."""
 import itertools
 import re
 
@@ -24,6 +29,8 @@ from .pattern_repairs import close
 FAMILY = 'float_local_merge'
 FAMILIES = (FAMILY,)
 SINGLES = 16
+CONSUMING = 8
+CHAINS = 12
 LIMIT = 40
 FLOAT = r'(?:f32|f64|float|double)'
 DECL = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<type>{FLOAT})[ \t]+(?P<names>[A-Za-z_]\w*(?:[ \t]*,[ \t]*[A-Za-z_]\w*)*)[ \t]*;[ \t]*$')
@@ -40,6 +47,11 @@ def _plain_assignment(clean, at, name, lo):
         return False
     statement = re.match(rf'{re.escape(name)}\s*=(?!=)([^;]*);', clean[at:])
     return bool(statement) and not re.search(rf'(?<![\w.>]){re.escape(name)}\b', statement.group(1))
+
+
+def _consumed_by(clean, at, last):
+    """Whether the assignment starting at `at` holds the mention at `last` in its right side."""
+    return at < last < clean.find(';', at)
 
 
 def _loops(clean, lo, hi):
@@ -89,9 +101,12 @@ def variants(source, name):
         if hits and not _address_taken(clean[last_decl:hi], local):
             use[local] = hits
     order = sorted(use, key=lambda n: use[n][0])
-    pairs = []
+    pairs, consuming = [], []
     for a, b in itertools.permutations(order, 2):
-        if decls[a][0] != decls[b][0] or not use[a][-1] < use[b][0]:
+        if decls[a][0] != decls[b][0] or not use[a][0] < use[b][0]:
+            continue
+        consumes = _consumed_by(clean, use[b][0], use[a][-1])
+        if not consumes and not use[a][-1] < use[b][0]:
             continue
         if not _plain_assignment(clean, use[b][0], b, lo):
             continue
@@ -101,9 +116,10 @@ def variants(source, name):
             inside = [m for m in use[a] if m > s]
             if not inside or not _plain_assignment(clean, inside[0], a, lo) or use[b][-1] > e:
                 continue
-        pairs.append((use[b][0] - use[a][-1], a, b))
+        (consuming if consumes else pairs).append((abs(use[b][0] - use[a][-1]), a, b))
     pairs.sort()
-    chosen = pairs[:SINGLES]
+    consuming.sort()
+    chosen = pairs[:SINGLES] + consuming[:CONSUMING]
 
     def child(merges):
         edits = []
@@ -121,6 +137,10 @@ def variants(source, name):
         return edit(source, edits)
 
     out = [(FAMILY, child([(a, b)])) for _d, a, b in chosen]
+    allowed = {(a, b) for _d, a, b in pairs + consuming}
+    chains = sorted(((d1 + d2, a, b, c) for (d1, a, b), (d2, middle, c) in itertools.permutations(chosen, 2)
+                     if b == middle and (a, c) in allowed))
+    out += [(FAMILY, child([(a, b), (a, c)])) for _d, a, b, c in chains[:CHAINS]]
     combos = sorted(((d1 + d2, (a1, b1), (a2, b2)) for (d1, a1, b1), (d2, a2, b2) in itertools.combinations(chosen, 2)
                      if len({a1, b1, a2, b2}) == 4), key=lambda item: item[0])
     out += [(FAMILY, child([first, second])) for _d, first, second in combos]
