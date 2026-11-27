@@ -18,8 +18,13 @@ A temporary is merged only when:
 - its declaration is a plain `TYPE name;` and the types of the group are the same text;
 - its first mention is an assignment (a value set before anything reads it) and its address is never taken;
 - the mentions of the earlier one all come before the first mention of the next one (the live ranges are disjoint),
+  or are read by the statement that first sets the next one (`b = f(a);`, written `a = f(a);`),
   and no loop (`for`, `while`, a `do` that is not a fence, a backward `goto`) holds mentions of both: in a loop a later
   assignment reaches an earlier read on the next round.
+m2c's second allocation is often exactly that shape: `temp_v0 = alloc(); ...; temp_v0_2 = alloc(temp_v0);`, a stray
+argument or a real one. On an 82-instruction N64 function (SN64 GCC 2.8.1 `-G0 -mips3 -O2`) one variable for both
+puts both pointers in `$a0`, as the target does (75 -> 0, the last of five edits).
+
 Only MIPS. The candidate is never a verdict: the judge decides."""
 import re
 
@@ -106,7 +111,7 @@ def _runs(part):
             previous = run[-1]
             together = any(any(a <= x < b for x, _ in previous[3]) and any(a <= x < b for x, _ in member[3])
                            for a, b in loops)
-            if previous[2] <= member[1] and not together:
+            if (previous[2] <= member[1] or _passed_on(clean, previous, member)) and not together:
                 run.append(member)
             else:
                 if len(run) > 1:
@@ -115,6 +120,24 @@ def _runs(part):
         if len(run) > 1:
             runs.append(run)
     return sorted(runs, key=lambda run: run[0][1])
+
+
+def _passed_on(clean, previous, member):
+    """Whether the only mentions of `previous` after `member`'s first are plain reads inside the statement that first
+    sets `member` (`temp_v0_2 = f(temp_v0);`): the right side is evaluated before the assignment, and nothing reads
+    the earlier value after it, so the two can be one variable (`temp_v0 = f(temp_v0);`)."""
+    end = clean.find(';', member[1])
+    if end < 0 or re.search(r'[{}?]', clean[member[1]:end]):
+        return False
+    for start, stop in previous[3]:
+        if stop <= member[1]:
+            continue
+        if not (member[1] < start and stop <= end):
+            return False
+        if re.search(r'(?:\+\+|--|(?<!&)&)\s*$', clean[:start]) or re.match(r'\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))',
+                                                                          clean[stop:end + 1]):
+            return False
+    return True
 
 
 def _merged(source, chosen):
