@@ -14,8 +14,8 @@ from .csource import _blank, find
 
 FAMILY = 'helper_live_arguments'
 FAMILIES = (FAMILY,)
-LIMIT = 90
-POOL = 5
+LIMIT = 36
+POOL = 4
 
 _CALL = re.compile(r'(?m)^[ \t]*(?P<callee>[A-Za-z_]\w*)\([ \t]*\)[ \t]*;')
 _ASSIGN = re.compile(r'(?<![\w.>])(?P<v>[A-Za-z_]\w*)[ \t]*=(?!=)[ \t]*(?P<rhs>[^;{}]+);')
