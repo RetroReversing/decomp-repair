@@ -14,7 +14,21 @@ join, depending on what each arm computed. m2c reads the merged form back as a v
 
 An N64 function was 99.3% this way: the shared value lived in a saved register, so the addresses loaded before a later
 call came in the other order. With the store written at the end of each arm and the variable gone, it was exact.
-Offered only when the variable is set nowhere but the two arms' last statements and read nowhere but the store.
+Offered only when the variable is set nowhere but the two arms' last statements and read nowhere but the stores.
+
+m2c also reads back a run of stores of one value after the join, such as the three colour bytes of an object:
+
+    } else {
+        v = 0x2D - (timer * 2);
+    }
+    p->r = v;
+    p->g = v;
+    p->b = v;
+
+An N64 object update (SN GCC 2.8.1, `-O2`) had the stores in both arms (100 -> 0): with the value joined, the variable
+lives across the join and takes `$v1`; stored in each arm it stays in `$v0` and gcc merges the stores again. The whole
+run goes to the end of each arm. An arm whose value is a literal that the variable's type holds stores the literal; any
+other arm keeps `v = E;` and stores `v`.
 """
 import re
 
@@ -33,6 +47,33 @@ def _last_assignment(arm, var):
     if not hit:
         return None
     return hit
+
+
+_RANGES = {'u8': (0, 0xFF), 's8': (-0x80, 0x7F), 'u16': (0, 0xFFFF), 's16': (-0x8000, 0x7FFF),
+           'u32': (0, 0xFFFFFFFF), 's32': (-0x80000000, 0x7FFFFFFF), 'int': (-0x80000000, 0x7FFFFFFF),
+           'unsigned char': (0, 0xFF), 'signed char': (-0x80, 0x7F), 'unsigned short': (0, 0xFFFF),
+           'short': (-0x8000, 0x7FFF)}
+
+
+def _literal_held(text, kind):
+    """True when `text` is an integer literal that a variable of type `kind` holds unchanged."""
+    hit = re.fullmatch(r'(-?)(0[xX][0-9a-fA-F]+|[1-9]\d*|0)', text)
+    if not hit or kind not in _RANGES:
+        return False
+    value = int(hit[2], 0) * (-1 if hit[1] else 1)
+    low, high = _RANGES[kind]
+    return low <= value <= high
+
+
+def _run_after(body, store, var):
+    """The stores of `var` that follow `store` one line after another, as matches in `body`."""
+    run = [store]
+    follow = re.compile(r'(?P<indent>[ \t]*)(?P<lhs>[^;={}\n]+?)\s*=(?!=)\s*' + var + r'\s*;[ \t]*\n')
+    while True:
+        hit = follow.match(body, run[-1].end())
+        if not hit or re.search(r'\b' + var + r'\b', hit['lhs']):
+            return run
+        run.append(hit)
 
 
 def variants(source, name):
@@ -81,19 +122,29 @@ def variants(source, name):
         if not lasts:
             continue
         # the variable appears nowhere else in the function (its declaration aside)
+        run = _run_after(clean[opening:end], store, var)
         mentions = [m.start() + opening for m in re.finditer(r'(?<![\w.>])' + var + r'\b', body)]
-        declared = re.search(r'(?m)^[ \t]*(?:[\w ]+?)\s+\**' + var + r'\s*;[ \t]*\n', clean[opening:if_open])
+        declared = re.search(r'(?m)^[ \t]*(?P<kind>[\w ]+?)\s+\**' + var + r'\s*;[ \t]*\n', clean[opening:if_open])
         inside = [p for p in mentions if any(s <= p < e for s, e, _, _, _ in lasts)]
-        others = [p for p in mentions if p not in inside and not (at <= p < opening + store.end())
+        others = [p for p in mentions if p not in inside and not (at <= p < opening + run[-1].end())
                   and not (declared and opening + declared.start() <= p < opening + declared.end())]
         if len(inside) != 2 or others:
             continue
         text = source
-        edits = [(opening + store.start(), opening + store.end(), '')]
+        targets = [source[opening + hit.start('lhs'):opening + hit.end('lhs')].strip() for hit in run]
+        edits = [(opening + store.start(), opening + run[-1].end(), '')]
+        kept = False
         for s, e, vs, ve, indent in lasts:
-            target = source[opening + store.start('lhs'):opening + store.end('lhs')].strip()
-            edits.append((s, e, f'{indent}{target} = {source[vs:ve].strip()};'))
-        if declared:
+            value = source[vs:ve].strip()
+            if len(targets) == 1:
+                lines = [f'{targets[0]} = {value};']
+            elif declared and _literal_held(value, ' '.join(declared['kind'].split())):
+                lines = [f'{target} = {value};' for target in targets]
+            else:
+                kept = True
+                lines = [f'{var} = {value};'] + [f'{target} = {var};' for target in targets]
+            edits.append((s, e, '\n'.join(indent + line for line in lines)))
+        if declared and not kept:
             edits.append((opening + declared.start(), opening + declared.end(), ''))
         for a, b, new in sorted(edits, reverse=True):
             text = text[:a] + new + text[b:]
