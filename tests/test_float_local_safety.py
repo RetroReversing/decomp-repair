@@ -41,3 +41,8 @@ def test_literal_and_expression_repairs_reject_shadows():
 }
 '''
     assert not inline.variants(expression, 'f', HEADER)
+
+
+def test_rejects_a_shadow_of_a_float_parameter():
+    source = "void f(f32 x) {\n    f32 y;\n    { int x;\n        y = (x * 3.14f) / 180.0f;\n    }\n}\n"
+    assert not literal.variants(source, 'f')
