@@ -15,6 +15,10 @@ entry_argument_restore
     pointer). Only a plain name is replaced, so nothing evaluated is dropped; every parameter of the caller must be an
     integer or pointer (position K is then register `$aK`), and the parameter must not be written in the body.
     One child per callee and position. MIPS only. Judged like any child.
+
+    The assembly may still call a renamed function by its address (`jal func_8004904C` for the C's `releaseEntity`), as
+    the app's stored target does: when exactly one address name of the target and exactly one called name of the C have
+    no counterpart, they are taken as the same function.
 """
 import re
 
@@ -77,6 +81,18 @@ def _retyped(source, callee, position, kind):
     return source
 
 
+def _target_sites(body, asm):
+    """`incoming_sites` keyed by the C's names, pairing a lone renamed callee with its lone address name."""
+    sites = dict(incoming_sites(asm))
+    called = {found for found in re.findall(rf'(?<![\w.>])({IDENT})\s*\(', body)
+              if found not in ('if', 'while', 'for', 'switch', 'return', 'sizeof') and not found.isupper()}
+    unseen = called - set(sites)
+    addressed = [callee for callee in set(sites) - called if re.fullmatch(r'func_[0-9A-Fa-f]{8}', callee)]
+    if len(unseen) == 1 and len(addressed) == 1:
+        sites[unseen.pop()] = sites.pop(addressed[0])
+    return sites
+
+
 def variants(source, name, asm=None, arch=None, header=''):
     """Proposals: the caller's own parameter at each call position the target passes it through untouched."""
     if arch not in (None, 'mips') or not asm:
@@ -89,7 +105,7 @@ def variants(source, name, asm=None, arch=None, header=''):
         return []
     body = part.body
     result = []
-    for callee, sites in sorted(incoming_sites(asm).items()):
+    for callee, sites in sorted(_target_sites(body, asm).items()):
         untouched = set.intersection(*sites)
         found = list(calls(part, callee))
         if not found:
