@@ -177,7 +177,9 @@ def units(source, name):
     """[(start, end, text, {name: references}, kind)] of the units the function offers, kind 0 for a compound statement,
     1 for a run of statements and 2 for one statement."""
     part = view(source, name)
-    if not part or re.search(r'\b(?:asm|__asm__|volatile|setjmp|longjmp)\b|^\s*#', part.clean[:part.end], re.M):
+    # a directive above the function (m2c's `#define M2C_FIELD` block) changes nothing here; one inside it could
+    if (not part or re.search(r'\b(?:asm|__asm__|volatile|setjmp|longjmp)\b', part.clean[:part.end])
+            or re.search(r'^\s*#', part.clean[part.opening:part.end], re.M)):
         return []
     names = _declared(part)
     if not names:

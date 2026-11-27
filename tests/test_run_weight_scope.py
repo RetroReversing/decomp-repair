@@ -127,3 +127,14 @@ def test_the_family_is_registered_and_declines_a_function_it_cannot_read():
     assert any(entry.module.endswith('run_weight_scope') for entry in registry.declared())
     assert variants('void other(void) { }', 'f') == []
     assert variants('void f(s32 a) {\n#define X 1\n g(a); h(a); }', 'f') == []
+
+
+def test_a_define_above_the_function_does_not_decline_it():
+    source = '''#define FIELD(p, o) (*(int *)((char *)(p) + (o)))
+void f(void *p) {
+    int v;
+    v = 1;
+    FIELD(p, 4) = v;
+}
+'''
+    assert any('do { v = 1; ' in child for _, child in variants(source, 'f'))
