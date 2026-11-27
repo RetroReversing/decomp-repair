@@ -9,15 +9,22 @@ other family offered it.
 
 Children (`unsigned_mask_modulo`): each `v & (2^k - 1)` or `v % 2^k` where every declaration of `v` in the function
 is `u8`, `u16`, `u32` or `unsigned`, one site per child.
+
+`counter_wrap_remainder`: a wrapping step `v = (v + 1) & (2^k - 1);` on such a local, written as the game's two
+statements `v++; v %= 2^k;`. On a 187-instruction N64 object spawner (`sn-n64-281 -O2 -mips3`) the loop's counter kept
+a temporary in `$v0` (10 -> 0); `v += 1; v &= 3;` stayed at 10 and `v = (v + 1) % 4;` scored 1095.
 """
 import re
 
 from .csource import _blank, find
 
 FAMILY = 'unsigned_mask_modulo'
-FAMILIES = (FAMILY,)
+WRAP_FAMILY = 'counter_wrap_remainder'
+FAMILIES = (FAMILY, WRAP_FAMILY)
 LIMIT = 12
 UNSIGNED = r'(?:u8|u16|u32|unsigned(?:\s+(?:char|short|int|long))?)'
+WRAP = re.compile(r'(?<=[;{}])(?P<indent>\s*)(?P<v>[A-Za-z_]\w*)\s*=\s*\(\s*(?P=v)\s*\+\s*1\s*\)\s*(?:&|%)\s*'
+                  r'(?P<k>0[xX][0-9a-fA-F]+|\d+)\s*;')
 MASK = re.compile(r'(?<![\w.>*&])(?P<v>[A-Za-z_]\w*)\s*(?P<op>&(?!&)|%)\s*(?P<k>0[xX][0-9a-fA-F]+|\d+)(?![\w.])')
 
 
@@ -52,6 +59,16 @@ def variants(source, name):
         result.append((FAMILY, source[:found.start()] + replacement + source[found.end():]))
         if len(result) >= LIMIT:
             break
+    for found in WRAP.finditer(clean, head, span[1]):
+        value, number = found['v'], int(found['k'], 0)
+        if not re.search(rf'\b{UNSIGNED}[ \t]+{value}\s*[;,)=]', text):
+            continue
+        modulus = number if '%' in found.group() else number + 1
+        if modulus < 2 or modulus > 0x10000 or modulus & (modulus - 1):
+            continue
+        indent = found['indent'] or ' '
+        replacement = f'{indent}{value}++;{indent}{value} %= {modulus};'
+        result.append((WRAP_FAMILY, source[:found.start()] + replacement + source[found.end():]))
     return result
 
 
