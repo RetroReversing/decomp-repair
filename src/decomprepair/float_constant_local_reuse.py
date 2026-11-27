@@ -11,7 +11,10 @@ from .integer_repair_support import IDENT, edit, view
 FAMILY = 'float_constant_local_reuse'
 
 
-def variants(source, name, flags=()):
+def variants(source, name, flags=(), header=""):
+    context = source + '\n' + (header or '')
+    if re.search(r'(?m)^\s*#\s*(?:define|undef)\s+(?:f32|float)\b|\btypedef\b[^;]*\bvolatile\b[^;]*\bf32\s*;', context):
+        return []
     part = view(source, name)
     if not part or '-O1' not in flags:
         return []
@@ -42,4 +45,4 @@ def variants(source, name, flags=()):
     return result
 
 
-REPAIR = {'families': (FAMILY,), 'variants': variants, 'needs': ('source', 'name', 'flags'), 'archs': ('mips',), 'order': 42}
+REPAIR = {'families': (FAMILY,), 'variants': variants, 'needs': ('source', 'name', 'flags', 'header'), 'archs': ('mips',), 'order': 42}
