@@ -72,5 +72,37 @@ def test_the_return_is_not_offered_when_the_root_is_overwritten_before_the_exit(
     assert nan.FAMILY + '_return' not in [f for f, _ in nan.variants(SOURCE, 'f', clobbered)]
 
 
+DOUBLE_SOURCE = '''f64 func_80059330();
+
+s32 g(f32 *arg0) {
+    f64 var_fs0;
+    f64 var_fv0;
+
+    var_fv0 = func_80059330((f64) (*arg0 * *arg0));
+    if (var_fv0 != var_fv0) {
+        var_fv0 = func_80059330();
+    }
+    return (s32) var_fv0;
+}
+'''
+DOUBLE_ASM = ASM.replace('sqrt.s', 'sqrt.d').replace('c.eq.s', 'c.eq.d').replace('func_80094350', 'func_80059330')
+
+
+def test_the_double_root_and_its_retry_become_the_builtin_sqrt():
+    out = dict(nan.variants(DOUBLE_SOURCE, 'g', DOUBLE_ASM))
+    child = out[nan.DOUBLE]
+    assert 'double sqrt(double);\ns32 g(' in child
+    assert 'var_fv0 = sqrt((f64) (*arg0 * *arg0));\n    return' in child
+    assert nan.FAMILY not in out
+    declared = dict(nan.variants(DOUBLE_SOURCE, 'g', DOUBLE_ASM, 'double sqrt(double);\n'))[nan.DOUBLE]
+    assert 'double sqrt(double);' not in declared
+
+
+def test_a_double_check_needs_the_square_root_and_a_root_from_the_same_callee():
+    assert nan.variants(DOUBLE_SOURCE, 'g', DOUBLE_ASM.replace('sqrt.d', 'add.d ')) == []
+    other = DOUBLE_SOURCE.replace('var_fv0 = func_80059330((f64)', 'var_fv0 = helper((f64)')
+    assert nan.variants(other, 'g', DOUBLE_ASM) == []
+
+
 def test_it_is_declared_in_the_registry():
     assert any(r.module == 'sqrtf_nan_fallback' for r in registry.declared())

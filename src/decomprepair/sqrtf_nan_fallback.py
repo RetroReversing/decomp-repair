@@ -21,6 +21,10 @@ or a variable set from X (`var_fs0 = temp_fv0;` before the check). Children:
 - `sqrtf_nan_fallback_return`: a `void` function whose last statement is the check, with `$f0` still holding the root in
   the target's epilogue (no later write to `$fv0`): declared `f32` and returning the root, which is how the target's
   caller reads it (`return sqrtf(...)` was the form that matched).
+- `sqrt_nan_fallback_double`: the double square root (`sqrt.d` in the target). There the draft usually names both the
+  root and the retry after the project's symbol for the C library (`v = func_X(a); if (v != v) { v = func_X(); }`), so
+  the root's callee is written `sqrt` too, every block is removed and `double sqrt(double);` declared. On a 70-instruction
+  N64 model-radius function (SN GCC 2.8.1, -mfp32) the saved best went 965 -> 720 and its plain form 910 -> 245.
 The judge decides; the rewrite is gated on `sqrt.s` and the retry call both being in the target, so it never fires on a
 function that did not use the builtin."""
 import re
@@ -30,7 +34,8 @@ from .integer_repair_support import edit, view
 from .void_parameter_return import _rows
 
 FAMILY = 'sqrtf_nan_fallback'
-FAMILIES = (FAMILY, FAMILY + '_one', FAMILY + '_return')
+DOUBLE = 'sqrt_nan_fallback_double'
+FAMILIES = (FAMILY, FAMILY + '_one', FAMILY + '_return', DOUBLE)
 
 CHECK = re.compile(rf'(?m)^(?P<lead>[ \t]*)if\s*\(\s*(?P<var>{IDENT})\s*!=\s*(?P=var)\s*\)\s*\{{')
 ROOT = re.compile(rf'\b(?P<var>{IDENT})\s*=\s*sqrtf\s*\(')
@@ -44,6 +49,53 @@ def evidence(asm):
     if not any(op == 'sqrt.s' for op, _ in rows):
         return None
     return {args.split()[0].strip() for op, args in rows if op == 'jal' and args}
+
+
+def _calls(rows):
+    return {args.split()[0].strip() for op, args in rows if op == 'jal' and args}
+
+
+def _double(source, name, asm, header):
+    """The `sqrt.d` child: roots assigned from the retry's own callee (or `sqrt`) call the builtin, the retries go."""
+    rows = _rows(asm)
+    if not any(op == 'sqrt.d' for op, _ in rows):
+        return []
+    called = _calls(rows)
+    part = view(source, name)
+    if not part:
+        return []
+    clean = part.clean
+    pairs = brace_pairs(clean, part.opening, part.end)
+    if pairs is None:
+        return []
+    cuts, roots = [], {}
+    for hit in CHECK.finditer(clean, part.opening, part.end):
+        closing = pairs.get(hit.end() - 1)
+        if closing is None:
+            continue
+        var = hit['var']
+        retry = RETRY.fullmatch(clean[hit.end():closing])
+        if not retry or retry['callee'] not in called or retry['set'] not in (None, var):
+            continue
+        spelled = '|'.join({re.escape(retry['callee']), 'sqrt'})
+        assigned = list(re.finditer(rf'(?<![\w.>]){re.escape(var)}\s*=(?!=)\s*', clean[part.opening:hit.start()]))
+        if not assigned:
+            continue
+        at = part.opening + assigned[-1].end()
+        root = re.compile(rf'(?:{spelled})(?=\s*\()').match(clean, at)
+        if not root:
+            continue
+        roots[root.start()] = root.end()
+        cuts.append((hit.start(), closing + 1, var))
+    if not cuts:
+        return []
+    declared = re.search(r'(?m)^[ \t]*(?:extern[ \t]+)?(?:f64|double)[ \t]+sqrt\s*\(', source + '\n' + (header or ''))
+    edits = _cut(source, cuts) + [(start, end, 'sqrt') for start, end in roots.items()]
+    if not declared:
+        from .csource import find
+        top = source.rfind('\n', 0, find(source, name)[0]) + 1
+        edits.append((top, top, 'double sqrt(double);\n'))
+    return [(DOUBLE, edit(source, edits))]
 
 
 def _live_root(asm):
@@ -105,6 +157,10 @@ def _prototype(source, header, at):
 
 
 def variants(source, name, asm, header=''):
+    return _single(source, name, asm, header) + _double(source, name, asm, header)
+
+
+def _single(source, name, asm, header):
     called = evidence(asm)
     part = view(source, name) if called is not None else None
     if not part:
