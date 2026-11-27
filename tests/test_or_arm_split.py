@@ -29,3 +29,16 @@ def test_the_arm_is_written_once_per_test_and_the_else_stays_on_the_last():
 
 def test_an_or_inside_an_and_and_a_labelled_body_stay():
     assert variants('void f(void) { if ((a || c) && d) { g(); } if (a || b) { L: g(); } }', 'f') == []
+
+
+def test_pairs_of_conditions_are_split_together():
+    source = '''void f(void)
+{
+    if (a == 1 || a == 2) { g(1); }
+    if (b == 3 || b == 4) { g(2); }
+    if (c == 5 || c == 6) { g(3); }
+}
+'''
+    children = [text for _, text in variants(source, 'f')]
+    assert any('if (a == 1) { g(1); } else if (a == 2)' in text and 'if (b == 3) { g(2); } else if (b == 4)' in text
+               and 'c == 5 || c == 6' in text for text in children)
