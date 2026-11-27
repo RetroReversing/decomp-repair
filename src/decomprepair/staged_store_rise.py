@@ -49,6 +49,12 @@ def _field(node):
     node = bare(node)
     if node.kind == 'member':
         return 'member', node.info
+    if node.kind == 'field':
+        offset = _number(node.kids[1])
+        base = bare(node.kids[0])
+        while base.kind == 'cast':
+            base = bare(base.kids[-1])
+        return ('offset', offset) if offset is not None and base.kind == 'id' else None
     if node.kind != 'unary' or node.op != '*':
         return None
     inner = bare(node.kids[0])
@@ -80,7 +86,7 @@ def _loads(node):
             if base.kind != 'id':
                 return None
         return [field]
-    if node.kind == 'index' or node.kind == 'member' or (node.kind == 'unary' and node.op == '*'):
+    if node.kind in ('index', 'member', 'field') or (node.kind == 'unary' and node.op == '*'):
         return None
     found = []
     for kid in node.kids:

@@ -7,6 +7,8 @@ patterns can't say that reliably, so this module reads a statement into a tree:
 
 - `sites(source, span)` lists the function's expressions with the statement each belongs to (an expression
   statement, a `return`, a condition, a declaration's initializer) and the block it is in;
+- m2c's `M2C_FIELD(base, T *, offset)` is a `field` node (a load or store of type `T`, kids `base` and `offset`, the
+  type's words in `info`), not a call: `T *` is no expression, so every statement holding one went unread;
 - `Parser` reads one expression into `Node`s (binary, unary, cast, call, index, member, ...) carrying their offsets in
   the source, so a family edits the exact text and leaves everything else untouched;
 - `Types` knows the declared type of every name (parameters, locals, file-level declarations, the header's, struct
@@ -236,8 +238,25 @@ class Parser:
             else:
                 return node
 
+    def field(self):
+        """m2c's `M2C_FIELD(base, type *, offset)`."""
+        start = self.take()[2]
+        self.take('(')
+        base = self.assignment()
+        self.take(',')
+        words = []
+        while self.peek()[0] == 'id' or self.peek()[1] == '*':
+            words.append(self.take()[1])
+        if words[-1:] != ['*']:
+            raise ParseError('field type')
+        self.take(',')
+        offset = self.assignment()
+        return Node('field', 'M2C_FIELD', [base, offset], start, self.take(')')[3], tuple(words))
+
     def primary(self):
         kind, value, start, end = self.peek()
+        if kind == 'id' and value == 'M2C_FIELD' and self.peek(1)[1] == '(':
+            return self.field()
         if kind in ('num', 'id', 'str'):
             self.take()
             return Node(kind, value, [], start, end)
@@ -524,6 +543,9 @@ class Types:
             return self.table.get(node.op)
         if kind == 'cast':
             return self._cast(node)
+        if kind == 'field':
+            pointer = self._cast(node)
+            return pointer.target if pointer is not None and pointer.kind == 'ptr' else None
         if kind == 'member':
             return self.members.get(node.info)
         if kind == 'index':

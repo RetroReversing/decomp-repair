@@ -19,7 +19,7 @@ FAMILIES = (FAMILY,)
 LIMIT = 24
 OPERATORS = ('*', '+')
 LITERALS = ('num',)
-READS = ('id', 'member', 'index')
+READS = ('id', 'member', 'index', 'field')
 
 
 def _literal(node):
@@ -31,7 +31,8 @@ def _literal(node):
 
 def _volatile(node, types):
     return any(n.op in types.volatile for n in node.walk() if n.kind == 'id') or any(
-        n.kind == 'member' and n.info in types.volatile for n in node.walk())
+        n.kind == 'member' and n.info in types.volatile or n.kind == 'field' and 'volatile' in n.info
+        for n in node.walk())
 
 
 def _exchanged(source, node):

@@ -109,7 +109,7 @@ def variants(source, name):
             if _in_fence(clean, start, part.opening) or _has_call(clean, start, end):
                 continue
             if (_ARITHMETIC.fullmatch(text) and not _CONSTANT.fullmatch(text)
-                  and re.search(r'\bD_\w+|->|\*\s*\(', text.partition('=')[2])
+                  and re.search(r'\bD_\w+|\bM2C_FIELD\b|->|\*\s*\(', text.partition('=')[2])
                   and len(re.findall(rf'(?<![\w.>]){re.escape(text.partition("=")[0].strip())}\b', clean[end:part.end])) >= 2):
                 deep.append((start, end))
     out = []
