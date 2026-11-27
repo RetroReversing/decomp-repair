@@ -122,3 +122,11 @@ def test_counter_from_minus_four_with_braced_steps():
     assert 'D_8017B208 + (8 + (i + 4) * 0x1C)' in other
     # a step followed by a statement that isn't one ends the run
     assert c.variants(VOICES.replace('      {\n      }\n', '      {\n        h();\n      }\n'), 'f') == []
+
+
+def test_a_typed_pointer_keeps_its_type():
+    # `s32 *k; k += 0xFF8;` steps in words: through `(char *)` the offset was a quarter of it and the read a byte
+    (_, both), _, _ = c.variants(SOURCE.replace('char *k;', 's32 *k;'), 'f')
+    assert '((s32 *) (&D_800E6A84) + j * 0xFF8)' in both
+    (_, both), _, _ = c.variants(SOURCE.replace('char *k;', 'void *k;'), 'f')
+    assert '((char *) (&D_800E6A84) + j * 0xFF8)' in both
