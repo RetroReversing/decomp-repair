@@ -29,13 +29,13 @@ SOURCE = '''void f(s32 arg0) {
 
 
 def texts(source=SOURCE):
-    return [t for _, t in d.variants(source, 'f')]
+    return [t for fam, t in d.variants(source, 'f') if fam == d.FAMILY]
 
 
 def test_the_empty_arm_in_the_loop_gets_each_counter_form():
     out = texts()
     assert len(out) == 3
-    assert {fam for fam, _ in d.variants(SOURCE, 'f')} == {d.FAMILY}
+    assert {fam for fam, _ in d.variants(SOURCE, 'f')} == {d.FAMILY, d.LENGTH}
     masked, plain, two = out
     assert '            if (M == 10) {\n                dead_count = (dead_count + 1) & 7;\n            } else' in masked
     assert '    u8 dead_count = 0;\n' in masked
@@ -53,9 +53,9 @@ def test_the_counter_is_never_read():
 
 def test_no_loop_or_no_empty_arm_gives_nothing():
     assert d.variants(SOURCE.replace('for (;;) {', '{'), 'f') == []
-    assert d.variants(SOURCE.replace('if (M == 10) {\n            } else ', ''), 'f') == []
+    assert texts(SOURCE.replace('if (M == 10) {\n            } else ', '')) == []
     # an empty initialiser is no arm
-    assert d.variants('void f(void) {\n    for (;;) {\n        S s = {};\n        g(&s);\n    }\n}\n', 'f') == []
+    assert texts('void f(void) {\n    for (;;) {\n        S s = {};\n        g(&s);\n    }\n}\n') == []
 
 
 def test_a_name_in_use_is_not_reused():
@@ -65,4 +65,4 @@ def test_a_name_in_use_is_not_reused():
 
 def test_it_declares_itself_to_the_registry():
     item = registry.get('dead_narrow_counter')
-    assert item is not None and tuple(item.families) == (d.FAMILY,)
+    assert item is not None and tuple(item.families) == d.FAMILIES
