@@ -37,7 +37,8 @@ WINDOW = 12  # statements after the store that may hold a read
 
 _WIDTHS = {'s8': (1, True), 'u8': (1, False), 's16': (2, True), 'u16': (2, False)}
 _SPELLED = {(size, signed): kind for kind, (size, signed) in _WIDTHS.items()}
-_CAST_STORE = re.compile(r'\(?\s*\*\s*\(\s*(?:volatile\s+)?(?P<kind>[su](?:8|16))\s*\*\s*\)')
+# `*(T *)p`, `(*(T *)p)` and `*((T *) (p))`: the printed form wraps the whole cast expression after the `*`.
+_CAST_STORE = re.compile(r'\(?\s*\*\s*(?P<wrap>\(\s*)?\(\s*(?:volatile\s+)?(?P<kind>[su](?:8|16))\s*\*\s*\)')
 _FIELD_STORE = re.compile(rf'M2C_FIELD\s*\(\s*{IDENT}\s*,\s*(?P<kind>[su](?:8|16))\s*\*\s*,\s*{NUMBER}\s*\)')
 
 
@@ -50,7 +51,7 @@ def _member(text):
             return None
         # The cast must cover the whole lvalue: what follows is one parenthesised address or one name.
         rest = text[found.end():].strip()
-        if text.startswith('('):
+        for _ in range(text.startswith('(') + bool(found['wrap'])):
             if not rest.endswith(')'):
                 return None
             rest = rest[:-1].strip()
