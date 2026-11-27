@@ -59,7 +59,7 @@ def _fresh(source):
 
 
 def _loads(node):
-    return any(n.kind in ('index', 'member') or (n.kind == 'unary' and n.op == '*') for n in node.walk())
+    return any(n.kind in ('index', 'member', 'field') or (n.kind == 'unary' and n.op == '*') for n in node.walk())
 
 
 class _Statement:
@@ -114,7 +114,7 @@ def _candidates(statement, types, source):
             # a floating literal stored or used again and again (`0.0f` into three fields): held once
             ty = types.of(node)
             return True if ty is not None and ty.kind == 'float' else None
-        if node.kind not in ('binary', 'cast', 'unary', 'index', 'member'):
+        if node.kind not in ('binary', 'cast', 'unary', 'index', 'member', 'field'):
             return None
         if node.kind == 'binary' and node.op not in HOISTED:
             return None
@@ -123,7 +123,8 @@ def _candidates(statement, types, source):
         ids = names(node)
         if not pure(node) or not ids and not _loads(node):
             return None
-        if ids & types.volatile or any(n.kind == 'member' and n.info in types.volatile for n in node.walk()):
+        if ids & types.volatile or any(n.kind == 'member' and n.info in types.volatile
+                                       or n.kind == 'field' and 'volatile' in n.info for n in node.walk()):
             return None
         ty = types.of(node)
         if ty is None or ty.kind not in ('int', 'float', 'ptr') or (ty.kind == 'ptr' and ty.target is None):
