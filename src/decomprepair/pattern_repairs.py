@@ -45,8 +45,27 @@ else:
     close = _scan.close
 
 
+def _whole_group(text):
+    """True when `text` is one parenthesised group from its first character to its last."""
+    depth = 0
+    for index, character in enumerate(text):
+        depth += (character == '(') - (character == ')')
+        if depth == 0:
+            return index == len(text) - 1 and index > 0
+    return False
+
+
 def negate(condition):
-    """Invert a single top-level comparison, retaining nested macro operands."""
+    """Invert a single top-level comparison, retaining nested macro operands.
+
+    A condition that is already one negated group, m2c's usual `!(a <= b)`, is inverted by dropping the `!`: that is
+    exact for floats too, where `a > b` would not be its opposite when either side is a NaN.
+    """
+    group = condition.strip()
+    if group.startswith('!') and group[1:].lstrip().startswith('('):
+        inner = group[1:].lstrip()
+        if _whole_group(inner):
+            return inner[1:-1].strip()
     depth = 0
     for match in re.finditer(r'[()]|->|<<|>>|==|!=|<=|>=|<|>|&&|\|\||[=?:;]', condition):
         token = match[0]
