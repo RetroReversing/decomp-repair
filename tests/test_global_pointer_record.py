@@ -35,3 +35,29 @@ def test_a_scalar_global_updated_in_place_becomes_a_record_member():
     assert found[0][1] == source.replace('extern s32 gCount;', 'extern struct { s32 value; } gCount;').replace(
         'gCount += 1;', 'gCount.value += 1;')
     assert variants(source, 'bump', 'extern s32 gCount;') == []
+
+
+READ = """extern void *gParam;
+
+void update(void *obj)
+{
+    if (M2C_FIELD(gParam, u16 *, 0x6A) != 0xFFFF) {
+        M2C_FIELD(obj, u16 *, 2) = M2C_FIELD(gParam, u16 *, 2);
+        if (M2C_FIELD(gParam, s32 *, 0x80) != 0xC8) {
+            done(obj);
+        }
+    }
+}
+"""
+
+
+def test_a_global_pointer_read_again_after_a_store_becomes_a_record_member():
+    found = variants(READ, 'update', '')
+    assert [family for family, _ in found] == ['global_pointer_read_record']
+    assert found[0][1] == READ.replace('extern void *gParam;', 'extern struct { void *block; } gParam;').replace(
+        '(gParam,', '(gParam.block,')
+    assert variants(READ, 'update', 'extern void *gParam;') == []
+
+
+def test_reads_with_no_store_between_are_left_alone():
+    assert variants(READ.replace('M2C_FIELD(obj, u16 *, 2) = M2C_FIELD(gParam, u16 *, 2);', 'g(gParam);'), 'update', '') == []
