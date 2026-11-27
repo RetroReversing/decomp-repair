@@ -51,13 +51,15 @@ OTHER = re.compile(r'\[|->|\.|\+\+|--|\bvolatile\b')
 # The saved bests' spelling of a field, `*((u8 *) (((char *) voice) + 0x4A))`, and of a global read as another width,
 # `*((u16 *) (&G))`: written as `M2C_FIELD` cells so they compare by base and byte interval like m2c's own. A global's
 # base is `__global_G`, which can never be a local's name; `_clash` keeps it apart from pointers it may alias.
-CAST_FIELD = re.compile(rf'\*\s*\(\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(\s*\(\s*\(\s*char\s*\*\s*\)\s*'
+# A byte pointer as m2c's expansions and the app's `M2C_FIELD` define cast it: `(char *)` or `(s8 *)`.
+BYTE = r'(?:char|signed\s+char|unsigned\s+char|s8|u8)'
+CAST_FIELD = re.compile(rf'\*\s*\(\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(\s*\(\s*\(\s*{BYTE}\s*\*\s*\)\s*'
                         rf'(?P<base>{IDENT})\s*\)\s*\+\s*(?P<off>0[xX][0-9a-fA-F]+|\d+)\s*\)\s*\)')
 CAST_GLOBAL = re.compile(rf'\*\s*\(\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(?\s*&\s*(?P<sym>{IDENT})\s*\)?\s*\)')
 GLOBAL = '__global_'
 # The other expansion of `M2C_FIELD`, `*(T *)((char *)(base) + off)`, and the redundant pair of parentheses m2c's
 # expansions put around a whole cell: `(*(s8 *)((char *)(arg0) + 0x7A)) = 2;`.
-DEREF_FIELD = re.compile(rf'\*\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(\s*\(\s*char\s*\*\s*\)\s*'
+DEREF_FIELD = re.compile(rf'\*\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(\s*\(\s*{BYTE}\s*\*\s*\)\s*'
                          rf'(?:\(\s*(?P<wrapped>{IDENT})\s*\)|(?P<bare>{IDENT}))\s*\+\s*(?P<off>0[xX][0-9a-fA-F]+|\d+)\s*\)')
 WRAPPED_FIELD = re.compile(r'(?P<call>\w\s*)?\(\s*(?P<field>M2C_FIELD\([^()]*\))\s*\)')  # (a call's parentheses stay)
 

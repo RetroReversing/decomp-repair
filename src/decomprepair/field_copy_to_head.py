@@ -11,14 +11,19 @@ statements up, one of the four edits of its match.
 A child moves `M2C_FIELD(q, T *, off) = M2C_FIELD(p, U *, off);` (the same offset of another record, casts allowed)
 to the highest place of its run of simple statements it can reach while commuting with every statement it passes
 (`statement_slide.commutes`: no call, no overlapping cell, no shared local written), and only when that is more than
-`statement_slide`'s reach above. That the two records are different objects is an assumption; the judge decides. One
-match, not read in the compiler source."""
+`statement_slide`'s reach above. The head is not always the place: a game's constructor copied `x`, `y`, `z` and then
+the angle from its parent before a run of constants, where m2c had written the angle copy last, eight statements down
+(`lw` right after the third `lhu`, its `sw` at the end). The head scored worse; after the first copy it was one of the
+five edits of the match (SN N64 GCC `-O2`, 101 instructions, 695). So after the heads a child also moves each such copy
+to every place between the head and that reach. That the two records are different objects is an assumption; the judge
+decides. One match each, not read in the compiler source."""
 from .integer_repair_support import view
 from .statement_slide import FIELD, REACH, _cells, _runs, commutes
 
 FAMILY = 'field_copy_to_head'
 FAMILIES = (FAMILY,)
 LIMIT = 8
+BELOW_LIMIT = 12  # places between the head and statement_slide's reach
 
 
 def _is_copy(text):
@@ -36,7 +41,7 @@ def variants(source, name):
     part = view(source, name)
     if not part:
         return []
-    out = []
+    heads, below = [], []
     for run in _runs(part.clean, part.opening + 1, part.clean.rindex('}', part.opening, part.end)):
         for index, (start, end) in enumerate(run):
             text = part.clean[start:end]
@@ -47,16 +52,19 @@ def variants(source, name):
                 top -= 1
             if index - top <= REACH:
                 continue
-            first = run[top][0]
-            indent = source[source.rfind('\n', 0, first) + 1:first]
-            gap = '\n' + indent if not indent.strip() else ' '
-            line = source.rfind('\n', 0, start) + 1
-            cut = line if not source[line:start].strip() and source[end:end + 1] == '\n' else start
-            stop = end + 1 if cut == line and cut != start else end
-            out.append((FAMILY, source[:first] + source[start:end] + gap + source[first:cut] + source[stop:]))
-            if len(out) >= LIMIT:
-                return out
-    return out
+            heads.append(_moved(source, run[top][0], start, end))
+            below += [_moved(source, run[place][0], start, end) for place in range(top + 1, index - REACH)]
+    return [(FAMILY, child) for child in heads[:LIMIT] + below[:BELOW_LIMIT]]
+
+
+def _moved(source, first, start, end):
+    """`source` with the statement `start:end` written before the one at `first`."""
+    indent = source[source.rfind('\n', 0, first) + 1:first]
+    gap = '\n' + indent if not indent.strip() else ' '
+    line = source.rfind('\n', 0, start) + 1
+    cut = line if not source[line:start].strip() and source[end:end + 1] == '\n' else start
+    stop = end + 1 if cut == line and cut != start else end
+    return source[:first] + source[start:end] + gap + source[first:cut] + source[stop:]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'archs': ('mips',)}
