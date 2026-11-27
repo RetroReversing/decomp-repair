@@ -31,10 +31,11 @@ instructions):
     M2C_FIELD(arg0, s32 *, 0x34) = timer;
     next = (frame & 0xFF) % 5U;
 
-where the game divided the member it had just stored (`next = *(u8 *)member % 5U;`). The target's `andi` of the stored
-register comes from that read: with the mask on the local the remainder was 635, with the read-back exact. So a stored
-value spelled `(s8) t` or `(u8) t` (the member's width) stands for `t` too, and the other member's store between does
-not end the walk.
+where the game divided the member it had just stored (`next = *(u8 *)member % 5;`). The compiler knows a byte read is
+not negative, so it divides unsigned (`multu`) where the masked `s32` local divides signed, and the target's `andi` of
+the stored register stays: 1495 with the mask on the local, exact with the read-back alone. So a stored value spelled
+`(s8) t` or `(u8) t` (the member's width) stands for `t` too, and a store to another member between does not end the
+walk.
 This module reads text only and never compiles or judges."""
 import re
 
