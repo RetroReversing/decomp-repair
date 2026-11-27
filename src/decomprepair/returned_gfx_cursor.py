@@ -40,6 +40,12 @@ A draft whose fields were typed as records (`m2c_field_record_view`: `(((Rec_f_a
 display-list setup routine (SN GCC 2.8.1 `-O2`) went from 3342 (that record-typed draft) to 205 with this, and
 `float_literal_global` took it to 0.
 
+A saved machine draft spells the same stores without the macro: `*((int *)((char *)arg0 + 0))`,
+`(*(s32 *)((char *)(t2) + 4))`, `((__repair_record_arg0*)arg0)->field_4`, and declares a cursor local `register`. They
+are read as `M2C_FIELD`s too, and the child is kept only when no new `M2C_FIELD` is left in the source (it need not be
+defined there). A 48-instruction N64 fill-rectangle display list (SN GCC 2.8.1 `-O2 -mfp64`) went from 4465 (that
+draft) to 265 with this, and `or_chain_order` took it to 0.
+
 Children (`returned_gfx_cursor`): one.
 """
 import re
@@ -104,6 +110,40 @@ def _plain_fields(source, name):
     # a store's whole left side keeps m2c's own parentheses, which the line's pattern does not expect
     text = re.sub(rf'(?m)^(?P<indent>[ \t]*)\({access}\)(?= = )', lambda m: m['indent'] + field(m), body)
     text = re.sub(access, field, text)
+    if text == body:
+        return None
+    return source[:span[0]] + text + source[span[1]:]
+
+
+def _unexpanded(source, name):
+    """`source` with the function's byte-offset casts and `__repair_record_` members written as `M2C_FIELD`s and no
+    `register` on its pointer locals, or None when it has none of them."""
+    span = find(source, name)
+    if not span:
+        return None
+    offsets = {}
+    for record in re.finditer(r'typedef struct \{(?P<body>[^{}]*)\} (?P<tag>__repair_record_\w+);', _blank(source)):
+        for member in re.finditer(r'(?P<type>[A-Za-z_]\w*(?: \*+)?)[ \t]*\bfield_(?P<at>[0-9A-F]+);', record['body']):
+            offsets[record['tag'], member['at']] = member['type']
+
+    def cast(found):
+        return f'M2C_FIELD({found["base"]}, {found["type"]} *, {found["at"]})'
+
+    def member(found):
+        kind = offsets.get((found['tag'], found['at']))
+        if not kind:
+            return found[0]
+        return f'M2C_FIELD({found["base"]}, {kind} *, 0x{found["at"]})'
+
+    body = source[span[0]:span[1]]
+    type_ = r'(?P<type>[A-Za-z_][\w ]*?\**)'
+    bytes_ = rf'\(\(char[ \t]*\*\)[ \t]*(?P<open>\()?(?P<base>{IDENT})(?(open)\))[ \t]*\+[ \t]*(?P<at>{NUMBER})\)'
+    text = body
+    for pattern in (rf'\(\*\({type_}[ \t]*\*\){bytes_}\)', rf'\*\(\({type_}[ \t]*\*\){bytes_}\)'):
+        text = re.sub(pattern, cast, text)
+    text = re.sub(rf'\(\([ \t]*(?P<tag>__repair_record_\w+)[ \t]*\*[ \t]*\)[ \t]*(?P<base>{IDENT})\)->field_(?P<at>[0-9A-F]+)',
+                  member, text)
+    text = re.sub(r'(?m)^([ \t]*)register (?=(?:void|u8|s8|char)[ \t]*\*)', r'\1', text)
     if text == body:
         return None
     return source[:span[0]] + text + source[span[1]:]
@@ -270,7 +310,18 @@ def _rewrite(source, clean, span, cursor):
 def variants(source, name, header=''):
     if not find(source, name):
         return []
-    source = _plain_fields(source, name) or source
+    result = _children(_plain_fields(source, name) or source, name)
+    if result:
+        return result
+    expanded = _unexpanded(source, name)
+    if not expanded:
+        return []
+    expanded = _plain_fields(expanded, name) or expanded
+    return [(family, child) for family, child in _children(expanded, name)
+            if child.count('M2C_FIELD(') <= source.count('M2C_FIELD(')]
+
+
+def _children(source, name):
     span = find(source, name)
     clean = _blank(source)
     opening = clean.find('{', span[0], span[1])
