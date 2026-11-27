@@ -2,7 +2,7 @@
 
 m2c writes `extern s32 D_80090000;` for a global it only ever adds offsets to and hands on as an address. The sums are
 the same bytes' arithmetic either way, but a pointer global is another alias class to GCC: loads of it can pass stores
-through other pointers, and the register order follows (a 46-instruction N64 matrix routine, SN GCC 2.8.1 `-O3`:
+through other pointers, and the register order follows (a 46-instruction N64 matrix routine, SN GCC 2.8.1 `-O2`:
 1180 -> 920 alone, 570 -> 0 as the last step).
 
 Only an `extern` written in the candidate itself is changed, and only when every mention of the global in the function
