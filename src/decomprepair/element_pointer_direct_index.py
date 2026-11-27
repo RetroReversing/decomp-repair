@@ -1,4 +1,4 @@
-"""A pointer local set once to a global array's element and used only for its members, written as the indexed element.
+"""A pointer local set once to a global array's element, used for its members (or passed on), written as the element.
 
 `ent = &TABLE[count]; ent->kind = 1; ent->t = t; ...` and `TABLE[count].kind = 1; TABLE[count].t = t; ...` are the same
 program while nothing between them changes `count`, but GCC 2.x expands them differently: the pointer is one pseudo
@@ -25,7 +25,12 @@ A pointer to a scalar element read as `*P` is written as the element the same wa
 (`p = &record.data[i]; f(*p);` as `f(record.data[i]);`), and a function with several such pointers also gets one child
 with all of them inlined. An SN GCC 2.8.1 `-O2` N64 function queueing sound ids from two stack records kept both record
 addresses in saved registers through the pointer locals (a frame 8 bytes too large); inlined, the target computes
-`addiu $sp, 0x10` at each use. `M2C_FIELD(...)` is a field access, not a call."""
+`addiu $sp, 0x10` at each use. `M2C_FIELD(...)` is a field access, not a call.
+
+The pointer may also be handed to the first call after it is set (`ent = &TABLE[count]; ent->data = p; if (load(ent, 0))`),
+written `load(&TABLE[count], 0)`: the argument is evaluated before the call can change the index, and no use may follow
+that call. An N64 asset loader (sn-n64-281 GCC 2.8.1, `-mfp64`, 229 instructions) went 500 -> 0 with the member store
+and the argument both written as the element; either one alone through the pointer stayed at 500."""
 import re
 
 from .csource import _blank
@@ -74,6 +79,39 @@ def _calls(text):
     return any(m[1] not in KEYWORDS for m in re.finditer(rf'\b({IDENT})\s*\(', text))
 
 
+def _passing_call(clean, position, length):
+    """`(start, end)` of the call whose argument list holds the bare name at `position`, or None: the call's name and its
+    closing parenthesis."""
+    if not re.search(r'[(,]\s*\Z', clean[:position]) or not re.match(r'\s*[,)]', clean[position + length:]):
+        return None
+    depth, opening = 0, None
+    for i in range(position - 1, -1, -1):
+        c = clean[i]
+        if c in ';{}':
+            return None
+        if c == ')':
+            depth += 1
+        elif c == '(':
+            if depth == 0:
+                opening = i
+                break
+            depth -= 1
+    if opening is None:
+        return None
+    callee = re.search(rf'(?<![\w.>])({IDENT})\s*\Z', clean[:opening])
+    if not callee or callee[1] in KEYWORDS:
+        return None
+    depth = 0
+    for i in range(opening, len(clean)):
+        if clean[i] == '(':
+            depth += 1
+        elif clean[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return callee.start(1), i
+    return None
+
+
 def variants(source, name, header='', every_deref=True):
     part = view(source, name)
     if not part:
@@ -103,13 +141,26 @@ def variants(source, name, header='', every_deref=True):
         if not others or any(u < after for u in others):
             continue
         stars = {u: len(clean[lo:u].rstrip()) + lo - 1 for u in others if clean[lo:u].rstrip().endswith('*')}
-        if not all(u in stars or re.match(rf'{re.escape(pointer)}\s*->\s*{IDENT}', clean[u:]) for u in others):
+        passed = {u: call for u in others
+                  if u not in stars and not re.match(rf'{re.escape(pointer)}\s*->', clean[u:])
+                  and (call := _passing_call(clean, u, len(pointer)))}
+        if not all(u in stars or u in passed or re.match(rf'{re.escape(pointer)}\s*->\s*{IDENT}', clean[u:])
+                   for u in others):
             continue
         end = _block_end(clean, after, after, hi)
         if end is None or others[-1] > end:
             continue
         region = clean[after:others[-1]]
-        if _calls(region) or any(_modifies(region, n) for n in names) or _modifies(region, pointer):
+        if passed:
+            # one call takes the pointer: nothing is called before it or inside its arguments, and nothing reads after it
+            calls = set(passed.values())
+            call_start, call_end = next(iter(calls))
+            arguments = clean[clean.index('(', call_start) + 1:call_end]
+            region = clean[after:call_end]
+            if len(calls) > 1 or others[-1] > call_end or call_end > end or _calls(clean[after:call_start]) or \
+                    _calls(arguments) or any(_modifies(region, n) for n in names) or _modifies(region, pointer):
+                continue
+        elif _calls(region) or any(_modifies(region, n) for n in names) or _modifies(region, pointer):
             continue
         # a member store written through the pointer must not itself change the index (`p->n = count++`)
         tail = re.search(r'[^;]*;', clean[others[-1]:end])
@@ -122,6 +173,9 @@ def variants(source, name, header='', every_deref=True):
         for u in others:
             if u in stars:  # `*p`, the element itself
                 edits.append((stars[u], u + len(pointer), f'{array}[{index}]'))
+                continue
+            if u in passed:  # the address itself, handed on
+                edits.append((u, u + len(pointer), f'&{array}[{index}]'))
                 continue
             arrow = re.match(rf'{re.escape(pointer)}\s*->\s*', clean[u:])
             edits.append((u, u + arrow.end(), f'{array}[{index}].'))
