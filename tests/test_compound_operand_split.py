@@ -97,3 +97,38 @@ def test_integers_split_only_bitwise_operators():
         assert not variants(base % body, 'f'), body
     out = [_squash(s) for _, s in variants(base % 'v = (a << 2) | p[0];', 'f')]
     assert any('v = (a << 2); v |= (p[0]);' in s for s in out)
+
+
+def test_address_differences_split_together():
+    source = """extern u8 D_1[];
+extern u8 D_2[];
+extern u8 D_3;
+extern u8 D_4;
+void f(void) {
+    s32 size;
+    size = D_2 - D_1;
+    use(D_1, size);
+    size = &D_4 - &D_3;
+    use(D_2, size);
+    size = (s32) D_2 - (s32) D_1;
+    use(D_1, size);
+}
+"""
+    children = [text for _, text in variants(source, 'f')]
+    together = children[-1]
+    assert 'size = (s32) D_2;\n    size -= ((s32) D_1);' in together
+    assert 'size = (s32) &D_4;\n    size -= ((s32) &D_3);' in together
+    assert '= D_2 - D_1' not in together and '&D_4 - &D_3' not in together
+
+
+def test_unknown_integer_difference_is_left_alone():
+    source = """extern s32 D_1[];
+void f(s32 *p, s32 *q) {
+    s32 n;
+    n = p - q;
+    n = D_1 - p;
+    n = (s32) p - (s32) q - 1;
+    use(n);
+}
+"""
+    assert variants(source, 'f') == []

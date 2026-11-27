@@ -29,6 +29,13 @@ A 32-bit integer local assigned from `&`, `|` or `^` splits the same way (`bits 
 `bits = row[j]; bits &= ~mine[j];`): the first load goes straight into the local and ahead of the second. A
 92-instruction N64 bit-count routine (KMC GCC 2.7.2, `-O1`) was 205 -> 0 on that one statement. Only the bitwise
 operators are offered for integers: they give the same bits whatever the operands' signedness.
+
+An integer difference of two addresses splits too, written `(s32) end - (s32) start` or between byte symbols declared
+in the source (`extern u8 A[];`, `&B` of `extern u8 B;`): `size = (s32) end; size -= (s32) start;`. The address of
+`end` then lives only in `size` and is overwritten, so cse cannot keep it for the next statement that loads the same
+address. A 363-instruction N64 segment loader (KMC GCC 2.7.2, `-O1`, sixteen loads in a row, each ending where the
+next starts) was 21051 -> 730 on this, all sixteen statements together. Only the explicit-cast and byte-symbol forms
+are offered, where the difference is the same 32 bits either way.
 """
 import re
 
@@ -116,6 +123,56 @@ def _split_bits(rhs):
     return rhs[:found[-1]].strip(), rhs[found[-1]], rhs[found[-1] + 1:].strip()
 
 
+_BYTES = re.compile(r'\bextern\s+(?:u8|s8|char|unsigned\s+char|signed\s+char)\s+([^;(){}*]+);')
+_CAST = re.compile(r'\(\s*(?:s32|u32|int|unsigned\s+int)\s*\)\s*')
+
+
+def _byte_symbols(clean):
+    """(arrays, scalars) of the byte symbols the source declares `extern`."""
+    arrays, scalars = set(), set()
+    for hit in _BYTES.finditer(clean):
+        for part in hit[1].split(','):
+            m = re.fullmatch(rf'\s*({_ID})\s*(\[\s*\w*\s*\])?\s*', part)
+            if m:
+                (arrays if m[2] else scalars).add(m[1])
+    return arrays, scalars
+
+
+def _address(operand, arrays, scalars):
+    """`operand` as a 32-bit integer when that is certainly the same value in a difference, else None."""
+    cast = _CAST.match(operand)
+    if cast:
+        rest = operand[cast.end():]
+        single = re.fullmatch(rf'&?\s*{_ID}(?:\[\w]+\])?|\(.*\)|0x[0-9A-Fa-f]+|\d+', rest)
+        return operand if single else None
+    if operand in arrays or (operand.startswith('&') and operand[1:].strip() in scalars):
+        return f'(s32) {operand}'
+    return None
+
+
+def _split_difference(rhs, arrays, scalars):
+    """(left, '-', right) of `A - B` between two addresses, each written as a word."""
+    depth, found = 0, []
+    for i, c in enumerate(rhs):
+        if c in '([':
+            depth += 1
+        elif c in ')]':
+            depth -= 1
+        elif depth == 0 and c in '+-*/&|^<>?=':
+            if c == '&' and not rhs[:i].rstrip().rstrip('-').strip():
+                continue  # `&X` opening the first operand
+            if c == '&' and rhs[:i].rstrip().endswith(('-', ')')):
+                continue  # `&X` after the minus or after a cast
+            if c != '-' or rhs[i + 1:i + 2] in ('-', '=', '>'):
+                return None
+            found.append(i)
+    if depth != 0 or len(found) != 1:
+        return None
+    left = _address(rhs[:found[0]].strip(), arrays, scalars)
+    right = _address(rhs[found[0] + 1:].strip(), arrays, scalars)
+    return (left, '-', right) if left and right else None
+
+
 def _word_operand(operand, name):
     return (operand and not re.search(rf'\b{name}\b', operand) and not re.search(rf'{_ID}\s*\(', operand)
             and not re.search(r'[=?]|&&|\|\||\+\+|--', operand))
@@ -130,7 +187,7 @@ def _simple(operand, name):
             and not re.search(r'[=<!&|?]|(?<!-)>|\+\+|--', operand))
 
 
-def _children(clean, lo, hi, floats, words=frozenset()):
+def _children(clean, lo, hi, floats, words=frozenset(), symbols=(frozenset(), frozenset())):
     """[(start, end, [replacement, ...])] for each statement that can be split."""
     out = []
     for hit in _STATEMENT.finditer(clean, lo, hi):
@@ -142,6 +199,8 @@ def _children(clean, lo, hi, floats, words=frozenset()):
         else:
             continue
         parts = split(hit[3].strip())
+        if name in words and not parts:
+            parts = _split_difference(hit[3].strip(), *symbols)
         if not parts:
             continue
         left, op, right = parts
@@ -166,7 +225,7 @@ def variants(source, name):
     if opening < 0 or re.search(r'\bvolatile\b', clean[span[0]:span[1]]):
         return []
     body = clean[span[0]:span[1]]
-    found = _children(clean, opening, span[1], _declared(body, _TYPE), _declared(body, _WORD_TYPE))
+    found = _children(clean, opening, span[1], _declared(body, _TYPE), _declared(body, _WORD_TYPE), _byte_symbols(clean))
     out = []
     for start, end, forms in found:
         for text in forms:
