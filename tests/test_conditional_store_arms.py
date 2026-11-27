@@ -96,3 +96,51 @@ def test_a_temporary_read_later_is_left_alone():
 
 def test_a_default_computed_by_a_call_is_left_alone():
     assert repairs.variants(TESTED.replace('t = 0x3000;', 't = f4();'), 'f') == []
+
+
+DRAFT = '''void f(void *arg0, void *other) {
+    s16 var_v0;
+    s16 var_v0_2;
+
+    var_v0 = 0x2AF8;
+    if (M2C_FIELD(arg0, u8 *, 0x6E) == 0) {
+        var_v0 = -0x3A98;
+    }
+    M2C_FIELD(arg0, s16 *, 0) = var_v0;
+    M2C_FIELD(arg0, s16 *, 2) = -0x1F40;
+    M2C_FIELD(arg0, u8 *, 0x75) = 9U;
+    var_v0_2 = 0x1F4;
+    if (M2C_FIELD(arg0, u8 *, 0x6E) == 0) {
+        var_v0_2 = 0x28;
+    }
+    M2C_FIELD(other, s16 *, 0) = var_v0_2;
+    M2C_FIELD(other, s16 *, 2) = 0x20;
+    M2C_FIELD(other, u8 *, 0x78) = 2;
+    M2C_FIELD(other, u8 *, 0x73) = 0;
+    M2C_FIELD(other, s32 *, 0x80) = 0x408;
+}
+'''
+
+
+def test_a_field_macro_store_is_not_a_call():
+    family, text = repairs.variants(DRAFT, 'f')[0]
+    assert family == repairs.FAMILY
+    assert 'var_v0 = 0x2AF8;' not in text and 'var_v0_2 = 0x1F4;' not in text
+    assert 'else { M2C_FIELD(arg0, s16 *, 0) = (s16) (0x2AF8); }' in text
+
+
+def test_short_literal_store_run_goes_into_both_arms():
+    runs = [text for family, text in repairs.variants(DRAFT, 'f') if family == repairs.RUN_FAMILY]
+    short = runs[0]
+    tail = 'M2C_FIELD(arg0, s16 *, 2) = -0x1F40; M2C_FIELD(arg0, u8 *, 0x75) = 9U; }'
+    assert short.count(tail) == 2
+    # the second site's run is longer than the limit, so it keeps its one store
+    assert short.count('M2C_FIELD(other, s16 *, 2) = 0x20;') == 1
+    assert any(text.count('M2C_FIELD(other, s16 *, 2) = 0x20;') == 2 for text in runs[1:])
+
+
+def test_run_stops_at_a_store_that_is_not_a_literal():
+    source = DRAFT.replace('M2C_FIELD(arg0, s16 *, 2) = -0x1F40;', 'M2C_FIELD(arg0, s16 *, 2) = g(arg0);')
+    runs = [text for family, text in repairs.variants(source, 'f') if family == repairs.RUN_FAMILY]
+    assert all('g(arg0); M2C_FIELD' not in text for text in runs)
+    assert all(text.count('g(arg0)') == 1 for text in runs)

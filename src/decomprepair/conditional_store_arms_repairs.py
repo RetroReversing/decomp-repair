@@ -34,14 +34,20 @@ from .goto_structure_repairs import _gotos, blocks, parse
 from .pattern_repairs import close
 
 FAMILY = 'conditional_store_arms'
+RUN_FAMILY = 'conditional_store_run_arms'
 KEEP_FAMILY = 'conditional_store_arms_keep_goto'
 TESTED_FAMILY = 'conditional_store_tested_arms'
-FAMILIES = (FAMILY, KEEP_FAMILY, TESTED_FAMILY)
+FAMILIES = (FAMILY, KEEP_FAMILY, TESTED_FAMILY, RUN_FAMILY)
 
 IDENT = r'[A-Za-z_]\w*'
 NARROW = {'u8': 'u8', 's8': 's8', 'char': 's8', 'u16': 'u16', 's16': 's16', 'short': 's16',
           'unsigned char': 'u8', 'signed char': 's8', 'unsigned short': 'u16'}
 MAX_SITES = 16
+_FIELD_MACRO = re.compile(r'\bM2C_FIELD\s*\(')
+# a literal, whatever casts and parentheses a draft or an earlier rewrite put around it
+_STORED_LITERAL = re.compile(r'(?:\(\s*[A-Za-z_]\w*\s*\**\s*\)\s*)*\(?\s*-?(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d*f?)?)[uUlL]*\s*\)?')
+# run lengths to offer: the shortest runs first, so that one child can take a site's short run and leave long ones
+RUN_LIMITS = (2, 3, 6)
 # a cast to a plain type: not a call, whatever parenthesis follows it
 _CAST = re.compile(r'\(\s*(?:unsigned\s+|signed\s+)?(?:[su](?:8|16|32)|f32|char|short|int|long|float|void)\s*\**\s*\)')
 
@@ -108,7 +114,8 @@ def _assignment(clean, source, stmt, var=None):
 
 def _pure(expr):
     """No call, assignment or step: the expression may be evaluated on one path only."""
-    plain = _CAST.sub(' ', _blank(expr))
+    # m2c's field macro is an access, not a call: without this the families declined every store of a raw m2c draft
+    plain = _CAST.sub(' ', _FIELD_MACRO.sub('(', _blank(expr)))
     if re.search(r'\+\+|--|(?<![=!<>])=(?!=)|<<=|>>=', plain):
         return False
     return not re.search(r'[\w\])]\s*\(', plain)
@@ -123,8 +130,29 @@ def _dead_after(flow, variable, pos):
     return node is not None and all(variable not in flow.nodes[n].live for n in node.successors)
 
 
-def _sites(source, name, flow):
-    """[(start, end, replacement)] for each temporary that only feeds one store."""
+def _run_after(clean, source, block, at, var):
+    """The stores of literals straight after the statement at `at` (at most the largest of `RUN_LIMITS`)."""
+    run = []
+    for stmt in block[at + 1:at + 1 + max(RUN_LIMITS)]:
+        if stmt.kind != 'simple':
+            break
+        hit = re.fullmatch(r'\s*([^;={}]+?)\s*(?<![-+*/%&|^<>!])=(?!=)\s*([^;={}]+);', clean[stmt.start:stmt.end], re.S)
+        if not hit:
+            break
+        lhs = source[stmt.start + hit.start(1):stmt.start + hit.end(1)].strip()
+        value = source[stmt.start + hit.start(2):stmt.start + hit.end(2)].strip()
+        stored = lhs.startswith(('*', '(*')) or _FIELD_MACRO.match(lhs) or re.search(r'[\[.]|->', lhs)
+        if not stored or not _pure(lhs) or _uses(lhs, var) or not _STORED_LITERAL.fullmatch(value):
+            break
+        run.append(stmt)
+    return run
+
+
+def _sites(source, name, flow, runs=None):
+    """[(start, end, replacement)] for each temporary that only feeds one store.
+
+    With `runs` (a dict), a two-arm site followed by stores of literals is also recorded there as
+    ``runs[start] = (run length, end, replacement with the run written in both arms)``."""
     parsed = _function(source, name)
     if not parsed or flow is None:
         return []
@@ -175,6 +203,11 @@ def _sites(source, name, flow):
                 text = f'{lhs} = {value};'
             else:
                 text = f'if ({condition}) {{ {lhs} = {other}; }} else {{ {lhs} = {value}; }}'
+                run = _run_after(clean, source, block, k, var) if runs is not None else []
+                if run:
+                    tail = ' '.join(source[stmt.start:stmt.end].strip() for stmt in run)
+                    runs[block[first].start] = (len(run), run[-1].end, (
+                        f'if ({condition}) {{ {lhs} = {other}; {tail} }} else {{ {lhs} = {value}; {tail} }}'))
             found.append((block[first].start, store.end, text))
             if len(found) >= MAX_SITES:
                 return found
@@ -262,6 +295,29 @@ def _rewrite(source, name):
     return text
 
 
+def _run_arms(source, name):
+    """Every site's store written in both arms, with the literal stores after it where they are few enough.
+
+    gcc cross-jumps the identical tails of the two arms back into one run, so the target shows a single store of the
+    picked value followed by the others; a temporary-free C that stops at the first store compiles differently."""
+    runs = {}
+    sites = _sites(source, name, local_flow.analyze(source, name), runs)
+    out = []
+    for limit in RUN_LIMITS:
+        text, taken, used = source, len(source) + 1, False
+        for start, end, new in sorted(sites, reverse=True):
+            run = runs.get(start)
+            if run and run[0] <= limit:
+                end, new, used = run[1], run[2], True
+            if end > taken:
+                continue
+            text = text[:start] + new + text[end:]
+            taken = start
+        if used and all(text != seen for _, seen in out):
+            out.append((RUN_FAMILY, text))
+    return out
+
+
 def variants(source, name):
     result = []
     inlined = source
@@ -277,7 +333,7 @@ def variants(source, name):
     text = _rewrite(source, name)
     if text:
         result.append((KEEP_FAMILY if inlined != source else FAMILY, text))
-    return result + _tested(source, name)
+    return result + _tested(source, name) + _run_arms(source, name)
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}
