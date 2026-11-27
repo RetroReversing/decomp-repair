@@ -15,7 +15,9 @@ This module finds the word slots (`s32`/`u32`/`M2C_UNK` scalars or arrays named 
 unassigned `unkspMM` locals that fall inside one, and rewrites each read to the narrowed word:
 - `(u16) E` for the halfword at +2 of the word (`(u16) (E >> 16)` at +0), `(u8) (E >> 8*(3-r))` for a byte;
 - a word counts as stored when the C assigns it or passes its address (`&spNN`, a bare array name) to a callee;
-- the width comes from the local's declared type, else from the pointer type of the store that consumes it;
+- the width comes from the target's own `lhu`/`lh`/`lbu`/`lb` of that frame slot when the assembly is given, else
+  from the local's declared type, else from the pointer type of the store that is the local's whole value (inside a
+  sum a halfword defaults to `u16`);
 - children: scalar words merged into one array `s32 spNN[n]` with the cast element read, and the same with the read
   spelt as a halfword view of the array (`((u16 *) spNN)[2 * i + 1]`, the form a game that reads its table through
   a narrower pointer wrote). An already-declared array only gets its reads rewritten.
@@ -37,12 +39,27 @@ _NARROW = {'s16': ('s16', 2), 'u16': ('u16', 2), 'M2C_UNK16': ('s16', 2), 's8': 
 _TARGET = re.compile(r'\b(u16|s16|u8|s8)\s*\*')
 
 
-def _width(declared, statement):
-    """(type, size) the read has: the declaration's narrow type, else the store that takes it."""
+_LOAD = re.compile(r'\b(lhu|lh|lbu|lb)\s+\$\w+,\s*(0x[0-9A-Fa-f]+|\d+)\(\$sp\)')
+_LOADS = {'lhu': ('u16', 2), 'lh': ('s16', 2), 'lbu': ('u8', 1), 'lb': ('s8', 1)}
+
+
+def _loads(asm):
+    """{stack offset: (type, size)} of the narrow loads the target makes from the frame."""
+    return {int(m[2], 0): _LOADS[m[1]] for m in _LOAD.finditer(asm or '')}
+
+
+def _width(declared, statement, name, loads, offset):
+    """(type, size) the read has: the target's own load from that slot, the declaration's narrow type, else the store
+    that takes it (only when the local is the whole value stored; inside a sum the store says nothing about it)."""
+    if offset in loads:
+        return loads[offset]
     if declared in _NARROW:
         return _NARROW[declared]
     found = _TARGET.search(statement)
-    return (found[1], 2 if found[1][1:] == '16' else 1) if found else None
+    whole = re.search(r'=\s*(?:\([^()]*\)\s*)?' + name + r'\s*;', statement)
+    if found and whole:
+        return (found[1], 2 if found[1][1:] == '16' else 1)
+    return None if whole or (found and found[1][1:] != '16') else ('u16', 2)
 
 
 def _statement(body, at):
@@ -58,7 +75,8 @@ def _read(expr, kind, size, rem, view=None):
     return f'({kind}) {inner}'
 
 
-def variants(source, name):
+def variants(source, name, asm=''):
+    loads = _loads(asm)
     span = find(source, name)
     if not span:
         return []
@@ -87,7 +105,7 @@ def variants(source, name):
             continue
         found = []
         for u in uses:
-            wide = _width(typ, _statement(body, u.start()))
+            wide = _width(typ, _statement(body, u.start()), f'unksp{m["off"]}', loads, off)
             if wide is None or off % wide[1]:
                 return []
             found.append((u, slot, wide, off - base))
@@ -166,4 +184,4 @@ def variants(source, name):
     return out
 
 
-REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'asm')}

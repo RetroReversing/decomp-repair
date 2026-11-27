@@ -72,3 +72,28 @@ def test_declared_in_the_registry():
     from decomprepair import registry
     names = {f for m in registry.declared() for f in getattr(m, 'families', ())}
     assert {'stack_word_half_read', 'stack_word_half_view'} <= names
+
+
+# A word array stored whole, whose halves are read inside a sum (`m2c` writes `unksp2 + D`): the target's own load
+# (`lhu`) says the width, since the store of the sum says nothing about it.
+SUM = '''s32 g(void *arg1) {
+    s32 unksp2;
+    s32 unksp6;
+    s32 sp0[3];
+
+    sp0[0] = h();
+    sp0[2] = k();
+    M2C_FIELD(arg1, s16 *, 0) = (s16) (unksp2 + D_A);
+    M2C_FIELD(arg1, s16 *, 2) = (s16) (unksp6 + D_B);
+    return sp0[2];
+}
+'''
+
+
+def test_a_half_inside_a_sum_takes_the_targets_load_width():
+    asm = 'lhu $t0, 0x2($sp)\nlh $t1, 6($sp)\n'
+    (_, signed_), (_, viewed) = r.variants(SUM, 'g', asm)
+    assert '(u16) sp0[0] + D_A' in signed_ and '(s16) sp0[1] + D_B' in signed_
+    assert '((u16 *) sp0)[1] + D_A' in viewed and '((s16 *) sp0)[3] + D_B' in viewed
+    (_, plain), _ = r.variants(SUM, 'g')
+    assert '(u16) sp0[0] + D_A' in plain and '(u16) sp0[1] + D_B' in plain
