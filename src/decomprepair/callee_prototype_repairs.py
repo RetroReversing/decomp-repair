@@ -14,7 +14,9 @@ NARROW = {'s8', 'u8', 's16', 'u16', 'char', 'short', 'signed char', 'unsigned ch
 
 def variants(source, name):
     part = view(source, name)
-    if not part or re.search(r'^\s*#', part.clean, re.M):
+    # m2c's own `#ifndef M2C_DEFINES ... #endif` preamble is not a reason to leave the prototypes alone.
+    directives = re.sub(r'#ifndef M2C_DEFINES.*?#endif', '', part.clean, flags=re.S) if part else ''
+    if not part or re.search(r'^\s*#', directives, re.M):
         return []
     prototypes = list(_PROTO.finditer(part.clean[:part.opening]))
     result = []
@@ -23,7 +25,8 @@ def variants(source, name):
         if callee == name or sum(p[1] == callee for p in prototypes) != 1 or find(source, callee):
             continue
         sites = list(calls(part, callee))
-        if not sites or not proto[2].strip() or '...' in proto[2]:
+        # An empty list `()` is an unknown-parameter declaration (m2c's): its return width is still a choice.
+        if not sites or '...' in proto[2]:
             continue
         # A local object/parameter can shadow this function name.
         without_proto = part.clean[:proto.start()]+part.clean[proto.end():]
@@ -48,6 +51,9 @@ def variants(source, name):
         if narrow and ' '.join(narrow[1].split()) in NARROW and used:
             offset = proto.start()+narrow.start(1)
             result.append(('callee_return_wide', edit(source, [(offset, proto.start()+narrow.end(1), 's32')])))
+            # The same widening as u32: a `>>` of the result is `srl` in the target (`sra` after s32), and a halfword
+            # store of it needs no extension either.
+            result.append(('callee_return_wide', edit(source, [(offset, proto.start()+narrow.end(1), 'u32')])))
         # Infer return-width choices only from a captured direct result subsequently masked in this caller.
         returns = re.match(rf'\s*(?:extern\s+)?({INTEGER})\s+{re.escape(callee)}\s*\(', proto[0])
         if returns and ' '.join(returns[1].split()) in {'s32', 'u32', 'int', 'signed int', 'unsigned int'}:
