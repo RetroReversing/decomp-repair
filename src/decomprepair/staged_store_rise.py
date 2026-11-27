@@ -17,6 +17,9 @@ step took the plain source from 1010 to 0, with the local declared in each of th
 member's type (one function-level local scored 40, an `int` local worse). `temporary_hoist_block` moves such an
 assignment only as far as it can prove every statement harmless, and stores through another pointer stop it.
 
+The value may be a member read through a view of a global's address (`((View *) &gPair)->b`), as a draft whose record
+was recovered from the assembly spells it (`asm_member_view`).
+
 The read moves only over plain stores to members (or literal offsets) that the value does not read, and over
 assignments to locals it does not use: no calls, labels or control flow. One child per distance; blocks that store the
 same member over the same distance are also changed together, and that child comes first. The judge decides.
@@ -68,9 +71,14 @@ def _loads(node):
     node = bare(node)
     field = _field(node)
     if field:
-        base = node.kids[0]
-        if node.kind == 'member' and bare(base).kind != 'id':
-            return None
+        if node.kind == 'member':
+            base = bare(node.kids[0])
+            while base.kind == 'cast':  # a view of a variable or of a global's address, `((T *) &g)->m`
+                base = bare(base.kids[-1])
+            if base.kind == 'unary' and base.op == '&':
+                base = bare(base.kids[0])
+            if base.kind != 'id':
+                return None
         return [field]
     if node.kind == 'index' or node.kind == 'member' or (node.kind == 'unary' and node.op == '*'):
         return None
@@ -87,7 +95,9 @@ def _store(types, source, site):
     """(target, value) of a statement `target = value;` without calls or other effects, or None."""
     if site.kind != 'expr' or site.statement is None or site.labeled:
         return None
-    root = parse(source, site.start, site.end, types.typedefs)
+    # (a cast to a record's typedef name, `((View *) p)->m`, needs the name; Types keeps only the scalar typedefs)
+    records = re.findall(r'\}\s*([A-Za-z_]\w*)\s*;', source) if 'typedef' in source else ()
+    root = parse(source, site.start, site.end, {*types.typedefs, *records})
     if root is None:
         return None
     root = bare(root)
