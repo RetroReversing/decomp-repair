@@ -61,3 +61,20 @@ def test_subu_from_zero_counts_as_a_negate_and_it_is_registered():
     assert ab.negates('/* 0 80001000 00021023 */  subu       $v0, $zero, $v0\n')
     assert not ab.negates('/* 0 80001000 00021023 */  subu       $v0, $v1, $v0\n')
     assert [r.module for r in registry.declared() if r.module in ('abs_idiom', 'rule:abs_idiom')] == ['rule:abs_idiom']
+
+
+def test_the_test_written_the_other_way_round():
+    source = '''void g(s16 sum) {
+    s32 var_v1;
+
+    var_v1 = sum;
+    if (0 > var_v1) {
+        var_v1 = -var_v1;
+    }
+    use(var_v1);
+}
+'''
+    # the rule is what runs (rules/abs_idiom.json); the module is its older reference
+    out = registry.run('rule:abs_idiom', source=source, name='g', asm=ASM, header='', arch='mips')
+    assert [family for family, _ in out] == [ab.FAMILY]
+    assert 'var_v1 = abs(sum);' in out[0][1] and '0 > var_v1' not in out[0][1]
