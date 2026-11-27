@@ -6,16 +6,20 @@ had two arms, which jump.c merges only after the fold would have happened. Any `
 `if`, so both forms run the same statements. KMC GCC 2.7.2 -O1, a 119-instruction two-key lookup: 960 -> 0.
 
 or_arm_split
-    Each `if (a || b ...) { S }` (S short) on its own, and every one of them together as one child.
+    Each `if (a || b ...) { S }` (S short) on its own, every one of them together, and each pair of them as one child:
+    a function often has one `||` the target keeps folded among several it splits (a 146-instruction N64 drawing
+    function, `-O1`: two of three split, 1635 -> 415).
 """
 import re
+from itertools import combinations
 
 from .c_scan import close
 from .csource import _blank, find
 
 FAMILY = 'or_arm_split'
 FAMILIES = (FAMILY,)
-LIMIT = 8
+LIMIT = 16
+PAIRED = 5  # pairs are offered among the first five sites
 BODY = 400  # a body longer than this is not copied
 _IF = re.compile(r'\bif\s*\(')
 _KEPT = re.compile(r'\b(?:case|default|static)\b|\b[A-Za-z_]\w*\s*:(?!:)\s*[^;?]*;')
@@ -75,7 +79,8 @@ def variants(source, name):
     for site in sites:
         if not apart or site[0] >= apart[-1][1]:
             apart.append(site)
-    picks = ([apart] if len(apart) > 1 else []) + [[site] for site in sites]
+    pairs = [list(pair) for pair in combinations(sites[:PAIRED], 2) if pair[0][1] <= pair[1][0] and list(pair) != apart]
+    picks = ([apart] if len(apart) > 1 else []) + [[site] for site in sites] + pairs
     return [(FAMILY, _apply(source, pick)) for pick in picks[:LIMIT]]
 
 
