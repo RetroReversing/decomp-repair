@@ -131,3 +131,20 @@ def test_a_table_the_target_loads_as_words_or_a_looser_sum_is_left_alone():
                         (FLAG.replace('D_slot + D_table', 'D_slot & 3 + D_table'), FLAG_ASM),
                         (FLAG.replace('extern char D_table[];', 'extern s32 D_table[];'), FLAG_ASM)):
         assert 'asm_table_index_read' not in [family for family, _ in variants(source, 'held', asm)]
+
+
+def test_plain_deref_of_a_byte_table_takes_the_width_loaded_through_its_address():
+    from decomprepair import asm_symbol_read_width as W
+    asm = ('lui $v1, %hi(sValues)\nsll $v0, $v0, 1\naddiu $v1, $v1, %lo(sValues)\n'
+           'addu $v0, $v0, $v1\nlhu $v1, 0x0($v0)\n')
+    source = 'extern u8 sValues[];\nvoid f(s32 *p, s32 i) {\n    *p += *(((i) * 2) + sValues);\n}\n'
+    children = [child for family, child in W.variants(source, 'f', asm) if family == W.FAMILY_DEREF]
+    assert children == [source.replace('*(((i) * 2)', '*(u16 *)(((i) * 2)')]
+
+
+def test_plain_deref_width_leaves_casts_and_products_alone():
+    from decomprepair import asm_symbol_read_width as W
+    asm = 'addiu $v1, $v1, %lo(sValues)\naddu $v0, $v0, $v1\nlhu $v1, 0x0($v0)\n'
+    for line in ('*p = *(u8 *)(i + sValues);', '*p = i * (i + sValues);'):
+        source = 'extern u8 sValues[];\nvoid f(s32 *p, s32 i) {\n    ' + line + '\n}\n'
+        assert not [c for family, c in W.variants(source, 'f', asm) if family == W.FAMILY_DEREF]
