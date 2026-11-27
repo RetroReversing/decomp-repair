@@ -18,6 +18,11 @@ What this reads, for the function's runs of simple statements (a call, a branch,
     `base->member`, `base[3]`
     `local.member = value;`                   a member of a local struct (`struct { .. } cfg;`, or a struct typedef's)
     `local = value;`, `local op= value;`      a plain local (declared, never address-taken, not `volatile`)
+    `G = value;`, `G op= value;`              a scalar `extern` global that is not `volatile`; it may alias any cell
+
+A switch arm's three global statements (`A = 0; B = 0; C &= ~1;`) matched with the last one first (KMC/SN GCC
+2.7.2, N64 command loop: 1960 -> 0): the loop's invariants are built before it in the order the arm first names them.
+Either adjacent swap alone scores worse, so only the move to the front finds it.
 
 where a value is made of literals, locals and parameters, `&symbol`, casts, operators (a division only by a
 literal) and reads of cells (`local = base[0x94] / 3;`). A statement that reads a bare global, calls, dereferences
@@ -66,6 +71,7 @@ _TOKEN = re.compile(rf'\s*(?:(?P<num>0[xX][0-9a-fA-F]+[uUlL]*|\d+\.\d*[fF]?|\.\d
                     r'|(?P<op><<=|>>=|->|<<|>>|<=|>=|==|!=|&&|\|\||\+\+|--|[-+*/%&|^]=|[-+*/%&|^~!<>=?:,.()\[\]]))')
 _BINARY = {'||': 1, '&&': 2, '|': 3, '^': 4, '&': 5, '==': 6, '!=': 6, '<': 7, '>': 7, '<=': 7, '>=': 7,
            '<<': 8, '>>': 8, '+': 9, '-': 9, '*': 10, '/': 10, '%': 10}
+_LABEL = re.compile(r'\b(?:case\b[^:;{}?]*|default[ \t]*):(?!:)')
 _ASSIGN = {'=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>='}
 _FIELD = re.compile(rf'M2C_FIELD\(\s*({IDENT})\s*,\s*([^,()]+?)\s*,\s*({NUMBER})\s*\)')
 
@@ -270,6 +276,9 @@ def _cell(node, records, aggregates=frozenset()):
 
 
 def _clash(one, two, apart=frozenset()):
+    if one[0] == 'g' or two[0] == 'g':
+        # a global is one object by its name; a pointer's cell may be any global
+        return one == two or one[0] == 'c' or two[0] == 'c'
     if one[0] == 'v' or two[0] == 'v':
         return one == two
     if one[1] != two[1]:
@@ -325,7 +334,7 @@ def _read(node, names, records, cells, locals_, aggregates=frozenset()):
     return False
 
 
-def _effects(text, names, records, aggregates=frozenset()):
+def _effects(text, names, records, aggregates=frozenset(), scalars=frozenset()):
     try:
         tree = _Parser(text.strip().rstrip(';')).parse()
     except _Bad:
@@ -341,6 +350,11 @@ def _effects(text, names, records, aggregates=frozenset()):
         kind, writes, store = 'local', {target}, None
         if op != '=':
             locals_.add(target)
+    elif left[0] == 'name' and left[1] in scalars:
+        target = ('g', left[1])
+        kind, writes, store = 'global', {target}, None
+        if op != '=':
+            reads.add(target)
     else:
         cell = _cell(left, records, aggregates)
         if not cell:
@@ -369,6 +383,16 @@ def _names(part, source):
         if hit[1] not in _NOT_DECLARATIONS and hit[2] not in _NOT_DECLARATIONS:
             names.add(hit[2])
     return {name for name in names if not re.search(rf'&\s*{re.escape(name)}\b', body)}
+
+
+def _scalars(part, header, names):
+    """The file-scope scalar globals (`extern u8 G;`), never `volatile` ones, arrays or names a local hides."""
+    text = _blank(header) + '\n' + part.clean[:part.opening]
+    found = set()
+    for hit in re.finditer(rf'(?m)^[ \t]*extern[ \t]+((?:(?:unsigned|signed|volatile|const|struct)[ \t]+)*{IDENT})[ \t]+({IDENT})[ \t]*;', text):
+        if 'volatile' not in hit[1]:
+            found.add(hit[2])
+    return frozenset(found - names)
 
 
 def _aggregates(part, header):
@@ -407,14 +431,16 @@ def _apart(source, part, aggregates):
     return frozenset(frozenset((one, two)) for one in aggregates for two in kept | aggregates if one != two)
 
 
-def _segments(source, part, names, records, aggregates=frozenset()):
+def _segments(source, part, names, records, aggregates=frozenset(), scalars=frozenset()):
     """[[(start, end, effects)]]: runs of two or more consecutive statements the model understands."""
     found = []
     stop = part.clean.rindex('}', part.opening, part.end)
-    for run in _runs(part.clean, part.opening + 1, stop, minimum=1):
+    # a `case` or `default` label is not part of the statement after it: end it there, so an arm's first statement moves too
+    labelled = _LABEL.sub(lambda hit: hit[0][:-1] + ';', part.clean)
+    for run in _runs(labelled, part.opening + 1, stop, minimum=1):
         group = []
         for start, end in run:
-            effects = _effects(source[start:end], names, records, aggregates)
+            effects = _effects(source[start:end], names, records, aggregates, scalars)
             if effects is None:
                 if len(group) >= 2:
                     found.append(group)
@@ -547,7 +573,7 @@ def variants(source, name, header=''):
     names = _names(part, source)
     records = _records(header + '\n' + source)
     aggregates = _aggregates(part, header)
-    segments = _segments(source, part, names, records, aggregates)
+    segments = _segments(source, part, names, records, aggregates, _scalars(part, header, names))
     result = [(FAMILY, child) for child in _order_children(source, segments, _apart(source, part, aggregates))]
     result += [(FAMILY_CONSTANT, child) for child in _constant_children(source, part, name, names, records)]
     return result
