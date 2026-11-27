@@ -71,3 +71,17 @@ def test_the_members_of_a_local_record_are_not_locals():
     record = SOURCE.replace('    s32 count;\n', '    struct {\n        f32 total;\n        f32 spare;\n    } work;\n    s32 count;\n')
     assert all('    f32 total;' not in t.replace('        f32 total;', '') for t in _texts(record))
     assert all('        f32 total;\n        f32 spare;\n    } work;' in t for t in _texts(record))
+
+
+def test_hoisting_a_declaration_sharing_a_line_keeps_the_store_and_braces():
+    source = SOURCE.replace('        f32 *sp174;\n',
+                            '        { f32 *sp174; sp174 = a; use(sp174); }\n')
+    children = _texts(source)
+    assert children
+    assert all('sp174 = a; use(sp174); }' in child for child in children)
+    assert all(child.count('{') == child.count('}') for child in children)
+
+
+def test_top_declaration_sharing_a_line_is_not_an_insertion_point():
+    source = SOURCE.replace('    s32 count;\n', '    s32 count; count = 1;\n')
+    assert all('s32 count; count = 1;' in child for child in _texts(source))

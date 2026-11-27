@@ -86,7 +86,9 @@ def variants(source, name):
             continue
         depth = _depth(clean, body_start, match.start())
         if depth == 0:
-            top.append(match)
+            start, end = _line(clean, match)
+            if not clean[start:match.start('type')].strip() and not clean[match.end():end].strip():
+                top.append(match)
         elif _statement_block(clean, blocks, match.start()):
             inner.append(match)
     if not inner or not top:
@@ -109,6 +111,11 @@ def variants(source, name):
         edits = []
         for match in sorted(chosen, key=lambda item: item.start()):
             start, end = _line(clean, match)
+            # A declaration can share a line with braces and executable code.
+            # Remove the whole line only when it contains nothing else, or the
+            # hoist would silently delete a store or break the surrounding block.
+            if source[start:match.start('type')].strip() or source[match.end():end].strip():
+                start, end = match.start('type'), match.end()
             edits.append((start, end, ''))
         indent = re.match(r'[ \t]*', source[_line(clean, top[0])[0]:])[0]
         key = lambda item: int(OFFSET.match(item['name'])[1], 16) if OFFSET.match(item['name']) else 1 << 60
