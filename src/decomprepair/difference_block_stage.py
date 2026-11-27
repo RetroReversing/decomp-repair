@@ -14,6 +14,13 @@ operand: a `M2C_FIELD(...)` read, a `*(T *)...` dereference or an integer local 
 or assignment) directly before another `-` or `+`. The statement may be an expression, an assignment or a `return`
 (not an `if`, a loop or a `goto`). The local is `span` (a suffix when the name is in use), `s32` unless the operand is an
 unsigned 32-bit word. One child with every site staged, and one per site when there are several.
+
+`subtrahend_block_stage` is the mirror shape, `X - (Y - K)`: gcc 2.7.2 (SN build) folds it into `(X + K) - Y`
+(`addiu` on the minuend), where the target subtracts `K` from `Y` first and then takes that from `X`. Staging the
+subtrahend (`{ u32 span = Y - K; ... X - span ... }`) keeps the two instructions: a 135-instruction N64 transfer routine,
+160 -> 0 after scan_loop_while (`end - (address - 1)`); the same edit on the unrepaired source scored worse (1415).
+The search's `do { } while (0)` fences earlier in the same block order the loads around the two instructions: staging
+alone made that source worse (160 -> 510) and opening the fences alone changed nothing, so one child does both.
 """
 import re
 
@@ -22,7 +29,8 @@ from .integer_repair_support import IDENT, INTEGER, NUMBER, edit, view
 from .pattern_repairs import close
 
 FAMILY = 'difference_block_stage'
-FAMILIES = (FAMILY,)
+SUBTRAHEND = 'subtrahend_block_stage'
+FAMILIES = (FAMILY, SUBTRAHEND)
 LIMIT = 6
 LOCAL = 'span'
 _FIELD = re.compile(rf'M2C_FIELD\((?:.|\n)*,\s*(?P<type>{INTEGER}|M2C_UNK32)\s*\*\s*,\s*[-\w]+\s*\)\Z')
@@ -80,7 +88,15 @@ def _group(text, start):
     return start, end, operand, hit['sign'], hit['k']
 
 
-def _sites(part):
+def _is_subtrahend(before):
+    """Whether `before` ends in a binary `-`: a value, then one minus sign (not `->`, `--`, `-=` or a sign)."""
+    before = before.rstrip()
+    if not before.endswith('-') or before.endswith('--'):
+        return False
+    return bool(re.search(r'(?:[\w\]\)])\s*-\Z', before)) and not re.search(r'\breturn\s*-\Z', before)
+
+
+def _sites(part, subtrahend=False):
     clean = part.clean
     pairs = brace_pairs(clean, part.opening, part.end) or {}
     found = []
@@ -93,7 +109,12 @@ def _sites(part):
                 continue  # a label
             for at in (m.start() for m in re.finditer(r'\(', text)):
                 group = _group(text, at)
-                if not group or not _FOLLOWS.match(text, group[1]) or group[1] >= len(text):
+                if not group or group[1] >= len(text):
+                    continue
+                if subtrahend:
+                    if not _is_subtrahend(text[:at]) or not re.match(r'\s*[;)]', text[group[1]:]):
+                        continue
+                elif not _FOLLOWS.match(text, group[1]):
                     continue
                 if text.count(clean[begin + group[0]:begin + group[1]]) != 1:
                     continue
@@ -112,12 +133,30 @@ def _local(clean):
     return name
 
 
+def _fences_before(part, begin):
+    """The edits that turn each earlier `do { } while (0);` of the block around `begin` into a plain block."""
+    clean = part.clean
+    pairs = brace_pairs(clean, part.opening, part.end) or {}
+    around = max((opening for opening, closing in pairs.items() if opening < begin < closing), default=part.opening)
+    found = []
+    for hit in re.finditer(r'\bdo\b(?=\s*\{)', clean[around:begin]):
+        at = around + hit.start()
+        opening = clean.index('{', at)
+        end = pairs.get(opening)
+        if end is None:
+            continue
+        inside = max((o for o, c in pairs.items() if o < at < c), default=part.opening)
+        end = close(clean, opening, '{', '}')
+        tail = re.match(r'\s*while\s*\(\s*0\s*\)\s*;', clean[end:]) if end else None
+        if inside != around or not tail or re.search(r'\b(?:break|continue)\b', clean[opening:end]):
+            continue
+        found += [(at, opening, ''), (end, end + tail.end(), '')]
+    return found
+
+
 def variants(source, name):
     part = view(source, name)
     if not part:
-        return []
-    sites = _sites(part)
-    if not sites:
         return []
     local = _local(part.clean)
 
@@ -127,8 +166,20 @@ def variants(source, name):
         body = source[begin:left] + local + source[right:end]
         return [(begin, end, f'{{\n{indent}    {kind} {local} = {operand} {sign} {constant};\n{indent}    {body}\n{indent}}}')]
 
-    choices = [sites] + ([[site] for site in sites] if len(sites) > 1 else [])
-    return [(FAMILY, edit(source, [e for site in choice for e in staged(site)])) for choice in choices][:LIMIT]
+    children = []
+    for family, subtrahend in ((FAMILY, False), (SUBTRAHEND, True)):
+        sites = _sites(part, subtrahend)
+        if not sites:
+            continue
+        choices = [sites] + ([[site] for site in sites] if len(sites) > 1 else [])
+        made = [(family, edit(source, [e for site in choice for e in staged(site)])) for choice in choices]
+        if subtrahend:
+            for site in sites:
+                opened = _fences_before(part, site[0])
+                if opened:
+                    made.insert(1, (family, edit(source, staged(site) + opened)))
+        children += made[:LIMIT]
+    return children
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}
