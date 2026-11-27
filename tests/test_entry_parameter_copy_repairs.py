@@ -90,3 +90,11 @@ def test_a_read_ahead_of_the_copy_keeps_the_parameters_own_name():
     found = [c for f, c in variants(FIVE, 'gather') if f == 'entry_parameter_copy' and 'void *d_in' in c]
     late = [c for c in found if '(s8 *)d_in + 0)' in c]
     assert late and all('(s8 *)d + 0)' not in c.split('d = d_in;')[0] for c in late)
+
+
+def test_a_function_without_locals_declares_the_copy_before_assigning_it():
+    source = ('int walk(int total, u8 *text, f32 *x) {\n    for (;;) {\n        if (*text == 0) {\n'
+              '            return total;\n        }\n        *x += *text++;\n    }\n}\n')
+    found = [c for family, c in variants(source, 'walk') if 'text_in,' in c]
+    assert len(found) == 2  # the plain copy and the clobber
+    assert all(c.index('u8 * text;') < c.index('text = text_in;') for c in found)
