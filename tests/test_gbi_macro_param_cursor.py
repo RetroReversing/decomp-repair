@@ -57,3 +57,14 @@ def test_fast3d_texture_rectangle_halves():
 
 def test_a_parameter_that_is_not_written_back_is_left_alone():
     assert children(SOURCE.replace('*arg0 = temp_a3 + 8;', '')) == []
+
+
+def test_each_command_may_use_the_pointer_itself_instead_of_a_copy():
+    direct = [c for c in children(SOURCE) if 'Gfx *gfx' not in c]
+    assert 'gDPTileSync((*(Gfx **) arg0)++);' in direct[0]
+    assert '__repair_cursor' not in direct[0]
+
+
+def test_a_word_stored_through_a_pointer_to_pointer_cast_is_still_a_word():
+    source = SOURCE.replace('*((s32 *) (((char *) temp_a3_2) + 4)) = 0;', '*((s32 **) (((char *) temp_a3_2) + 4)) = NULL;')
+    assert 'gDPTileSync(gfx++);' in children(source)[0]

@@ -56,6 +56,7 @@ PARAMETER_FAMILY = 'gbi_macro_param_cursor'
 FAMILIES = (FAMILY, LOCAL_FAMILY, RAW_FAMILY, RUN_FAMILY, LOCAL_RUN_FAMILY, TRIM_FAMILY, PARAMETER_FAMILY)
 LIMIT = 10
 NUMBER = r'0[xX][0-9a-fA-F]+|\d+'
+NULL_OR_CAST_NUMBER = re.compile(rf'(?:\(\s*\w+\s*\*+\s*\)\s*)?(?:NULL|\(\s*(?P<n>-?(?:{NUMBER}))\s*\)|(?P<m>-?(?:{NUMBER})))')
 
 POINTER = re.compile(rf'(?m)^[ \t]*extern\s+(?P<type>void|char|s8|u8|s32|u32|int|unsigned|Gfx)\s*\*\s*(?:volatile\s+)?(?P<name>{IDENT})\s*;')
 SIZES = {'s32': 4, 'u32': 4, 'int': 4, 'unsigned': 4, 'Gfx': 8}
@@ -68,10 +69,21 @@ CONTROL = re.compile(r'\b(?:goto|return|case|default|break|continue)\b|^\s*\w+\s
 CAST = re.compile(r'^\(\s*(?:(?:unsigned|signed)\s+)?(?:s32|u32|int|long|unsigned|s16|u16|short)\s*\)\s*')
 
 
-RAW_LHS = re.compile(rf'\*(?:s32|u32|int|unsigned|unsignedint)\*(?:char\*)?(?P<p>{IDENT})(?:\+(?P<off>{NUMBER}))?(?:\+(?P<more>{NUMBER}))?')
+RAW_LHS = re.compile(rf'\*(?:s32|u32|int|unsigned|unsignedint|(?:s32|u32|int|void|u8|s8)\*)\*(?:char\*)?(?P<p>{IDENT})(?:\+(?P<off>{NUMBER}))?(?:\+(?P<more>{NUMBER}))?')
+
+
+def _word_value(value):
+    """A stored word written through a pointer cast: `NULL` is 0 and `(s32 *) 0x204` the number."""
+    found = NULL_OR_CAST_NUMBER.fullmatch(value)
+    return value if not found else found['n'] or found['m'] or '0'
 
 
 def _store(text, records):
+    found = _raw_store(text, records)
+    return found and (found[0], found[1], _word_value(found[2]))
+
+
+def _raw_store(text, records):
     if found := _record_store(text, records):
         return found
     lhs, sep, value = text.partition('=')
@@ -909,7 +921,8 @@ PARAMETER_CURSOR = '__repair_cursor'
 def _parameter_cursor(source, name, header=''):
     """A display-list cursor the caller passes by address (`void **arg0`): read once from `*arg0`, advanced through
     locals and stored back at the end. The run is read as a global cursor's and written on a block-local `Gfx *` copy
-    (`{ Gfx *gfx = ...; gDPPipeSync(gfx++); ... }`), which is what the pointer argument's functions keep it in."""
+    (`{ Gfx *gfx = ...; gDPPipeSync(gfx++); ... }`), or, without the copy, on the pointer itself
+    (`gDPPipeSync((*(Gfx **) arg0)++)`), which keeps one load and store of `*arg0` per command."""
     part = view(source, name)
     if not part or PARAMETER_CURSOR in source:
         return []
@@ -928,11 +941,14 @@ def _parameter_cursor(source, name, header=''):
                  for m in re.finditer(rf'(?<![\w)\]]){deref}|(?<=[=(,] ){deref}', body)]
         declaration = f'extern void *{PARAMETER_CURSOR};\n'
         shadow = edit(source, edits + [(head, head, declaration)])
-        for family, text in _variants(shadow, name, header):
-            if family not in (LOCAL_FAMILY, LOCAL_RUN_FAMILY):
-                continue
-            text = text.replace(f'extern Gfx *{PARAMETER_CURSOR};\n', '')
-            result.append((PARAMETER_FAMILY, text.replace(PARAMETER_CURSOR, f'(*(Gfx **) {param})')))
+        # the block-local copy first, then each macro on `(*gfx)++` itself (the game reads and writes `*gfx` per command)
+        found_variants = _variants(shadow, name, header)
+        for wanted in ((LOCAL_FAMILY, LOCAL_RUN_FAMILY), (FAMILY,), (RAW_FAMILY,)):
+            for family, text in found_variants:
+                if family not in wanted:
+                    continue
+                text = text.replace(f'extern Gfx *{PARAMETER_CURSOR};\n', '')
+                result.append((PARAMETER_FAMILY, text.replace(PARAMETER_CURSOR, f'(*(Gfx **) {param})')))
     return result
 
 
