@@ -39,6 +39,13 @@ asm_table_index_read
     takes is. The table is declared at the loaded width and read as `TABLE[INDEX]`, which also puts the table's
     `lui` first. An N64 flag test went 235 -> 0 in this one step.
 
+asm_byte_table_deref_width
+    A byte table read through a plain dereference of the byte pointer sum, with no cast to say the width:
+    `extern u8 TABLE[]; ... *(((id) * 2) + TABLE)`, where the target makes the table's address, adds the index and loads
+    `lhu 0($v0)`. The read is written `*(u16 *)(((id) * 2) + TABLE)` (the declaration stays, so the sum keeps counting
+    bytes). All the tables together, then each alone. The last step of an N64 object update (sn-n64-281 GCC 2.8.1),
+    200 -> 0.
+
 The width is read off the target's own loads; the exact judge decides every child."""
 import re
 
@@ -49,7 +56,8 @@ FAMILY_CAST = 'float_literal_int_cast'
 FAMILY_OFFSET = 'asm_offset_read_width'
 FAMILY_ADDRESS = 'asm_address_read_width'
 FAMILY_INDEX = 'asm_table_index_read'
-FAMILIES = (FAMILY, FAMILY_OFFSET, FAMILY_CAST, FAMILY_ADDRESS, FAMILY_INDEX)
+FAMILY_DEREF = 'asm_byte_table_deref_width'
+FAMILIES = (FAMILY, FAMILY_OFFSET, FAMILY_CAST, FAMILY_ADDRESS, FAMILY_INDEX, FAMILY_DEREF)
 LIMIT = 8
 _TYPE = {'lb': 's8', 'lbu': 'u8', 'lh': 's16', 'lhu': 'u16', 'lw': 's32'}
 _INTEGER = r'(?:[su](?:8|16|32)|int|short|char|unsigned\s+(?:int|short|char))'
@@ -286,6 +294,30 @@ def _index_edits(source, name, widths):
     return found
 
 
+def _deref_edits(source, name, widths):
+    """{symbol: edits}: each plain `*(index + TABLE)` of a byte table written at the wider width the target loads."""
+    span = find(source, name)
+    if not span:
+        return {}
+    clean = _blank(source)
+    found = {}
+    # a unary `*`: after an operator, an opening bracket or a statement's start, never after an operand
+    read = re.compile(r'(?:(?<=[=({,;}+\-*/&|^<>?:!~\[])|(?<=\breturn))(?P<gap>\s*)\*\s*(?=\()')
+    for sym, kind in widths.items():
+        if kind not in ('s16', 'u16', 's32') or not re.search(
+                rf'\bextern\s+(?:char|s8|u8)\s+{re.escape(sym)}\s*\[\s*\]\s*;', clean):
+            continue
+        for hit in read.finditer(clean, span[0], span[1]):
+            end = _closing(clean, hit.end())
+            if end is None:
+                continue
+            inner = clean[hit.end() + 1:end - 1]
+            if re.match(r'\s*\(?\s*[A-Za-z_]\w*(?:\s+\w+)*\s*\*+\s*\)', inner) or not _index_of(inner, sym):
+                continue  # a cast in front of the sum already names a type
+            found.setdefault(sym, []).append((hit.end(), hit.end(), f'({kind} *)'))
+    return found
+
+
 def _apply(source, edits):
     for start, end, text in sorted(edits, reverse=True):
         source = source[:start] + text + source[end:]
@@ -314,6 +346,10 @@ def variants(source, name, asm=''):
     if len(address) > 1:
         out.append((FAMILY_ADDRESS, _apply(source, [e for edits in address.values() for e in edits])))
     out += [(FAMILY_ADDRESS, _apply(source, edits)) for _, edits in sorted(address.items())]
+    deref = _deref_edits(source, name, _address_widths(asm))
+    if len(deref) > 1:
+        out.append((FAMILY_DEREF, _apply(source, [e for edits in deref.values() for e in edits])))
+    out += [(FAMILY_DEREF, _apply(source, edits)) for _, edits in sorted(deref.items())]
     span = find(source, name)
     if span:
         clean = _blank(source)
