@@ -5,7 +5,10 @@ the target reads that pointee with `lbu` (or `lb`, `lhu`, `lh`), the word read i
 or symbol names it, so `field_width` has nothing to retype. A saved N64 draft sat one row from exact on this: the first
 test of an object's state byte was a `lw` in C and a `lbu` in the target.
 
-The evidence is a `lw $r, ...` followed by a narrow load from `0($r)` before `$r` is written again. Each word read of
+The evidence is a `lw $r, ...` followed by a narrow load from `0($r)` before `$r` is written again; an `addu` that
+adds an index to the loaded pointer (`addu $v0,$v0,$a1`) passes it on to its destination, so a byte table whose base
+pointer was loaded from a record and indexed by a variable counts (an N64 object loop's count, `lbu $s1,($v0)` where the
+saved C had `*(s32 *)(*(s32 *)(rec + 0x14) + i)`: 595 -> 395, and with the next fix 0). Each word read of
 a read (`*(s32 *)(*...)`) is given each such width: all of them together, and one at a time.
 """
 import re
@@ -21,6 +24,7 @@ INSTRUCTION = re.compile(r'^\s*(?:/\*[^*]*\*/\s*)?([a-z][\w.]*)\s+\$(\w+)(?:\s*,
 ZERO_OFFSET = re.compile(r'(?:0x0|0)?\(\s*\$(\w+)\s*\)')
 KEEPS_FIRST = ('sb', 'sh', 'sw', 'swc1', 'sdc1', 'sd', 'swl', 'swr', 'beq', 'bne', 'beql', 'bnel', 'beqz', 'bnez',
                'beqzl', 'bnezl', 'blez', 'bgtz', 'bltz', 'bgez', 'jr', 'mtc1', 'ctc1', 'mtc0')  # (they only read it)
+ADDS = ('addu', 'add', 'daddu')
 REACH = 8  # instructions between the pointer's load and the read through it
 WORD_READ = re.compile(r'\*\s*\(?\s*\(\s*(?P<type>s32|u32|int)\s*\*\s*\)\s*\(*\s*\*')
 SITES_MAX = 6
@@ -44,6 +48,8 @@ def _widths(asm):
             loaded = {}
         elif op == 'lw' and first not in ('sp', 'ra'):
             loaded[first] = 0
+        elif op in ADDS and (ages := [loaded[r] for r in re.findall(r'\$(\w+)', rest or '') if r in loaded]):
+            loaded[first] = min(ages)  # the pointer plus an index is still the loaded pointer's object
         elif op not in KEEPS_FIRST:
             loaded.pop(first, None)
     return found
