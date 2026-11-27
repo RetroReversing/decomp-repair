@@ -101,3 +101,49 @@ def test_a_label_at_its_arm_level_is_copied_over_the_goto_that_ends_another_arm(
 
     case 0x38:''' in text
     assert text.count('link(voice, group);') == 2
+
+
+EXIT_STORE = '''extern int state;
+void g(void);
+void run(void)
+{
+  int v;
+  switch (state)
+  {
+    case 3:
+      g();
+      v = 4;
+block_35:
+      state = v;
+    case 9:
+    default:
+      return;
+    case 5:
+      g();
+      v = 6;
+      goto block_35;
+    case 7:
+      v = 8;
+      goto block_35;
+  }
+}
+'''
+
+
+def test_a_label_that_falls_into_an_exit_arm_is_copied_over_each_goto():
+    # a state-machine dispatcher: the shared store at the first arm kept the join there (1480 -> 0)
+    (family, text), = variants(EXIT_STORE, 'run')
+    assert family == FAMILY
+    assert 'goto' not in text and 'block_35' not in text
+    assert text.count('state = v; return;') == 2
+    assert 'case 9:\n    default:\n      return;' in text
+
+
+def test_a_run_that_falls_into_a_working_arm_is_left_alone():
+    assert variants(EXIT_STORE.replace('default:\n      return;', 'default:\n      g();\n      return;'), 'run') == []
+
+
+def test_a_goto_that_does_not_end_an_arm_keeps_the_label():
+    source = EXIT_STORE.replace('v = 8;\n      goto block_35;', 'v = 8;\n      goto block_35;\n      g();')
+    (_, text), = variants(source, 'run')
+    assert 'block_35:' in text and text.count('goto block_35;') == 1
