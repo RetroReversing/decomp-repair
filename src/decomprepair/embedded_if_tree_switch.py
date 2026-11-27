@@ -22,6 +22,10 @@ next value, `<`/`>=` at the constant, `<=`/`>` at the next value). Values that r
 the values on both ends of the line must run the same statements: that group is the default. A tree needs two tests
 on the variable at least (one test is an `if`). Only trees whose arms
 neither `return` nor jump, loop, or change the variable are read (the arms' own `if`s on other variables stay as written).
+
+m2c's compare tree in a `void` function leaves each leaf with `if (v != K) { return; }`, after the index copy the
+branch's delay slot holds. When the tree is the last statement, those guards are first written as `if (v == K) { ... }`
+(`_unguarded`): on a 146-instruction KMC GCC 2.7.2 `-O1` three-state routine the switch took 4505 -> 770.
 """
 import re
 
@@ -35,6 +39,8 @@ LIMIT = 4
 MAX_CASE_VALUES = 8
 
 IDENT = r'[A-Za-z_]\w*'
+GUARD = re.compile(r'\bif\s*\(\s*(?:\(s32\)\s*)?(?P<var>' + IDENT + r')\s*!=\s*(?P<value>-?(?:0[xX][0-9a-fA-F]+|\d+))[uUlL]*\s*\)'
+                   r'\s*\{\s*return\s*;\s*\}')
 
 
 def _block(source, clean, start, end):
@@ -172,7 +178,71 @@ def _arm(statements, inner):
     return ''.join(inner + '    ' + _reindent(s, inner + '    ') + '\n' for s in statements) + inner + '    break;\n'
 
 
+def _unguarded(source, name):
+    """`source` with the tree's early returns written as nesting, or None when it has none.
+
+    In a `void` function whose last statement is the tree, `{ P; if (v != K) { return; } REST }` runs REST only for K
+    and does nothing else: it is `{ if (v == K) { P; REST } }` when P only assigns plain locals. A `(s32)` cast on the
+    tested variable in a condition, which m2c writes for a `u16` read it compares as a word, goes with it."""
+    span = find(source, name)
+    if not span:
+        return None
+    clean = _blank(source)
+    opening = clean.find('{', span[0], span[1])
+    if opening < 0 or not re.search(r'\bvoid[ \t\n]+' + re.escape(name) + r'\s*\(', clean[span[0]:opening]):
+        return None
+    out, changed = source, False
+    for _ in range(MAX_CASE_VALUES):
+        clean = _blank(out)
+        opening = clean.find('{', find(out, name)[0])
+        end = close(clean, opening, '{', '}')
+        guard = GUARD.search(clean, opening, end) if end else None
+        if not guard:
+            break
+        # the block the guard sits in, and the assignments before it
+        depth, start = 0, guard.start()
+        while start > opening:
+            start -= 1
+            if clean[start] == '}':
+                depth += 1
+            elif clean[start] == '{':
+                if not depth:
+                    break
+                depth -= 1
+        stop = close(clean, start, '{', '}')
+        prefix = clean[start + 1:guard.start()]
+        if start <= opening or not stop or not re.fullmatch(r'(?:\s*' + IDENT + r'\s*=(?!=)[^;{}()]*;)*\s*', prefix):
+            return None
+        # nothing but closing braces and `else` arms may follow the tree: the return then is the end of the function
+        outer = re.search(r'\bif\s*\(', clean[opening:start])
+        if not outer:
+            return None
+        try:
+            _, tree_end = _if(out, clean, opening + outer.start(), end)
+        except Bail:
+            tree_end = None
+        if tree_end is not None and clean[tree_end:end - 1].strip():
+            return None
+        rest = out[guard.end():stop - 1]
+        test = f'if ({guard["var"]} == {guard["value"]}) {{'
+        out = (out[:start + 1] + ' ' + test + out[start + 1:guard.start()] + rest.rstrip() + ' } '
+               + out[stop - 1:])
+        changed = True
+    if not changed:
+        return None
+    return re.sub(r'(\bif\s*\(\s*)\(s32\)\s*(?=' + IDENT + r'\s*(?:==|!=|<=|>=|<|>))', r'\1', out)
+
+
 def variants(source, name):
+    result = _variants(source, name)
+    if not result:
+        unguarded = _unguarded(source, name)
+        if unguarded:
+            result = _variants(unguarded, name)
+    return result
+
+
+def _variants(source, name):
     span = find(source, name)
     if not span:
         return []

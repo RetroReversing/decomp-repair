@@ -6,6 +6,10 @@ compared with zero is `sll $v0, $v0, 0x18` / `bgez`, the target's two instructio
 delay slot to the instruction that was waiting for it (KMC GCC 2.7.2: 1900 -> 1600 in one 557-instruction function,
 with the counter's own local instead of a cast through a pointer-typed one).
 
+`halfword_sign_test` is the halfword's: m2c writes a signed halfword countdown as `t = *(u16 *) p - 1; *(u16 *) p = t;
+if (t & 0x8000)`, which compiles `andi $v0, $v0, 0x8000` / `beqz` where the target has `sll $v0, $v0, 0x10` / `bgez`.
+The test written `(s16) t < 0` is those two instructions (a 146-instruction KMC GCC 2.7.2 `-O1` routine: 400 -> 0).
+
 A proposal takes a plain `u8`/`unsigned char` local `n` whose only tests are `n & 0x80` as a whole `if` condition
 (or its negation) and declares it `s8` with the tests `n < 0` (`n >= 0`); a local that is already signed gets the
 tests alone. Nothing else about the local changes: stores of it as a byte and the arithmetic that feeds it keep their
@@ -17,7 +21,8 @@ from .csource import find
 from .integer_repair_support import edit, view
 
 FAMILY = 'byte_sign_test'
-FAMILIES = (FAMILY,)
+HALFWORD = 'halfword_sign_test'
+FAMILIES = (FAMILY, HALFWORD)
 
 _UNSIGNED = r'(?:u8|unsigned\s+char)'
 _SIGNED = r'(?:s8|signed\s+char)'
@@ -51,7 +56,23 @@ def variants(source, name, arch='mips'):
         child = edit(source, edits)
         if child != source:
             out.append((FAMILY, child))
-    return list(dict.fromkeys(out))[:6]
+    return list(dict.fromkeys(out))[:6] + _halfwords(source, part)
+
+
+def _halfwords(source, part):
+    """Each 16-bit local's `& 0x8000` conditions written as the signed halfword compared with zero."""
+    body = part.clean[part.opening + 1:part.end - 1]
+    out = []
+    for local in dict.fromkeys(re.findall(r'(?m)^[ \t]*(?:u16|s16|unsigned\s+short|short)[ \t]+([A-Za-z_]\w*)[ \t]*;', body)):
+        tests = re.finditer(rf'\bif\s*\(\s*(!?)\s*\(?\s*{local}\s*&\s*(?:0x8000|32768)[uU]?\s*\)?\s*\)', body)
+        edits = []
+        for test in tests:
+            at = part.opening + 1 + test.start()
+            edits.append((source.index('(', at), part.opening + 1 + test.end(),
+                          f'((s16) {local} {">=" if test[1] else "<"} 0)'))
+        if edits:
+            out.append((HALFWORD, edit(source, edits)))
+    return out[:4]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'arch'), 'order': 70}  # the registry: no caller wiring (registry.py)

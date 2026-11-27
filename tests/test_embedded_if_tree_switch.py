@@ -67,3 +67,43 @@ def test_left_alone_otherwise():
 def test_it_declares_itself_and_is_proposed():
     from decomprepair import registry
     assert any(r.module == 'embedded_if_tree_switch' for r in registry.declared())
+
+
+GUARDED = '''void f(s32 i) {
+    s32 a;
+    s32 b;
+    u16 state;
+
+    state = table[i];
+    if (state != 1) {
+        if ((s32) state >= 2) {
+            a = i & 0xFFFF;
+            if (state != 2) {
+                return;
+            }
+            g(a);
+        } else {
+            b = i & 0xFFFF;
+            if (state != 0) {
+                return;
+            }
+            h(b);
+        }
+    } else {
+        k(i);
+    }
+}
+'''
+
+
+def test_leaves_that_return_early_in_a_void_function_are_cases():
+    out = t.variants(GUARDED, 'f')[0][1]
+    assert 'switch (state) {' in out and 'return' not in out
+    assert out.index('case 0:') < out.index('h(b);') < out.index('case 1:') < out.index('k(i);') < out.index('case 2:')
+    assert out.index('case 2:') < out.index('a = i & 0xFFFF;') < out.index('g(a);')
+
+
+def test_early_returns_are_kept_when_code_follows_or_the_function_returns_a_value():
+    assert t.variants(GUARDED.replace('        k(i);\n    }\n', '        k(i);\n    }\n    after();\n'), 'f') == []
+    assert t.variants(GUARDED.replace('void f', 's32 f'), 'f') == []
+    assert t.variants(GUARDED.replace('a = i & 0xFFFF;', 'count(i);'), 'f') == []
