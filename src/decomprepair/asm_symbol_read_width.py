@@ -44,7 +44,9 @@ asm_byte_table_deref_width
     `extern u8 TABLE[]; ... *(((id) * 2) + TABLE)`, where the target makes the table's address, adds the index and loads
     `lhu 0($v0)`. The read is written `*(u16 *)(((id) * 2) + TABLE)` (the declaration stays, so the sum keeps counting
     bytes). All the tables together, then each alone. The last step of an N64 object update (sn-n64-281 GCC 2.8.1),
-    200 -> 0.
+    200 -> 0. A scalar cast in front of the dereference does not give the load a width (`(u16) *(index * 2 + TABLE)`
+    still loads a byte and widens it), so that read is typed too: the second of two reads of one halfword table in an N64
+    entity chain routine (sn-n64-281 GCC 2.8.1), 725 -> 530 after the first.
 
 The width is read off the target's own loads; the exact judge decides every child."""
 import re
@@ -301,8 +303,9 @@ def _deref_edits(source, name, widths):
         return {}
     clean = _blank(source)
     found = {}
-    # a unary `*`: after an operator, an opening bracket or a statement's start, never after an operand
-    read = re.compile(r'(?:(?<=[=({,;}+\-*/&|^<>?:!~\[])|(?<=\breturn))(?P<gap>\s*)\*\s*(?=\()')
+    # a unary `*`: after an operator, an opening bracket, a scalar cast or a statement's start, never after an operand
+    read = re.compile(r'(?:(?<=[=({,;}+\-*/&|^<>?:!~\[])|(?<=\breturn)|(?<!\bsizeof)\(\s*(?:' + _INTEGER + r'|f32)\s*\))'
+                      r'(?P<gap>\s*)\*\s*(?=\()')
     for sym, kind in widths.items():
         if kind not in ('s16', 'u16', 's32') or not re.search(
                 rf'\bextern\s+(?:char|s8|u8)\s+{re.escape(sym)}\s*\[\s*\]\s*;', clean):

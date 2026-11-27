@@ -148,3 +148,13 @@ def test_plain_deref_width_leaves_casts_and_products_alone():
     for line in ('*p = *(u8 *)(i + sValues);', '*p = i * (i + sValues);'):
         source = 'extern u8 sValues[];\nvoid f(s32 *p, s32 i) {\n    ' + line + '\n}\n'
         assert not [c for family, c in W.variants(source, 'f', asm) if family == W.FAMILY_DEREF]
+
+
+def test_plain_deref_after_a_scalar_cast_still_takes_the_loaded_width():
+    from decomprepair import asm_symbol_read_width as W
+    asm = 'addiu $v1, $v1, %lo(sValues)\naddu $v0, $v0, $v1\nlhu $v1, 0x0($v0)\n'
+    source = 'extern char sValues[];\nvoid f(u16 *p, s32 i) {\n    *p = (u16) *((i * 2) + sValues);\n}\n'
+    children = [child for family, child in W.variants(source, 'f', asm) if family == W.FAMILY_DEREF]
+    assert children == [source.replace('(u16) *((i', '(u16) *(u16 *)((i')]
+    product = 'extern char sValues[];\nvoid f(s32 *p, s32 i) {\n    *p = sizeof(u16) * (i + sValues);\n}\n'
+    assert not [c for family, c in W.variants(product, 'f', asm) if family == W.FAMILY_DEREF]
