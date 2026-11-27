@@ -55,6 +55,8 @@ def measured_slot_orders(source, name, rows, header=''):
     pairs = sorted({(a, b) for reg, a, b in slots if a < b and (reg, b, a) in slots})
     if not pairs:
         return []
+    if not any(re.search(rf'\bsp{offset:X}\b', source, re.I) for pair in pairs for offset in pair):
+        return spill_local_orders(source, name, header)
 
     from .frame_padding_repairs import declaration_ends
 
@@ -86,6 +88,39 @@ def measured_slot_orders(source, name, rows, header=''):
             if len(out) == 6:
                 break
     return out
+
+
+_WORD_LOCAL = re.compile(rf'(?:(?:s32|u32|int|unsigned int)\s+|(?!return\b){IDENT}\s*\*+\s*)(?P<name>{IDENT})\s*;')
+
+
+def spill_local_orders(source, name, header='', limit=60):
+    """Swaps of two word-sized local declarations, for two stack slots the target holds the other way round.
+
+    reload gives spilled registers their slots in register-number order, which for locals is their declaration order,
+    and the C does not name the slots. Locals set before the first loop (the invariants a loop spills) come first."""
+    from .frame_padding_repairs import declaration_ends
+
+    part = view(source, name)
+    if not part or re.search(r'\b(?:asm|__asm|__asm__)\b|(?m:^[ \t]*#)', part.body):
+        return []
+    macros = set(re.findall(rf'(?m)^\s*#\s*(?:define|undef)\s+({IDENT})', source + '\n' + header))
+    begin = part.opening + 1
+    found = []
+    for end in declaration_ends(part):
+        start = end - len(part.clean[begin:end].lstrip())
+        hit = _WORD_LOCAL.fullmatch(part.clean[start:end])
+        if hit and source[start:end] == part.clean[start:end] and hit['name'] not in macros:
+            found.append((start, end, hit['name']))
+        begin = end
+    body = part.clean[begin:part.end]
+    loop = re.search(r'\b(?:for|while|do)\b', body)
+    early = {local for _, _, local in found if loop and re.search(rf'\b{local}\s*=(?!=)', body[:loop.start()])}
+    order = sorted(((i, j) for i in range(len(found)) for j in range(i + 1, len(found))),
+                   key=lambda p: (-sum(found[k][2] in early for k in p), p[1] - p[0], p[0]))
+    return [('spill_declaration_order', edit(source, [
+        (found[i][0], found[i][1], source[found[j][0]:found[j][1]]),
+        (found[j][0], found[j][1], source[found[i][0]:found[i][1]]),
+    ])) for i, j in order[:limit]]
 
 
 _STACK_WORD = re.compile(r'(lw|sw|lwc1|swc1) (\$\w+), (0x[0-9a-f]+|[0-9]+)\(\$sp\)')
