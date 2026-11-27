@@ -8,6 +8,7 @@ float locals and target compare/branch/negate evidence are required.
 import re
 
 from .csource import find
+from .float_local_safety import unshadowed
 from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'copyback_float_negation'
@@ -31,6 +32,8 @@ def variants(source, name, asm, header=''):
     out = []
     for hit in _PATTERN.finditer(part.clean, part.opening + 1, part.end):
         src, dst, pad = hit['src'], hit['dst'], hit['pad']
+        if not unshadowed(part.clean, part.opening, part.end, dst, src):
+            continue
         if src == dst or re.search(r'/[*/]|#', source[hit.start():hit.end()]):
             continue
         if any(len(re.findall(r'(?m)^\s*f32\s+' + re.escape(n) + r'\s*;', part.clean[part.opening:part.end])) != 1

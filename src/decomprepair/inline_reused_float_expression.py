@@ -8,6 +8,7 @@ no calls or writes other than known field reads and the final field store.
 import re
 
 from .csource import find
+from .float_local_safety import unshadowed
 from .integer_repair_support import IDENT, edit, view
 from .shared_float_equality_ladder import _MACRO
 
@@ -44,6 +45,8 @@ def variants(source, name, header=''):
         groups.setdefault(local, []).append(hit)
     out = []
     for local, hits in groups.items():
+        if not unshadowed(part.clean, part.opening, part.end, local):
+            continue
         if len(re.findall(r'(?m)^\s*f32\s+' + re.escape(local) + r'\s*;', part.clean[part.opening:part.end])) != 1:
             continue
         if len(re.findall(r'\b' + re.escape(local) + r'\b', part.clean[part.opening:part.end])) != 1 + 2 * len(hits):

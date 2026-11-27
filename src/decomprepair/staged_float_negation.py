@@ -7,6 +7,7 @@ Using a separate float local for the selected value before assigning the consume
 import re
 
 from .csource import find
+from .float_local_safety import unshadowed
 from .float_negation_branch_order import _EXPLICIT_ELSE
 from .integer_repair_support import edit, view
 
@@ -26,6 +27,8 @@ def variants(source, name, asm, header=''):
     out = []
     for hit in _EXPLICIT_ELSE.finditer(part.clean, part.opening + 1, part.end):
         dst, src = hit['dst'], hit['src']
+        if not unshadowed(part.clean, part.opening, part.end, dst, src):
+            continue
         if dst == src or re.match(r'\s*else\b', part.clean[hit.end():part.end]) or re.search(r'/[*/]|#', source[hit.start():hit.end()]):
             continue
         if any(len(re.findall(rf'\bf32\s+{re.escape(var)}\s*;', part.clean[part.opening:part.end])) != 1
