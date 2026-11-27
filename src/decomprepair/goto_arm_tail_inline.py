@@ -13,7 +13,9 @@ handler had 14 references and ranked below its three masks; the target's order w
 Offered once for the function (every such `goto` in one child, and the labels it leaves unused removed): a label whose
 statements run to the end of their block, with the block followed only by skipped `else` arms and `break;`, and `goto`s
 whose block is followed only by closing braces, skipped `else` arms and `break;`. Labels with labels or `goto`s of their
-own inside are left alone. A second child does the same for a label at its arm's own level (`case A: v = x; L: f(v);
+own inside are left alone. A third child copies a label's run that falls into an arm that only leaves (`L: D = v;
+default: return;`) over each `goto L;` that ends an arm, followed by that `return;`/`break;` (`_falls_into_exit`).
+A second child does the same for a label at its arm's own level (`case A: v = x; L: f(v);
 r = 0; break;`): its run up to the arm's `break;` is copied over each `goto L;` that ends another arm (`_arm_level`).
 A candidate rewrite; the exact judge decides.
 """
@@ -115,7 +117,69 @@ def variants(source, name):
     arm_level = _arm_level(source, clean, part)
     if arm_level and all(arm_level != text for _, text in results):
         results.append((FAMILY, arm_level))
+    exit_label = _falls_into_exit(source, clean, part)
+    if exit_label and all(exit_label != text for _, text in results):
+        results.append((FAMILY, exit_label))
     return results
+
+
+def _switch_opener(clean, part, at):
+    """The innermost open brace before `at` when it is a switch's, else None."""
+    depth = 0
+    for pos in range(at - 1, part.opening, -1):
+        if clean[pos] == '}':
+            depth += 1
+        elif clean[pos] == '{':
+            if depth == 0:
+                return pos if re.search(r'\bswitch\s*\([^{}]*\)\s*$', clean[part.opening:pos]) else None
+            depth -= 1
+    return None
+
+
+def _falls_into_exit(source, clean, part):
+    """Labels at an arm's own level whose run falls into an arm that only leaves, copied over each `goto`.
+
+        case 0x32: f(); v = 0x33;
+        block_35: D = v;
+        default: return;
+        case 0x28: g(); v = 0x29; goto block_35;
+     -> case 0x28: g(); v = 0x29; D = v; return;
+
+    The shared store is the compiler's cross-jumping, and it keeps the copy of the last arm: with the label in an
+    early arm the join sat there and every other arm branched backwards to it (a KMC GCC 2.7.2 N64 state-machine
+    dispatcher of 158 instructions: with the empty case of its jump table's last entry, 1480 -> 0)."""
+    edits = []
+    for label in _LABEL.finditer(clean, part.opening + 1, part.end):
+        name = label['l']
+        if name in ('default', 'case'):
+            continue
+        opener = _switch_opener(clean, part, label.start())
+        if opener is None:
+            continue
+        arm = re.compile(r'\b(?:case\b|default\s*:)').search(clean, label.end(), part.end)
+        if not arm:
+            continue
+        run = clean[label.end():arm.start()]
+        if not run.strip() or not run.rstrip().endswith(';') or re.search(
+                rf'[{{}}]|\b(?:goto|break|return|continue)\b|^\s*{IDENT}\s*:(?!:)', run, re.M):
+            continue
+        leave = re.compile(r'(?:\s*(?:case\b[^:;{}]+|default\s*):)+\s*(?P<x>(?:return\b[^;{}]*|break\s*);)').match(
+            clean, arm.start())
+        if not leave:
+            continue
+        statements = source[label.end():arm.start()].strip()
+        statements += ' ' + source[leave.start('x'):leave.end('x')]
+        gotos = list(re.finditer(rf'\bgoto\s+{re.escape(name)}\s*;', clean[part.opening:part.end]))
+        replaced = 0
+        for goto in gotos:
+            start, end = part.opening + goto.start(), part.opening + goto.end()
+            # a `break` copied there must leave the same switch: the `goto` ends an arm of the label's own switch
+            if _switch_opener(clean, part, start) == opener and re.compile(r'\s*(?:case\b|default\b|\})').match(clean, end):
+                edits.append((start, end, statements))
+                replaced += 1
+        if replaced and replaced == len(gotos):
+            edits.append((label.start(), label.end(), ' '))
+    return edit(source, edits) if edits else None
 
 
 def _arm_level(source, clean, part):
