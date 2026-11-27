@@ -53,3 +53,10 @@ def test_a_register_the_target_writes_or_a_copy_of_the_parameter_is_left_alone()
 
 def test_it_is_registered():
     assert FAMILY in {family for entry in registry.declared() for family in entry.families}
+
+
+def test_a_target_that_names_the_renamed_callee_by_address():
+    asm = ASM.replace('jal        releaseEntity', 'jal        func_8004904C')
+    assert variants(DRAFT, 'update', asm=asm, arch='mips') == variants(DRAFT, 'update', asm=ASM, arch='mips') != []
+    two = asm.replace('.L1:', 'jal        func_80000000\nnop\n.L1:')
+    assert variants(DRAFT, 'update', asm=two, arch='mips') == []
