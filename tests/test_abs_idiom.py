@@ -74,6 +74,7 @@ def test_the_test_written_the_other_way_round():
     use(var_v1);
 }
 '''
-    out = ab.variants(source, 'g', ASM.replace(' f\n', ' g\n'))
+    # the rule is what runs (rules/abs_idiom.json); the module is its older reference
+    out = registry.run('rule:abs_idiom', source=source, name='g', asm=ASM, header='', arch='mips')
     assert [family for family, _ in out] == [ab.FAMILY]
     assert 'var_v1 = abs(sum);' in out[0][1] and '0 > var_v1' not in out[0][1]
