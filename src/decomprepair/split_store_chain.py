@@ -17,13 +17,16 @@ draft spell them as
     *(s8 *)((char *)p + 0x62) = ~(w >> 8);
     *(s8 *)((char *)p + 0x61) = ~(w >> 8);
 
-Four rewrites, each a family:
+Five rewrites, each a family:
 
 - `scattered_store_chain`: several stores of one local to members of one base, with unrelated statements between,
   written as one chain at the first store (the first store innermost, so the stores keep their order); and, when the
   local is used nowhere else, with its value written in the chain.
 - `expression_store_chain`: adjacent stores of the same computed expression, written as one chain.
 - `staged_field_compound`: `w = F op k; F = w;` as `F op= k;`, the local's later reads as `F`.
+- `dead_value_store_chain`: `t = E; u = ...; A = t; B = t;` with `t` not read afterwards, written `B = A = E;` (an N64
+  voice allocator, KMC GCC 2.7.2: the draft reused one local for a priority and then a script pointer, and with the
+  second value written in the chain, after guarded_exit_for_loop and callee_arity_trim, the function was exact).
 - `member_reread_local`: after `t = F;`, the later reads of `F` written `t`, until `F` could change (the target keeps
   the value in the saved register it read it into, instead of reloading the member).
 
@@ -36,6 +39,7 @@ import re
 
 from . import scaffold_strip
 from .csource import _blank, find
+from .line_scan import mentions
 from .pattern_repairs import close
 
 SCATTERED = 'scattered_store_chain'
@@ -43,7 +47,8 @@ EXPRESSION = 'expression_store_chain'
 COMPOUND = 'staged_field_compound'
 REREAD = 'member_reread_local'
 TOGETHER = 'split_store_chain'
-FAMILIES = (SCATTERED, EXPRESSION, COMPOUND, REREAD, TOGETHER)
+DEAD = 'dead_value_store_chain'
+FAMILIES = (SCATTERED, EXPRESSION, COMPOUND, REREAD, TOGETHER, DEAD)
 LIMIT = 9
 
 IDENT = r'[A-Za-z_]\w*'
@@ -302,6 +307,89 @@ def _reread(source, name):
     return _apply(source, edits)
 
 
+def _dead_value(source, name):
+    """`t = E; [u = ...;] A = t; B = t;` where `t` is not read afterwards, written `B = A = E;` at the stores. The
+    value's other lives keep the local: a reused temporary (the draft's name for the priority, then for a script
+    pointer) no longer carries the second value, which moved the register the first one gets."""
+    lines = _statements(source, name)
+    span = find(source, name)
+    if not span:
+        return source
+    clean = _blank(source)
+    opening = clean.find('{', span[0])
+    for index in range(1, len(lines) - 1):
+        parsed = lines[index][2]
+        if not parsed or parsed['op'][0] != '=' or _place(parsed['lhs'][0]) is None:
+            continue
+        local = parsed['rhs'][0].strip()
+        if not re.fullmatch(IDENT, local):
+            continue
+        places, last = [], index
+        while last < len(lines):
+            item = lines[last][2]
+            if not (item and item['op'][0] == '=' and item['rhs'][0].strip() == local and _place(item['lhs'][0])):
+                break
+            places.append(_place(item['lhs'][0]))
+            last += 1
+        if len(places) < 2 or not _compatible(places) or places[0][2] != 4 or any(p[0] == local for p in places):
+            continue
+        if not re.search(rf'\b(?:s32|u32|int)\s+{local}\s*;', clean[span[0]:span[1]]):
+            continue
+        # the definition: above the stores, past plain assignments to other locals only
+        at, moved = index - 1, []
+        while at >= 0:
+            text = clean[lines[at][0]:lines[at][1]].strip()
+            if re.match(rf'{local}\s*=(?!=)', text):
+                break
+            other = re.fullmatch(rf'({IDENT})\s*=(?!=)\s*([^;{{}}=]+);', text)
+            if not other or mentions(text, local) or CALL.search(other[2]) or re.search(r'\+\+|--', other[2]):
+                at = -1
+                break
+            moved.append(other[1])
+            at -= 1
+        if at < 0:
+            continue
+        definition = re.fullmatch(rf'[ \t]*{local}\s*=\s*(?P<value>[^;{{}}=]+);\s*', clean[lines[at][0]:lines[at][1]])
+        if not definition:
+            continue
+        a, b = lines[at][0] + definition.start('value'), lines[at][0] + definition.end('value')
+        value = clean[a:b]
+        if (CALL.search(value) or re.search(r'\+\+|--', value) or mentions(value, local)
+                or any(mentions(value, other) for other in moved)):
+            continue
+        # not read again: nothing names it after the stores, and no loop or jump can bring control back to a read
+        if mentions(clean[lines[last - 1][1]:span[1]], local) or _in_loop(clean, opening, lines[at][0]):
+            continue
+        if re.search(r'\bgoto\b', clean[opening:span[1]]):
+            continue
+        targets = [source[lines[i][2]['lhs'][1]:lines[i][2]['lhs'][2]] for i in range(index, last)]
+        edits = [(lines[at][0], lines[at][1], ''),
+                 (lines[index][0], lines[last - 1][1], _indent(source, lines[index][0]) + _chain(targets, source[a:b]))]
+        return _apply(source, edits)
+    return source
+
+
+def _in_loop(clean, opening, position):
+    """Whether `position` is inside a loop's braces."""
+    stack = []
+    for hit in re.finditer(r'[{}]', clean[opening:position]):
+        if hit[0] == '{':
+            head = clean[opening:opening + hit.start()].rstrip()
+            looped = re.search(r'\bdo$', head) is not None
+            if head.endswith(')'):
+                depth, at = 0, len(head)
+                while at > 0:
+                    at -= 1
+                    depth += (head[at] == ')') - (head[at] == '(')
+                    if depth == 0:
+                        break
+                looped = re.search(r'\b(?:for|while)\s*$', head[:at]) is not None
+            stack.append(looped)
+        elif stack:
+            stack.pop()
+    return any(stack)
+
+
 def variants(source, name):
     """[(family, source)]: each rewrite alone, the three together, and the three with the fences opened."""
     result, seen = [], {source}
@@ -327,7 +415,9 @@ def variants(source, name):
     offer(EXPRESSION, _expression(source, name))
     offer(COMPOUND, _compound(source, name))
     offer(REREAD, _reread(source, name))
-    return result[:LIMIT]
+    result = result[:LIMIT]
+    offer(DEAD, _dead_value(source, name))
+    return result
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 57}
