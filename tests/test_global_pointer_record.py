@@ -23,9 +23,29 @@ def test_the_stored_through_global_becomes_a_record_member():
     assert 'use(gOther);' in text
 
 
-def test_a_global_the_header_declares_or_the_source_assigns_is_left_alone():
+def test_a_global_the_header_declares_or_whose_address_is_taken_is_left_alone():
     assert variants(SOURCE, 'update', 'extern void *gBlock;\n') == []
-    assert variants(SOURCE.replace('    use(gOther);', '    gBlock = arg0;'), 'update', '') == []
+    assert variants(SOURCE.replace('    use(gOther);', '    use(&gBlock);'), 'update', '') == []
+
+
+def test_an_assigned_pointer_stored_through_m2c_fields_is_a_record():
+    source = '''extern void *gVoice;
+
+void setup(void)
+{
+    void *temp;
+
+    temp = alloc();
+    gVoice = temp;
+    M2C_FIELD(temp, s32 *, 0x80) = 1;
+    M2C_FIELD(gVoice, s16 *, 0x6A) = 0;
+    M2C_FIELD(gVoice, s8 *, 0x7A) = 5;
+}
+'''
+    found = variants(source, 'setup', '')
+    assert [family for family, _ in found] == [FAMILY]
+    assert found[0][1] == source.replace('extern void *gVoice;', 'extern struct { void *block; } gVoice;').replace(
+        'gVoice = temp;', 'gVoice.block = temp;').replace('(gVoice,', '(gVoice.block,')
 
 
 def test_a_scalar_global_updated_in_place_becomes_a_record_member():
