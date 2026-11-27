@@ -75,4 +75,66 @@ def test_labels_with_a_jump_after_the_work_decline():
 
 
 def test_declared():
-    assert 'guard_ladder_early_exit' in [family for repair in registry.declared() for family in repair.families]
+    families = [family for repair in registry.declared() for family in repair.families]
+    assert {'guard_ladder_early_exit', 'guard_ladder_prefix_exit'} <= set(families)
+
+
+PREFIXED = """void update(Obj *arg0) {
+    s32 level;
+
+    if (gTarget != NULL) {
+        if (M2C_FIELD(gTarget, u16 *, 0x6A) == 0xFFFF) {
+            arg0->timer = 0xFFFF;
+            return;
+        }
+        level = 0x80 - distance(gTarget);
+        arg0->level = level;
+        if (level > 0) {
+            if (M2C_FIELD(gTarget, u16 *, 0x6A) != 0xFFFF) {
+                if (gTarget == NULL) {
+                    goto block_7;
+                }
+                arg0->timer = 9;
+                return;
+            }
+            goto block_8;
+        }
+        goto block_7;
+    }
+block_7:
+block_8:
+    arg0->timer = 0xFFFF;
+}
+"""
+
+PREFIX_MERGED = """void update(Obj *arg0) {
+    s32 level;
+
+    if (gTarget == NULL) {
+        goto block_7;
+    }
+    if (M2C_FIELD(gTarget, u16 *, 0x6A) == 0xFFFF) {
+        arg0->timer = 0xFFFF;
+        return;
+    }
+    level = 0x80 - distance(gTarget);
+    arg0->level = level;
+    if (level <= 0 || M2C_FIELD(gTarget, u16 *, 0x6A) == 0xFFFF || gTarget == NULL) {
+block_7:
+block_8:
+        arg0->timer = 0xFFFF;
+        return;
+    }
+    arg0->timer = 9;
+}
+"""
+
+
+def test_a_ladder_after_other_work_takes_the_labels_into_its_exit():
+    assert guard_ladder_early_exit.variants(PREFIXED, 'update') == [('guard_ladder_prefix_exit', PREFIX_MERGED)]
+
+
+def test_a_prefix_that_jumps_to_the_labels_declines():
+    source = PREFIXED.replace('        arg0->level = level;\n',
+                              '        if (level == 1) { goto block_8; }\n        arg0->level = level;\n')
+    assert guard_ladder_early_exit.variants(source, 'update') == []

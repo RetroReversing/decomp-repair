@@ -30,6 +30,28 @@ jumps to the tail) or the work, which ends in a `return`. The outermost `if` fal
 the function's end and holds no label, `case` or `goto`, so copying it is safe.
 
 Variants: the tests joined with `||` in one `if`, or one `if` each (cross-jumping merges the tails).
+
+`guard_ladder_prefix_exit` is the ladder that does not open the outermost `if`: that block does some work first (often
+with its own early return) and only then starts the ladder, which fails to the same labels as the outer test:
+
+    if (target != NULL) {
+        if (target->state == 0xFFFF) { obj->timer = 0xFFFF; return; }
+        level = 0x80 - distance(target);
+        if (level > 0) {
+            if (target->state != 0xFFFF) {
+                if (target == NULL) { goto block_7; }
+                WORK; return;
+            }
+            goto block_8;
+        }
+        goto block_7;
+    }
+    block_7: block_8: obj->timer = 0xFFFF;
+
+The labels move into the ladder's own exit and the outer test jumps to them, since the work before the ladder cannot be
+joined into one condition: `if (target == NULL) { goto block_7; } ... if (level <= 0 || ...) { block_7: block_8: TAIL
+return; } WORK`. On an 82-instruction N64 function (SN GCC 2.8.1, `-G0 -mips3 -O2 -mfp64`) this was the last step,
+410 -> 0, after `field_copy_reread` and `field_width`: the target puts the shared exit between the tests and the work.
 """
 import re
 
@@ -38,7 +60,8 @@ from .goto_tail_early_exit import DECLARES, JUMP, LAST_RETURN, _lines, _loose
 from .pattern_repairs import close, negate
 
 FAMILY = 'guard_ladder_early_exit'
-FAMILIES = (FAMILY,)
+PREFIX_FAMILY = 'guard_ladder_prefix_exit'
+FAMILIES = (FAMILY, PREFIX_FAMILY)
 
 IF = re.compile(r'(?<![\w.>])if\s*\(')
 HEAD = re.compile(r'\s*if\s*\(')
@@ -133,6 +156,29 @@ def _level(source, clean, start, end, labels):
     return tests, jumps, at, end, 0
 
 
+def _later_ladder(source, clean, start, end, labels):
+    """A ladder that starts after other statements of the block between `start` and `end`: (its start, its level)."""
+    for statement in IF.finditer(clean, start, end):
+        before = clean[start:statement.start()]
+        if (before.count('{') != before.count('}') or not before.strip(' \t\n;')
+                or not re.search(r'[;{}]\s*\Z', before) or re.search(r'\belse\s*\Z', before)):
+            continue
+        level = _level(source, clean, statement.start(), end, labels)
+        if not level or not level[4]:
+            continue
+        # The work before the ladder moves out of the outer `if`: it may return, but not declare, label or jump in.
+        if (any(DECLARES.match(row) for row in before.split('\n'))
+                or re.search(r'\b(?:case|default)\b|(?m:^\s*[A-Za-z_]\w*\s*:)', before)
+                or any(re.search(rf'\bgoto\s+{label}\b', before) for label in labels)):
+            continue
+        return statement.start(), level
+    return None
+
+
+def _joined(tests):
+    return ' || '.join(f'({part})' if _loose(part) and not CAST.fullmatch(part) else part for part in tests)
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -157,8 +203,12 @@ def variants(source, name):
             continue
         labels = set(re.findall(r'([A-Za-z_]\w*)\s*:', labelled[0]))
         level = _level(source, clean, block_start, block_end, labels)
+        ladder_start = None
         if not level or not level[4]:
-            continue
+            later = _later_ladder(source, clean, block_start, block_end, labels)
+            if not later:
+                continue
+            ladder_start, level = later
         tests, jumps, work_start, work_end, _ = level
         if jumps != sum(len(re.findall(rf'\bgoto\s+{label}\b', clean[opening:end])) for label in labels):
             continue
@@ -184,11 +234,18 @@ def variants(source, name):
         moved = _lines(work, indent) if work.strip() else ''
         if any(DECLARES.match(row) for row in work_clean.split('\n')):
             moved = f'{indent}{{\n' + _lines(work, indent + '    ') + f'{indent}}}\n'
-        either = _failures(condition) + tests
-        joined = ' || '.join(f'({part})' if _loose(part) and not CAST.fullmatch(part) else part for part in either)
         closing_at = source.rfind('\n', 0, body_end) + 1
+        if ladder_start is not None:
+            names = [label for label in re.findall(r'([A-Za-z_]\w*)\s*:', labelled[0])]
+            jump = f'{indent}if ({_joined(_failures(condition))}) {{\n{indent}    goto {names[0]};\n{indent}}}\n'
+            prefix = _lines(source[block_start:ladder_start].rstrip(), indent)
+            anchors = ''.join(f'{label}:\n' for label in names)
+            exits = (f'{indent}if ({_joined(tests)}) {{\n' + anchors + _lines(tail, indent + '    ')
+                     + f'{indent}}}\n')
+            return [(PREFIX_FAMILY, source[:line] + jump + prefix + exits + moved + source[closing_at:])]
+        either = _failures(condition) + tests
         result = []
-        for texts in ([joined], either):
+        for texts in ([_joined(either)], either):
             exits = ''.join(f'{indent}if ({text}) {{\n' + _lines(tail, indent + '    ') + f'{indent}}}\n'
                             for text in texts)
             result.append((FAMILY, source[:line] + exits + moved + source[closing_at:]))
