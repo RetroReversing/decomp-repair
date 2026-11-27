@@ -22,6 +22,14 @@ and the function byte-identical (with its data relocations; the threshold readin
 `variants` offers, for every empty compound statement (`{ }`) inside a `for`, `while` or `do` body, a counter local
 declared at the top of the function and updated there: masked (`c = (c + 1) & 7;`), plain (`c++;`) and two counters.
 The arm stays a no-op for the program's behaviour: the local is never read. Candidates for the exact judge only.
+
+`dead_loop_length` is the same lever for a loop with no empty arm, where the length needed is larger. An N64 asset
+list loop (SN GCC 2.8.1, `-G0 -mips3 -O2`) held 36 real insns, and loop.c moved the addresses a guarded call reads in
+front of the loop (two more saved registers than the target, an 8-byte larger frame). One counter in a new `else` of
+the guard (which also keeps cse from carrying an address past the join) and four counted at the end of the loop body
+made 51, and those two addresses stayed where the target has them (judged 1548 to 10). Four counters in all did not
+reach it. For each loop whose body makes a call it offers several counts of trailing counters, with and without the
+new `else`.
 """
 import re
 
@@ -29,11 +37,18 @@ from .csource import _blank, find
 from .pattern_repairs import close
 
 FAMILY = 'dead_narrow_counter'
-FAMILIES = (FAMILY,)
+LENGTH = 'dead_loop_length'
+FAMILIES = (FAMILY, LENGTH)
 NAME = 'dead_count'
 LIMIT = 12
+LENGTH_LIMIT = 30
+COUNTS = (4, 3, 5, 6, 2)  # counters at the end of the loop body
 LOOP = re.compile(r'\b(?:for|while)\s*\(|\bdo\s*\{')
 EMPTY = re.compile(r'\{\s*\}')
+IF = re.compile(r'\bif\s*\(')
+JUMP = re.compile(r'\b(?:continue|break|return|goto)\b')
+CALL = re.compile(r'\b(?!(?:if|for|while|switch|return|sizeof)\b)[A-Za-z_]\w*\s*\(')
+LAST_JUMP = re.compile(r'(?:\b(?:continue|break|goto\s+\w+)|\breturn\b[^;{}]*)\s*;\s*$')
 
 
 def _loop_bodies(clean, opening, end):
@@ -62,6 +77,52 @@ def _fresh(clean, base):
     while f'{base}{k}' in taken:
         k += 1
     return f'{base}{k}'
+
+
+def _plain_arms(clean, lo, hi):
+    """Closing braces of the `if (...) { ... }` blocks without an `else` in the loop body, those that jump out last."""
+    arms = []
+    for m in IF.finditer(clean, lo, hi):
+        stop = close(clean, m.end() - 1, '(', ')')
+        brace = re.match(r'\s*\{', clean[stop:hi]) if stop else None
+        if not brace:
+            continue
+        start = stop + brace.end() - 1
+        last = close(clean, start, '{', '}')
+        if last and not re.match(r'\s*else\b', clean[last:hi]):
+            arms.append((bool(JUMP.search(clean, start, last)), last))
+    return [last for _, last in sorted(arms)]
+
+
+def _indent_at(source, at):
+    line = source.rfind('\n', 0, at) + 1
+    return re.match(r'[ \t]*', source[line:]).group()
+
+
+def _lengthened(source, clean, opening, bodies):
+    """The loop made longer by counters nothing reads: at its end, with one more in a new `else` arm or without."""
+    prefix = _fresh(clean, NAME)
+    result = []
+    loops = [(lo, hi) for lo, hi in bodies if CALL.search(clean, lo, hi)][:3]
+    for lo, hi in loops:
+        tail = hi - 1  # the loop's closing brace
+        jump = LAST_JUMP.search(clean[lo + 1:tail])
+        at = lo + 1 + jump.start() if jump else tail
+        at = len(source[:at].rstrip(' \t'))
+        inner = _indent_at(source, tail) + '    '
+        for count in COUNTS:
+            for arm in _plain_arms(clean, lo + 1, tail)[:2] + [None]:
+                for kind in ('u8', 's16'):
+                    names = [f'{prefix}_{k}' for k in range(count + (arm is not None))]
+                    text = source[:at] + ''.join(f'{inner}{n}++;\n' for n in names[-count:]) + source[at:]
+                    if arm is not None:  # before `at`, so its offset still holds
+                        pad = _indent_at(source, arm - 1)
+                        text = text[:arm] + f' else {{\n{pad}    {names[0]}++;\n{pad}}}' + text[arm:]
+                    decls = ''.join(f'\n    {kind} {n} = 0;' for n in names)
+                    result.append((LENGTH, text[:opening + 1] + decls + text[opening + 1:]))
+                    if len(result) >= LENGTH_LIMIT:
+                        return result
+    return result
 
 
 def variants(source, name, limit=LIMIT):
@@ -94,8 +155,10 @@ def variants(source, name, limit=LIMIT):
             text = text[:opening + 1] + '\n    ' + decl + text[opening + 1:]
             result.append((FAMILY, text))
             if len(result) >= limit:
-                return result
-    return result
+                break
+        if len(result) >= limit:
+            break
+    return result + _lengthened(source, clean, opening, bodies)
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 60}  # the registry: no caller wiring (registry.py)
