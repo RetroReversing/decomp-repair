@@ -10,7 +10,10 @@ outright.
 
 callee_arity_trim
     For each callee whose matched definition (in `callees`) takes N parameters and is called with more, the calls
-    lose their arguments past N, when those are plain names (nothing evaluated is dropped). Every callee together
+    lose their arguments past N, when those are plain names or integer literals
+    (nothing evaluated is dropped): `allocEntity(1)` for a callee that takes none kept the 1 in `$a0` ahead of the
+    comparison that wanted it there (a 131-instruction spawn-point routine, SN GCC 2.8.1, 995 -> 875 beside its other
+    repairs). Every callee together
     first, then each alone. The judge decides; a drop that is worse means the target used the value. A prototype of
     the callee in the source that declares more parameters loses them too, or the trimmed call would not compile
     (`void func_80048D08(u8 *, s32, s32, s32);` before a call that m2c gave a fourth argument)."""
@@ -87,7 +90,7 @@ def variants(source, name, callees=''):
         if len(args) <= count:
             continue
         dropped = [inner[a:b].strip() for a, b in args[count:]]
-        if not all(re.fullmatch(IDENT, d) for d in dropped):
+        if not all(re.fullmatch(IDENT + r'|-?(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*', d) for d in dropped):
             continue
         cut = hit.end() + (args[count - 1][1] if count else 0)
         if hit[1] not in per:
