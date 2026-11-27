@@ -119,10 +119,10 @@ def test_a_byte_global_whose_address_is_held_for_two_reads_is_declared_as_an_arr
     source = 'extern u8 D_A;\nvoid f(void) {\n    put(0xFF - D_A);\n    put2(D_A, 0xFF - D_A);\n}\n'
     asm = '\n'.join(['lui $v0, %hi(D_A)', 'lbu $a0, %lo(D_A)($v0)', 'jal put', 'nop', 'lui $s3, %hi(D_A)',
                      'addiu $s3, $s3, %lo(D_A)', 'lbu $a0, 0($s3)', 'lbu $a1, ($s3)'])
-    [(family, child)] = int_global_array_read.variants(source, 'f', asm=asm)
-    assert family == int_global_array_read.FAMILY
+    [(family, child)] = igar.variants(source, 'f', asm=asm)
+    assert family == igar.FAMILY
     assert 'extern u8 D_A[];' in child and '*(u8 *) D_A' in child
-    assert int_global_array_read.held_address('D_A', asm)
+    assert igar.held_address('D_A', asm)
     clobbered = asm.replace('lbu $a0, 0($s3)\nlbu $a1, ($s3)', 'move $s3, $zero\nlbu $a0, 0($s3)')
-    assert not int_global_array_read.held_address('D_A', clobbered)
-    assert not int_global_array_read.variants(source, 'f', asm='lui $v0, %hi(D_A)\nlbu $a0, %lo(D_A)($v0)')
+    assert not igar.held_address('D_A', clobbered)
+    assert not igar.variants(source, 'f', asm='lui $v0, %hi(D_A)\nlbu $a0, %lo(D_A)($v0)')
