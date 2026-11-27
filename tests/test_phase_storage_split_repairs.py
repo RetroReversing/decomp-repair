@@ -58,3 +58,13 @@ def test_a_union_with_a_brace_initializer_gives_its_first_member_the_value():
     assert 'union' not in text and 'store.' not in text
     assert 's32 *store_pointer = &table[1];' in text or 's32 * store_pointer = &table[1];' in text
     assert 's32 store_value;' in text
+
+
+def test_a_member_local_does_not_take_a_name_the_source_already_uses():
+    source = SOURCE.replace('  s32 x;\n', '  s32 x;\n  s32 store_value;\n  s32 store_value_2;\n')
+    source = source.replace('  x = 0;\n', '  x = 0;\n  store_value = 1;\n  store_value_2 = store_value;\n')
+    text = _by_family(source)[FAMILY]
+    assert text.count('s32 store_value;') == 1 and text.count('s32 store_value_2;') == 1
+    assert 's32 store_value_3;' in text
+    assert 'store_value_3 = 0xA0;' in text and 'use2(x, store_value_3);' in text
+
