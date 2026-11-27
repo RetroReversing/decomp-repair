@@ -358,15 +358,24 @@ def _strip_syntax(source, name):
     for m in re.finditer(r'\[\s*\(\s*(?:long long|s64)\s*\)\s*', clean[part.opening:part.end]):
         edits.append((part.opening + m.start() + 1, part.opening + m.end(), ''))
     text = edit(source, edits)
-    identity = re.findall(rf'(?:inline\s+static|static\s+inline|static|inline)\s+{TYPE}\s+({IDENT})\s*\(\s*{TYPE}\s+({IDENT})\s*\)\s*\{{\s*return\s+\2\s*;\s*\}}', _blank(text))
-    if identity:
-        part = view(text, name)
-        if part:
-            body = text[part.opening:part.end]
-            for fn, _ in identity:
-                body = re.sub(rf'\b{fn}\s*\(((?:[^()]|\([^()]*\))*)\)', lambda m: _paren(m[1]), body)
-            text = text[:part.opening] + body + text[part.end:]
+    identity = re.findall(rf'(?:static\s+)?(?:(?:__inline__|__inline|inline)\s+)?(?:static\s+)?{TYPE}\s+({IDENT})\s*\(\s*{TYPE}\s+({IDENT})\s*\)\s*\{{\s*return\s+\2\s*;\s*\}}', _blank(text))
+    for fn, _ in identity:
+        text = _unwrap_calls(text, name, fn)
     return text
+
+
+def _unwrap_calls(source, name, fn):
+    """Every `fn(E)` in the function written as `E`, however deeply E's parentheses nest (a post-incremented field read
+    nests three: `fn(*(*(u8 **) (p + 4))++)`). Last call first, so an inner call is written out before its outer one."""
+    part = view(source, name)
+    if not part:
+        return source
+    for hit in reversed(list(re.finditer(rf'(?<![\w.>]){fn}\s*\(', part.clean[part.opening:part.end]))):
+        start, opening = part.opening + hit.start(), part.opening + hit.end() - 1
+        stop = close(_blank(source), opening, '(', ')')
+        if stop:
+            source = source[:start] + _paren(source[opening + 1:stop - 1]) + source[stop:]
+    return source
 
 
 def _drop(source, start, end):
@@ -391,7 +400,8 @@ def _plain(expr):
 
 
 def _operands(expr):
-    return {m for m in re.findall(IDENT, CAST.sub('', expr)) if m not in KEYWORD and not re.fullmatch(TYPE, m)}
+    # `(?<![\w.])`: the `xFF` of `0xFF` is no operand
+    return {m for m in re.findall(rf'(?<![\w.]){IDENT}', CAST.sub('', expr)) if m not in KEYWORD and not re.fullmatch(TYPE, m)}
 
 
 def _value(analysis, read):
@@ -425,8 +435,21 @@ def _paren(expr):
     return '(' + expr + ')'
 
 
+def _narrow_copy(analysis, read, value):
+    """The narrow local `value` only copies, for a read cast to that local's width: `v = (u8) (b & 0xFF);` read as
+    `(u8) v`, with `b` a `u8`, reads `b` itself (a search's word copy of a byte, read in two branches)."""
+    bits = NARROW.get(read.cast)
+    if not bits:
+        return None
+    text = _canon(CAST.sub(lambda m: '' if NARROW.get(re.sub(r'\s+', ' ', m[1])) == bits else m[0], value))
+    hit = re.fullmatch(rf'[(\s]*({IDENT})[)\s]*(?:&\s*(0[xX][0-9a-fA-F]+|\d+)[)\s]*)?', text)
+    if not hit or NARROW.get(analysis.types.get(hit[1])) != bits or (hit[2] and int(hit[2], 0) != (1 << bits) - 1):
+        return None
+    return hit[1]
+
+
 def _substitute(source, name):
-    """Index reads (and the only read of a local set once) written as the value they hold; dead assignments dropped."""
+    """Index reads, narrow copies and the only read of a local set once written as the value they hold; dead assignments dropped."""
     try:
         a = Analysis(source, name)
     except Unsupported:
@@ -441,7 +464,12 @@ def _substitute(source, name):
         single = len(reads) == 1
         for r in reads:
             value = _value(a, r)
-            if value is None or not (r.index or single):
+            if value is None:
+                continue
+            copied = _narrow_copy(a, r, value)
+            if copied:
+                value = copied
+            elif not (r.index or single):
                 continue
             if r.start >= r.end or any(e[0] <= r.start < e[1] for e in edits):
                 continue
