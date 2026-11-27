@@ -65,3 +65,53 @@ def test_a_value_that_meets_another_at_a_join_or_is_read_later_keeps_its_local()
     # it to `r` would leave `alpha` unclamped (a 516-instruction particle renderer, SN GCC 2.8.1, got such a child)
     found = [text for _, text in repair.variants(CLAMP, 'g')]
     assert not any('r = 0;' in t or 'r = 0xFF;' in t or 'r = out[0] * 3;' in t for t in found)
+
+
+# m2c's shared store: two switch arms jump to a label whose store reads the local the first arm falls through with
+JOINED = '''void h(s32 *p, s32 kind) {
+    s32 value;
+    s32 other;
+
+    switch (kind) {
+    case 1:
+        value = p[0] + 0x28;
+block_1:
+        p[0] = value;
+        break;
+    case 2:
+        value = p[0] + 0x20;
+        goto block_1;
+    }
+    other = p[1];
+    g(other);
+}
+'''
+
+CARRIED = '''void j(s32 *p, s32 flag) {
+    s32 value;
+    s32 other;
+
+    value = p[0];
+    p[1] = value;
+    if (flag) {
+        goto out;
+    }
+    value = p[2];
+    p[3] = value;
+    other = p[4];
+    g(other);
+    return;
+out:
+    other = 0;
+    g(value + other);
+}
+'''
+
+
+def test_a_range_another_path_joins_at_a_label_keeps_its_local():
+    # writing `value = p[0] + 0x28; block_1: p[0] = value;` through `other` made case 2 store `other`
+    assert not [t for _, t in repair.variants(JOINED, 'h') if 'other = p[0] + 0x28' in t]
+
+
+def test_a_value_a_later_goto_carries_to_a_read_keeps_its_local():
+    assert not [t for _, t in repair.variants(CARRIED, 'j') if 'other = p[0];' in t]

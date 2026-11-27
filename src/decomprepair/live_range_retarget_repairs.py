@@ -41,13 +41,27 @@ def _leaves_block(region):
     return False
 
 
+_LABEL = re.compile(r'(?:case\s+[^:?]+|default|(?!default\b)[A-Za-z_]\w*)\s*:(?!:)')
+_GOTO = re.compile(r'(?<![\w.>])goto\b')
+
+
+def _joins_or_jumps(region):
+    """A label inside the range lets another path reach the uses with its own value of the local (`v = a + 40; block:
+    p->x = v;` with `v = b + 32; goto block;` elsewhere): writing only this range through another local would make
+    that path store whatever the other one holds. A `goto` inside the range carries the value to a use not in it."""
+    return any(_LABEL.match(line.stripped) for line in region[1:]) or any(_GOTO.search(line.stripped) for line in region)
+
+
 def _dead_after(body, start, stop, var):
     """The range's value is not read after it. A plain assignment at the depth of the range's own one ends the search; one
     nested deeper (inside an `if` or a loop opened since) covers only the reads inside its block, so a read after that
-    block closes may still see the range's value (a clamp's `if (x < 0) { x = 0; }` and the `if (x >= 0x100)` after it)."""
+    block closes may still see the range's value (a clamp's `if (x < 0) { x = 0; }` and the `if (x >= 0x100)` after it).
+    A `goto` before the value is overwritten may take it to a read the text order doesn't show, so the range is kept."""
     depth, kill = 0, None
     for at, line in enumerate(body[start + 1:], start + 1):
         text = line.stripped
+        if at > stop and _GOTO.search(text):
+            return False
         if at > stop and mentions(text, var):
             plain = re.match(rf'{re.escape(var)}\s*=(?!=)', text) is not None and not mentions(text.split('=', 1)[1], var)
             if plain and depth <= 0:
@@ -93,7 +107,7 @@ def variants(source, name):
             region = body[i:stop + 1]
             if any(re.match(r'(?:while|do)\b', line.stripped) for line in region):
                 continue
-            if _leaves_block(region) or not _dead_after(body, i, stop, var):
+            if _joins_or_jumps(region) or _leaves_block(region) or not _dead_after(body, i, stop, var):
                 continue
             for other in decls:
                 if other == var or any(mentions(line.stripped, other) for line in region):
