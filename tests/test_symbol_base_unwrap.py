@@ -34,3 +34,16 @@ def test_a_pointer_used_other_than_through_a_dereference_stays():
 
 def test_it_is_declared_in_the_registry():
     assert 'symbol_base_unwrap' in {r.module.rsplit('.', 1)[-1] for r in registry.declared()}
+
+
+def test_a_setting_alone_in_wrappers_goes_with_them():
+    for wrapped in ('do { __base_gActor = &gActor; } while (0);', '{ __base_gActor = &gActor; }',
+                    'do { do {\n        __base_gActor = &gActor;\n    } while (0); } while (0);'):
+        [(_, text)] = unwrap.variants(SOURCE.replace('__base_gActor = &gActor;', wrapped), 'f')
+        assert '__base_gActor' not in text and 'do' not in text
+        assert 'void f(void *a, s32 n) {\n    gActor = NULL;' in text
+
+
+def test_a_wrapper_holding_more_than_the_setting_stays():
+    wrapped = 'do { __base_gActor = &gActor; n++; } while (0);'
+    assert not unwrap.variants(SOURCE.replace('__base_gActor = &gActor;', wrapped), 'f')
