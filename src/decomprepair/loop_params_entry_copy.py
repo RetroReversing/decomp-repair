@@ -15,6 +15,14 @@ Children: the register parameters (the first four) that a loop reads, copied (`T
 NAME_in;` at the top); those plus the `u8`/`s16`-style parameters a loop reads, taken as `s32 NAME_in` and copied into
 a local of the narrow type. A parameter whose address is taken is left alone. A candidate for the exact judge, never a
 verdict.
+
+`stack_params_entry_copy` is the same copy for the parameters passed on the stack (the fifth and later) that the body
+assigns: gcc loads such a parameter into its register as the function starts, ahead of the body's own first sets, while
+a target that has `move $s2,$zero; move $s1,$zero` first and the `lwc1`s from the caller's frame after them copied the
+parameters into locals once its counters were cleared. KMC GCC 2.7.2 `-O1`, N64: a 165-instruction collision walk whose
+three float velocities are reassigned in its loop was at 120 (those rows alone) and exact with all three copied after
+the declarations that clear its two counters. The copies go after the declarations, their constant initialisers
+included, and after any leading `x = 0;` statements. Which pass moves the loads is not read from the compiler's source.
 """
 import re
 
@@ -22,7 +30,9 @@ from .integer_repair_support import IDENT, _address_taken, edit, view
 from .pattern_repairs import close
 
 FAMILY = 'loop_params_entry_copy'
-FAMILIES = (FAMILY,)
+STACK = 'stack_params_entry_copy'
+FAMILIES = (FAMILY, STACK)
+CONSTANT = r'(?:-?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d*)?)[uUfFlL]*|NULL)'
 NARROW = r'(?:u8|s8|u16|s16|char|short|(?:unsigned|signed)\s+(?:char|short))'
 TYPE = r'(?:(?:unsigned|signed|const|struct)\s+)*[A-Za-z_]\w*(?:\s*\*+)?'
 
@@ -89,6 +99,38 @@ def _child(source, part, chosen):
     return edit(source, edits)
 
 
+def _after_clears(clean, cursor, end):
+    """Past the declarations, constant initialisers included, and the constant sets that follow them."""
+    declarator = rf'{IDENT}\s*(?:\[[^\];]*\])?\s*(?:=\s*{CONSTANT}\s*)?'
+    declaration = rf'\s*(?!return\b|goto\b){TYPE}\s*(?<=[\s*]){declarator}(?:,\s*\**\s*{declarator})*;'
+    while match := re.match(declaration, clean[cursor:end]):
+        cursor += match.end()
+    declared = cursor
+    while match := re.match(rf'\s*{IDENT}\s*=\s*{CONSTANT}\s*;', clean[cursor:end]):
+        cursor += match.end()
+    return declared, cursor
+
+
+def _stack_child(source, part):
+    """Every parameter past the fourth that the body assigns, copied after the first sets; or None."""
+    declared, top = _after_clears(part.clean, part.opening + 1, part.end)
+    body = part.clean[part.opening + 1:part.end]
+    chosen = [(offset, length, param, kind) for offset, length, param, kind in _parameters(part)[4:]
+              if re.search(rf'(?<![\w.>]){param}\s*(?:=(?!=)|[-+*/&|^]=|<<=|>>=|\+\+|--)', body)
+              and not _address_taken(part.body, param) and not re.search(rf'\b{param}_in\b', part.clean)
+              and not re.search(rf'(?<![\w.>]){param}\b', part.clean[part.opening + 1:top])]
+    if not chosen:
+        return None
+    edits = [(offset, offset + length, f'{kind} {param}_in') for offset, length, param, kind in chosen]
+    declarations = ''.join(f'\n    {kind} {param};' for _, _, param, kind in chosen)
+    copies = ''.join(f'\n    {param} = {param}_in;' for _, _, param, _ in chosen)
+    if declared == top:
+        edits.append((top, top, declarations + copies))
+    else:
+        edits += [(declared, declared, declarations), (top, top, copies)]
+    return edit(source, edits)
+
+
 def variants(source, name):
     part = view(source, name)
     if not part or re.search(r'\b(?:asm|__asm__|setjmp|longjmp)\b', part.body):
@@ -110,7 +152,8 @@ def variants(source, name):
             text = _child(source, part, sorted(chosen))
             if text and text != source and text not in result:
                 result.append(text)
-    return [(FAMILY, text) for text in result]
+    stack = _stack_child(source, part)
+    return [(FAMILY, text) for text in result] + ([(STACK, stack)] if stack else [])
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 72}  # the registry: no caller wiring (registry.py)
