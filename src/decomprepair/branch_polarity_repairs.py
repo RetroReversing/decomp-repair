@@ -9,6 +9,9 @@ the polarity its own control-flow recovery found, and decomp-repair's `branch_or
 - `polarity_swapped_arms`: a braced `if (c) { A } else { B }` whose condition `negate` can't invert becomes
   `if (!c) { B } else { A }` (a `!(...)` is dropped instead of doubled).
 - Identical negated bit tests are also flipped together, including branches with an else-if arm.
+- A braced `if (c) { A } else if (d) B` (an `else` that is itself an `if`, with or without more arms) becomes
+  `if (!c) { if (d) B } else { A }`, whatever `c` is: a 169-instruction N64 state function (`gcc-2.7.2-kmc -O1`)
+  needed its middle arm laid out after the chain (365 -> 0, a controlled result of one function).
 - `polarity_goto_tail`: m2c's `if (c) { T...; goto L; } R...` where R is the rest of the enclosing block and the
   `goto` leaves it becomes `if (!c) { R... } else { T...; goto L; }`: the layout of an N64 actor-update function's
   colour block, where the target puts the shared tail's arm second.
@@ -16,12 +19,14 @@ Only conditions with no side effects (no call, `++`, `--` or assignment), no lab
 """
 import re
 
+from .call_result_join_copy import _statement_end
 from .csource import _blank, find
 from .goto_structure_repairs import parse, walk
 from .pattern_repairs import close, negate
 
 FAMILY = 'branch_polarity'
 FAMILIES = (FAMILY,)
+CHAIN_LIMIT = 8  # `else if` swaps, counted apart so the braced pairs keep their places
 LIMIT = 12  # every `if` is read (a cap of 24 never reached the second half of a 1337-instruction function)
 
 IDENT = r'[A-Za-z_]\w*'
@@ -120,6 +125,7 @@ def variants(source, name):
         return []
     result = _repeated_flag_variants(source, clean, opening, end)
     tails = []
+    chains = []
 
     def add(text):
         if text != source and (FAMILY, text) not in result:
@@ -152,6 +158,14 @@ def variants(source, name):
                     + source[a:b] + source[d:])
             add(text)
             continue
+        chained = re.compile(r'\s*else\b\s*(?=if\b)').match(clean, b)
+        if chained:
+            stop = _statement_end(clean, chained.end(), end)
+            if stop:
+                indent = ' ' * (start - source.rfind('\n', 0, start) - 1)
+                swap = (source[:paren + 1] + flipped + source[cond_end - 1:a] + '{\n' + indent + '    '
+                        + source[chained.end():stop] + '\n' + indent + '} else ' + source[a:b] + source[stop:])
+                chains.append((FAMILY, swap))
         then = clean[a:b]
         if not re.search(r'\bgoto\s+(' + IDENT + r')\s*;\s*\}$', then):
             continue
@@ -179,7 +193,7 @@ def variants(source, name):
             text = text[:begin] + swap + text[finish:]
         if text != source and (FAMILY, text) not in combined:
             combined.append((FAMILY, text))
-    return (combined + result)[:LIMIT]
+    return (combined + result)[:LIMIT] + chains[:CHAIN_LIMIT]
 
 
 def _shape(text):
