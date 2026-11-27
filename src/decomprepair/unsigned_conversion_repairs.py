@@ -17,6 +17,8 @@ The two arms may also store through one lvalue with a narrowing cast, where no v
 as `*(u16 *)((char *)p + 0x26)`): `LV = (u16) ((s32) (F - 2.1474836e9f) | 0x80000000);` and `LV = (u16) (s32) F;` become `LV =
 (u16) (u32) F;` (two such conversions in a 443-instruction display-state updater were 1915 -> 855 -> 0 once written back,
 one site at a time).
+
+When two such conversions' truncations were cross-jumped, m2c writes the arms with `goto`s between them (`_joined_arms`).
 """
 import re
 
@@ -82,6 +84,38 @@ def _schedule_variants(source, flipped, isolated):
     return paired + [(SCHEDULING, edit(source, changes)) for changes in (flipped + isolated)[:4 - len(paired)]]
 
 
+_BIG = r'2\.1474836e9f'
+JOINED = re.compile(
+    rf'if\s*\([^;{{}}]*?\)\s*\{{\s*if\s*\(\s*(?P<f>{IDENT})\s*>=\s*{_BIG}\s*\)\s*\{{\s*(?P<t>{IDENT})\s*=\s*(?P=f)\s*-\s*{_BIG}\s*;\s*'
+    rf'goto\s+(?P<high>{IDENT})\s*;\s*\}}\s*goto\s+(?P<low>{IDENT})\s*;\s*\}}\s*'
+    rf'(?P<neg>(?P=f)\s*=(?!=)[^;{{}}]+;)\s*if\s*\(\s*(?P=f)\s*>=\s*{_BIG}\s*\)\s*\{{\s*(?P=t)\s*=\s*(?P=f)\s*-\s*{_BIG}\s*;\s*(?P=high)\s*:\s*'
+    rf'(?P<r>{IDENT})\s*=\s*\(?\s*\(s32\)\s*(?P=t)\s*\|\s*0x80000000\s*\)?\s*;\s*\}}\s*else\s*\{{\s*(?P=low)\s*:\s*'
+    rf'(?P=r)\s*=\s*\(s32\)\s*(?P=f)\s*;\s*\}}')
+
+
+def _joined_arms(source, clean, opening, end):
+    """Two conversions whose truncations the compiler cross-jumped, which m2c reads as `goto`s between the arms:
+
+        if (f > 0.0f) { if (f >= 2^31) { t = f - 2^31; goto high; } goto low; }
+        f = -(f32) x;
+        if (f >= 2^31) { t = f - 2^31; high: r = (s32) t | 0x80000000; } else { low: r = (s32) f; }
+     -> if (f > 0.0f) { r = (u32) f; } else { f = -(f32) x; r = (u32) f; }
+
+    An absolute value of an int taken as a float before the unsigned conversion, in an arctangent-by-table helper (the
+    draft scored 6630-6820, the rewrite 2185 under -O1). Every site is rewritten in one child."""
+    edits = []
+    for hit in JOINED.finditer(clean, opening, end):
+        labels = (hit['high'], hit['low'])
+        if any(len(re.findall(rf'\bgoto\s+{label}\s*;', clean[opening:end])) != 1 for label in labels):
+            continue
+        condition_end = close(clean, clean.index('(', hit.start()))
+        condition = source[hit.start():condition_end]
+        negate = source[hit.start('neg'):hit.end('neg')]
+        edits.append((hit.start(), hit.end(), f"{condition} {{ {hit['r']} = (u32) {hit['f']}; }} else {{ {negate} "
+                                              f"{hit['r']} = (u32) {hit['f']}; }}"))
+    return edit(source, edits) if edits else None
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -91,7 +125,8 @@ def variants(source, name):
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
         return []
-    result = []
+    joined = _joined_arms(source, clean, opening, end)
+    result = [(FAMILY, joined)] if joined else []
     flipped, isolated = [], []
     for hit in re.finditer(r'\bif\s*\(', clean[opening:end]):
         cond_open = opening + hit.end() - 1
