@@ -35,7 +35,7 @@ the record a pointer global names into the record its argument names, and the ta
 one `%hi` register. With `extern void *G;` a store to a member of another record (a nonzero offset) leaves the global's
 value in its register, so it is loaded twice; with `extern void *G[];` read `G[0]` the load is a member's too and every
 such store makes the compiler load it again, while reads with no store between still share one load. `volatile` (the
-`reloaded_global` family) reloads at every use, so it only fits a target with as many loads as mentions. The gate: the
+`reloaded_global` family) reloads at every use, so it only fits a target with as many loads as mentions (it also reached 0 on that function). The gate: the
 source reads the global at least twice (through `->` and `[` too), and the target has at least two `%lo(G)` loads outside
 `$at`. (The aliasing explanation is a controlled snippet's behaviour, not traced through the compiler's source.)"""
 import re
