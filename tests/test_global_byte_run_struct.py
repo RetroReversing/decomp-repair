@@ -34,3 +34,10 @@ def test_needs_matching_types_and_consecutive_addresses():
 def test_leaves_a_later_local_that_is_used_again():
     source = SOURCE.replace('tint((s32) &sp18);', 'tint((s32) &sp18 + sp19);')
     assert repair.variants(source, 'drawTinted') == []
+
+
+def test_a_following_copy_into_a_word_is_not_part_of_the_record():
+    source = SOURCE.replace('    s8 sp1A;\n', '    s8 sp1A;\n    s32 index;\n')
+    source = source.replace('    sp1A = D_80001232;\n', '    sp1A = D_80001232;\n    index = D_80005000;\n')
+    [(_, child)] = repair.variants(source, 'drawTinted')
+    assert '    sp18 = D_80001230;\n    index = D_80005000;\n' in child

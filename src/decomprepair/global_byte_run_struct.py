@@ -55,9 +55,13 @@ def variants(source, name):
         return []
     clean, result = part.clean, []
     for run in _runs(clean, part.opening, part.end):
-        if len(run) > 8:
-            continue
         locals_ = [_declaration(clean, part.opening, part.end, hit['local']) for hit in run]
+        # a draft often copies a global into a word or a pointer right after the record's bytes; that copy is not part
+        # of the record and must not hide it
+        while locals_ and locals_[-1] is None:
+            run, locals_ = run[:-1], locals_[:-1]
+        if not 1 < len(run) <= 8:
+            continue
         externs = [_declaration(clean, 0, part.opening, hit['symbol'], r'extern[ \t]+') for hit in run]
         if not all(locals_) or not all(externs):
             continue
