@@ -54,3 +54,17 @@ def test_casts_move_with_their_operands_and_every_comparison_swaps_at_once():
              '((u8) M2C_FIELD(&limits, u8 *, 1) <= (u8) M2C_FIELD(a, u8 *, 0x7D)) && '
              '((u32) D_80000000 <= (u8) M2C_FIELD(a, u8 *, 0x7D))) {')
     assert any(every in text for _, text in c.variants(source, 'f'))
+
+
+def test_a_typed_dereference_is_one_operand():
+    source = ('void f(void *a) {\n    if (*(s32 *)((kind * 4) + D_80010000) < M2C_FIELD(a, s32 *, 0x38)) {\n'
+              '        g();\n    }\n}\n')
+    found = [text for _, text in c.variants(source, 'f')]
+    assert any('if (M2C_FIELD(a, s32 *, 0x38) > *(s32 *)((kind * 4) + D_80010000))' in t for t in found)
+
+
+def test_a_typed_dereference_of_a_cast_sum_or_a_name():
+    source = 'void f(char *p) {\n    if ((x->a < *(u16 *)(s8 *)(p + 2)) && (*(s32 *)&D_80010000 > x->b)) {\n        g();\n    }\n}\n'
+    found = [text for _, text in c.variants(source, 'f')]
+    assert any('*(u16 *)(s8 *)(p + 2) > x->a' in t for t in found)
+    assert any('x->b < *(s32 *)&D_80010000' in t for t in found)

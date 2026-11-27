@@ -14,6 +14,10 @@ every comparison at once: a 118-instruction N64 enemy-respawn routine (SN64 GCC 
 table bytes and one global in one `&&` chain, each written `field >= limit` by m2c where the game compared
 `limit <= field`; the four swaps together were 1385 -> 1135.
 
+A typed dereference, `*(s32 *)((index * 4) + TABLE)`, is m2c's spelling of a table read and is one operand: it once
+ended at its cast, so no comparison with a table was ever swapped. A 108-instruction N64 entity chain routine (SN64 GCC
+2.8.1) tested `table[kind] < self->count` where the game wrote `self->count > table[kind]`.
+
 Every comparison is offered (a cap of four once left the later ones unreachable), and a comparison repeated with only
 its numbers changed (unrolled vector components, `a[0] < b[0]`, `a[1] < b[1]`, ...) also gets one child that swaps
 all of its copies: a 144-instruction three-component bounds update (`-O1`) needed nine swaps, 90 -> 0 in three.
@@ -30,6 +34,7 @@ IDENT = r'[A-Za-z_]\w*'
 FIELD_TYPE = r'Field_[A-Za-z_]\w*'
 FLIP = {'<': '>', '>': '<', '<=': '>=', '>=': '<=', '==': '==', '!=': '!='}
 LIMIT = 32  # single swaps offered
+POINTER_CAST = re.compile(r'\(\s*' + IDENT + r'(?:\s+' + IDENT + r')*\s*\*+\s*\)')
 SCALAR_CASTS = r'(?:\(\s*(?:[su](?:8|16|32)|f32)\s*\)\s*)*'  # a cast belongs to its operand and moves with it
 
 
@@ -38,13 +43,30 @@ def _operand_end(text, start):
     m = re.match(r'\s*(M2C_FIELD\s*\(|\*\s*\()', text[start:])
     if m:
         paren = start + m.end() - 1
-        return close(text, paren)
+        end = close(text, paren)
+        if end and m[1].startswith('*') and POINTER_CAST.fullmatch(text, paren, end):
+            return _cast_operand_end(text, end)  # `*(s32 *)(sum)`: the sum is the operand, not the cast alone
+        return end
     m = re.match(r'\s*\(\s*\(\s*' + FIELD_TYPE + r'\s*\*\s*\)', text[start:])
     if m:  # `((Field_s16 *) (((char *) base) + 0x7A))->v`, the cell the project's drafts write
         stop = close(text, start + m.start() + text[start:].index('('))
         tail = re.match(r'\s*->\s*' + IDENT, text[stop:]) if stop else None
         return stop + tail.end() if tail else None
     m = re.match(r'\s*' + IDENT + r'(?:\s*(?:->|\.)\s*' + IDENT + r'|\s*\[[^\]]*\])+', text[start:])
+    return start + m.end() if m else None
+
+
+def _cast_operand_end(text, start):
+    """End of what a pointer cast applies to: a bracketed sum, another cast and its sum, or `&name`/a name with its
+    members and subscripts; or None."""
+    m = re.match(r'\s*\(', text[start:])
+    if m:
+        paren = start + m.end() - 1
+        end = close(text, paren)
+        if end and POINTER_CAST.fullmatch(text, paren, end):
+            return _cast_operand_end(text, end)
+        return end
+    m = re.match(r'\s*&?\s*' + IDENT + r'(?!\s*\()(?:\s*(?:->|\.)\s*' + IDENT + r'|\s*\[[^\]]*\])*', text[start:])
     return start + m.end() if m else None
 
 
