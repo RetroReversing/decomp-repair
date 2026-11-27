@@ -58,3 +58,22 @@ def test_propose_finds_the_family():
     from decomprepair.propose import propose
     assert any(p.module == 'unknown_symbol_offset_repairs' and 'arg2 * 0x4' in p.source
                for p in propose(SOURCE, 'f').proposals)
+
+
+def test_an_address_passed_on_gets_its_byte_offset():
+    # `&D + 0x10` on an `M2C_UNK` symbol is 0x40 bytes: a spawn list passing 16-byte rows needs the byte form.
+    source = '''extern M2C_UNK D_80100000;
+
+void f(void) {
+    g(&D_80100000);
+    g(&D_80100000 + 0x10);
+    g(&D_80100000 + 0x20);
+}
+'''
+    out = [text for _, text in u.variants(source, 'f')]
+    whole = [t for t in out if 'g((M2C_UNK *)((s8 *)&D_80100000 + 0x10));' in t
+             and 'g((M2C_UNK *)((s8 *)&D_80100000 + 0x20));' in t]
+    assert whole and 'g(&D_80100000);' in whole[0]
+    # not an argument or a value: a dereference keeps to the other rewrites
+    read = 'extern M2C_UNK D_1;\nvoid f(void) {\n    x = *(&D_1 + 8);\n}\n'
+    assert not [t for _, t in u.variants(read, 'f') if '(M2C_UNK *)((s8 *)&D_1' in t and '*((M2C_UNK' not in t]

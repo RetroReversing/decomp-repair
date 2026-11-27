@@ -121,7 +121,9 @@ def variants(source, name, limit=8):
         if block_end is None:
             continue
         body = clean[end:block_end]
-        if _changed(local, body) or any(_changed(o, body) for o in set(re.findall(r'[A-Za-z_]\w*', expression))):
+        # a symbol the expression only takes the address of is a constant, however often the body takes it too
+        operands = set(re.findall(r'(?<![\w&])[A-Za-z_]\w*', expression))
+        if _changed(local, body) or any(_changed(o, body) for o in operands):
             continue
         uses = [end + h.start() for h in re.finditer(rf'\b{local}\b', body)]
         # A constant read once is still worth spelling out: a literal store in a loop is a movable loop.c hoists

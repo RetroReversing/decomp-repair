@@ -104,3 +104,20 @@ void f(void) {
 '''
     out = [text for _, text in inline.variants(source, 'f')]
     assert any('g((T + 0xC0), 1);' in t and 'g((T + 0xC0), 2);' in t for t in out)
+
+
+def test_an_address_the_body_also_takes_does_not_pin_the_temporary():
+    source = '''extern u8 T[];
+
+void f(void) {
+    void *row;
+
+    g(&D_80100000);
+    row = (s8 *)&D_80100000 + 0xC0;
+    g(row);
+    g(row);
+    g(&D_80100000);
+}
+'''
+    out = [text for _, text in inline.variants(source, 'f')]
+    assert any(text.count('g(((s8 *)&D_80100000 + 0xC0));') == 2 for text in out)
