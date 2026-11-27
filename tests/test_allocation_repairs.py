@@ -164,3 +164,23 @@ def test_measured_array_orders_need_two_displaced_ranges():
     assert not measured_array_orders(source.replace('sp50[3]', 'sp50[4]'), 'f', rows)
     assert not measured_array_orders(source.replace('float sp50', 'int n; float sp50'), 'f', rows)
     assert not measured_array_orders(source, 'f', rows, '#define sp50 other')
+
+
+def test_unnamed_stack_slots_the_target_holds_exchanged_swap_two_declarations():
+    from decomprepair.allocation_repairs import measured_slot_orders
+
+    source = '''void f(void) {
+    s16 *buffer;
+    s32 other;
+    s32 size;
+
+    size = g(0);
+    buffer = h();
+    while (1) { k(buffer, size, other); }
+}
+'''
+    rows = [('s', 'sw $t0, 0x8c($sp)', 'sw $t0, 0x84($sp)'), ('s', 'sw $t0, 0x84($sp)', 'sw $t0, 0x8c($sp)')]
+    children = measured_slot_orders(source, 'f', rows)
+    assert ('spill_declaration_order', source.replace('s16 *buffer;', '@').replace('s32 size;', 's16 *buffer;')
+            .replace('@', 's32 size;')) == children[0]
+    assert not measured_slot_orders(source, 'f', rows[:1])
