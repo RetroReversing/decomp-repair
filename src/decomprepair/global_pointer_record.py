@@ -18,6 +18,15 @@ global_scalar_record
     scalar is read and written with two `%lo` relocations. As `extern struct { s32 value; } G;` read as `G.value`
     the same function went 3302 -> 2797. One child per global.
 
+global_pointer_read_record
+    The same for a pointer global the source declares itself that is only *read* (fewer than two stores through it,
+    never assigned or address-taken) at two or more places with a store between them: after a store through another
+    pointer the target loads the global again, and the candidate keeps the first load. Matched on an SN gcc 2.8.1
+    (`-G0 -mips3 -O2 -mfp64`) effect update of 71 instructions: after `sh` at offset 2 of the object the target
+    reloads the pointer before reading a word through it. A store through a constant offset is a structure member to
+    the compiler and did not invalidate the plain global's load; as `extern struct { void *block; } G;` it did
+    (500 -> 240 alone, 0 with the two other edits). One child per global.
+
 Hypothesis, read from expr.c's `MEM_IN_STRUCT_P` marking but not traced through
     cse.c: a store marked as a structure member does not invalidate a scalar global's load, a member's load it does.
     The exact judge decides.
@@ -26,7 +35,8 @@ import re
 
 FAMILY = 'global_pointer_record'
 SCALAR = 'global_scalar_record'
-FAMILIES = (FAMILY, SCALAR)
+READ = 'global_pointer_read_record'
+FAMILIES = (FAMILY, SCALAR, READ)
 LIMIT = 6
 MEMBER = 'block'
 
@@ -40,6 +50,21 @@ def _stores(source, name):
                           rf'[^;=]*\)\s*\)?\s*=(?!=)', source))
 
 
+_STORE = re.compile(r'(?<![=!<>+\-*/|&^%])(?:[-+*/|&^%]|<<|>>)?=(?!=)|\+\+|--')
+
+
+def _written_between(source, name):
+    """True when a store through memory (`*...=`, `...->m =`, `a[i] =`, an M2C_FIELD) lies between two reads."""
+    uses = [m.start() for m in re.finditer(rf'\b{re.escape(name)}\b', source)]
+    if len(uses) < 2:
+        return False
+    for statement in source[uses[0]:uses[-1]].split(';'):
+        store = _STORE.search(statement)
+        if store and re.search(r'\*\s*\(|->|\]|FIELD\s*\(|\bF\s*\(', statement):
+            return True
+    return False
+
+
 def variants(source, name, header=''):
     result = []
     for found in _EXTERN.finditer(source):
@@ -51,6 +76,16 @@ def variants(source, name, header=''):
         head = source[:found.start()] + f'extern struct {{ {found.group("type")} *{MEMBER}; }} {glob};'
         rest = re.sub(rf'\b{re.escape(glob)}\b(?!\s*\.)', f'{glob}.{MEMBER}', source[found.end():])
         result.append((FAMILY, head + rest))
+    for found in _EXTERN.finditer(source):
+        glob = found.group('name')
+        if header and re.search(rf'\b{re.escape(glob)}\b', header):
+            continue
+        body = source[found.end():]
+        if _stores(source, glob) >= 2 or not _written_between(body, glob) or re.search(
+                rf'&\s*{re.escape(glob)}\b|\b{re.escape(glob)}\s*=(?!=)|(?:\.|->)\s*{re.escape(glob)}\b', body):
+            continue
+        head = source[:found.start()] + f'extern struct {{ {found.group("type")} *{MEMBER}; }} {glob};'
+        result.append((READ, head + re.sub(rf'\b{re.escape(glob)}\b(?!\s*\.)', f'{glob}.{MEMBER}', body)))
     for found in _SCALAR.finditer(source):
         glob = found.group('name')
         if found.group('type') in ('struct', 'union', 'enum') or (header and re.search(rf'\b{re.escape(glob)}\b', header)):
