@@ -71,17 +71,39 @@ def edits(source, name, asm):
             at = opening + use.start()
             result.append((at, at, '(s8 *) '))
     # `*((i * 4) + &D)` on a symbol of a 4-byte type scales the index again: an N64 function stored at `i * 16`
-    # where the game stored at `i * 4`, exact as `(&D)[i]`
-    for use in re.finditer(r'\*\s*\(\s*\(\s*(?P<i>' + IDENT + r'(?:\([^()]*\))?)\s*\*\s*(?P<k>0x[0-9a-fA-F]+|\d+)\s*\)\s*\+\s*&\s*(?P<d>'
-                           + IDENT + r')\s*\)', body):
-        declared = re.search(r'(?m)^[ \t]*extern\s+(?P<t>[A-Za-z_]\w*)\s+' + use['d'] + r'\s*;', outside)
+    # where the game stored at `i * 4`, exact as `(&D)[i]`. The index may be any one operand: a name, a call, or a
+    # parenthesised expression (`*((((Rec *) arg0)->type * 4) + &D)`, an m2c field view of a parameter's halfword)
+    for use in re.finditer(r'\*\s*\(', body):
+        before = body[:use.start()].rstrip()[-1:]
+        if before.isalnum() or before in ('_', ')', ']'):  # a multiplication, not a load or store through the sum
+            continue
+        opened = use.end() - 1
+        closed = close(body, opened, '(', ')')
+        if not closed:
+            continue
+        start = opened + 1
+        term = re.fullmatch(r'\s*\((?P<i>.+?)\s*\*\s*(?P<k>0x[0-9a-fA-F]+|\d+)\s*\)\s*\+\s*&\s*(?P<d>' + IDENT + r')\s*',
+                            body[start:closed - 1], re.S)
+        if not term or not _operand(term['i']):
+            continue
+        declared = re.search(r'(?m)^[ \t]*extern\s+(?P<t>[A-Za-z_]\w*)\s+' + term['d'] + r'\s*;', outside)
         size = SIZES.get(declared['t']) if declared else None
-        k = int(use['k'], 0)
+        k = int(term['k'], 0)
         if not size or k % size:
             continue
-        index = use['i'] if k == size else f"{use['i']} * {k // size}"
-        result.append((opening + use.start(), opening + use.end(), f"(&{use['d']})[{index}]"))
+        original = source[opening + start + term.start('i'):opening + start + term.end('i')]
+        index = original if k == size else f"{original} * {k // size}"
+        result.append((opening + use.start(), opening + closed, f"(&{term['d']})[{index}]"))
     return result
+
+
+def _operand(text):
+    """Whether `text` is one operand of `*`: a name, a call of a name, or wholly parenthesised."""
+    named = re.match(IDENT, text)
+    at = named.end() if named else 0
+    if named and at == len(text):
+        return True
+    return text[at:at + 1] == '(' and close(text, at, '(', ')') == len(text)
 
 
 def variants(source, name, asm):
