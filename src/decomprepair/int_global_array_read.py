@@ -22,7 +22,12 @@ Then each form for all the globals together. At most 4 globals and 24 children.
 Second shape (a 7-instruction function, 200 -> 0): a global read as `*(T *)((s8 *)G + K)` at two or more offsets, which
 the compiler folds into the symbol (`lui/%lo(G+K)`), where the target builds the address once (`lui` + `addiu %lo(G)`,
 no load through `%lo(G)`) and reads at `K($r)`. The child declares `extern u8 G[];`, adds `u8 *base_G = G;` and reads
-`*(T *)(base_G + K)`; the array alone scored 600, the pointer local is what pins the address in a register."""
+`*(T *)(base_G + K)`; the array alone scored 600, the pointer local is what pins the address in a register.
+
+Third shape (KMC GCC 2.7.2 `-O1`, N64; an 838-instruction menu renderer, 1995 -> 0): a byte the target mostly reads as
+`lui; lbu %lo(G)` but in places builds the address of (`lui $s3; addiu $s3, %lo(G)`) and reads twice as `0($s3)`. The
+scalar reads each carry their own `lui`; the array form gets the held address. The first two tests miss it, since the
+first `lui` in the function is an ordinary scalar read's."""
 import re
 
 from .csource import _blank
@@ -93,6 +98,22 @@ def address_taken(symbol, asm):
     return taken
 
 
+def held_address(symbol, asm):
+    """True when somewhere the assembly builds `symbol`'s whole address in a register other than `$at` and then loads at
+    offset 0 through that register, whatever its other reads do."""
+    built = None
+    for code in _code_lines(asm):
+        whole = re.match(rf'addiu\s+\$(\w+)\s*,\s*\$\w+\s*,\s*%lo\(\s*{re.escape(symbol)}\s*\)', code)
+        if whole and whole[1] != 'at':
+            built = whole[1]
+        elif built:
+            if re.match(rf'l[bhw]u?\s+\$\w+\s*,\s*(?:0x0|0)?\(\s*\${built}\s*\)', code):
+                return True
+            if re.match(rf'(?!s[bhw]\b|b|j)\w+\s+\${built}\b', code):
+                built = None
+    return False
+
+
 _BYTE_CAST = re.compile(r'\(\s*(?:(?:unsigned|signed)\s+char|[su]8|char|void)\s*\*\s*\)\s*$')
 
 
@@ -134,7 +155,7 @@ def variants(source, name, header='', asm=''):
         if hit.start() >= part.opening or symbol not in used or symbol == name:
             continue
         if re.search(rf'\b{re.escape(symbol)}\b', header or '') \
-                or not (early_address(symbol, asm) or address_taken(symbol, asm)):
+                or not (early_address(symbol, asm) or address_taken(symbol, asm) or held_address(symbol, asm)):
             continue
         spans = _reads(part, symbol)
         if not spans:
