@@ -24,9 +24,10 @@ The arms are the leaves of the `if`/`else` (an `else { if ... else ... }` and an
 in a jump is left alone. One child per site. Hypothesis: the mechanism above (local-alloc runs before the global pass)
 is read from local-alloc.c and global.c and confirmed by the match, not by the compiler's own documentation."""
 import re
+from os.path import commonprefix
 
-from .csource import _blank
 from .join_tail_arm_split_repairs import _blocks, _body, _cut, _end, _falls_out, _items, _plain, _private_regions, _skip
+from .local_flow import _function_volatile
 from .pattern_repairs import close
 
 FAMILY = 'join_tail_arm_inline'
@@ -185,17 +186,27 @@ def _sites(source, name):
     return out
 
 
+def _moves_volatile(source, text):
+    """Whether the stretch an edit rewrote holds a volatile access, whose order the edit may change. A volatile cast
+    elsewhere (hardware registers written after the join) is untouched: it used to switch the family off for the whole
+    function (an N64 boot routine's three AI register writes hid its video-clock join)."""
+    head = len(commonprefix([source, text]))
+    tail = min(len(commonprefix([source[::-1], text[::-1]])), len(source) - head, len(text) - head)
+    return 'volatile' in source[head:len(source) - tail] or 'volatile' in text[head:len(text) - tail]
+
+
 def variants(source, name):
     """One child per site, then every site in one child: a join that follows another is each no better alone (a
     second site alone scored 430 where the first alone scored 60 and both 20)."""
-    if _body(source, name)[0] is None or re.search(r'\bvolatile\b', _blank(source)):
+    part = _body(source, name)[0]
+    if part is None or re.search(r'\bvolatile\b', _function_volatile(part)):
         return []
-    singles = _sites(source, name)[:LIMIT]
+    singles = [text for text in _sites(source, name) if not _moves_volatile(source, text)][:LIMIT]
     out = [(FAMILY, text) for text in singles]
     if len(singles) > 1:
         text = source
         for _ in range(LIMIT):
-            more = _sites(text, name)
+            more = [site for site in _sites(text, name) if not _moves_volatile(text, site)]
             if not more:
                 break
             text = more[0]
