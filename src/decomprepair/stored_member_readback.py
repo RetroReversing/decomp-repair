@@ -20,11 +20,26 @@ A proposal takes a plain store of a local to an 8 or 16 bit member written with 
 `M2C_FIELD(p, T *, off) = t;`, and the later statements of the same block (an `if` only for its condition) that read
 `t` masked or cast to the member's width (`(t & 0xFFFF)`, `(u16) t`, `(s16) t`, `(t & 0xFF)`, `(u8) t`), or `t`
 itself when its declared type is the member's. Each such read is written as the member with the matching signedness,
-which has the same value. Between the store and a read nothing may call or write anything but another local.
+which has the same value. Between the store and a read nothing may call, and nothing may be written but another
+local or a member of the same base at offsets that don't overlap the stored one (`M2C_FIELD` and `*(T *)((u8 *)p + K)`
+forms).
+
+m2c also writes the store itself through a cast of the member's width (an N64 sprite pulse routine, SN GCC 2.8.1, 50
+instructions):
+
+    M2C_FIELD(arg0, s8 *, 0x77) = (s8) frame;
+    M2C_FIELD(arg0, s32 *, 0x34) = timer;
+    next = (frame & 0xFF) % 5U;
+
+where the game divided the member it had just stored (`next = *(u8 *)member % 5U;`). The target's `andi` of the stored
+register comes from that read: with the mask on the local the remainder was 635, with the read-back exact. So a stored
+value spelled `(s8) t` or `(u8) t` (the member's width) stands for `t` too, and the other member's store between does
+not end the walk.
 This module reads text only and never compiles or judges."""
 import re
 
 from .fence_regroup import _fences
+from .field_copy_reread import _field, _may_touch
 from .hand_found_support import IDENT, NUMBER, blocks, calls_in, local_type, simple, stmts, store_target, writes
 from .integer_repair_support import edit, view
 from .pattern_repairs import close
@@ -68,6 +83,20 @@ def _read(lvalue, member, size, signed):
     return text if text.startswith('(') and close(text, 0, '(', ')') == len(text) else f'({text})'
 
 
+def _stored_local(value, size):
+    """The local a store's value names: `t` itself, or `t` cast to a type of the member's width; None otherwise."""
+    if re.fullmatch(IDENT, value):
+        return value
+    found = re.fullmatch(rf'\(\s*(?P<kind>[su](?:8|16))\s*\)\s*(?P<local>{IDENT})', value)
+    return found['local'] if found and _WIDTHS[found['kind']][0] == size else None
+
+
+def _other_member(target, lvalue):
+    """True when `target` is a member of the stored member's base that cannot overlap it."""
+    stored, other = _field(lvalue), _field(target)
+    return bool(stored and other and not _may_touch(other, stored))
+
+
 def _reads(clean, lo, hi, local, same_type, lvalue, member):
     """[(start, end, replacement)] of the reads of `local` in clean[lo:hi] that the member can stand for."""
     n = re.escape(local)
@@ -102,12 +131,13 @@ def _readbacks(source, name):
             if not simple(clean[start:end]):
                 continue
             hit = store_target(clean[start:end])
-            if not hit or calls_in(hit[0]) or not re.fullmatch(IDENT, hit[1]):
+            if not hit or calls_in(hit[0]):
                 continue
-            lvalue, local = hit
+            lvalue = hit[0]
             member = _member(lvalue)
-            kind = local_type(part, local)
-            if not member or not kind:
+            local = member and _stored_local(hit[1], _WIDTHS[member[0]][0])
+            kind = local and local_type(part, local)
+            if not kind:
                 continue
             names = set(re.findall(IDENT, lvalue))
             found = []
@@ -128,7 +158,10 @@ def _readbacks(source, name):
                 if target is None:
                     compound = re.match(rf'\s*({IDENT})\s*(?:[-+*/%&|^]|<<|>>)=', text)
                     target = compound[1] if compound else None
-                if target is None or not re.fullmatch(IDENT, target) or not local_type(part, target):
+                if target is None:
+                    break
+                elsewhere = assigned is not None and _other_member(target, lvalue)
+                if not elsewhere and (not re.fullmatch(IDENT, target) or not local_type(part, target)):
                     break
                 value_at = a + text.index('=') + 1
                 reads = _reads(clean, value_at, b, local, kind == member[0], lvalue, member)

@@ -73,5 +73,35 @@ def test_nothing_across_a_call_a_store_or_a_wider_member():
     assert children(wide) == []
 
 
+def test_a_cast_store_is_read_back_past_another_member():
+    source = """void func(void *arg0) {
+    s32 value;
+    s32 next;
+    u8 low;
+
+    M2C_FIELD(arg0, s8 *, 0x77) = (s8) value;
+    M2C_FIELD(arg0, s32 *, 0x34) = next;
+    low = (value & 0xFF) % 5U;
+}
+"""
+    found = [c for f, c in children(source) if f == FAMILY]
+    assert len(found) == 1
+    assert 'low = ((M2C_FIELD(arg0, u8 *, 0x77))) % 5U;' in found[0]
+
+
+def test_cast_store_stops_at_an_overlapping_member_or_a_wider_cast():
+    for store, between in (('(s8) t', 'M2C_FIELD(p, s32 *, 4) = n;'), ('(s8) t', 'M2C_FIELD(q, s32 *, 0x10) = n;'),
+                           ('(s16) t', 'n = 1;')):
+        source = f"""void func(char *p, char *q) {{
+    s32 t;
+    s32 n;
+    M2C_FIELD(p, s8 *, 6) = {store};
+    {between}
+    n = (t & 0xFF);
+}}
+"""
+        assert children(source) == []
+
+
 def test_registered():
     assert any(r.module == 'stored_member_readback' for r in registry.declared())
