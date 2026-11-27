@@ -15,7 +15,7 @@ from .local_flow import Flow
 FAMILY = 'float_cfg_local_reuse'
 FAMILIES = (FAMILY,)
 LIMIT = 128
-_DECL = re.compile(rf'(?m)^[ \t]*f32\s+(?P<name>{IDENT})\s*;[^\n]*\n')
+_DECL = re.compile(rf'(?m)^[ \t]*f32\s+(?P<name>{IDENT})\s*;[ \t]*\n')
 
 
 def variants(source, name, header=''):

@@ -27,3 +27,8 @@ def test_rejects_overlapping_lives_and_escaped_or_volatile_float():
 def test_rejects_shadows_and_member_names():
     assert not repair.variants(SOURCE.replace('    consume(a);', '    { int a; consume(a); }\n    consume(a);'), 'f')
     assert not repair.variants(SOURCE.replace('    consume(a);', '    consume(obj. a, a);'), 'f')
+
+
+def test_never_removes_code_after_a_declaration():
+    source = SOURCE.replace('    f32 a;\n', '    f32 a; side_effect();\n')
+    assert not repair.variants(source, 'f')
