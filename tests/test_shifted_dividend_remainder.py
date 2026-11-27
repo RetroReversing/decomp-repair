@@ -41,6 +41,21 @@ def test_quotient_and_product_in_locals():
     assert '*out = half % 3;' in child
 
 
+def test_unsigned_quotient_with_an_outer_shift():
+    source = '''void func_tick(void *arg0) {
+    u32 temp_a0;
+    u32 temp_hi;
+
+    temp_a0 = (u8) M2C_FIELD(arg0, u8 *, 0x79) >> 2;
+    temp_hi = M2C_FIELD(arg0, u8 *, 0x79) / 6;
+    M2C_FIELD(arg0, s8 *, 0x77) = (s8) (temp_a0 - ((temp_hi >> 3) * 0xC));
+}
+'''
+    (child,) = children(source)
+    assert '(s8) (temp_a0 % 12)' in child
+    assert children(source.replace('>> 3) * 0xC', '>> 2) * 0xC')) == []  # 6 << 2 is not 12 << 2
+
+
 def test_refusals():
     for line in ('*out = (x >> 1) - ((x / 12) * 5);',     # not the shifted divisor
                  '*out = (x >> 1) - ((y / 10) * 5);',     # another value
