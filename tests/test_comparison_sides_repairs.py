@@ -41,3 +41,16 @@ def test_repeated_comparisons_swap_together():
     family, first = c.variants(source, 'f')[0]
     assert family == 'comparison_sides'
     assert all(f'if (b[{i}] > a[{i}])' in first and f'if (c[{i}] < b[{i}])' in first for i in range(3))
+
+
+def test_casts_move_with_their_operands_and_every_comparison_swaps_at_once():
+    source = '''void f(void *a) {
+    if (((u8) M2C_FIELD(a, u8 *, 0x7C) >= (u8) M2C_FIELD(&limits, u8 *, 0)) && ((u8) M2C_FIELD(a, u8 *, 0x7D) >= (u8) M2C_FIELD(&limits, u8 *, 1)) && ((u8) M2C_FIELD(a, u8 *, 0x7D) >= (u32) D_80000000)) {
+        g();
+    }
+}
+'''
+    every = ('if (((u8) M2C_FIELD(&limits, u8 *, 0) <= (u8) M2C_FIELD(a, u8 *, 0x7C)) && '
+             '((u8) M2C_FIELD(&limits, u8 *, 1) <= (u8) M2C_FIELD(a, u8 *, 0x7D)) && '
+             '((u32) D_80000000 <= (u8) M2C_FIELD(a, u8 *, 0x7D))) {')
+    assert any(every in text for _, text in c.variants(source, 'f'))
