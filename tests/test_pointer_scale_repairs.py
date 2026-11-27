@@ -45,3 +45,13 @@ def test_an_index_expression_into_a_word_symbol():
     source = 'extern M2C_UNK D;\nvoid f(void *arg0) {\n    *((M2C_FIELD(arg0, s16 *, 0x14) * 4) + &D) = 1;\n}\n'
     (_, out), = p.variants(source, 'f', 'sll        $v0, $v0, 2\naddiu      $v0, $v0, 4\n')
     assert '(&D)[M2C_FIELD(arg0, s16 *, 0x14)] = 1;' in out
+
+
+def test_scaled_symbol_index_that_is_a_parenthesised_operand():
+    source = '''extern M2C_UNK D_80078F20;
+s32 func(void *arg0) {
+    return (*(((((Rec *) arg0)->type) * 4) + &D_80078F20) * 2) * ((i * 4) + &D_80078F20);
+}
+'''
+    [(_, child)] = p.variants(source, 'func', 'addiu $v0, $v0, 1')
+    assert 'return ((&D_80078F20)[(((Rec *) arg0)->type)] * 2) * ((i * 4) + &D_80078F20);' in child
