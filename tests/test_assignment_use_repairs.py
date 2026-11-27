@@ -41,3 +41,20 @@ def test_written_into_the_call():
 def test_left_alone_when_an_input_changes_first():
     changed = MOVED.replace('    *(s8 *)((char *)arg0 + 0x18) = 0;\n', '    arg0 = k();\n')
     assert a.variants(changed, 'f') == []
+
+
+def test_a_field_macro_is_a_load_not_a_call():
+    # a 112-instruction N64 object update: the load right before the `if` that tests it, past a call.
+    source = """void f(void *arg0) {
+    s32 temp_s2;
+
+    temp_s2 = M2C_FIELD(arg0, s32 *, 0x80);
+    M2C_FIELD(arg0, s32 *, 0x24) = (s32) size(arg0);
+    M2C_FIELD(arg0, s8 *, 0x84) = 1;
+    if (temp_s2 == 0x1A0) {
+        g(temp_s2);
+    }
+}
+"""
+    texts = [t for _, t in a.variants(source, 'f')]
+    assert any('= 1;\n    temp_s2 = M2C_FIELD(arg0, s32 *, 0x80);\n    if (temp_s2 == 0x1A0)' in t for t in texts)

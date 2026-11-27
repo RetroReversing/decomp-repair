@@ -11,6 +11,9 @@ scaffolding round statements none of them offers (a counter's step in its own fe
   same as nothing, the pair moved the weight of both);
 - a statement that computes a value several statements later use, fenced four deep (`do { do { do { do { t = g * 2; }
   while (0); } while (0); } while (0); } while (0);`: depth is the weight, and each depth is a different priority).
+- a local's store into a field right before a call (`o->scale = value; next = lookup(o);`): the target stores first and
+  fills the call's delay slot with the argument copy, where the unfenced source stores in the delay slot (a
+  112-instruction N64 object update, SN GCC 2.8.1 `-G0 -mips3 -O2`, 120 -> 0).
 The fences are scaffolding no developer wrote; polishing removes them once the match is recorded.
 
 Children (`LIMIT` in all, the runs first): `fence_initialiser_run` (the first run of two or three consecutive constant
@@ -25,11 +28,15 @@ from .statement_across_call import _blocks, _has_call, _statements
 
 FAMILY_RUN = 'fence_initialiser_run'
 FAMILY_DEEP = 'fence_statement_deep'
-FAMILIES = (FAMILY_RUN, FAMILY_DEEP)
+FAMILY_BEFORE_CALL = 'fence_store_before_call'
+FAMILIES = (FAMILY_RUN, FAMILY_DEEP, FAMILY_BEFORE_CALL)
 LIMIT = 8
+STORES = 4  # stores before a call offered, beside the other two kinds' LIMIT
 _LVALUE = rf'(?:\*\s*)?{IDENT}(?:\s*(?:->|\.)\s*{IDENT}|\s*\[[^\];{{}}]*\])*'
 _CONSTANT = re.compile(rf'{_LVALUE}\s*=(?!=)\s*-?\s*(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d*)?[fFuU]*)\s*;')
 _ARITHMETIC = re.compile(rf'{_LVALUE}\s*=(?!=)\s*[^;{{}}=]*[-+*/<>&|][^;{{}}=]*;')
+_STORE = re.compile(rf'(?:M2C_FIELD\s*\([^()]*\)|\*\s*\([^;{{}}=]*|{IDENT}(?:\s*(?:->|\.)\s*{IDENT}|\s*\[[^\];{{}}]*\])+)'
+                    rf'\s*=(?!=)\s*{IDENT}\s*;')
 _FENCE = re.compile(r'do\s*\{[^{}]*\}\s*while\s*\(\s*0\s*\)\s*;')
 
 
@@ -58,6 +65,18 @@ def _in_fence(clean, start, part_opening):
     return False
 
 
+def _store_before_call(clean, items):
+    """The `(start, end)` of each store of a plain value into memory that the next statement, holding a call, follows."""
+    out = []
+    for (start, end, kind), (after, stop, follows) in zip(items, items[1:]):
+        if kind != 'simple' or follows != 'simple':
+            continue
+        stored = _STORE.fullmatch(clean[start:end].strip())
+        if stored and _has_call(clean, after, stop):
+            out.append((start, end))
+    return out
+
+
 def variants(source, name):
     part = view(source, name)
     if not part:
@@ -65,11 +84,12 @@ def variants(source, name):
     clean = part.clean
     if re.search(r'\b(?:volatile|asm|__asm__|goto)\b|^\s*#', clean[part.opening:part.end], re.M):
         return []
-    runs, deep = [], []
+    runs, deep, stores = [], [], []
     for lo, hi in _blocks(clean, part.opening + 1, part.end):
         items = [item for item in _statements(clean, lo, hi) if item[2] == 'simple']
         # statements directly after one another in the source (compound statements split a run)
         everything = _statements(clean, lo, hi)
+        stores += [span for span in _store_before_call(clean, everything) if not _in_fence(clean, span[0], part.opening)]
         index = 0
         while index < len(everything):
             start, end, kind = everything[index]
@@ -101,7 +121,10 @@ def variants(source, name):
         indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, start) + 1:])[0]
         for depth in (4, 2):
             out.append((FAMILY_DEEP, edit(source, [(start, end, _fence(source[start:end].strip(), depth, indent))])))
-    return list(dict.fromkeys(item for item in out if item[1] != source))[:LIMIT]
+    out = out[:LIMIT]
+    for start, end in stores[:STORES]:
+        out.append((FAMILY_BEFORE_CALL, edit(source, [(start, end, _fence(source[start:end].strip(), 1, ''))])))
+    return list(dict.fromkeys(item for item in out if item[1] != source))
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'archs': ('mips',)}
