@@ -37,6 +37,11 @@ member, an array or a pointer that does not name it too: a flag cleared with `ki
 KMC GCC 2.7.2 `-O2`, 15 -> 0). Set before the call, the flag is live across it, so global.c gives it a saved register
 (`$s0`, as the target has) where the later clear left it in `$a1`.
 
+A field of a global in m2c's own spelling, `M2C_FIELD(&D_8007FC64, u8 *, 2)`, is that global's cell (it was refused
+for its `&`), kept apart from the plain globals stored beside it unless it is the same symbol or its address overlaps: a
+64-instruction N64 routine (SN gcc 2.8.1) wanted a third byte store back beside the other two, above four word clears
+(450 alone, 0 with the call's missing arguments).
+
 statement_slide_far
     The slides the `LIMIT` above leaves out, up to `FAR_LIMIT` of them: shortest first, so in a function with two long
     runs of stores every slide of three places was cut. A 66-instruction N64 sound-voice initialiser (SN GCC 2.8.1
@@ -99,7 +104,13 @@ def _record_cells(text, types):
     return RECORD_CELL.sub(cell, text)
 
 
+# m2c's own spelling of a field of a global, `M2C_FIELD(&G, u8 *, 2)`: the same cell as `*((u8 *) (&G) + 2)`.
+ADDRESS_FIELD = re.compile(rf'(?<![\w.>])M2C_FIELD\(\s*&\s*(?P<sym>{IDENT})\s*,')
+ADDRESS_NAME = re.compile(r'D_([0-9A-Fa-f]{8})')
+
+
 def _cells(text):
+    text = ADDRESS_FIELD.sub(lambda m: f'M2C_FIELD({GLOBAL}{m["sym"]},', text)
     text = CAST_FIELD.sub(lambda m: f'M2C_FIELD({m["base"]}, {m["type"]} *, {m["off"]})', text)
     text = DEREF_FIELD.sub(lambda m: f'M2C_FIELD({m["wrapped"] or m["bare"]}, {m["type"]} *, {m["off"]})', text)
     text = WRAPPED_FIELD.sub(lambda m: m[0] if m['call'] else m['field'], text)
@@ -142,10 +153,27 @@ def _effects(text):
     return writes, reads
 
 
+def _global_cell(cell, name):
+    """Whether the cell of a global may be the plain global `name`: the same symbol, or (both named by their address)
+    one that begins within eight bytes below the cell's end and not before its start."""
+    if not cell[1].startswith(GLOBAL):
+        return False
+    symbol = cell[1][len(GLOBAL):]
+    if symbol == name:
+        return True
+    base, other = ADDRESS_NAME.fullmatch(symbol), ADDRESS_NAME.fullmatch(name)
+    if not base or not other:
+        return False
+    low, at = int(base[1], 16) + cell[2], int(other[1], 16)
+    return low - 7 <= at < int(base[1], 16) + cell[3]
+
+
 def _clash(a, b):
     for x in a:
         for y in b:
             if x[0] == 'v' and y[0] == 'v' and x[1] == y[1]:
+                return True
+            if {x[0], y[0]} == {'v', 'f'} and _global_cell(x if x[0] == 'f' else y, y[1] if x[0] == 'f' else x[1]):
                 return True
             if x[0] == 'f' and y[0] == 'f' and x[1] == y[1] and x[2] < y[3] and y[2] < x[3]:
                 return True
