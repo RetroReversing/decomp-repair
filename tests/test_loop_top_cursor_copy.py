@@ -83,3 +83,34 @@ def test_a_call_in_the_copy_or_a_changed_copy_is_not_moved():
 
 def test_it_declares_itself_to_the_registry():
     assert any(FAMILY in repair.families for repair in registry.declared())
+
+
+DO_LOOP = """void tail(s32 dst, u8 *src, u32 size)
+{
+    s32 var_a0;
+    u8 byte;
+    if (size != 0)
+    {
+        var_a0 = dst;
+        do {
+            dst += 1;
+            byte = *src;
+            src += 1;
+            put(var_a0, byte);
+            size -= 1;
+            var_a0 = dst;
+        } while (size != 0);
+    }
+}
+"""
+
+
+def test_a_do_loop_gets_the_copy_at_its_top():
+    [child] = [text for family, text in variants(DO_LOOP, 'tail', '') if family == FAMILY]
+    assert 'do {\nvar_a0 = dst;\n            dst += 1;' in child
+    assert child.count('var_a0 = dst;') == 1
+
+
+def test_a_do_loop_whose_test_reads_the_copy_keeps_it():
+    assert not variants(DO_LOOP.replace('while (size != 0);', 'while (var_a0 < size);'), 'tail', '')
+    assert not variants(DO_LOOP.replace('            var_a0 = dst;\n        } while', '            var_a0 = dst;\n            size -= 1;\n        } while'), 'tail', '')
