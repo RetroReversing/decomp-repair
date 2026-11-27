@@ -8,7 +8,8 @@ triples in between 115 to 1675), so the permuter's one-edit-at-a-time search cou
 - `spill_slot_copy_collapse` (D): m2c writes a pointer chain through a temporary and copies it once into a stack local
   (`temp = &base[n]; next = &temp[n]; ...; slot = temp;`, `slot` read later). Written through `slot` itself, the stack
   local is the spilled pseudo, and reload picks its first free reload register ($t0) for the chain's first add
-  instead of local-alloc's $a3.
+  instead of local-alloc's $a3. Not offered when either name is stepped (`+=`, `++`): a cursor reset from the base on
+  every outer iteration would lose its reset.
 - `weight_scope_unwrap` (U, I): a `do { ... } while (0);` is still a loop when references are counted, so everything
   inside counts double. The existing `one_shot_scope` skips a wrapper whose body holds a label or `goto`, so the
   function-body wrapper that holds m2c's `block_N:` labels was never unwrapped. A wrapper whose gotos and labels all
@@ -96,6 +97,11 @@ def _collapse_edits(part, source):
         if sets(clean[body_start:part.end], slot) != 1 or sets(clean[body_start:part.end], temp) != 1:
             continue
         if re.search(rf'\b{temp}\b', later) or len(re.findall(rf'\b{slot}\b', before)) > 1:
+            continue
+        # a stepped cursor (`slot += 0x10;`) inside a loop must start from `temp` again each time: renaming
+        # would drop that reset, which is another program
+        if any(re.search(rf'(?<![\w.>]){n}\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)=)|(?:\+\+|--)\s*{n}\b', clean[body_start:part.end])
+               for n in (slot, temp)):
             continue
         assign = re.search(rf'(?<![\w.>]){temp}\s*=(?!=)', before)
         if not assign:
