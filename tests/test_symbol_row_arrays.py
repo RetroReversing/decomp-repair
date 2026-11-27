@@ -57,3 +57,57 @@ void f(int i) {
 '''
     assert rows.variants(source, 'f') == []
     assert rows.variants(DRAFT, 'f', 'extern short D_80100000[]; extern int D_80100400[];') == []
+
+
+BYTE_DRAFT = '''extern s32 D_80093278;
+extern M2C_UNK D_80095D78;
+extern M2C_UNK D_80095E20;
+extern s16 D_800B84C0;
+
+void f(s32 arg0) {
+    u8 temp_s1;
+
+    temp_s1 = *(((D_80093278 / 10) * 0x15) + &D_80095E20 + D_800B84C0);
+    if (temp_s1 == 1) {
+        g(*(((D_80093278 / 10) * 0x15) + &D_80095D78 + D_800B84C0), arg0);
+    }
+}
+'''
+
+
+def test_byte_table_column_without_a_scale():
+    # a sound-cue table of a racing game (SN GCC 2.7.2, -O1): matched once both tables were declared this way
+    unsigned, signed = rows.variants(BYTE_DRAFT, 'f')
+    out = unsigned[1]
+    assert 'extern u8 D_80095E20[][21];' in out and 'extern u8 D_80095D78[][21];' in out
+    assert 'temp_s1 = D_80095E20[D_80093278 / 10][D_800B84C0];' in out
+    assert 'g(D_80095D78[D_80093278 / 10][D_800B84C0], arg0);' in out
+    assert 'extern s8 D_80095E20[][21];' in signed[1]
+
+
+def test_byte_table_declared_as_an_array_and_read_through_a_byte_cast():
+    source = '''extern s32 D_80093278;
+extern char D_80095E20[];
+extern s16 D_800B84C0;
+
+void f(void) {
+    g(*(u8 *)(D_80095E20 + (D_80093278 / 10) * 0x15 + D_800B84C0));
+}
+'''
+    out = rows.variants(source, 'f')[0][1]
+    assert 'extern u8 D_80095E20[][21];' in out
+    assert 'g(D_80095E20[D_80093278 / 10][D_800B84C0]);' in out
+
+
+def test_byte_reading_declines_wider_tables_and_casts():
+    wide = BYTE_DRAFT.replace('extern M2C_UNK D_80095E20;', 'extern s32 D_80095E20;')
+    assert 'D_80095E20[' not in ''.join(source for _, source in rows.variants(wide, 'f'))
+    cast = '''extern s32 D_80093278;
+extern char D_80095E20[];
+extern s16 D_800B84C0;
+
+void f(void) {
+    g(*(s32 *)(D_80095E20 + (D_80093278 / 10) * 0x15 + D_800B84C0));
+}
+'''
+    assert rows.variants(cast, 'f') == []

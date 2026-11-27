@@ -18,12 +18,20 @@ function is converted together, with unsigned and then signed elements.
 A 119-instruction N64 list builder (KMC GCC 2.7.2) scored 7260 from its draft under `-O1`; with its two tables
 declared this way the draft scored 1430, and the repair chain reaches 400 from the form that keeps m2c's offsets.
 
+A byte table has no column scale: m2c adds the column as it is, `*(((x / 10) * 0x15) + &D_X + D_Y)`, so the access
+is read with the one term that has no scale as the column, its element a byte (`u8 D_X[][21]`, `D_X[x / 10][D_Y]`).
+That reading is taken only when the table's own declaration is m2c's unknown type or a byte, and the dereference has no
+cast or a byte one (a wider declared type would scale m2c's sum by its width), and the table term is `&D_X` or an
+array-declared `D_X` while the column, a global's value, is declared as a scalar. A table of a racing game's sound
+cues (SN GCC 2.7.2, `-O1`, 137 instructions) was tuned to 40 in that byte arithmetic with the two reads' registers
+swapped, and matched once its two tables were declared `u8 D_X[][0x15]`; the draft scores 3284 before and 2339 after.
+
 Nothing is rewritten unless every use of every symbol of a table is one of these accesses.
 """
 import re
 
 from .csource import _blank, find
-from .indexed_symbol_records import _ACCESS, _SYMBOL, _offset_temps, _terms, _wrapped
+from .indexed_symbol_records import _ACCESS, _SYMBOL, _offset_temps, _split, _terms, _wrapped
 from .pattern_repairs import close
 
 FAMILY = 'symbol_row_arrays'
@@ -33,8 +41,51 @@ _TYPES = {1: ('u8', 's8'), 2: ('u16', 's16'), 4: ('u32', 's32')}
 _SHIFT = re.compile(r'<<[ \t]*([1-9]|1[0-5])\b')
 
 
-def _accesses(body, temps):
+_BYTE_DECLARED = {'M2C_UNK', '?', 'char', 'u8', 's8', 'unsigned char', 'signed char'}
+_BYTE_CASTS = {'char', 'u8', 's8'}
+_DECLARATION = re.compile(r'(?m)^[ \t]*extern[ \t]+(?P<type>[A-Za-z_?][\w \t]*?)[ \t]*(?<![\w])(?P<sym>' + _SYMBOL +
+                          r')\s*(?P<array>(?:\[[^\]\n]*\])+)?\s*;')
+
+
+def _declared(head):
+    """{symbol: (type, is an array)} of the externs before the function."""
+    return {m['sym']: (' '.join(m['type'].split()), bool(m['array'])) for m in _DECLARATION.finditer(head)}
+
+
+def _byte_terms(inner, cast, temps, at, declared):
+    """(symbols, constant, [(index, scale)]) of a byte table's sum whose column has no scale, or None.
+
+    One term is the table (`&D_X`, or `D_X` declared as an array), one is the column (any term `_terms` cannot read,
+    or a scalar global's value), the rest are what `_terms` reads (the row's product, constants)."""
+    if cast not in (None, *_BYTE_CASTS):
+        return None
+    tables, column, rest = [], [], []
+    for part in _split(inner.strip(), '+'):
+        bare = part[1:-1].strip() if _wrapped(part) else part
+        symbol = re.fullmatch(r'(&)?\s*(' + _SYMBOL + r')', bare)
+        if symbol and (symbol[1] or declared.get(symbol[2], ('', False))[1]):
+            tables.append(symbol[2])
+            continue
+        if symbol and symbol[2] in declared:
+            column.append(bare)
+            continue
+        terms = _terms(part, temps, at)
+        if terms is None:
+            if re.search(r'[=,;?{}]|&&|\|\|', bare):
+                return None
+            column.append(bare)
+            continue
+        rest.append(terms)
+    if len(tables) != 1 or len(column) != 1 or any(t[0] for t in rest):
+        return None
+    if declared.get(tables[0], ('',))[0] not in _BYTE_DECLARED:
+        return None
+    return tables, sum(t[1] for t in rest), [i for t in rest for i in t[2]] + [(column[0], 1)]
+
+
+def _accesses(body, temps, declared=None):
     """[(start, end, symbol, address, [(index, scale)])] of every dereference of one symbol's sum."""
+    declared = declared or {}
     found = []
     for m in _ACCESS.finditer(body):
         opening = body.find('(', m.end() - 1 if body[m.end() - 1] == '(' else m.end())
@@ -49,7 +100,10 @@ def _accesses(body, temps):
             inner = nested[1][1:-1]
         if not re.search(r'\b' + _SYMBOL + r'\b', inner):
             continue
-        terms = _terms(_SHIFT.sub(lambda s: f'* {1 << int(s[1])}', inner), temps, m.start())
+        inner = _SHIFT.sub(lambda s: f'* {1 << int(s[1])}', inner)
+        terms = _terms(inner, temps, m.start())
+        if terms is None or len(terms[0]) != 1:
+            terms = _byte_terms(inner, m['type'], temps, m.start(), declared)
         if terms is None or len(terms[0]) != 1 or not terms[2]:
             continue
         symbol = terms[0][0]
@@ -101,7 +155,7 @@ def variants(source, name, header=''):
     temps = {}
     for m in re.finditer(r'(?m)^[ \t]*([A-Za-z_]\w*)\s*=\s*([^=;][^;]*);', body):
         temps.setdefault(m[1], []).append((m.start(), m[2].strip()))
-    accesses = _accesses(body, temps)
+    accesses = _accesses(body, temps, _declared(head))
     edits, used = [], []
     for table in _tables(accesses):
         base, stride, size = table
