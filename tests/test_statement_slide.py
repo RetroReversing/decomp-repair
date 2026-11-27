@@ -141,3 +141,13 @@ def test_a_global_read_does_not_pass_a_store_through_a_pointer():
     text = CAST_ARM.replace('t = *((u8 *) (((char *) arg0) + 0x4A));', 't = *((u8 *) (&D_800FDB9C));')
     kids = [src for _, src in variants(text, 'f')]
     assert not any(k.index('t = *') > k.index('+ 0xC0)) = (s8)') for k in kids)
+
+
+def test_slides_past_the_cap_are_offered_apart():
+    from decomprepair.statement_slide import FAR_FAMILY, LIMIT
+    run = ''.join(f'    M2C_FIELD(p, s8 *, {offset:#x}) = {offset};\n' for offset in range(0x10, 0x20))
+    source = 'void f(void *p) {\n' + run + '}\n'
+    found = variants(source, 'f')
+    near = [child for family, child in found if family == FAMILY]
+    far = [child for family, child in found if family == FAR_FAMILY]
+    assert len(near) == LIMIT and far and not set(near) & set(far)

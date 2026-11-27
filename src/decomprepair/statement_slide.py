@@ -30,14 +30,22 @@ member, an array or a pointer that does not name it too: a flag cleared with `ki
 (`rec[id].loaded = 1; mode = 1;`) was the target's when cleared above the call (an 874-instruction N64 object spawner,
 KMC GCC 2.7.2 `-O2`, 15 -> 0). Set before the call, the flag is live across it, so global.c gives it a saved register
 (`$s0`, as the target has) where the later clear left it in `$a1`.
+
+statement_slide_far
+    The slides the `LIMIT` above leaves out, up to `FAR_LIMIT` of them: shortest first, so in a function with two long
+    runs of stores every slide of three places was cut. A 66-instruction N64 sound-voice initialiser (SN GCC 2.8.1
+    `-G0 -mips3 -O2`) wanted a word store three places down, below three byte stores of constants (110 -> 80, then two
+    more reorders to 0); it was the 48th of 78 slides.
 """
 import re
 
 from .integer_repair_support import IDENT, view
 
 FAMILY = 'statement_slide'
-FAMILIES = (FAMILY,)
+FAR_FAMILY = 'statement_slide_far'
+FAMILIES = (FAMILY, FAR_FAMILY)
 LIMIT = 40
+FAR_LIMIT = 80  # the slides past LIMIT, offered apart as FAR_FAMILY
 REACH = 4
 FIELD = re.compile(rf'M2C_FIELD\(\s*(?P<base>{IDENT})\s*,\s*(?P<type>[^,*]+?)\s*\*\s*,\s*(?P<off>0[xX][0-9a-fA-F]+|\d+)\s*\)')
 WIDTH = {'s8': 1, 'u8': 1, 'char': 1, 's16': 2, 'u16': 2, 's32': 4, 'u32': 4, 'f32': 4, 'int': 4}
@@ -231,9 +239,9 @@ def variants(source, name, header=''):
     for _, child in sorted(found, key=lambda item: item[0]):
         if child != source and child not in result:
             result.append(child)
-        if len(result) >= LIMIT:
+        if len(result) >= LIMIT + FAR_LIMIT:
             break
-    return [(FAMILY, child) for child in result]
+    return [(FAMILY, child) for child in result[:LIMIT]] + [(FAR_FAMILY, child) for child in result[LIMIT:]]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header')}
