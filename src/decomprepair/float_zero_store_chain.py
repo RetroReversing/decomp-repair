@@ -7,6 +7,7 @@ and three `swc1` instructions. Chaining the same stores kept their order and imp
 import re
 
 from .integer_repair_support import view
+from .shared_float_equality_ladder import _MACRO
 
 FAMILY = 'float_zero_store_chain'
 FAMILIES = (FAMILY,)
@@ -15,9 +16,9 @@ _STORE = re.compile(r'(?P<field>' + _FIELD + r')\s*=\s*0(?:\.0*)?[fF]\s*;')
 _ASM_STORE = re.compile(r'\bswc1\s+\$(\w+)\s*,\s*(0[xX][0-9a-fA-F]+|\d+)\(\$(\w+)\)')
 
 
-def variants(source, name, asm):
+def variants(source, name, asm, header=''):
     part = view(source, name)
-    if not part:
+    if not part or not _MACRO.search(source + '\n' + (header or '')):
         return []
     lines = (asm or '').splitlines()
     target = []
@@ -53,4 +54,4 @@ def variants(source, name, asm):
     return out[:24]
 
 
-REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'asm'), 'archs': ('mips',)}
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'asm', 'header'), 'archs': ('mips',)}
