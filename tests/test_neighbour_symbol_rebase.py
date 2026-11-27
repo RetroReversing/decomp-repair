@@ -48,3 +48,23 @@ void f(void)
     run = source.replace('if (D_80000010[0] != 0) {\n        D_80000010[0]--;',
                          f'if ({rebased} != 0) {{\n        {rebased}--;')
     assert run in children
+
+
+def test_consecutive_pointer_globals_become_arrays_as_a_run_of_their_own():
+    source = '''typedef struct { int pad; short *base; } Fx;
+extern Fx *D_80200000;
+extern short *D_80100000;
+extern short *D_80100004;
+void f(int n) {
+    D_80200000->pad = n;
+    D_80200000->base = D_80100000;
+    D_80200000->base = D_80100004;
+}
+'''
+    children = [child for family, child in variants(source, 'f') if family == 'unsized_extern_array']
+    run = source.replace('extern short *D_80100000;', 'extern short *D_80100000[];') \
+        .replace('extern short *D_80100004;', 'extern short *D_80100004[];') \
+        .replace('= D_80100000;', '= D_80100000[0];').replace('= D_80100004;', '= D_80100004[0];')
+    assert run in children
+    assert any('extern Fx *D_80200000[];' in child and 'D_80200000[0]->pad = n;' in child for child in children)
+    assert not [child for family, child in variants(source, 'f') if family == REBASE]

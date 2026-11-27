@@ -11,13 +11,24 @@ unsized arrays 1980, then the neighbours read from those arrays, 0. m2c writes e
 
 Two families:
 
-- `unsized_extern_array`: one child per referenced `extern TYPE D_x;` scalar declared `extern TYPE D_x[];` and read as
-  `D_x[0]`, and one with all of them;
+- `unsized_extern_array`: one child per referenced `extern TYPE D_x;` scalar or pointer declared `extern TYPE D_x[];`
+  and read as `D_x[0]`, one per run of globals in consecutive words (`D_800FD900`, `D_800FD904`) and one with all;
 - `neighbour_symbol_rebase`: one child per reference to a scalar `D_x` whose address is within 0x40 bytes of an
   unsized array `D_y`, rewritten `*(TYPE *)((char *)D_y - K)` (one reference at a time: a target often rebases only
   some of them), one with every reference of one symbol, and each run of two or three neighbouring references (a
   137-instruction N64 menu handler, `-O1`: the test and the decrement of one block reached the byte as `-0x2c($s0)` off a
   neighbouring array held in `$s0`, the later blocks by its own name; 991 -> 10, then `initializer_placement` -> 0).
+
+A pointer global matters for a second reason. On a 184-instruction N64 effect set-up (KMC GCC 2.7.2
+`-G0 -mips3 -mgp32 -mfp32 -O2`) two consecutive pointers were copied into the members of a structure:
+
+    f->length = param[1];  f->delay = D_800FD900;  f->base = D_800FD904;
+
+The target loads `D_800FD900` after the `length` store and reads `length` again for the loop test; the plain scalar's
+load moved above the store. With both declared `[]` and read as `[0]` the match was exact (430 -> 0); one alone scored
+worse than neither, which is why the run is a child of its own. A third pointer global in the function, read through
+for its fields, was not part of it. The reading is that a plain scalar at a fixed address cannot alias a structure
+member's store and an array element can (`sched.c`, `true_dependence`); not traced through the compiler.
 
 The program reads and writes the same addresses: the offsets come from the symbols' own names."""
 import re
@@ -31,12 +42,19 @@ FAMILIES = (UNSIZED, REBASE)
 REACH = 0x40
 LIMIT = 90
 RUN = 3  # the longest run of references rebased together
+WORD = 4  # globals this far apart sit in consecutive words
 SCALAR = r'(?:(?:volatile|unsigned|signed)\s+)*(?:char|short|int|long|float|double|[su](?:8|16|32|64)|f(?:32|64))'
 _DECL = re.compile(rf'^[ \t]*extern[ \t]+(?P<type>{SCALAR})[ \t]+(?P<name>D_(?P<at>[0-9A-Fa-f]{{8}}))[ \t]*(?P<array>\[[^\]\n]*\])?[ \t]*;', re.M)
+_POINTER = re.compile(r'^[ \t]*extern[ \t]+(?P<type>(?:(?:const|volatile|struct|union|unsigned|signed)[ \t]+)*[A-Za-z_]\w*'
+                      r'[ \t]*\*[ \t*]*?)[ \t]*(?P<name>D_(?P<at>[0-9A-Fa-f]{8}))[ \t]*(?P<array>\[[^\]\n]*\])?[ \t]*;', re.M)
 
 
 def _declarations(source):
     return {hit['name']: hit for hit in _DECL.finditer(_blank(source))}
+
+
+def _pointers(source):
+    return {hit['name']: hit for hit in _POINTER.finditer(_blank(source))}
 
 
 def _references(part, name):
@@ -51,7 +69,7 @@ def _edit(source, edits):
 
 
 def _unsized(source, part, declared):
-    singles = []
+    singles, addresses = [], []
     for symbol, hit in declared.items():
         if hit['array'] is not None:
             continue
@@ -64,7 +82,17 @@ def _unsized(source, part, declared):
             continue
         edits = [(hit.end('name'), hit.end('name'), '[]')] + [(start, end, f'{symbol}[0]') for start, end in places]
         singles.append(edits)
+        addresses.append(int(hit['at'], 16))
     children = [_edit(source, edits) for edits in singles]
+    runs = []
+    for address, edits in sorted(zip(addresses, singles), key=lambda pair: pair[0]):
+        if runs and address - runs[-1][-1][0] == WORD:
+            runs[-1].append((address, edits))
+        else:
+            runs.append([(address, edits)])
+    # a run that is every global is the last child already
+    children += [_edit(source, [edit for _, edits in run for edit in edits])
+                 for run in runs if 1 < len(run) < len(singles)]
     if len(singles) > 1:
         children.append(_edit(source, [edit for edits in singles for edit in edits]))
     return [(UNSIZED, child) for child in children]
@@ -104,7 +132,8 @@ def variants(source, name):
     if not part or re.search(r'\b(?:asm|__asm__)\b', part.body):
         return []
     declared = _declarations(source)
-    results = _unsized(source, part, declared) + _rebased(source, part, declared)
+    # pointers only change their own declaration: their neighbours are not rebased from them
+    results = _unsized(source, part, {**declared, **_pointers(source)}) + _rebased(source, part, declared)
     seen, out = {source}, []
     for family, text in results:
         if text not in seen:
