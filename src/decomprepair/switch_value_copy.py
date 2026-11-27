@@ -1,11 +1,12 @@
-"""Give one switch arm a separate copy of an immutable incoming byte.
+"""Give a switch arm a separate copy of an incoming byte.
 
 A MIDI handler's key byte feeds several command arms but the note-on arm also
 uses it repeatedly across calls. Splitting that arm's reads into a same-type
 copy moved a KMC GCC 2.7.2 candidate from 6555 to 6245. The register-allocation
 explanation is a hypothesis; the byte comparison is measured on one function.
 Only unaddressed byte locals initialized before a plain, non-looping switch
-are eligible. The first arm may read the copy only while the local is unchanged.
+are eligible. An arm may read the copy only while the local is unchanged and control cannot
+fall through into it from an earlier case.
 """
 import re
 
@@ -65,7 +66,12 @@ def variants(source, name):
             if not groups or len(groups) < 2:
                 continue
             for group_index, (_, a, b) in enumerate(groups):
-                if group_index or write.search(clean, init.end(), body[0]) or write.search(clean, a, b):
+                if group_index:
+                    _, prev_a, prev_b = groups[group_index - 1]
+                    previous = clean[prev_a:prev_b]
+                    if not re.search(r'(?:^|[;}])\s*(?:break|return(?:\s+[^;{}]+)?)\s*;\s*$', previous):
+                        continue
+                if write.search(clean, init.end(), body[0]) or write.search(clean, a, b):
                     continue
                 uses = list(_mentions(var).finditer(clean, a, b))
                 if len(uses) < 2 or not any(m.start() < a or m.start() >= b for m in mentions if m.start() >= init.end()):
@@ -73,15 +79,20 @@ def variants(source, name):
                 new = var + '_copy'
                 while new in taken:
                     new += '_'
-                edits = [(decl.end(), decl.end(), f"{decl['indent']}{decl['type']}{new};\n"),
-                         (init.end(), init.end(), f'\n{decl["indent"]}{new} = {var};')]
-                edits.extend((m.start(), m.end(), new) for m in uses)
-                child = source
-                for start, stop, replacement in sorted(edits, reverse=True):
-                    child = child[:start] + replacement + child[stop:]
-                result.append((FAMILY, child))
-                if len(result) >= LIMIT:
-                    return result
+                placements = [init.end()]
+                following = re.match(r'\s*[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\s*;', clean[init.end():switch_at])
+                if following and not write.search(following.group()):
+                    placements.append(init.end() + following.end())
+                for position in placements:
+                    edits = [(decl.end(), decl.end(), f"{decl['indent']}{decl['type']}{new};\n"),
+                             (position, position, f'\n{decl["indent"]}{new} = {var};')]
+                    edits.extend((m.start(), m.end(), new) for m in uses)
+                    child = source
+                    for start, stop, replacement in sorted(edits, reverse=True):
+                        child = child[:start] + replacement + child[stop:]
+                    result.append((FAMILY, child))
+                    if len(result) >= LIMIT:
+                        return result
     return result
 
 
