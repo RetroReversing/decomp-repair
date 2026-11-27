@@ -13,6 +13,19 @@ LIMIT = 16
 DECL = re.compile(rf'\b(?P<type>{INTEGER})\s+(?P<name>{IDENT})\s*(?:=\s*(?P<value>{NUMBER}))?\s*;')
 
 
+def _same_path(gap):
+    """Whether text after a copy is still only reached through it: no label to jump in at, and the copy's own block not
+    left (a copy inside an arm does not hold after the arm: reading its source there gave an undefined value)."""
+    if re.search(rf'(?:^|[;{{}}])\s*{IDENT}\s*:(?!:)', gap):
+        return False
+    depth = 0
+    for brace in re.findall(r'[{}]', gap):
+        depth += 1 if brace == '{' else -1
+        if depth < 0:
+            return False
+    return True
+
+
 def variants(source, name):
     part = view(source, name)
     if not part or re.search(r'\b(?:volatile|asm|__asm__)\b', part.clean):
@@ -67,6 +80,8 @@ def variants(source, name):
                 gap = part.clean[end:hit.start()]
                 if re.search(rf'\b(?:{variable}|{origin["name"]})\s*(?:[+\-*/%&|^]?=|\+\+|--)|'
                              rf'(?:\+\+|--)\s*(?:{variable}|{origin["name"]})\b|\b(?:goto|for|while|do|case|default)\b', gap):
+                    break
+                if not _same_path(gap):
                     break
                 if re.match(r'\s*(?:[+\-*/%&|^]?=|\+\+|--)', part.clean[hit.end():]):
                     break
