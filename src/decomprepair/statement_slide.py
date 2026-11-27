@@ -55,10 +55,17 @@ CAST_FIELD = re.compile(rf'\*\s*\(\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\
                         rf'(?P<base>{IDENT})\s*\)\s*\+\s*(?P<off>0[xX][0-9a-fA-F]+|\d+)\s*\)\s*\)')
 CAST_GLOBAL = re.compile(rf'\*\s*\(\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(?\s*&\s*(?P<sym>{IDENT})\s*\)?\s*\)')
 GLOBAL = '__global_'
+# The other expansion of `M2C_FIELD`, `*(T *)((char *)(base) + off)`, and the redundant pair of parentheses m2c's
+# expansions put around a whole cell: `(*(s8 *)((char *)(arg0) + 0x7A)) = 2;`.
+DEREF_FIELD = re.compile(rf'\*\s*\(\s*(?P<type>{TYPES}(?:\s+{TYPES})*)\s*\*\s*\)\s*\(\s*\(\s*char\s*\*\s*\)\s*'
+                         rf'(?:\(\s*(?P<wrapped>{IDENT})\s*\)|(?P<bare>{IDENT}))\s*\+\s*(?P<off>0[xX][0-9a-fA-F]+|\d+)\s*\)')
+WRAPPED_FIELD = re.compile(r'(?P<call>\w\s*)?\(\s*(?P<field>M2C_FIELD\([^()]*\))\s*\)')  # (a call's parentheses stay)
 
 
 def _cells(text):
     text = CAST_FIELD.sub(lambda m: f'M2C_FIELD({m["base"]}, {m["type"]} *, {m["off"]})', text)
+    text = DEREF_FIELD.sub(lambda m: f'M2C_FIELD({m["wrapped"] or m["bare"]}, {m["type"]} *, {m["off"]})', text)
+    text = WRAPPED_FIELD.sub(lambda m: m[0] if m['call'] else m['field'], text)
     return CAST_GLOBAL.sub(lambda m: f'M2C_FIELD({GLOBAL}{m["sym"]}, {m["type"]} *, 0)', text)
 
 
