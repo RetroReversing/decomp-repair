@@ -23,6 +23,10 @@ loop_top_cursor_copy
     compiler source: a copy that opens the body is not joined by cse to the loop's end test, and reorg then fills the
     loop-back branch's slot with it.
 
+    The same for m2c's `do` loop: `V = E; do { ...; V = E; } while (c);`, with the second copy the body's last
+    statement and `c` not reading `V`, becomes `do { V = E; ... } while (c);` (the byte-wise tail of a memcpy-like
+    ROM copy built by SN GCC 2.8.1, `-G0 -mips3 -O2`: 250 -> 150 alone, 0 with `call_load_temps_inline`).
+
 The exact judge decides every child; nothing here proves it is the compiler's reason.
 """
 import re
@@ -36,7 +40,8 @@ FAMILIES = (FAMILY,)
 LIMIT = 8
 _LOOP = re.compile(
     rf'(?P<pre>(?<![\w.>])(?P<v>{IDENT})\s*=(?!=)\s*(?P<e>[^;{{}}=]+?)\s*;)\s*'
-    r'(?:for\s*\(\s*;\s*;\s*\)|while\s*\(\s*1\s*\))\s*\{')
+    r'(?:for\s*\(\s*;\s*;\s*\)|while\s*\(\s*1\s*\)|(?P<do>do(?![\w])))\s*\{')
+_TAIL = re.compile(r'\s*while\s*\((?P<c>(?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\)\s*;')
 _IMPURE = re.compile(rf'\+\+|--|(?<![=!<>])=(?!=)|\b(?!(?:if|while|for|switch|return|sizeof)\b){IDENT}\s*\(|\bvolatile\b')
 _BLOCKED = re.compile(r'\bgoto\b|\bswitch\b')
 
@@ -70,8 +75,17 @@ def _loops(source, clean, low, high):
         if _names(after, v) or _IMPURE.search(re.sub(r'[=!<>]=', '', after)):
             continue
         base = opening + 1
+        end = closing + 1
+        if hit['do']:
+            tail = _TAIL.match(clean, end)
+            # a `do` loop's copy is its last statement and the test after it reads nothing the copy would change;
+            # `do { ... } while (0);` is a fence, not a loop
+            if (not tail or after.strip() or _names(tail['c'], v) or _IMPURE.search(tail['c'])
+                    or tail['c'].strip() == '0' or body[:copy.start()].rstrip()[-1:] not in ('', ';', '{', '}')):
+                continue
+            end = tail.end()
         early = [at for at in own_loop_statements(clean, base, base + copy.start(), 'continue')]
-        if early or not _written_before_read(clean, closing + 1, low, high, v):
+        if early or not _written_before_read(clean, end, low, high, v):
             continue
         pre = _line(source, hit.start('pre'), hit.end('pre'))
         bottom = _line(source, base + copy.start(), base + copy.end())
