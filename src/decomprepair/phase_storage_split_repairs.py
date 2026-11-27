@@ -28,6 +28,22 @@ UNION = re.compile(rf'(?m)^(?P<indent>[ \t]*)union\s*(?:{IDENT})?\s*{{(?P<member
 MEMBER = re.compile(rf'\s*(?P<type>(?:(?:unsigned|signed|const|volatile)\s+)*{IDENT}(?:\s+{IDENT})?[\s*]*?)\b(?P<member>{IDENT})\s*;')
 
 
+def _free_names(clean, local, members):
+    """{member: the name of its own local}: `NAME_member`, numbered when the source already says that name.
+
+    An earlier repair's `__repair_phase_storage_value` local beside the union `__repair_phase_storage { ..; value; }`
+    made the split declare it twice, so every child (and `scaffold_strip`'s plain form) failed to compile."""
+    taken = set(re.findall(IDENT, clean))
+    names = {}
+    for member in members:
+        plain, number = f'{local}_{member}', 2
+        while plain in taken:
+            plain, number = f'{local}_{member}_{number}', number + 1
+        taken.add(plain)
+        names[member] = plain
+    return names
+
+
 def split(source, name):
     """The function with its first splittable local union written as plain locals, or None."""
     part = view(source, name)
@@ -54,12 +70,14 @@ def split(source, name):
             continue  # the union is used whole (addressed, copied or passed), or only as the declaration
         # A brace initializer sets the first member (C's rule): that member's local is declared with it.
         first = ' = ' + union['init'].strip() if union['init'] and union['init'].strip() else ''
+        plain = _free_names(part.clean, local, names)
         edits = [(union.start(), union.end(),
-                  ''.join(f'{union["indent"]}{kind} {local}_{member}{first if index == 0 else ""};\n'
+                  ''.join(f'{union["indent"]}{kind} {plain[member]}{first if index == 0 else ""};\n'
                           for index, (kind, member) in enumerate(members)))]
         for hit in members_used:
             start = part.opening + hit.start()
-            edits.append((start, part.opening + hit.end(), f'{local}_' + re.sub(rf'^{re.escape(local)}\s*\.\s*', '', hit.group())))
+            member = re.sub(rf'^{re.escape(local)}\s*\.\s*', '', hit.group())
+            edits.append((start, part.opening + hit.end(), plain[member]))
         return edit(source, edits)
     return None
 
