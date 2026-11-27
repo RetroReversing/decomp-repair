@@ -58,3 +58,31 @@ def test_a_table_read_times_four_is_the_leading_operand_at_every_site():
     assert '*(s32 *)(idx + (s32) base)' in everything
     assert everything.count('*(s32 *)(D_800B2DB2[off] * 4 + (s32) base)') == 2
     assert 'base + D_800B2DB2' not in everything
+
+
+NESTED = '''typedef int s32;
+extern char D_801E5280[];
+
+void g(s32 n, s32 j) {
+    char *base;
+    s32 temp_s5;
+    s32 *var_v0;
+    s32 i;
+
+    base = D_801E5280;
+    temp_s5 = j * 4;
+    for (i = 0; i < n; i++) {
+        var_v0 = temp_s5 + (base + (i << 5));
+        *var_v0 = 0;
+    }
+}
+'''
+
+
+def test_an_integer_plus_a_byte_pointer_sum_becomes_two_integer_sums():
+    """An SN GCC 2.7.2 row-and-column lookup: `temp_s5 + (base + (i << 5))` was 10, exact as integer sums."""
+    children = [child for family, child in m.variants(NESTED, 'g')]
+    assert 'var_v0 = (void *) (temp_s5 + ((i << 5) + (s32) base));' in children[0]
+    assert 'var_v0 = (void *) (temp_s5 + ((s32) base + (i << 5)));' in children[1]
+    word = NESTED.replace('char *base;', 's32 *base;').replace('char D_801E5280[]', 's32 D_801E5280[]')
+    assert m.variants(word, 'g') == []

@@ -15,6 +15,12 @@ function or the file as a pointer or array of one-byte elements (`char`, `u8`, `
 without a call or assignment that does not name P. One child per site and operand order, and one with every site
 (`byte_pointer_sum_int_first`). A hypothesis from the operand order, not read from the compiler's source; the judge
 decides.
+
+Also offered for an uncast sum of an integer and such a sum assigned to a pointer, `v = X + (P + I);`, which is
+pointer arithmetic at both levels (the C front end builds `int + pointer` pointer first too): written as
+`v = (void *) (X + (I + (s32) P));`, both adds keep the order written. An SN GCC 2.7.2 N64 loop's row-and-column
+lookup `temp_s5 + (base + (i << 5))` was 10 with `addu $v0,$s3,$v0; addu $v0,$v0,$s5` and exact so, where the target
+has `addu $v0,$v0,$s3; addu $v0,$s5,$v0`. The inner sum's other order is offered too.
 """
 import re
 
@@ -25,6 +31,8 @@ FAMILIES = (FAMILY,)
 LIMIT = 8
 BYTE_TYPES = {'char', 'u8', 's8', 'void', 'M2C_UNK8', 'int8_t', 'uint8_t', 'Byte', 'u_char'}
 QUALIFIERS = {'extern', 'static', 'const', 'register', 'volatile', 'struct', 'union', 'enum', 'signed', 'unsigned'}
+TERM = r'(?:[^;=(){}+]|\([^;=(){}]*\))+?'
+NESTED = re.compile(rf'(?<![\w.>])(?P<v>{IDENT})\s*=\s*(?P<x>{TERM})\s*\+\s*\(\s*(?P<p>{IDENT})\s*\+\s*(?P<i>{TERM})\s*\)\s*;')
 SITE = re.compile(rf'\(\s*[A-Za-z_][\w \t]*\*\s*\)\s*\(\s*(?P<p>{IDENT})\s*\+\s*(?!\+)')
 
 
@@ -79,6 +87,25 @@ def variants(source, name):
         out += [(FAMILY, edit(source, [one])) for one in edits]
         if len(edits) > 1:
             out.append((FAMILY, edit(source, edits)))
+    return out + _nested(source, part)
+
+
+def _nested(source, part):
+    """`v = X + (P + I);` with P a byte pointer: both sums as integers, X first and the index first inside."""
+    clean, out = part.clean, []
+    for hit in NESTED.finditer(clean, part.opening, part.end):
+        x, i, p = hit['x'].strip(), hit['i'].strip(), hit['p']
+        if (not x or not i or not _byte_pointer(clean, p) or x[0] in '*&' or i[0] in '*&'
+                or any(re.search(rf'\b{re.escape(p)}\b', term) for term in (x, i))
+                or any(re.search(r'\+\+|--|[<>&|^?:!]', term) for term in (x,))):
+            continue
+        whole = i[0] == '(' and _close(i, 1) == len(i) - 1
+        inner = f'({i})' if re.search(r'[<>&|^?:!]', i) and not whole else i
+        for form in (f'{inner} + (s32) {p}', f'(s32) {p} + {inner}'):
+            start, end = hit.start('x'), hit.end() - 1
+            out.append((FAMILY, edit(source, [(start, end, f'(void *) ({x} + ({form}))')])))
+            if len(out) >= LIMIT:
+                return out
     return out
 
 
