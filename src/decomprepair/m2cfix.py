@@ -292,7 +292,11 @@ def refine_draft(draft: str, name: str, asm: str) -> str | None:
         body = hardware[0][1]
     globals_: dict[str, str] = {}
 
+    indexed = set(re.findall(r"&(D_[0-9A-F]{8}) \+ ", body))
+
     def own_variable(m: re.Match) -> str:
+        if m.group(1) in indexed:
+            return m.group(0)  # a table the code also indexes: one array, never a variable per offset
         label = "D_%08X" % (int(m.group(1)[2:], 16) + int(m.group(3), 0))
         globals_[label] = _CTYPES.get(m.group(2), "int")
         return label
