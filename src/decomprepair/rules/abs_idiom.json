@@ -59,6 +59,39 @@
         }
       ],
       "replace": "{lead}{var} = abs({var});"
+    },
+    {
+      "match": "^(?P<lead>[ \\t]*)(?P<var>@IDENT@)\\s*=\\s*(?P<expr>[^;{}]+?)\\s*;[ \\t]*\\n[ \\t]*if\\s*\\(\\s*0\\s*>\\s*(?P<test>[^;{}]+?)\\s*\\)\\s*\\{\\s*(?P=var)\\s*=\\s*-\\s*(?P=var)\\s*;\\s*\\}(?!\\s*else\\b)",
+      "where": [
+        {
+          "group_equals_any": {
+            "group": "test",
+            "of": [
+              "var",
+              "expr"
+            ]
+          }
+        },
+        {
+          "declared_type": {
+            "group": "var",
+            "kind": "integer"
+          }
+        }
+      ],
+      "replace": "{lead}{var} = abs({expr:strip});"
+    },
+    {
+      "match": "^(?P<lead>[ \\t]*)if\\s*\\(\\s*0\\s*>\\s*(?P<var>@IDENT@)\\s*\\)\\s*\\{\\s*(?P=var)\\s*=\\s*-\\s*(?P=var)\\s*;\\s*\\}(?!\\s*else\\b)",
+      "where": [
+        {
+          "declared_type": {
+            "group": "var",
+            "kind": "integer"
+          }
+        }
+      ],
+      "replace": "{lead}{var} = abs({var});"
     }
   ],
   "prepend_unless_declared": {
