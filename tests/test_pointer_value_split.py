@@ -19,9 +19,11 @@ void f(struct V *v, struct E *e) {
 
 def test_offers_value_copies_for_a_stable_pointer_and_keeps_the_store():
     out = variants(SOURCE, 'f')
-    assert len(out) == 3
+    assert len(out) == 6
     assert all(family == FAMILY and 'void *__split_p;' in text for family, text in out)
-    assert all('e->value = __split_p;' in text and 'observe(p);' in text for _, text in out)
+    assert all('e->value = __split_p;' in text for _, text in out)
+    assert any('observe(p);' in text for _, text in out)
+    assert any('observe(__split_p_call);' in text for _, text in out)
     assert any('do { __split_p = p; } while (0);' in text for _, text in out)
 
 
@@ -110,3 +112,14 @@ def test_cpp_reference_parameters_and_aliases_are_not_assumed_safe():
     assert variants(SOURCE, 'f', 'struct X { void operator=(void *); };') == []
     source = SOURCE.replace('    observe(p);', '    auto &alias = p;\n    mutate(alias);')
     assert variants(source, 'f') == []
+
+
+def test_both_branches_of_one_call_receive_the_same_stable_copy():
+    source = SOURCE.replace('    observe(p);', '    if (v->field) { observe(p); } else { observe(p); }')
+    out = [text for _, text in variants(source, 'f')]
+    assert any(text.count('observe(__split_p_call)') == 2 for text in out)
+
+
+def test_does_not_rewrite_compiler_introspection_builtins():
+    source = SOURCE.replace('    observe(p);', '    __builtin_object_size(p, 0);')
+    assert not any('__split_p_call' in text for _, text in variants(source, 'f'))

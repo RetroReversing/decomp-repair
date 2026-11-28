@@ -2,7 +2,8 @@
 
 A voice pointer in an N64 audio handler had the target's stack spill but stayed in a saved register. Copying the
 pointer immediately after its one initialization and using that copy in a later event-field store changed the
-allocation: 686 -> 365 with GCC 2.7.2 KMC, -G0 -mips3 -mgp32 -mfp32 -O2. The copy and one-shot scope are compiler
+allocation: 686 -> 365 with GCC 2.7.2 KMC, -G0 -mips3 -mgp32 -mfp32 -O2. A separate copy for a call and the
+field store reached 350; the existing call-weight ladder then reached 260. Copies and one-shot scopes are compiler
 scaffolding, not evidence that the original source used them. Every child still needs the ordinary byte judge.
 
 Only a plain, unescaped pointer initialized once from a field address is eligible. Capture and store must be in the
@@ -61,7 +62,8 @@ def variants(source, name, header='', flags=()):
         alias = '__split_' + local
         if local in macros or alias in macros:
             continue
-        if re.search(rf'\b{re.escape(alias)}\b', _blank(source + '\n' + header)):
+        call_alias = alias + '_call'
+        if re.search(rf'\b(?:{re.escape(alias)}|{re.escape(call_alias)})\b', _blank(source + '\n' + header)):
             continue
         declarations = _declarations(part, local)
         # A grouped declaration can shadow the name but is not recognized by the single-declarator parser.
@@ -105,6 +107,30 @@ def variants(source, name, header='', flags=()):
                                                        (read, read + len(local), alias)])))
                 if len(result) >= LIMIT:
                     return result
+            # A separate copy for a call and for the later field store can split two overlapping live ranges.
+            # Only first arguments to ordinary named calls in the capture's block or a nested block are changed.
+            calls = {}
+            call_re = rf'(?<![\w.>])(?P<callee>{IDENT})\s*\(\s*(?P<arg>{escaped})\s*(?=,|\))'
+            for call in re.finditer(call_re, between):
+                callee = call['callee']
+                if callee in ('if', 'while', 'for', 'switch', 'sizeof', 'return') or callee.startswith('__builtin_'):
+                    continue
+                position = capture + call.start('arg')
+                path = block_path(part, capture + call.start())
+                prefix = block_path(part, begin)
+                if path[:len(prefix)] == prefix:
+                    calls.setdefault(callee, []).append(position)
+            for positions in calls.values():
+                for depth in (0, 1, 2):
+                    copies = (f'{call_alias} = {local}; ' + 'do { ' * depth + f'{alias} = {local};'
+                              + ' } while (0);' * depth)
+                    declarations_text = f'\n{indent}{declared}{call_alias};\n{indent}{declared}{alias};'
+                    changes = [(declaration, declaration, declarations_text), (capture, capture, ' ' + copies),
+                               (read, read + len(local), alias)]
+                    changes += [(pos, pos + len(local), call_alias) for pos in positions]
+                    result.append((FAMILY, edit(source, changes)))
+                    if len(result) >= LIMIT:
+                        return result
     return result
 
 
