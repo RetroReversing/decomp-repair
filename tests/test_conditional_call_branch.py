@@ -26,3 +26,10 @@ def test_rejects_dangling_control_and_opaque_call_macros():
     assert not variants(SOURCE + '\nint line = __LINE__;', 'f')
     assert not variants(SOURCE.replace('call(value, 1);', 'call(value, __LINE__);'), 'f')
     assert not variants(SOURCE.replace('call(value, 1);', 'call(value, 1); extra();'), 'f')
+
+
+def test_requires_a_plain_integer_condition():
+    assert not variants(SOURCE.replace('int cond', 'Unknown cond'), 'f')
+    assert not variants(SOURCE.replace('int cond', 'int *cond'), 'f')
+    assert not variants(SOURCE.replace('int cond', 'u8 cond'), 'f')
+    assert variants(SOURCE.replace('int cond', 'u8 cond'), 'f', 'typedef unsigned char u8;')

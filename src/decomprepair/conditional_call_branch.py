@@ -40,6 +40,22 @@ def _call(clean, start, end, depth=0):
     return at, closing + len(re.match(r'\s*;', clean[closing:end])[0])
 
 
+def _integer_condition(text, name):
+    """`name` is a declared integer, so testing it against zero preserves `if (name)`."""
+    types = ('s8', 'u8', 's16', 'u16', 's32', 'u32', 'int', 'short', 'char')
+    decl = re.compile(r'\b(' + IDENT + r')\s+' + re.escape(name) + r'\s*(?=[,;=)])')
+    kinds = [found[1] for found in decl.finditer(text)]
+    if not kinds or any(kind not in types for kind in kinds):
+        return False
+    if re.search(r'\b' + IDENT + r'\s*\*+\s*' + re.escape(name) + r'\b', text):
+        return False
+    for kind in set(kinds) & {'s8', 'u8', 's16', 'u16', 's32', 'u32'}:
+        if not re.search(r'\btypedef\s+(?:signed|unsigned)\s+(?:char|short|int)\s+'
+                         + re.escape(kind) + r'\s*;', text):
+            return False
+    return True
+
+
 def variants(source, name, header=''):
     span = find(source, name)
     if not span:
@@ -52,7 +68,8 @@ def variants(source, name, header=''):
     pairs = brace_pairs(clean, span[0], span[1])
     if not pairs:
         return []
-    macros = set(re.findall(r'^\s*#\s*define\s+(' + IDENT + r')\b', _blank(header + '\n' + source), re.M))
+    declarations = _blank(header + '\n' + source)
+    macros = set(re.findall(r'^\s*#\s*define\s+(' + IDENT + r')\b', declarations, re.M))
     out = []
     for opening, closing in pairs.items():
         siblings = statements(clean, opening + 1, closing)
@@ -67,6 +84,8 @@ def variants(source, name, header=''):
             if macros.intersection(re.findall(IDENT, clean[a:b] + clean[call[0]:call[1]])):
                 continue
             condition = selected['cond']
+            if not _integer_condition(declarations, condition):
+                continue
             assignment = source[a + selected.start('assign'):a + selected.end('assign')]
             indent = re.search(r'[ \t]*$', source[:a])[0]
             replacement = (f'if ({condition} == 0) {{\n{indent}    {call_text}\n{indent}}} else {{\n'
