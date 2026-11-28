@@ -63,3 +63,15 @@ def test_the_module_declares_itself_to_the_registry():
     for repair in registry.declared():
         if repair.module == 'volatile_step_index':
             assert registry.problems(repair) == []
+
+
+def test_a_start_read_from_memory_is_not_moved_into_the_loop():
+    for start in ('D_value', '*out', 'next(out)'):
+        source = (SOURCE.replace('    s32 n;\n', '    s32 n;\n    s32 other;\n')
+                  .replace('off3 = 0; off6 = 0;', f'off3 = 0; off6 = 0; other = {start};')
+                  .replace('            if (*(s32 *) ((u8 *) arg0 + 0x4C)) {',
+                           '            use(other);\n            if (*(s32 *) ((u8 *) arg0 + 0x4C)) {')
+                  .replace('off6 += 6;\n', 'off6 += 6;\n                other += 4;\n'))
+        assert all(f'other = {start};' in text and f'use({start}' not in text and f'use(({start}' not in text
+                   for _, text in variants(source, 'walk')), start
+        assert variants(source, 'walk'), start

@@ -16,13 +16,15 @@ givs their allocation priority from the counter, which is why the one-shot weigh
 needed. The two changes go together: neither the profile alone nor the source alone changes the score.
 
 Offered for a `do { } while (cond)` whose counter is set to 0 and stepped by one at the end of the body, with other
-variables set before the loop to an expression that nothing in the loop assigns and stepped by a literal at the end of the
-body, read in the loop and nowhere after it. The children are the all-at-once rewrite and each variable alone; `probes`
+variables set before the loop to an expression proven the same on every pass (`loop_invariance`: never a global, a
+dereference or a call) and stepped by a literal at the end of the body, read in the loop and nowhere after it. A variable
+whose start is not proven stays stepped. The children are the all-at-once rewrite and each variable alone; `probes`
 pairs the all-at-once rewrite with the profile that drops `-fno-strength-reduce`, the way the caller must judge it.
 """
 import re
 
 from .integer_repair_support import IDENT, NUMBER, edit, view
+from .loop_invariance import runs_each_time, stable, written
 from .pattern_repairs import close
 
 FAMILY = 'stepped_induction_index'
@@ -85,7 +87,6 @@ def _plan(part, loop, counter, var, stride):
     inside = clean[opening + 1:end - 1]
     stepped_at = run[0].start()
     if (re.search(rf'\b{var}\b', before[start.end():]) or re.search(rf'\b{var}\b\s*(?:=(?!=)|\+\+|--|[-+*/|&^]=)|&\s*{var}\b', inside[:stepped_at])
-            or any(re.search(rf'\b{w}\b\s*(?:=(?!=)|\+\+|--|[-+*/|&^]=)', inside) for w in set(re.findall(IDENT, init)))
             or not re.search(rf'\b{var}\b', inside[:stepped_at] + tail['cond'])):
         return None
     type_, star = kind
@@ -94,6 +95,28 @@ def _plan(part, loop, counter, var, stride):
             f'({init})' if star or not _PRIMARY.fullmatch(init) else init)
     term = f'{counter} * {stride:#x}' if stride > 9 else f'{counter} * {stride}'
     return start, ('(' + term + ')') if init in ('0', '0U') and not star else f'({base} + {term})'
+
+
+def _last_start(part, loop, var):
+    """(code before the loop, the last start of `var` in it)."""
+    before = part.clean[part.opening + 1:loop[0]]
+    return before, [a for a in _ASSIGN.finditer(before) if a['v'] == var][-1]
+
+
+def _counter_proven(part, loop, counter):
+    """Whether the counter is 0 on entering the loop each time and only its step writes it, as the multiples assume."""
+    opening, end, tail, run, _ = loop
+    before, zero = _last_start(part, loop, counter)
+    unstepped = part.clean[opening + 1:end - 1][:run[0].start()] + tail['cond']
+    return runs_each_time(before, zero) and not written(before[zero.end():] + unstepped, counter)
+
+
+def _start_proven(part, loop, var):
+    """Whether the start of a planned variable may be repeated at its uses in the loop."""
+    opening, end, tail, _, _ = loop
+    before, start = _last_start(part, loop, var)
+    between = before[start.end():] + part.clean[opening:end + tail.end()]
+    return runs_each_time(before, start) and stable(part, start['init'].strip(), between)
 
 
 def variants(source, name):
@@ -105,10 +128,10 @@ def variants(source, name):
         opening, end, tail, run, strides = loop
         for counter in [v for v, k in strides.items() if k == 1]:
             zero = [a for a in _ASSIGN.finditer(part.clean[part.opening + 1:opening]) if a['v'] == counter]
-            if not zero or zero[-1]['init'].strip() not in ('0', '0U'):
+            if not zero or zero[-1]['init'].strip() not in ('0', '0U') or not _counter_proven(part, loop, counter):
                 continue
             plans = {var: plan for var in strides if var != counter
-                     and (plan := _plan(part, loop, counter, var, strides[var]))}
+                     and (plan := _plan(part, loop, counter, var, strides[var])) and _start_proven(part, loop, var)}
             if not plans:
                 continue
             for chosen in ([list(plans)] + [[v] for v in plans] if len(plans) > 1 else [list(plans)]):

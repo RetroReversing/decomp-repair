@@ -36,97 +36,13 @@ import re
 
 from . import counted_loop_shapes, stepped_induction_index
 from .integer_repair_support import IDENT, edit, view
+from .loop_invariance import CAST, WORD, declared, runs_each_time, stable
 from .pattern_repairs import close
 
 FAMILY = 'integer_cursor_for_loop'
 BOUND_LOCAL = 'integer_cursor_for_loop_bound_local'
 FAMILIES = (FAMILY, BOUND_LOCAL)
 _FOR = re.compile(rf'\bfor\s*\(\s*(?P<i>{IDENT}) = 0; (?P=i) < (?P<n>{IDENT});')
-_WORD = re.compile(rf'(?<![\w.])(?<!->)\b(?P<v>{IDENT})\b(?P<after>\s*[(\[.]|\s*->)?')
-# only what is surely a cast: `(mask) & x` and `(count) - 1` read the name in the parentheses
-_CAST = re.compile(rf'\(\s*(?:const\s+)?(?:(?:(?:unsigned|signed)(?:\s+(?:char|short|int|long))*|struct\s+{IDENT}'
-                   r'|[su](?:8|16|32|64)|u?int(?:8|16|32|64|ptr)_t|size_t|char|short|int|long|float|double|f32|f64|void)'
-                   rf'[\s*]*|{IDENT}\s*\*[\s*]*)\)')
-_SIDE_EFFECT = re.compile(r'\+\+|--|<<=|>>=|(?<![=!<>])=(?!=)')
-
-
-def _declared(part, name):
-    """The type a local or parameter of the function is declared with, or None."""
-    head = part.clean[:part.opening]
-    params = head[head.rfind('(') + 1:head.rfind(')')]
-    body = part.clean[part.opening:part.end]
-    tail = rf'\s*(?!(?:return|else|case|goto|do)\b)(?P<type>[A-Za-z_][\w ]*?[\s*]+)\b{name}\b\s*(?=[;,=)]|$)'
-    # in the body a comma separates call arguments (`f(a, b * name)`), so only a statement can declare
-    hit = re.search(r'(?:^|[;{}])' + tail, body, re.M) or re.search(r'(?:^|,)' + tail, params, re.M)
-    words = hit['type'].split() if hit else []
-    # `extern` names a global and a `static` outlives the call: a callee can reach either
-    return ' '.join(words) if words and not {'extern', 'static'} & set(words) else None
-
-
-def _written(text, name):
-    return re.search(rf'\b{name}\b\s*(?:=(?!=)|\+\+|--|(?:[-+*/|&^%]|<<|>>)=)|(?:\+\+|--)\s*{name}\b|(?<!&)&\s*{name}\b', text)
-
-
-def _escaped(part, name):
-    """Whether the function takes the local's address anywhere, so a store or a callee in the loop may write it."""
-    body = _CAST.sub(' ', part.body)
-    for hit in re.finditer(rf'(?<!&)&[\s(]*{name}\b', body):
-        before = body[:hit.start()].rstrip()
-        # after a name or `]` the `&` is binary; after `)` it may follow a typedef's cast, so it counts
-        if re.search(r'\breturn$', before) or not re.search(r'[\w\]]$', before):
-            return True
-    return False
-
-
-def _stable(part, expression, between):
-    """Whether `expression` reads only locals, parameters, addresses and literals that nothing in `between` can write."""
-    plain = _CAST.sub(' ', expression).strip()
-    if _SIDE_EFFECT.search(plain):
-        return False
-    for star in re.finditer(r'\*', plain):
-        if not re.search(r'[\w)]$', plain[:star.start()].rstrip()):
-            return False  # a dereference: memory a call or a store in the loop may change
-    for word in _WORD.finditer(plain):
-        if word['after']:
-            return False
-        before = plain[:word.start()].rstrip()
-        if before.endswith('&') and not before.endswith('&&') and not re.search(r'[\w\])]$', before[:-1].rstrip()):
-            continue  # `&name`: an address, the same whatever the name holds
-        if not _declared(part, word['v']) or _written(between, word['v']) or _escaped(part, word['v']):
-            return False
-    return True
-
-
-def _once_block(before_brace):
-    """Whether the brace after `before_brace` opens a block run at most once for each time it is reached."""
-    head = before_brace.rstrip()
-    if re.search(r'\belse$', head):
-        return True
-    # `if (..) {`, but not the `if` that is a braceless loop's whole body
-    return any(close(head, hit.end() - 1, '(', ')') == len(head)
-               for hit in re.finditer(r'(?:^|[;{}]|\belse)\s*if\s*\(', head))
-
-
-def _runs_each_time(before, start):
-    """Whether a start surely runs before each entry of the loop that follows `before`.
-
-    The start is its own statement (no braceless `if` or loop), its block is not left before the loop, and the blocks
-    opened on the way that still hold the loop are `if`s, not loops that would enter it again without the start.
-    """
-    lead = before[:start.start()].rstrip()
-    if lead and lead[-1] not in ';{}' or re.search(r'\bgoto\b', before):
-        return False
-    between = before[start.end():]
-    opened = []
-    for brace in re.finditer(r'[{}]', between):
-        if brace[0] == '{':
-            opened.append(brace.start())
-        elif opened:
-            opened.pop()
-        else:
-            return False
-    # the last `do` of `before` is the rewritten loop's own, whose brace comes after `before`
-    return all(_once_block(between[:at]) for at in opened)
 
 
 def _starts_stable(part):
@@ -146,14 +62,10 @@ def _starts_stable(part):
                       and stepped_induction_index._plan(part, loop, counter, v, strides[v])]
             if not chosen:
                 continue
-            unstepped = clean[opening + 1:end - 1][:run[0].start()] + tail['cond']
-            if not _runs_each_time(before, zero[-1]) or _written(before[zero[-1].end():] + unstepped, counter):
+            if not stepped_induction_index._counter_proven(part, loop, counter):
                 return False
-            for var in chosen:
-                start = [a for a in assigns if a['v'] == var][-1]
-                between = before[start.end():] + clean[opening:end + tail.end()]
-                if not _runs_each_time(before, start) or not _stable(part, start['init'].strip(), between):
-                    return False
+            if not all(stepped_induction_index._start_proven(part, loop, var) for var in chosen):
+                return False
             return True
     return False
 
@@ -166,7 +78,7 @@ def _inline_bound(source, name):
     clean = part.clean
     for loop in _FOR.finditer(clean, part.opening, part.end):
         n = loop['n']
-        kind = _declared(part, n)
+        kind = declared(part, n)
         body = clean[part.opening + 1:part.end - 1]
         offset = part.opening + 1
         copies = list(re.finditer(rf'(?m)^[ \t]*{n} = {n};[ \t]*\n', body))
@@ -174,7 +86,7 @@ def _inline_bound(source, name):
                 if s['value'].strip() != n]
         if not kind or len(sets) != 1 or offset + sets[0].end() > loop.start():
             continue
-        if not _runs_each_time(body[:loop.start() - offset], sets[0]):
+        if not runs_each_time(body[:loop.start() - offset], sets[0]):
             continue
         declaration = re.search(rf'(?m)^[ \t]*{re.escape(kind)}\s*\b{n}\s*;', body)
         known = [(s.start(), s.end()) for s in copies + sets] + ([declaration.span()] if declaration else [])
@@ -186,10 +98,10 @@ def _inline_bound(source, name):
         header_end = close(clean, opening, '(', ')')
         brace = clean.find('{', header_end) if header_end else -1
         loop_end = close(clean, brace, '{', '}') if brace >= 0 else None
-        if not loop_end or not _stable(part, value, clean[offset + sets[0].end():loop_end]):
+        if not loop_end or not stable(part, value, clean[offset + sets[0].end():loop_end]):
             continue
-        words = [w['v'] for w in _WORD.finditer(_CAST.sub(' ', value))]
-        text = f'({value})' if all(_declared(part, w) == kind for w in words) else f'({kind})({value})'
+        words = [w['v'] for w in WORD.finditer(CAST.sub(' ', value))]
+        text = f'({value})' if all(declared(part, w) == kind for w in words) else f'({kind})({value})'
         edits = [(offset + s.start(), offset + s.end(), '') for s in copies + sets]
         edits.append((loop.start('n'), loop.end('n'), text))
         return edit(source, edits)
