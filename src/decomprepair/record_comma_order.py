@@ -23,6 +23,8 @@ def variants(source, name):
         return []
     clean = _blank(source)
     body = clean[span[0]:span[1]]
+    if '#' in body or re.search(r'\b(?:asm|__asm__|setjmp|longjmp)\b', body):
+        return []
     out = []
     for match in START.finditer(body):
         obj = match['obj']
