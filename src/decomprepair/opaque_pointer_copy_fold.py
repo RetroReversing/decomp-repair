@@ -88,13 +88,13 @@ def variants(source, name, header='', flags=None):
         between = clean[end:last]
         if re.search(rf'\b(?:goto|case|default|asm|__asm__|volatile)\b|(?<![\w?:]){IDENT}\s*:(?!:)', between):
             continue
-        if re.search(rf'&\s*\b(?:{re.escape(alias)}|{re.escape(origin)})\b', clean[part.opening:part.end]):
+        if re.search(rf'&\s*\(*\s*\b(?:{re.escape(alias)}|{re.escape(origin)})\b', clean[part.opening:part.end]):
             continue
-        if re.search(rf'(?<![\w.>]){re.escape(origin)}\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))|'
-                     rf'(?:\+\+|--)\s*\b{re.escape(origin)}\b', clean[end:part.end]):
+        if re.search(rf'(?<![\w.>]){re.escape(origin)}\s*\)*\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))|'
+                     rf'(?:\+\+|--)\s*\(*\s*\b{re.escape(origin)}\b', clean[end:part.end]):
             continue
-        if any(re.match(r'\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))', clean[b:])
-               or re.search(r'(?:\+\+|--)\s*$', clean[part.opening:a]) for a, b in uses):
+        if any(re.match(r'\s*\)*\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))', clean[b:])
+               or re.search(r'(?:\+\+|--)\s*\(*\s*$', clean[part.opening:a]) for a, b in uses):
             continue
         groups.append((alias, origin, [(declaration.start(), declaration.end(), ''), (start, end, '')]
                        + [(a, b, origin) for a, b in uses]))
