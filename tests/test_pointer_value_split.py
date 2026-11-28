@@ -106,5 +106,7 @@ def test_macro_before_capture_cannot_hide_an_address_escape():
 def test_cpp_reference_parameters_and_aliases_are_not_assumed_safe():
     source = SOURCE.replace('    observe(p);', '    mutate(p);')
     assert variants(source, 'f', 'void mutate(void *&value);') == []
+    assert variants(SOURCE, 'f', flags=['-x', 'c++']) == []
+    assert variants(SOURCE, 'f', 'struct X { void operator=(void *); };') == []
     source = SOURCE.replace('    observe(p);', '    auto &alias = p;\n    mutate(alias);')
     assert variants(source, 'f') == []

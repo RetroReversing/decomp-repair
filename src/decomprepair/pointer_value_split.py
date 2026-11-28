@@ -34,11 +34,12 @@ def _declarations(part, name):
 def variants(source, name, header='', flags=()):
     # Unknown included or command-line macros could write the local without naming it at the call site.
     if re.search(r'(?m)^\s*#\s*include\b', source + '\n' + header) or any(
-            str(flag).startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor')) for flag in flags):
+            (str(flag).startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor', '-std=c++', '-std=gnu++'))
+             or str(flag) in ('c++', 'c++-header')) for flag in flags):
         return []
     # C++ references can mutate a local without an explicit `&local` at the call site.
     combined = source + '\n' + header
-    if (re.search(r'\b(?:class|namespace|template|auto)\b|extern\s*"C"', combined)
+    if (re.search(r'\b(?:class|namespace|template|auto|operator|decltype|constexpr|new|delete|this|using)\b|extern\s*"C"', combined)
             or re.search(rf'(?<![\w.>]){IDENT}\s*\**\s*&\s*{IDENT}\b', _blank(combined))):
         return []
     part = view(source, name)
