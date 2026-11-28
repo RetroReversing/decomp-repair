@@ -138,4 +138,35 @@ def test_it_is_registered():
 def test_a_pointer_set_again_after_the_loop_is_another_walks():
     second = WALK.replace('    return var_a1;', '    var_v1 = table;\n    var_a2 = 0;\n    do {\n        var_a2 += 1;\n        '
                           'M2C_FIELD(var_v1, s32 *, 4) = 0;\n        var_v1 += 8;\n    } while (var_a2 < count);\n    return var_a1;')
-    assert len(forward(second)) == 4  # each walk, the counter's step in place and moved
+    assert len(forward(second)) == 5  # both walks at once, then each walk, the counter's step in place and moved
+
+
+def test_an_unknown_typed_cursor_steps_what_its_typedef_says():
+    """`typedef s32 M2C_UNK;` makes `p += 4` sixteen bytes, and two walks are written in one child too."""
+    source = """typedef s32 M2C_UNK;
+void clear(void) {
+    M2C_UNK *p;
+    M2C_UNK *q;
+    u32 n;
+    u32 m;
+
+    n = 0;
+    p = &gFirst;
+    do {
+        M2C_FIELD(p, s32 *, 4) = 0;
+        n += 1;
+        p += 4;
+    } while (n < 8U);
+    m = 0;
+    q = &gSecond;
+    do {
+        M2C_FIELD(q, s32 *, 0) = 0;
+        q += 2;
+        m += 1;
+    } while (m < 8U);
+}
+"""
+    text = pwi.variants(source, 'clear')[0][1]
+    assert 'M2C_FIELD(p, s32 *, n * 0x10 + 4) = 0;' in text
+    assert 'M2C_FIELD(q, s32 *, m * 8) = 0;' in text
+    assert 'p += 4;' not in text and 'q += 2;' not in text

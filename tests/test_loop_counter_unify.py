@@ -81,3 +81,12 @@ def test_a_counter_with_one_loop_alone_proposes_nothing():
 def test_it_declares_itself():
     assert REPAIR['variants'] is variants
     assert FAMILY in {family for entry in registry.declared() for family in entry.families}
+
+
+def test_a_counter_set_far_above_its_loop_by_plain_statements_is_shared():
+    calls = ''.join(f'    show({i});\n' for i in range(40))
+    source = ('void f(void) {\n    u32 i;\n    u32 j;\n\n    i = 0;\n    do {\n        a[i] = 0;\n        i += 1;\n'
+              '    } while (i < 4U);\n    j = 0;\n' + calls + '    do {\n        b[j] = 0;\n        j += 1;\n'
+              '    } while (j < 4U);\n}\n')
+    text = variants(source, 'f')[0][1]
+    assert 'u32 j;' not in text and 'b[i] = 0;' in text

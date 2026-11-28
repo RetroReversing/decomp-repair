@@ -49,10 +49,20 @@ _MACRO = re.compile(rf'(?m)^[ \t]*#[ \t]*define[ \t]+(?P<name>{IDENT})\([ \t]*(?
                     rf'[ \t]*\)?[ \t]*\+[ \t]*\(?[ \t]*(?P=c)[ \t]*\)?\)\)')
 
 
-def _stride(kind):
-    """Bytes of one element of a pointer of declared type `kind` (`void *`, `s32 *`), None when it is not a plain one."""
+def _stride(kind, text=''):
+    """Bytes of one element of a pointer of declared type `kind` (`void *`, `s32 *`), None when it is not a plain one.
+
+    `M2C_UNK` is what `text` (the source and its header) says it is: m2c's usual `typedef s32 M2C_UNK;` makes
+    `p += 4` a step of sixteen bytes."""
     hit = re.fullmatch(r'(?:(?:const|volatile)\s+)*(' + IDENT + r')\s*\*', (kind or '').strip())
-    return _SIZES.get(hit[1]) if hit else None
+    if not hit:
+        return None
+    base = hit[1]
+    if base == 'M2C_UNK':
+        alias = re.search(rf'(?m)^[ \t]*typedef[ \t]+({IDENT})[ \t]+M2C_UNK[ \t]*;', text)
+        if alias:
+            base = alias[1]
+    return _SIZES.get(base)
 
 
 def _field_macros(source, header):
@@ -151,7 +161,7 @@ def _line(source, start, end):
     return (a, b) if not source[a:start].strip() and not source[end:b].strip() else (start, end)
 
 
-def _plan(source, part, macros, step, counters, move=False):
+def _plan(source, part, macros, step, counters, move=False, header=''):
     """The edits of the child for the pointer step `step` = (name, k, start, end), or None; with `move` the counter's
     step goes to the end of the body (only when the body names the counter nowhere else)."""
     p, k, s_start, s_end = step
@@ -166,7 +176,7 @@ def _plan(source, part, macros, step, counters, move=False):
     if re.search(r'(?<![\w.])(?:continue|goto)\b|(?m:^\s*\w+\s*:(?!:))', body):
         return None
     kind = _pointer_type(source, part, p)
-    stride = _stride(kind)
+    stride = _stride(kind, f'{header or ""}\n{source}')
     typed = stride is None and k == 1 and kind and re.fullmatch(rf'(?:struct\s+)?{IDENT}\s*\*', kind.strip())
     if stride is None and not typed:
         return None
@@ -239,10 +249,30 @@ def forward(source, name, header=''):
     out = []
     for step in _pointer_steps(clean, part.opening, part.end):
         for move in (False, True):  # the counter's step where it is, then at the end of the body
-            edits = _plan(source, part, macros, step, counters, move)
+            edits = _plan(source, part, macros, step, counters, move, header)
             if edits:
                 out.append((FAMILY, edit(source, edits)))
     return out
+
+
+def _every_walk(source, name, header, first):
+    """With two or more walks, one child with all of them written as indexes: a long function's loops each keep
+    registers the others need."""
+    text, taken = source, 0
+    while first and taken < 12:
+        part = view(text, name)
+        if not part:
+            break
+        macros = _field_macros(text, header)
+        counters = _counter_steps(part.clean, part.opening, part.end)
+        for step in _pointer_steps(part.clean, part.opening, part.end):
+            edits = _plan(text, part, macros, step, counters, header=header)
+            if edits:
+                text, taken = edit(text, edits), taken + 1
+                break
+        else:
+            break
+    return [(FAMILY, text)] if taken > 1 else []
 
 
 _FOR = re.compile(rf'(?<![\w.])for\s*\(\s*(?P<i>{IDENT})\s*=\s*(?P<init>[^;{{}}]+?)\s*;\s*(?P<cond>[^;{{}}]+?)\s*;\s*'
@@ -307,7 +337,8 @@ def reverse(source, name, header=''):
 
 def variants(source, name, header=''):
     """Proposals: a stepped record pointer beside a counter as the counter's index, and an indexed loop as a cursor."""
-    return list(dict.fromkeys(forward(source, name, header) + reverse(source, name, header)))[:MAX_CHILDREN]
+    one = forward(source, name, header)
+    return list(dict.fromkeys(_every_walk(source, name, header, one) + one + reverse(source, name, header)))[:MAX_CHILDREN]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header'), 'order': 66,
