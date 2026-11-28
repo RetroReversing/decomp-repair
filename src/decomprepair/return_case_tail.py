@@ -10,6 +10,7 @@ import re
 from .arm_block_support import brace_pairs, statements
 from .csource import _blank, find
 from .integer_repair_support import IDENT, edit, view
+from .pattern_repairs import close
 from .switch_case_tail_goto import _match, _segments
 
 FAMILY = 'return_case_tail'
@@ -59,7 +60,10 @@ def variants(source, name, header='', flags=None):
     result = []
     for found in re.finditer(r'\bswitch\s*\(', clean[part.opening + 1:part.end]):
         head = part.opening + 1 + found.start()
-        opening = clean.find('{', head, part.end)
+        condition_open = clean.find('(', head, part.end)
+        condition_end = close(clean, condition_open) if condition_open >= 0 else None
+        brace = re.match(r'\s*\{', clean[condition_end:part.end]) if condition_end else None
+        opening = condition_end + brace.end() - 1 if brace else -1
         closing = _match(clean, opening) if opening >= 0 else None
         if closing is None or closing >= part.end:
             continue

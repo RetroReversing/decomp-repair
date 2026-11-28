@@ -63,6 +63,11 @@ def test_later_comma_declarator_cannot_hide_a_shadow():
     assert not variants(source, 'f')
 
 
+def test_unbraced_switch_does_not_capture_a_later_block():
+    source = 'void f(int x) { switch (x) case 1: return; { int y; y = 1; } }'
+    assert not variants(source, 'f')
+
+
 def test_original_and_outlined_case_agree(tmp_path):
     cc = shutil.which('cc')
     if cc is None:
