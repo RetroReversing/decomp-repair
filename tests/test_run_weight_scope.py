@@ -138,3 +138,20 @@ void f(void *p) {
 }
 '''
     assert any('do { v = 1; ' in child for _, child in variants(source, 'f'))
+
+
+def test_finds_assignment_to_a_scoped_typeof_table_base():
+    source = """
+extern char table[];
+void f(int i) {
+    int *out;
+    { __typeof__(table + 0) base; base = table; out = base + (i * 4); }
+    use(out);
+}
+"""
+    children = variants(source, 'f')
+    assert any('do { base = table; } while (0);' in text for _, text in children)
+    assert not any('do { __typeof__' in text for _, text in children)
+    for declaration in ('const __typeof__(table + 0) base;', '__typeof__(table + 0) base, other;'):
+        changed = source.replace('__typeof__(table + 0) base;', declaration)
+        assert not any('do { ' + declaration in text for _, text in variants(changed, 'f'))
