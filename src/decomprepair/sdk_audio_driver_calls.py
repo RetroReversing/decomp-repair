@@ -36,6 +36,21 @@ def _prototype(text, symbol, driverless):
     return False
 
 
+def _volatile_typedefs(text):
+    """Simple volatile aliases and aliases of those aliases; unrelated SDK typedefs need not block a call."""
+    declarations = re.findall(r'\btypedef\s+([^;{}]+);', text)
+    aliases = set()
+    while True:
+        before = len(aliases)
+        for declaration in declarations:
+            name = re.search(r'(' + IDENT + r')\s*$', declaration)
+            if name and (re.search(r'\bvolatile\b', declaration)
+                         or any(re.search(r'\b' + re.escape(alias) + r'\b', declaration) for alias in aliases)):
+                aliases.add(name[1])
+        if len(aliases) == before:
+            return aliases
+
+
 def variants(source, name, header='', asm=''):
     span = find(source, name)
     if not span or not asm:
@@ -45,8 +60,9 @@ def variants(source, name, header='', asm=''):
     if re.search(r'\bvolatile\b|\b(?:asm|__asm__)\b|^\s*#', body, re.M):
         return []
     declarations = _blank(header + '\n' + source)
-    if re.search(r'\btypedef\b[^;]*\bvolatile\b|\b(?:class|template|operator)\b|::', declarations):
+    if re.search(r'\btypedef\b[^;]*\bvolatile\b[^;]*[({]|\b(?:class|template|operator)\b|::', declarations):
         return []
+    volatile_types = _volatile_typedefs(declarations)
     edits = {}
     for found in CALL.finditer(clean, span[0], span[1]):
         original = found['name']
@@ -56,6 +72,9 @@ def variants(source, name, header='', asm=''):
                 or re.search(r'\b' + IDENT + r'\s+' + re.escape(original) + r'\s*[;=]', body)):
             continue
         replacement = 'n_' + original
+        if any(re.search(r'\b' + re.escape(alias) + r'\b[^;{}]*\b(?:drvr|'
+                         + re.escape(found['player']) + r')\b', declarations) for alias in volatile_types):
+            continue
         if any(re.search(r'^\s*#\s*define\s+' + re.escape(token) + r'\b', declarations, re.M)
                for token in (original, replacement, found['player'], 'drvr')):
             continue

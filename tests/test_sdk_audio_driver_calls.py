@@ -39,7 +39,11 @@ def test_rejects_incompatible_driverless_prototypes():
 
 def test_does_not_replace_macros_or_opaque_volatile_typedefs():
     assert not variants(SOURCE, 'f', '#define alSynSetVol(...) side_effect()', 'jal n_alSynSetVol')
-    assert not variants(SOURCE, 'f', 'typedef void *volatile Driver;', ASM)
+    assert not variants(SOURCE, 'f', 'typedef void *volatile Driver; Driver drvr;', ASM)
+    assert variants(SOURCE, 'f', 'typedef volatile int Unrelated;', ASM)
+    assert not variants(SOURCE.replace('Player *p', 'Alias *p'), 'f', 'typedef volatile Player Alias;', ASM)
+    assert not variants(SOURCE, 'f', 'typedef void (*volatile Driver)(void);', ASM)
+    assert not variants(SOURCE, 'f', 'typedef void *volatile Driver; typedef Driver Alias; Alias drvr;', ASM)
     assert not variants(SOURCE, 'f', 'class Player;', ASM)
 
 
