@@ -39,3 +39,10 @@ def test_preprocessor_inputs_are_conservative():
         assert variants(SOURCE, 'f', header=directive) == []
     for flag in ('-DFOO=1', '-include', '-imacros', '-Wp,foo', '-Xpreprocessor', '@flags'):
         assert variants(SOURCE, 'f', flags=[flag]) == []
+
+
+def test_logical_and_does_not_hide_a_masked_copy():
+    source = SOURCE.replace('if (x) { x = (use(), copy = arg & 0xFFFF, 2); }',
+                            'if (x && (copy = arg & 0xFFFF, 2)) { use(copy); }')
+    assert len(variants(source, 'f')) == 1
+    assert variants(source.replace('use(copy);', 'use(&copy);'), 'f') == []
