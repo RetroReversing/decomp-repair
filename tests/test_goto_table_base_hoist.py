@@ -34,6 +34,7 @@ def test_address_moves_before_label_and_reads_stay_in_loop():
 
 @pytest.mark.parametrize('change', [
     lambda s: s.replace('base = table;', 'if (i) base = table;'),
+    lambda s: s.replace('    loop: {', '    if (n)\n    loop: {'),
     lambda s: s.replace('base = table;', 'if (i) {\n            base = table;\n        }'),
     lambda s: s.replace('x = i;', 'if (i) return; x = i;'),
     lambda s: s.replace('x = i;', 'touch(); x = i;'),

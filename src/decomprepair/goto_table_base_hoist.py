@@ -44,6 +44,9 @@ def variants(source, name, header='', flags=None):
         label_name = label['label']
         if label_name in ('case', 'default') or label_name in macros:
             continue
+        before_label = clean[part.opening + 1:label.start()].rstrip()
+        if before_label and before_label[-1] not in ';{}':
+            continue  # an unbraced control statement can govern the labeled block
         opening = label.end() - 1
         end = close(clean, opening, '{', '}')
         if not end:
