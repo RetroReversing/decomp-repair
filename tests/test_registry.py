@@ -119,3 +119,8 @@ def test_a_replaced_module_function_is_the_one_that_runs(monkeypatch):
     monkeypatch.setattr(module, 'variants', lambda source, name: [source + 'patched'])
     assert registry.run('string_walk_index', source=SOURCE, name='f') == [('string_walk_index', SOURCE + 'patched')]
     assert repair.function() is module.variants
+
+
+def test_sdk_repairs_are_explicitly_opted_in():
+    assert registry.get('sdk_audio_driver_calls').sdk
+    assert not registry.get('string_walk_index').sdk

@@ -13,6 +13,7 @@ asks `registry.declared()` and runs each entry with only the context it says it 
         "lanes": ("draft", "beam", "local"),     # where it runs (the default is all three)
         "archs": ("mips",),                      # optional: only for these processors
         "directives": True,                      # optional: it reads the function's own `#define` lines
+        "sdk": True,                             # optional: also propose on imported SDK source
     }
 
 `directives`: a caller that sees a `#` inside the function hands the draft to a masking path (preprocessor lines blanked,
@@ -62,6 +63,7 @@ class Repair:
     archs: tuple
     directives: bool = False
     rule: bool = False     # a declarative rule (rules.py), not a module of this package
+    sdk: bool = False      # useful on imported SDK source as well as ordinary drafts
 
     def runs_in(self, lane, arch=None):
         return lane in self.lanes and (not self.archs or arch is None or arch in self.archs)
@@ -86,6 +88,7 @@ def _make(module_name, declared):
         lanes=tuple(declared.get('lanes', LANES)),
         archs=tuple(declared.get('archs', ())),
         directives=bool(declared.get('directives', False)),
+        sdk=bool(declared.get('sdk', False)),
     )
 
 
