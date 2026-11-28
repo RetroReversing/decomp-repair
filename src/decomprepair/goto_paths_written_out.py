@@ -23,18 +23,28 @@ goto_paths_written_out
     when a path would have to be copied that declares something, when the result would grow past a few times the
     function's size, and when a path that must leave the function early has no `return` to end it.
 
+goto_paths_literals
+    The same paths, where a local only carried a literal to a store the jump shared (`v = 0xDAC; goto block_35; ...
+    block_35: p->y = v;`): each store takes the literal and the local goes. The compiler merges the identical stores
+    again itself. Offered as that, and with the written-out ladder's `!=` nests turned back into an `else if` chain
+    (`inverted_guard_ladder`), the combination: measured on a 259-instruction N64 object reset (SN, `-O2 -mips3`),
+    where the paths written out alone scored worse (3840 -> 4575), with literals 3960, and with the chain 2090.
+
 A hypothesis like every family's; the judge decides.
 """
 import re
 
+from . import inverted_guard_ladder
 from .csource import _blank, find
 from .goto_structure_repairs import LOOPS, parse, walk
 from .pattern_repairs import close
 
 FAMILY = 'goto_paths_written_out'
-FAMILIES = (FAMILY,)
+LITERALS = 'goto_paths_literals'
+FAMILIES = (FAMILY, LITERALS)
 
 MAX_STATEMENTS = 400
+_LITERAL = r'-?(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*'
 _DECLARATION = re.compile(r'\s*(?!return\b|goto\b|else\b)[A-Za-z_]\w*(?:\s+|\s*\*+\s*)[A-Za-z_]\w*\s*[;=,\[]')
 
 
@@ -196,6 +206,71 @@ def _single_if(lines, pad):
     return heads[-1] == pad + '}' and all(line == pad + '}' or line.startswith(pad + '} else') for line in heads[1:])
 
 
+def _propagate(lines, local):
+    """The lines with every `X = local;` given the literal `local` holds there and its assignments gone, or None.
+
+    One statement or brace per line, as the writer emits them. An arm starts with the value held before its `if`; after
+    blocks that assigned the local its value is unknown. Any other mention of the local declines."""
+    assign = re.compile(rf'\s*{local}\s*=\s*({_LITERAL})\s*;')
+    store = re.compile(rf'(?P<lhs>\s*[^=;{{}}]*[^=;{{}}<>!+\-*/%&|^\s]\s*=\s*){local}\s*;')
+    value, dirty, outer, out, replaced = None, False, [], [], 0
+    for line in lines:
+        text = line.strip()
+        if text.startswith('}') and outer:
+            if text.endswith('{'):
+                value = outer[-1][0]  # the next arm of the same `if`
+                out.append(line)
+                continue
+            before, was = outer.pop()
+            value, dirty = (None, True) if dirty else (before, was)
+        found = assign.fullmatch(line)
+        if found:
+            value, dirty = found[1], True
+        elif re.search(rf'\b{local}\b', line):
+            use = store.fullmatch(line)
+            if not use or re.search(rf'\b{local}\b', use['lhs']) or value is None:
+                return None
+            out.append(f"{use['lhs']}{value};")
+            replaced += 1
+        else:
+            out.append(line)
+        if text.endswith('{'):
+            outer.append((value, dirty))
+            dirty = False
+    return out if replaced else None
+
+
+def _repeats(body, local):
+    """Whether a loop or `switch` mentions the local: its lines don't run once, top to bottom."""
+    clean = _blank(body)
+    for hit in re.finditer(r'\b(?:for|while|do|switch)\b', clean):
+        brace = clean.find('{', hit.end())
+        end = None if brace < 0 else close(clean, brace, '{', '}')
+        stop = clean.find(';', end) if end and hit[0] == 'do' else end
+        if re.search(rf'\b{local}\b', clean[hit.start():stop if stop and stop > 0 else len(clean)]):
+            return True
+    return False
+
+
+def _literals(source, name):
+    """The function with each literal-carrying local written into its stores, or None."""
+    span = find(source, name)
+    head, body, tail = source[:span[0]], source[span[0]:span[1]], source[span[1]:]
+    opening = body.find('{')
+    changed = False
+    declared = re.findall(r'(?m)^[ \t]*(?:u8|s8|u16|s16|u32|s32|int|short|char)[ \t]+([A-Za-z_]\w*)[ \t]*;[ \t]*$',
+                          body[opening:])
+    for local in declared:
+        pattern = rf'(?m)^[ \t]*[A-Za-z_]\w*[ \t]+{local}[ \t]*;[ \t]*\n'
+        rest = re.sub(pattern, '', body, count=1)
+        if not re.search(rf'\b{local}\s*=\s*{_LITERAL}\s*;', rest) or _repeats(rest, local):
+            continue
+        lines = _propagate(rest.split('\n'), local)
+        if lines is not None:
+            body, changed = '\n'.join(lines), True
+    return head + body + tail if changed else None
+
+
 def variants(source, name):
     span = find(source, name)
     if not span:
@@ -234,7 +309,12 @@ def variants(source, name):
     out = source[:start] + '\n'.join(lines) + '\n' + source[end - 1:]
     if re.search(r'\bgoto\b', _blank(out)[opening:]):
         return []
-    return [(FAMILY, out)]
+    results = [(FAMILY, out)]
+    literal = _literals(out, name)
+    if literal:
+        results += [(LITERALS, text) for _, text in inverted_guard_ladder.variants(literal, name)[:2]]
+        results.append((LITERALS, literal))
+    return results
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}

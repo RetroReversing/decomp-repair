@@ -29,6 +29,13 @@ m2c_goto_arm_chain
     (gcc 2.8.1 merges the stores again and keeps the address's `lui` in each arm; measured on a 92-instruction N64
     mode setup, 910 -> 190, and `carried_store_arms` from there reached 0).
 
+m2c_argument_register_local
+    A parameter that is only the default of a join is an argument register read before the function sets it:
+    `v = arg1 & 0xFF; if (kind == 3) { var_a1 = f(); block_45: v = var_a1 & 0xFF; }` (`arg1` and `var_a1` are both
+    `$a1`; the callers pass one argument). The last parameter goes, its reads use the local m2c named for the same
+    register, and the child includes the join. Measured on a 259-instruction N64 object reset (SN, `-O2 -mips3`):
+    5565 -> 4400, the first of the steps to 0.
+
 Candidate rewrites; the exact judge decides each.
 """
 import re
@@ -40,7 +47,8 @@ SAVED = 'm2c_saved_register_local'
 LADDER = 'm2c_goto_join_ladder'
 TABLE = 'm2c_halfword_byte_table'
 CHAIN = 'm2c_goto_arm_chain'
-FAMILIES = (SAVED, LADDER, TABLE, CHAIN)
+ARGUMENT = 'm2c_argument_register_local'
+FAMILIES = (SAVED, LADDER, TABLE, CHAIN, ARGUMENT)
 LIMIT = 8
 
 _SAVED_NAME = re.compile(r'\bsaved_reg_(s[0-7]|f\d{1,2}|fp)\b')
@@ -213,6 +221,37 @@ def _halfword_table(body, declarations):
     return results
 
 
+def _argument_register(head, body):
+    """(signature without its last parameter, body reading the local of that register instead), for each such local.
+
+    m2c's `argN` is register `$aN` (the first four integer or pointer parameters). The parameter is only offered when
+    every read of it is the value of a plain assignment, so nothing else shows a caller passed it."""
+    signature = re.search(r'\(([^()]*)\)\s*\{?\s*\Z', head)
+    if not signature:
+        return []
+    parameters = [part.strip() for part in signature[1].split(',')]
+    last = re.fullmatch(r'(?P<type>[^()\[\]]*?[\s*])arg(?P<n>[0-3])', parameters[-1])
+    if not last or int(last['n']) != len(parameters) - 1 or re.search(r'\b(?:f32|f64|float|double)\b(?![^*]*\*)', last['type']):
+        return []
+    argument, clean = f"arg{last['n']}", _blank(body)
+    reads = list(re.finditer(rf'\b{argument}\b', clean))
+    default = re.compile(r'(?:\A|[;{}:])\s*[A-Za-z_]\w*\s*=\s*(?:\([^()]*\)\s*)?\Z')
+    for read in reads:
+        before = clean[:read.start()]
+        if not default.search(before) or not re.match(r'\s*(?:(?:&|\||>>|<<)\s*(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*\s*)?;',
+                                                      clean[read.end():]):
+            return []
+    if not reads:
+        return []
+    results = []
+    kept = ', '.join(parameters[:-1]) or 'void'
+    new_head = head[:signature.start(1)] + kept + head[signature.end(1):]
+    for local in dict.fromkeys(re.findall(rf"\b(?:var|temp)_a{last['n']}(?:_\d+)?\b", clean)):
+        if re.search(rf'\b{local}\s*=(?!=)', clean):
+            results.append((new_head, re.sub(rf'\b{argument}\b', local, body)))
+    return results
+
+
 def variants(source, name, header=''):
     span = find(source, name)
     if not span:
@@ -224,7 +263,15 @@ def variants(source, name, header=''):
         children += [(LADDER, text) for text in _goto_join(base)]
         children += [(CHAIN, text) for text in _goto_arm_chain(base)]
     children += [(TABLE, text) for text in _halfword_table(body, f'{header}\n{source}')[:LIMIT]]
-    return list(dict.fromkeys((family, head + text + tail) for family, text in children))
+    found = [(family, head + text + tail) for family, text in children]
+    opening = body.find('{')
+    if opening >= 0:
+        # the definition's own line(s) may sit in `head` or in `body`, so the signature is read across the two
+        start = head + body[:opening + 1]
+        for new_start, rest in _argument_register(start, body[opening + 1:])[:LIMIT]:
+            for joined in [*_goto_join(rest), *_goto_arm_chain(rest)] or [rest]:
+                found.append((ARGUMENT, new_start + joined + tail))
+    return list(dict.fromkeys(found))
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header')}
