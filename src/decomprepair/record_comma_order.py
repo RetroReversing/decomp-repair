@@ -35,6 +35,10 @@ def variants(source, name):
                 or re.search(r'\bunion\s*\{[^{}]*\}\s+' + re.escape(obj) + r'\s*;', body)
                 or re.search(r'\b' + IDENT + r'\s+' + re.escape(obj) + r'\s*;', body)):
             continue
+        prefix = body[records[0].end():match.start()]
+        uses = re.finditer(r'\b' + re.escape(obj) + r'\b', prefix)
+        if any(not re.match(r'\s*\.\s*' + IDENT + r'\s*=(?!=)', prefix[use.end():]) for use in uses):
+            continue
         names = re.findall(r'\b(?:s8|u8|s16|u16|s32|u32|int|char|short)\s+(' + IDENT + r')\s*;', records[0]['fields'])
         if names.count(match['first']) != 1 or names.count(match['field']) != 1:
             continue
