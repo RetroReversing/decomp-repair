@@ -49,9 +49,14 @@ def variants(source, name, asm='', header='', flags=None):
             continue
         if not re.search(rf'\bextern\s+(?:char|s8|u8|unsigned\s+char|signed\s+char)\s+{re.escape(symbol)}\s*\[\s*\]\s*;', clean):
             continue
+        # A local or parameter with the symbol's name is not the global table.
+        symbol_shadow = (rf'\b(?:(?:const|volatile|static|struct|unsigned|signed|long|short)\s+)*{IDENT}'
+                         rf'\s*(?:\*\s*|\s+){re.escape(symbol)}\s*(?:[;=,\[)]|$)')
+        if re.search(symbol_shadow, clean[clean.rfind(name, 0, part.opening):part.end]):
+            continue
         for base in _aliases(clean[part.opening:part.end], symbol):
             declarations = [d for d in DECL.finditer(clean, part.opening + 1, part.end) if d['name'] == base]
-            if len(declarations) != 1 or base in macros or re.search(rf'&\s*{re.escape(base)}\b', body):
+            if len(declarations) != 1 or base in macros or re.search(rf'&\s*\(*\s*{re.escape(base)}\b', body):
                 continue
             declared = declarations[0]['type']
             if declared == wanted or integer_abi.scalar(declared, _blank(context), 'mips') != (8, declared == 's8'):
