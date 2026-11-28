@@ -28,6 +28,9 @@ def variants(source, name, header=''):
     braces = brace_pairs(clean, part.opening, part.end)
     if braces is None:
         return []
+    if re.search(rf'\b(?!(?:if|for|while|switch)\b){IDENT}\s*\([^;{{}}]*\)\s*\{{',
+                 clean[part.opening + 1:part.end]):
+        return []  # a nested function can mutate an outer local after its textual definition
     declarations = list(DECL.finditer(clean, part.opening + 1, part.end))
     counts = {d['name']: sum(other['name'] == d['name'] for other in declarations) for d in declarations}
     decls = {d['name']: d for d in declarations if counts[d['name']] == 1

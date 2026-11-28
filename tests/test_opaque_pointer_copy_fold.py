@@ -49,6 +49,11 @@ def test_dependent_copies_are_not_combined_into_an_undefined_local():
     assert all('first' in child or 'second' in child for _, child in variants(source, 'f'))
 
 
+def test_nested_function_cannot_hide_a_later_source_mutation():
+    source = SOURCE.replace('root = p;', 'void change(void) { root = p; } root = p;')
+    assert not variants(source.replace('use(first);', 'change(); use(first);', 1), 'f')
+
+
 def test_member_name_equal_to_origin_is_not_a_local_reassignment():
     source = SOURCE.replace('emit(second);', 'obj.root = second; emit(second);')
     assert 'first' not in variants(source, 'f')[0][1]
