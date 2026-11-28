@@ -266,7 +266,10 @@ def _single(source, name):
             body_end = end + len(line_text) - (stop - start)
             text = _drop_locals(text, names, span[0], body_end)
             body_end -= len(source[:start] + line_text + source[stop:]) - len(text)
-            retyped = _retype_local(text, dinit, record, span[0], body_end)
+            # only the element-stepped form (`+= 4` after four words): a byte-stepped draft's stack scalars are
+            # `slot_scalar_records`' to gather
+            stepped = re.search(rf'(?<![\w.>]){re.escape(names[0])}\s*\+=\s*4\s*;', clean[start:stop])
+            retyped = _retype_local(text, dinit, record, span[0], body_end) if stepped else None
             if retyped is False:
                 continue
             if retyped:
@@ -282,8 +285,8 @@ def _single(source, name):
 
 
 def variants(source, name):
-    """Each block move written as its assignment, and, with two or more, all of them in one child."""
-    return _every_copy(source, name) + _single(source, name)
+    """Each block move written as its assignment, then, with two or more, all of them in one child."""
+    return _single(source, name) + _every_copy(source, name)
 
 
 def _every_copy(source, name):

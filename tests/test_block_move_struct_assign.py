@@ -156,7 +156,7 @@ void load(void) {
 
 def test_element_stepped_cursors_into_scalar_stack_words():
     """Two copies at once: `M2C_UNK *` cursors step by elements, and the scalar destination takes the record's type."""
-    text = variants(STEPPED, 'load')[0][1]
+    text = variants(STEPPED, 'load')[-1][1]
     assert '*(__repair_block518w *)(&sp10) = *(__repair_block518w *)(&D_FIRST);' in text
     assert '*(__repair_block518w *)(&sp528) = *(__repair_block518w *)(&D_SECOND);' in text
     assert '__repair_block518w sp10;' in text and '__repair_block518w sp528;' in text
