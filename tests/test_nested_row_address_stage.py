@@ -53,3 +53,7 @@ def test_stages_row_plus_column_when_first_row_already_exists():
     assert '__repair_row_address2 = __repair_row_address + col;' in children[0][1]
     assert 'inner(__repair_row_address2)' in children[0][1]
     assert variants(source.replace('u8 *__repair_row_address;', 'int *__repair_row_address;'), 'f') == []
+
+
+def test_rejects_cpp_overload_context():
+    assert variants(SOURCE + '\nclass C {};\n', 'f') == []

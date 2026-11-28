@@ -19,6 +19,8 @@ def variants(source, name, header='', flags=None):
     if any(f.startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor', '@')) for f in flags or ()):
         return []
     context = source + '\n' + header
+    if re.search(r'\b(?:class|namespace|template|operator)\b|::', context):
+        return []  # C++ overloads can make these apparent scalar operations observable
     if re.search(r'(?m)^\s*#\s*(?:include(?:_next)?|import)\b|\b(?:volatile|_Atomic|__LINE__)\b', context):
         return []
     part = view(source, name)
