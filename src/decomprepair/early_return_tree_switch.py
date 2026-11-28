@@ -97,7 +97,7 @@ def variants(source, name, header='', flags=None):
             aliases = re.findall(r'\btypedef\s+([^;{}]+)\s+s32\s*;', _blank(source + '\n' + header))
             if not aliases or any(' '.join(alias.split()) not in ('int', 'signed', 'signed int') for alias in aliases):
                 continue
-        if re.search(rf'&\s*{re.escape(variable)}\b', clean[span[0]:span[1]]):
+        if re.search(rf'&\s*\(*\s*{re.escape(variable)}\b', clean[span[0]:span[1]]):
             continue
         high_at = outer[1][0] + len(clean[outer[1][0]:outer[1][1]]) - len(clean[outer[1][0]:outer[1][1]].lstrip())
         high = _statement_if(clean, high_at)
@@ -116,8 +116,8 @@ def variants(source, name, header='', flags=None):
         if high_body is None or low_body is None:
             continue
         bodies = clean[high_start:high[1][1]] + clean[low_start:outer[1][1]]
-        if re.search(rf'(?<![\w.>]){re.escape(variable)}\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))|'
-                     rf'(?:\+\+|--)\s*\b{re.escape(variable)}\b', bodies):
+        if re.search(rf'(?<![\w.>]){re.escape(variable)}\s*\)*\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))|'
+                     rf'(?:\+\+|--)\s*\(*\s*\b{re.escape(variable)}\b', bodies):
             continue
         # A macro expansion could hide an outer break, goto or declaration.
         if macro_names.intersection(re.findall(IDENT, bodies)):
