@@ -7,6 +7,7 @@ the adjacent values have their own bodies and return, as does the default.
 """
 import re
 
+from .arm_block_support import statements
 from .compare_tree_default_switch import _statement_if
 from .csource import _blank, find
 from .integer_repair_support import IDENT
@@ -34,7 +35,10 @@ def _guard(clean, at, end, name, value):
 
 def _body(source, clean, start, end):
     text = clean[start:end]
-    if not re.search(r'\breturn\s*;\s*$', text):
+    parts = statements(clean, start, end)
+    if not parts or not re.fullmatch(r'return\s*;', clean[parts[-1][0]:parts[-1][1]].strip()):
+        return None
+    if clean[parts[-1][1]:end].strip():
         return None
     # A switch would capture an outer break, and labels or jumps could enter or
     # leave its arms. C declarations are avoided because a case is not a scope.
@@ -56,6 +60,9 @@ def variants(source, name, header='', flags=None):
     opening = clean.find('{', span[0], span[1])
     if opening < 0:
         return []
+    if re.search(rf'\b(?!(?:return|else|case|goto)\b){IDENT}(?:\s+|\s*\*+\s*){IDENT}\s*\([^;{{}}]*\)\s*\{{',
+                 clean[opening + 1:span[1]]):
+        return []  # a nested function can mutate the discriminant
     if (re.search(r'(?m)^\s*#\s*include\b', source + '\n' + header)
             or re.search(r'(?m)^\s*#\s*(?:if|ifdef|ifndef|elif|else|endif)\b', clean[opening:span[1]])):
         return []
@@ -108,8 +115,12 @@ def variants(source, name, header='', flags=None):
         low_body = _body(source, clean, low_start, outer[1][1])
         if high_body is None or low_body is None:
             continue
+        bodies = clean[high_start:high[1][1]] + clean[low_start:outer[1][1]]
+        if re.search(rf'(?<![\w.>]){re.escape(variable)}\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))|'
+                     rf'(?:\+\+|--)\s*\b{re.escape(variable)}\b', bodies):
+            continue
         # A macro expansion could hide an outer break, goto or declaration.
-        if macro_names.intersection(re.findall(IDENT, clean[high_start:high[1][1]] + clean[low_start:outer[1][1]])):
+        if macro_names.intersection(re.findall(IDENT, bodies)):
             continue
         indent = re.search(r'[ \t]*$', source[:at])[0]
         replacement = (f'switch ({variable}) {{\n{indent}case {middle - 1}:\n{indent}    {low_body}\n'
