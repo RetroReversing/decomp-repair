@@ -86,3 +86,72 @@ def test_a_global_set_from_the_cursor_is_left_alone():
 def test_the_module_declares_itself():
     assert acc.REPAIR['variants'] is acc.variants
     assert any(r.module == 'asm_cursor_commands' for r in registry.all())
+
+
+# two arms ending in the same command: the target shares the tail, whose constant is loaded before the label
+TAILS = '''extern void *gCursor;
+extern s32 D_80100004;
+
+void func_80040000(void) {
+    void *temp_a2;
+    void *temp_v1;
+
+    if (D_80100004 == 1) {
+        temp_a2 = gCursor;
+        gCursor = temp_a2 + 8;
+        M2C_FIELD(temp_a2, s32 *, 0) = 0xE7000000;
+        M2C_FIELD(temp_a2, s32 *, 4) = 0;
+        return;
+    }
+    if (D_80100004 == 2) {
+        temp_v1 = gCursor + 8;
+        M2C_FIELD(gCursor, s32 *, 0) = 0xE7000000;
+        M2C_FIELD(gCursor, s32 *, 4) = 0;
+        gCursor = temp_v1;
+    }
+}
+'''
+TAILS_ASM = '''
+glabel func_80040000
+    bne        $v0, $v1, .L2
+    lui        $t0, (0xE7000000 >> 16)
+    j          .Ltail
+    lui        $a1, %hi(gCursor)
+.L2:
+    lui        $a1, %hi(gCursor)
+    lw         $v1, %lo(gCursor)($a1)
+    lui        $t0, (0xE7000000 >> 16)
+    addiu      $v0, $v1, 0x8
+    sw         $t0, 0x0($v1)
+    sw         $zero, 0x4($v1)
+    jr         $ra
+    sw         $v0, %lo(gCursor)($a1)
+.Ltail:
+    lw         $v1, %lo(gCursor)($a1)
+    addiu      $v0, $v1, 0x8
+    sw         $t0, 0x0($v1)
+    sw         $zero, 0x4($v1)
+    jr         $ra
+    sw         $v0, %lo(gCursor)($a1)
+endlabel func_80040000
+'''
+
+
+def test_every_repeated_tail_is_written_in_one_child():
+    assert acc.commands(TAILS_ASM) == {}
+    assert acc.repeated_commands(TAILS_ASM) == {'gCursor': [(('const', 0xE7000000), ('const', 0))]}
+    (family, text), = acc.variants(TAILS, NAME, asm=TAILS_ASM)
+    assert family == 'asm_cursor_command_tails'
+    assert text.count('CursorCommand *cmd = gCursor++;') == 2
+    assert 'extern CursorCommand *gCursor;' in text
+    assert 'temp_v1 =' not in text and 'M2C_FIELD' not in text
+    assert 'return;' in text
+
+
+def test_tails_with_other_constants_or_shared_locals_are_left_alone():
+    other = TAILS.replace('0xE7000000;\n        M2C_FIELD(gCursor', '0xE9000000;\n        M2C_FIELD(gCursor')
+    assert acc.variants(other, NAME, asm=TAILS_ASM) == []
+    read = TAILS.replace('        return;\n', '        return;\n        sink = temp_a2;\n')
+    assert acc.variants(read, NAME, asm=TAILS_ASM) == []
+    called = TAILS.replace('        gCursor = temp_v1;\n', '        gCursor = temp_v1;\n        if (gCursor) flush();\n')
+    assert acc.variants(called, NAME, asm=TAILS_ASM) == []
