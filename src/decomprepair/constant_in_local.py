@@ -26,7 +26,12 @@ Gates: when the target's assembly is given, a bound is offered only when the tar
   `if`/loop statement that holds it (a constant a block earlier than its use: a hand match needed `tgt = 180.0f;` set
   before the `if` whose body passes it, which holds it in a register across the test), and the call reads `k_180p0`.
 A function with `volatile`, `asm` or a preprocessor line is left alone. Proposals only; the compiler and the byte judge
-decide."""
+decide.- `constant_in_local_addend`: a literal in the middle of a sum, `x * 409 + 0x266 + (r >> 6)`, is held in
+  `add_0x266`. gcc's `fold` splits `(X + K) + Y` into `X + (Y + K)` (fold-const.c, `associate:` and `split_tree`,
+  read in the 2.8.1 source; SN's own build has none), so no parenthesising of a literal keeps the `addiu` on the first
+  term; a variable does. On a 386-instruction N64 hit handler (SN GCC 2.8.1 `-G0 -mips3 -O2`) it took the best from
+  360 to 0. The statements of the block that add the same literal share the one local.
+"""
 import re
 
 from .integer_repair_support import IDENT, edit, view
@@ -35,8 +40,10 @@ from .store_run_order import _insert_declaration
 FAMILY_MULTIPLIER = 'constant_in_local_multiplier'
 FAMILY_BOUND = 'constant_in_local_bound'
 FAMILY_ARGUMENT = 'constant_in_local_argument'
-FAMILIES = (FAMILY_MULTIPLIER, FAMILY_BOUND, FAMILY_ARGUMENT)
+FAMILY_ADDEND = 'constant_in_local_addend'
+FAMILIES = (FAMILY_MULTIPLIER, FAMILY_BOUND, FAMILY_ARGUMENT, FAMILY_ADDEND)
 LIMIT = 8
+ADDEND_LIMIT = 4
 _FLOAT = r'\d+\.\d*[fF]?|\.\d+[fF]?'
 _INT = r'0[xX][0-9a-fA-F]+|\d+'
 _MULTIPLY_RIGHT = re.compile(rf'(?<=[\w)\]])\s*\*\s*(?P<k>(?:{_FLOAT})|(?:{_INT}))(?![\w.])')
@@ -255,6 +262,47 @@ def _enclosing_statement(clean, at, opening):
     return None
 
 
+# a literal between a term and another `+`/`-` term: `x * 409 + 0x266 + y`
+_MIDDLE = re.compile(rf'(?<=[\w)\]])\s*(?<![+\-])[+\-]\s*(?P<k>{_INT})(?=\s*(?:\+(?![+=])|-(?![\->=])))')
+
+
+def _addend_children(source, part, name):
+    out = []
+    body = part.clean
+    used = set(re.findall(IDENT, body[part.opening:part.end]))
+    for hit in _STATEMENT.finditer(body, part.opening + 1, part.end):
+        text = hit[2]
+        first = re.match(r'\s*(\w+)', text)
+        if first and first[1] in _NOT_STATEMENT and first[1] != 'return':
+            continue
+        if body[:hit.start(1)].rstrip()[-1:] not in ('', ';', '{', '}'):
+            continue
+        found = [m for m in _MIDDLE.finditer(text) if _int(m['k']) >= 2]
+        if not found:
+            continue
+        literal = found[0]['k']
+        local = _name('add', literal)
+        if local in used:
+            continue
+        indent = hit[1]
+        own = [(hit.start(2) + m.start('k'), hit.start(2) + m.end('k'), local) for m in found if m['k'] == literal]
+        depth, stop = 0, part.end
+        for at in range(hit.end(), part.end):
+            depth += {'{': 1, '}': -1}.get(body[at], 0)
+            if depth < 0:
+                stop = at
+                break
+        rest = [(hit.end() + m.start('k'), hit.end() + m.end('k'), local)
+                for m in _MIDDLE.finditer(body[hit.end():stop]) if m['k'] == literal]
+        for extra in ([own + rest] if rest else []) + [own]:
+            child = edit(source, extra + [(hit.start(2), hit.start(2), f'{local} = {literal};\n{indent}')])
+            moved = view(child, name)
+            if moved:
+                out.append((FAMILY_ADDEND, _insert_declaration(child, moved, f's32 {local};')))
+        used.add(local)
+    return out
+
+
 def variants(source, name, asm=''):
     part = view(source, name)
     if not part:
@@ -267,7 +315,8 @@ def variants(source, name, asm=''):
         out += _multiplier_children(source, part, name)
     out += _bound_children(source, part, name, asm)
     out += _argument_children(source, part, name)
-    return list(dict.fromkeys(out))[:LIMIT]
+    # the addends have a cap of their own, so a function full of multiplies still gets them
+    return list(dict.fromkeys(out))[:LIMIT] + list(dict.fromkeys(_addend_children(source, part, name)))[:ADDEND_LIMIT]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'asm'), 'archs': ('mips',)}

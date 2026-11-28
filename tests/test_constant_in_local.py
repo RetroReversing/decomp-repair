@@ -1,5 +1,5 @@
 from decomprepair import registry
-from decomprepair.constant_in_local import FAMILY_BOUND, FAMILY_MULTIPLIER, REPAIR, variants
+from decomprepair.constant_in_local import FAMILY_ADDEND, FAMILY_BOUND, FAMILY_MULTIPLIER, REPAIR, variants
 
 SOURCE = """void step(f32 *out, f32 x, s32 n) {
     s32 i;
@@ -86,3 +86,17 @@ def test_a_float_argument_is_held_in_a_local_on_the_line_before_and_before_the_i
     assert any('k_180p0 = 180.0f;\n        if (o->speed > 7.0f) {' in c and 'turn(k_180p0' in c for c in out)
     assert all('f32 k_180p0;' in c for c in out)
     assert not [c for f, c in variants(ARGUMENT.replace('180.0f', '1.0f'), 'aim') if f == FAMILY_ARGUMENT and 'k_1p0' in c]
+
+
+def test_a_literal_in_the_middle_of_a_sum_is_held_in_one_local_for_both_statements():
+    source = ("void sp(Obj *o, u16 r) {\n    o->x = (sin(1) * (o->size * 409 + 0x266 + (r >> 6))) >> 8;\n"
+              "    o->y = (cos(1) * (o->size * 409 + 0x266 + (r >> 6))) >> 8;\n}\n")
+    children = [c for f, c in variants(source, 'sp') if f == FAMILY_ADDEND]
+    assert children[0].count('add_0x266 + (r >> 6)') == 2 and children[0].count('add_0x266 = 0x266;') == 1
+    assert 's32 add_0x266;' in children[0]
+    assert children[1].count('add_0x266 + (r >> 6)') == 1
+
+
+def test_a_trailing_literal_or_an_increment_is_not_a_middle_addend():
+    for line in ('o->x = o->size + 5;', 'o->x = a + 5;', 'o->x += 5;'):
+        assert not [f for f, _ in variants(f"void sp(Obj *o) {{\n    {line}\n}}\n", 'sp') if f == FAMILY_ADDEND]
