@@ -80,3 +80,46 @@ def test_a_returning_function_and_a_wider_copy_are_left_alone():
 
 def test_the_registry_runs_it():
     assert registry.get('field_wrap_arms').families == (FAMILY,)
+
+
+SAVED = """
+void wrap(void *arg0) {
+    s16 temp_a1;
+    s16 temp_a1_2;
+    s16 var_v0;
+    u16 temp_v1;
+    u16 temp_v1_2;
+
+    temp_a1 = (*(s16 *)((char *)(arg0) + 2));
+    var_v0 = temp_v1 + 0x100;
+    temp_v1 = (u16) (*(s16 *)((char *)(arg0) + 2));
+    if ((temp_a1 < -0x80) || (var_v0 = temp_v1 - 0x100, ((temp_a1 < 0x81) == 0))) {
+        (*(s16 *)((char *)(arg0) + 2)) = var_v0;
+    }
+    temp_a1 = (*(s16 *)((char *)(arg0) + 0));
+    temp_v1_2 = (u16) (*(s16 *)((char *)(arg0) + 0));
+    if (temp_a1 < -0x40) {
+        var_v0 = (s16) ((s32)temp_v1_2 + 0x70);
+        (*(s16 *)((char *)(arg0) + 0)) = var_v0;
+        return;
+    }
+    if (temp_a1 >= 0x41) {
+        (*(s16 *)((char *)(arg0) + 0)) = (s16) (temp_v1_2 - 0x70);
+    }
+}
+"""
+
+
+def test_a_saved_bests_spelling_is_read():
+    children = variants(SAVED, 'wrap')
+    combined = flat(children[0][1])
+    x, y = '(*(s16 *)((char *)(arg0) + 0))', '(*(s16 *)((char *)(arg0) + 2))'
+    assert f'if ({y} < -0x80) {{ {y} += 0x100; }} else if (!({y} < 0x81)) {{ {y} -= 0x100; }}' in combined
+    assert f'if ({x} < -0x40) {{ {x} += 0x70; }} else if ({x} >= 0x41) {{ {x} -= 0x70; }}' in combined
+    assert 'var_v0 =' not in combined and 'temp_a1 =' not in combined and 'return;' not in combined
+
+
+def test_a_copy_already_set_keeps_the_early_sum():
+    source = SAVED.replace('    temp_a1 = (*(s16 *)((char *)(arg0) + 2));\n', '    temp_v1 = 3;\n'
+                           '    temp_a1 = (*(s16 *)((char *)(arg0) + 2));\n', 1)
+    assert 'var_v0 = temp_v1 + 0x100;' in variants(source, 'wrap')[0][1]

@@ -28,6 +28,12 @@ On a 46-instruction function of an N64 game built by SN GCC 2.8.1 (four axis wra
 exact (960, 800, 715 and 400 alone), all four together were byte-identical, and 120 judged variants of the other
 families had reached 490. So every site is offered alone and all of them as one child.
 
+A saved best spells the same shapes differently, and is read too: the macro written out as
+`(*(s16 *)((char *)(p) + 2))`, the first arm's sum moved above the copy it reads (`var = copy + K1; copy = (u16) LOAD;`,
+made only when nothing set `copy` before), and the guard's store staged through a local (`v = (s16) ((s32) copy + K1);
+LOAD = v; return;`). On a 22-instruction two-axis wrap of an N64 game (sn-n64-281) the saved best, left at 510 by earlier
+searches, gave no child; read this way the combined child is byte-identical.
+
 Only made when the width of the field is spelt in the expression (`M2C_FIELD(p, s16 *, 2)`, `*(s16 *) q`), when the
 temporaries are plain locals whose values are not read anywhere after the rewritten statements, and, for the guard
 shape, when nothing but closing braces and `else` arms follows it in the function. Only a candidate: the judge decides.
@@ -43,9 +49,12 @@ IDENT = r'[A-Za-z_]\w*'
 NUMBER = r'-?\s*(?:0[xX][0-9a-fA-F]+|[0-9]+)[uU]?'
 LIMIT = 8
 
-# an lvalue whose width is in its text: M2C_FIELD(base, s16 *, offset) or *(s16 *) base
+# an lvalue whose width is in its text: M2C_FIELD(base, s16 *, offset), *(s16 *) base, or the macro written out as
+# (*(s16 *)((char *)(base) + offset))
+PARENS = r'\((?:[^;{}=()]|\((?:[^;{}=()]|\([^;{}=()]*\))*\))*\)'
+DEREF = rf'\*\s*\(\s*[su](?:8|16)\s*\*\s*\)\s*(?:{PARENS}|[A-Za-z_]\w*)'
 LOAD = (r'(?:M2C_FIELD\(\s*[^;{}=()]*?(?:\([^;{}=()]*\))?\s*,\s*[su](?:8|16)\s*\*\s*,\s*-?\w+\s*\)'
-        r'|\*\s*\(\s*[su](?:8|16)\s*\*\s*\)\s*(?:\([^;{}=()]*\)|[A-Za-z_]\w*))')
+        rf'|\(\s*{DEREF}\s*\)|{DEREF})')
 WIDTH = re.compile(r'(?:,|\()\s*([su])(8|16)\s*\*')
 
 
@@ -56,19 +65,35 @@ def _loaded(temp, copy):
             rf'(?P<copy>{IDENT})\s*=\s*\(\s*u(?P<bits>8|16)\s*\)\s*(?P=load)\s*;\s*')
 
 
-COMMA = re.compile(
-    _loaded('temp', 'copy')
-    + rf'(?P<var>{IDENT})\s*=\s*(?P=copy)\s*(?P<op1>[+-])\s*(?P<k1>{NUMBER})\s*;\s*'
+_COMMA_IF = (
     rf'if\s*\(\s*\(?\s*(?P=temp)\s*<\s*(?P<low>{NUMBER})\s*\)?\s*\|\|\s*\(\s*(?P=var)\s*=\s*(?P=copy)\s*'
     rf'(?P<op2>[+-])\s*(?P<k2>{NUMBER})\s*,\s*\(\s*\(\s*(?P=temp)\s*<\s*(?P<high>{NUMBER})\s*\)\s*==\s*0\s*\)\s*\)\s*\)'
     rf'\s*\{{\s*(?P=load)\s*=\s*(?:\(\s*[su](?:8|16)\s*\)\s*)?(?P=var)\s*;\s*\}}[ \t]*\n?')
 
+COMMA = re.compile(
+    _loaded('temp', 'copy')
+    + rf'(?P<var>{IDENT})\s*=\s*(?P=copy)\s*(?P<op1>[+-])\s*(?P<k1>{NUMBER})\s*;\s*' + _COMMA_IF)
+
+# the same gate with the first arm's sum moved above the copy it reads (a saved best keeps that order)
+HOISTED = re.compile(
+    rf'(?P<indent>[ \t]*)(?P<temp>{IDENT})\s*=\s*(?P<load>{LOAD})\s*;\s*'
+    rf'(?P<var>{IDENT})\s*=\s*(?P<copy>{IDENT})\s*(?P<op1>[+-])\s*(?P<k1>{NUMBER})\s*;\s*'
+    rf'(?P=copy)\s*=\s*\(\s*u(?P<bits>8|16)\s*\)\s*(?P=load)\s*;\s*' + _COMMA_IF)
+
+
+def _stored(number):
+    """The guard arm's store of `copy op K`: direct, or through a local (`v = ...; LOAD = v;`)."""
+    value = (rf'(?:\(\s*[su](?:8|16)\s*\)\s*)?\(\s*(?:\(\s*s32\s*\)\s*)?(?P=copy)\s*'
+             rf'(?P<op{number}>[+-])\s*(?P<k{number}>{NUMBER})\s*\)\s*;')
+    return (rf'(?:(?:(?P<staged{number}>{IDENT})\s*=\s*|(?P=load)\s*=\s*){value}'
+            rf'(?(staged{number})\s*(?P=load)\s*=\s*(?P=staged{number})\s*;))')
+
+
 GUARD = re.compile(
     _loaded('temp', 'copy')
-    + rf'if\s*\(\s*(?P=temp)\s*<\s*(?P<low>{NUMBER})\s*\)\s*\{{\s*(?P=load)\s*=\s*(?:\(\s*[su](?:8|16)\s*\)\s*)?'
-    rf'\(\s*(?P=copy)\s*(?P<op1>[+-])\s*(?P<k1>{NUMBER})\s*\)\s*;\s*return\s*;\s*\}}\s*'
-    rf'if\s*\(\s*(?P=temp)\s*>=\s*(?P<high>{NUMBER})\s*\)\s*\{{\s*(?P=load)\s*=\s*(?:\(\s*[su](?:8|16)\s*\)\s*)?'
-    rf'\(\s*(?P=copy)\s*(?P<op2>[+-])\s*(?P<k2>{NUMBER})\s*\)\s*;\s*\}}[ \t]*\n?')
+    + rf'if\s*\(\s*(?P=temp)\s*<\s*(?P<low>{NUMBER})\s*\)\s*\{{\s*' + _stored(1)
+    + rf'\s*return\s*;\s*\}}\s*if\s*\(\s*(?P=temp)\s*>=\s*(?P<high>{NUMBER})\s*\)\s*\{{\s*' + _stored(2)
+    + r'\s*\}[ \t]*\n?')
 
 # LOAD = (sN) ((uN) LOAD - K);
 UPDATE = re.compile(
@@ -97,7 +122,8 @@ def _dead_after(part, names, start, end):
 
         declared = re.compile(rf'\b[su](?:8|16|32)\s+{re.escape(name)}\s*;')
         body = [(a, b) for a, b in places
-                if not any(m.start() <= a < m.end() for m in declared.finditer(part.clean))]
+                if not any(m.start() <= a < m.end() for m in declared.finditer(part.clean))
+                and not start <= a < end]  # the removed statements' own reads go with them
         if not any(m for m in declared.finditer(part.clean, part.opening, part.end)):
             return False  # a parameter or a global: its value is seen elsewhere
         if re.search(rf'&\s*{re.escape(name)}\b', part.clean[part.opening:part.end]):
@@ -139,12 +165,18 @@ def variants(source, name):
     def free(start, end):
         return all(end <= a or start >= b for a, b, _ in edits)
 
-    for pattern, guard in ((COMMA, False), (GUARD, True)):
+    for pattern, guard in ((COMMA, False), (HOISTED, False), (GUARD, True)):
         for hit in pattern.finditer(part.clean, part.opening, part.end):
             load, bits = hit['load'], hit['bits']
             if not free(hit.start(), hit.end()) or WIDTH.search(load)[2] != bits:
                 continue
             temps = [hit['temp'], hit['copy']] + ([] if guard else [hit['var']])
+            if guard:
+                temps += sorted({v for v in (hit['staged1'], hit['staged2']) if v})
+            # a copy summed before it is loaded must hold nothing yet, or the sum meant something
+            if pattern is HOISTED and re.search(rf'\b{re.escape(hit["copy"])}\s*=(?!=)',
+                                                part.clean[part.opening:hit.start()]):
+                continue
             if len(set(temps)) != len(temps) or any(re.search(rf'\b{re.escape(t)}\b', load) for t in temps):
                 continue
             if not _dead_after(part, temps, hit.start(), hit.end()):
