@@ -40,3 +40,34 @@ def test_declines():
 
 def test_registered():
     assert any(r.module == 'masked_reads_narrow' for r in registry.declared())
+
+
+def test_a_for_counter_masked_inside_subscripts_is_narrowed():
+    source = """void f(void)
+{
+    s32 i;
+
+    for (i = 0; (i & 0xFFFF) < 10U; i++, tick())
+    {
+        counts[i & 0xFFFF] = 0;
+        use(table[i & 0xFFFF][2]);
+    }
+}
+"""
+    children = [child for _, child in m.variants(source, 'f')]
+    assert children and 'u16 i;' in children[0]
+    assert 'counts[i] = 0;' in children[0] and 'table[i][2]' in children[0] and '(i) < 10U' in children[0]
+
+
+def test_a_for_header_that_reads_the_counter_bare_is_left():
+    source = """void f(void)
+{
+    s32 i;
+
+    for (i = 0; i++ < 10;)
+    {
+        counts[i & 0xFFFF] = 0;
+    }
+}
+"""
+    assert m.variants(source, 'f') == []
