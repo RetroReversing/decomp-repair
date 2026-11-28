@@ -30,6 +30,7 @@ def test_rejects_mutation_escape_and_shadow():
         SOURCE.replace('value = arg;', 'value = arg + 1;'),
         SOURCE.replace('    u16 value;', '    u16 value;\n    { int x, value; use(value); }'),
         SOURCE.replace('u16 value;', 'short value;'),
+        SOURCE.replace('use(value * 100);', '__builtin_va_start(value, arg);'),
     )
     for source in cases:
         assert variants(source, 'f') == []

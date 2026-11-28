@@ -28,7 +28,7 @@ def variants(source, name, header='', flags=None):
     clean = part.clean
     body = clean[part.opening + 1:part.end]
     if (re.search(r'(?m)^\s*#\s*(?:if|ifdef|ifndef|elif|else|endif)\b', body)
-            or re.search(r'\b(?:asm|__asm__|volatile|_Atomic|setjmp|longjmp)\b', body)):
+            or re.search(r'\b(?:asm|__asm__|volatile|_Atomic|setjmp|longjmp|__builtin_\w*)\b', body)):
         return []
     directives = '\n'.join(re.findall(r'(?m)^\s*#.*(?:\\\n.*)*', context))
     macros = set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})\b', directives))
