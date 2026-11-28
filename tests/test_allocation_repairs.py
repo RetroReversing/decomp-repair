@@ -184,3 +184,10 @@ def test_unnamed_stack_slots_the_target_holds_exchanged_swap_two_declarations():
     assert ('spill_declaration_order', source.replace('s16 *buffer;', '@').replace('s32 size;', 's16 *buffer;')
             .replace('@', 's32 size;')) == children[0]
     assert not measured_slot_orders(source, 'f', rows[:1])
+
+
+def test_spilled_halfword_locals_swap_with_words():
+    from decomprepair.allocation_repairs import spill_local_orders
+
+    source = 'void f(void) {\n    s32 angle;\n    s16 x;\n    x = a();\n    angle = b();\n    c(x, angle);\n}\n'
+    assert any(text.index('s16 x;') < text.index('s32 angle;') for _, text in spill_local_orders(source, 'f'))
