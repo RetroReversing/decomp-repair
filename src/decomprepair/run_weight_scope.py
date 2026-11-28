@@ -38,8 +38,10 @@ _CONTROL = re.compile(r'\b(?:break|continue|goto|case|default|asm|__asm__|volati
 _LABEL = re.compile(rf'(?<![\w:?])(?:{IDENT})\s*:(?!:)')
 _HEAD = re.compile(r'(?P<kw>if|while|for|switch)\s*\(')
 _SCOPE = re.compile(r'do\s*{[^{}]*}\s*while\s*\(\s*0\s*\)\s*;?$')
-_INITIALISED = re.compile(rf'(?:(?:unsigned|signed|const|volatile|static|register)\s+)*(?:{IDENT}\s+)+\**\s*{IDENT}\s*'
-                          rf'(?:\[[^\]]*\])?\s*(?:=[^;{{}}]*)?;$')
+_INITIALISED = re.compile(rf'(?:(?:unsigned|signed|const|volatile|static|register)\s+)*'
+                          rf'(?:(?:{IDENT}\s+)+|__typeof__\s*\([^;{{}}]*\)\s*)\**\s*{IDENT}\s*'
+                          rf'(?:\[[^\]]*\])?(?:\s*,\s*\**\s*{IDENT}(?:\s*\[[^\]]*\])?)*'
+                          rf'\s*(?:=[^;{{}}]*)?;$')
 
 
 def _python_match(clean, at, opening, closing):
@@ -170,6 +172,12 @@ def _declared(part):
             tail = re.search(rf'}}\s*(?P<n>{IDENT})\s*;', text)
             if tail:
                 names.add(tail['n'])
+    # Scoped table-base locals from other repairs use this unevaluated type
+    # expression. Count their references too: their assignment can affect
+    # register weight even when the local lives inside a statement block.
+    for match in re.finditer(rf'\b__typeof__\s*\(\s*{IDENT}\s*\+\s*0\s*\)\s*\**\s*(?P<name>{IDENT})\s*;',
+                             part.clean[part.opening + 1:part.end - 1]):
+        names.add(match['name'])
     return names
 
 
