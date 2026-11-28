@@ -366,3 +366,48 @@ def test_the_arm_of_a_switch_writes_the_same_display_list_as_the_draft(tmp_path,
     assert variants
     for k, (family, text) in enumerate(variants):
         assert run(text, f'variant{k}') == expected, family
+
+
+def _body(statements):
+    """A homemade function that uses the cursor global in the given way, after a plain store through it."""
+    return f'''extern s32 *sCursor;
+void u(s32 k, s32 *t)
+{{
+    M2C_FIELD(sCursor, s32 *, 0) = 0;
+    g2(k);
+    {statements}
+}}
+'''
+
+
+@pytest.mark.parametrize('statements', [
+    # the global itself is stepped
+    'sCursor++;', '++sCursor;', 'sCursor--;', '--sCursor;', 't = sCursor++;', '*sCursor++ = k;', '(sCursor)++;',
+    # written or stepped somewhere other than at the start of a statement
+    'if (k) sCursor = t;', 'if (k) sCursor += 8;', 'if (k) sCursor -= 8;', 't = sCursor = 0;',
+    'while (k--) sCursor = t;',
+    # its address is taken
+    't = &sCursor;', 't = & (sCursor);',
+    # a braceless else has no room for a read in front of it
+    'if (k) k = 0; else k = *sCursor;', 'if (k) g2(0); else *t = *sCursor;',
+])
+def test_a_use_that_a_local_copy_would_change_leaves_the_source_alone(statements):
+    source = _body(statements)
+    assert g._explicit_reads(source, 'u', 'sCursor', 's32') == source
+
+
+@pytest.mark.parametrize('statements', [
+    '*sCursor = k;', 'if (k) *sCursor = 1;', 'if (k) * sCursor += 1;', 'sCursor[1]++;', '++sCursor[1];',
+    '++*sCursor;', 'sCursor->w0 = k;', '++sCursor->w0;', 't = &sCursor[2];', 't = &sCursor->w0;',
+    'k = k && sCursor;', 'k = sCursor == t;', 'k = sCursor <= t;', 'k = sCursor != t;',
+])
+def test_a_use_of_what_the_cursor_points_at_or_holds_is_still_read_into_a_local(statements):
+    read = g._explicit_reads(_body(statements), 'u', 'sCursor', 's32')
+    assert '_cur2 = sCursor;' in read
+
+
+@pytest.mark.parametrize('statement', ['gDPPipeSync(sCursor++);', 'g2(&sCursor);'])
+def test_a_call_that_changes_the_cursor_is_left_as_written_and_the_rest_is_still_read(statement):
+    # a statement with a call is never rewritten, so it keeps the global
+    read = g._explicit_reads(_body(statement), 'u', 'sCursor', 's32')
+    assert statement in read and '_cur1 = sCursor;' in read

@@ -839,13 +839,26 @@ def _arm_stores(source, name, records):
 LABELS = re.compile(rf'(?:(?:case\b(?:\((?:[^()]|\([^()]*\))*\)|[^:;?()])*|{IDENT}\s*):(?!:)\s*)+')
 
 
+def _changes_cursor(text, cursor):
+    """True when the statement steps the cursor global, writes it or takes its address: a local copy in its place would
+    take the change, or give its own address. What the cursor points at (`*c = `, `c[1]++`, `&c->w0`) is not the cursor."""
+    c = re.escape(cursor)
+    itself, bare = rf'(?:\(\s*{c}\s*\)|(?<![\w.>]){c}\b)', r'(?!\s*(?:\[|\.|->))'
+    if re.search(rf'{itself}\s*(?:\+\+|--)|(?:\+\+|--)\s*{itself}{bare}|(?<!&)&(?!&)\s*{itself}{bare}', text):
+        return True
+    return any(not text[:m.start()].rstrip().endswith('*')
+               for m in re.finditer(rf'(?<![\w.>]){c}\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)', text))
+
+
 def _explicit_reads(source, name, cursor, kind='void'):
     """Each place m2c used the cursor global itself as a run's base (`M2C_FIELD(gCursor, s32 *, 8) = ...`,
     `temp_v1 = gCursor + 8;`) read into a local first (`_cur1 = gCursor;`), as m2c writes it elsewhere: the run
     finder starts a run at a read of the cursor into a local. A read stays valid until the cursor is written or a
     brace (a branch), a label or a call comes between; the next use reads it again. A read goes after the labels of its
     statement, since above them a jump to the label would pass it by. The local has the global's own type and the global
-    is read at the same place, so the program is the same."""
+    is read at the same place, so the program is the same. The source is left alone where it would not be: the global
+    stepped, written other than by the statement's own `cursor = ` or `+=`, or its address taken, and a braceless `else`
+    that uses it (no read fits between the `if` and the `else`)."""
     part = view(source, name)
     if not part:
         return source
@@ -874,6 +887,8 @@ def _explicit_reads(source, name, cursor, kind='void'):
             continue
         if not mention.search(text):
             continue
+        if _changes_cursor(text, cursor) or re.match(r'else\b', text):
+            return source
         if re.fullmatch(rf'{IDENT}\s*=\s*{re.escape(cursor)}\s*;', text):
             current = None  # m2c's own read into a local: the run finder starts there already
             continue
