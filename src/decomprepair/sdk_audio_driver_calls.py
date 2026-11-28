@@ -39,7 +39,7 @@ def _prototype(text, symbol, driverless):
 def _target_calls(asm, symbol):
     # Ignore comments and jumps into a routine: neither proves a call to the exported entry point.
     pattern = (r'(?m)^(?!\s*(?:#|//))[^#\n]*?\b(?:jal|jalx|bal)\s+' + re.escape(symbol)
-               + r'\b(?!\s*[+-])')
+               + r'\b(?![ \t]*[+-])')
     return len(re.findall(pattern, asm))
 
 
