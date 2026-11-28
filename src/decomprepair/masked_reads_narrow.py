@@ -8,9 +8,11 @@ step alone, and 0 with the argument its calls were short of.
 
 `masked_reads_narrow` offers, for each signed word local (declared once, no initialiser, its address never taken)
 whose reads are all `v & 0xFFFF` (or `v & 0xFF`, or the matching cast) and whose writes are a literal that fits,
-`+=`, `-=`, `++` or `--`, the local declared `u16` (`u8`) with the masks dropped, one child per local and one with all
+`+=`, `-=`, `++` or `--` (a statement of its own or a whole clause of a `for` header), the local declared `u16` (`u8`) with the masks dropped, one child per local and one with all
 of them. The values read are unchanged, and a `u16`/`u8` read is promoted to `int`, the type the masked word had, so
-the program means the same. `variants` returns [(family, source)]."""
+the program means the same. A read inside a subscript
+(`table[v & 0xFFFF]`) and a counter kept by a `for` header count too (a 297-instruction N64 entity-list update:
+320 -> 0 with both). `variants` returns [(family, source)]."""
 import re
 
 from .csource import _blank, find
@@ -36,8 +38,8 @@ def _uses(clean, var, start, end, decl):
             before = clean[start:hit.start()].rstrip()
             after = clean[hit.end():end].lstrip()
             # `&` binds looser than arithmetic and comparisons: only a whole operand is the counter's own mask
-            plain = before.endswith(('(', ',', '{', ';')) or re.search(r'(?<![=!<>+\-*/%&|^])=$', before)
-            if not plain or not after.startswith((')', ',', ';')):
+            plain = before.endswith(('(', ',', '{', ';', '[')) or re.search(r'(?<![=!<>+\-*/%&|^])=$', before)
+            if not plain or not after.startswith((')', ',', ';', ']')):
                 return None
         else:
             kind = hit['cast']
@@ -50,6 +52,11 @@ def _uses(clean, var, start, end, decl):
         return None
     kind = kinds.pop()
     limit = 0xFF if kind == 'u8' else 0xFFFF
+    headers = []
+    for loop in re.finditer(r'(?<![\w.>])for\s*\(', clean[:end]):
+        after_paren = close(clean, loop.end() - 1)
+        if loop.start() >= start and after_paren:
+            headers.append((loop.end(), after_paren - 1))
     for hit in re.finditer(rf'(?<![\w.>]){var}\b', clean[:end]):
         at = hit.start()
         if at < start or decl.start() <= at < decl.end() or any(a <= at < b for a, b in taken):
@@ -60,6 +67,11 @@ def _uses(clean, var, start, end, decl):
         prefixed = before.endswith(('++', '--'))
         stored = re.match(rf'\s*=\s*(?P<k>{_NUMBER})\s*;', after)
         statement = before.endswith((';', '{', '}', ')', ':')) or before.endswith('else')
+        if any(a <= at < b for a, b in headers):
+            if _header_write(clean, before, after, limit):
+                writes.append(at)
+                continue
+            return None
         if prefixed:
             statement = before[:-2].rstrip().endswith((';', '{', '}', ')', ':'))
             rest = after.lstrip()
@@ -74,6 +86,17 @@ def _uses(clean, var, start, end, decl):
         else:
             return None
     return (kind, reads) if reads and writes else None
+
+
+def _header_write(clean, before, after, limit):
+    """Whether the counter is set or stepped as a whole clause of a `for (...)` header, its value unused there."""
+    alone = before.endswith(('(', ';', ','))
+    stored = re.match(rf'\s*=\s*(?P<k>{_NUMBER})\s*[;,]', after)
+    if alone and stored:
+        return int(stored['k'], 0) <= limit
+    if before.endswith(('++', '--')):
+        return before[:-2].rstrip().endswith(('(', ';', ',')) and after.lstrip().startswith((';', ',', ')'))
+    return alone and bool(re.match(rf'\s*(?:\+\+|--|[-+]=\s*{_NUMBER})\s*[;,)]', after))
 
 
 def variants(source, name):
