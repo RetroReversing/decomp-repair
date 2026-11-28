@@ -15,7 +15,9 @@ put the stores of `$a3` and of the zero start index, and with them whether reloa
 
 Offered when the first statement that touches the local is `var = param;`, the parameter is not mentioned anywhere
 else, the two have the same type, and the local is never addressed. The local's declaration goes and every use becomes
-the parameter.
+the parameter. A local the body writes again is refused only when a `goto` jumps back (it could run the copy a second
+time): a jump forward never returns. An N64 message queueing function whose slot
+parameter is remapped in place, with a forward `goto` into its last branch, was 270 until the copy went (270 -> 0).
 
 With two copies (`start = arg1; size = arg2;`, a block-cache lookup of 364 instructions) each drop alone scored the same
 or worse (30 and 60 from 30) and both together were exact (0): the second scheduler places the prologue's saves with
@@ -57,16 +59,23 @@ def _assigned(body, local, copy):
     return False
 
 
+def _jumps_back(body):
+    """True when a `goto` may jump back (its label is not written below it, or is computed): only then could the copy
+    run again. A forward jump never returns above itself."""
+    return any(not hit[1] or not re.search(rf'(?:[;{{}}]|^)\s*{hit[1]}\s*:(?!:)', body[hit.end():])
+               for hit in re.finditer(rf'\bgoto\b\s*({IDENT})?', body))
+
+
 def _singles(source, name):
     part = view(source, name)
     if not part or re.search(r'\b(?:asm|__asm__|setjmp|longjmp)\b|^\s*#', part.body, re.M):
         return []
-    # a backward `goto` could run the copy again after the parameter changed: then only a local nothing else writes
-    jumps = re.search(r'\bgoto\b', part.body) is not None
     parameters = _parameters(part)
     if not parameters:
         return []
     body, base = part.body, part.opening + 1
+    # a backward `goto` could run the copy again after the parameter changed: then only a local nothing else writes
+    jumps = _jumps_back(body)
     result = []
     for copy in re.finditer(rf'(?:(?<=[;{{}}])|^)\s*({IDENT})\s*=\s*({IDENT})\s*;', body):
         local, param = copy[1], copy[2]
