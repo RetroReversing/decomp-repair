@@ -38,7 +38,7 @@ def _body(source, clean, start, end):
         return None
     # A switch would capture an outer break, and labels or jumps could enter or
     # leave its arms. C declarations are avoided because a case is not a scope.
-    if re.search(r'\b(?:break|continue|goto|case|default|asm|__asm__)\b|(?<![\w?:])'+IDENT+r'\s*:(?!:)', text):
+    if re.search(r'\b(?:break|continue|goto|case|default|asm|__asm__|typedef|struct|union|enum)\b|(?<![\w?:])'+IDENT+r'\s*:(?!:)', text):
         return None
     if re.search(r'(?:^|[;{}])\s*(?:(?:const|volatile|static|struct)\s+)*'+IDENT
                  + r'\s*(?:\*\s*|\s+)'+IDENT+r'\s*(?:[;=,\[])', text):

@@ -42,6 +42,7 @@ def test_generate_three_cases_and_leave_continuation_after_switch():
     lambda s: s.replace('result = 10;', 'break; result = 10;'),
     lambda s: s.replace('result = 10;', 'goto label; label: result = 10;'),
     lambda s: s.replace('result = 10;', 'typedef int T; T x; result = 10;'),
+    lambda s: s.replace('result = 10;', 'struct { int x; } item; result = 10;'),
     lambda s: s.replace('result = 10;', 'MACRO; result = 10;'),
 ])
 def test_unsafe_or_different_shapes_are_ignored(change):
