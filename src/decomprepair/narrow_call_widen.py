@@ -38,7 +38,7 @@ def variants(source, name):
         start, end = span[0] + assign.start(1), span[0] + assign.end(1)
         kind_start, kind_end = span[0] + decl.start('kind'), span[0] + decl.end('kind')
         text = source[:start] + '(' + decl['kind'] + ') ' + source[start:end] + source[end:]
-        text = text[:kind_start] + ('s32' if decl['kind'].startswith('s') else 'u32') + text[kind_end:]
+        text = text[:kind_start] + 's32' + text[kind_end:]
         out.append((FAMILY, text))
     return out
 

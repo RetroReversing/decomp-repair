@@ -24,3 +24,10 @@ def test_avoids_address_type_checks_and_later_writes():
 
 def test_does_not_rewrite_plain_arithmetic_assignment():
     assert not variants(SOURCE.replace('get(p, 2)', '1 + 2'), 'f')
+
+
+def test_unsigned_narrow_value_keeps_signed_integer_promotions():
+    source = SOURCE.replace("s16 x;", "u16 x;")
+    children = variants(source, 'f')
+    assert 's32 x;' in children[0][1]
+    assert '(u16) get(p, 2)' in children[0][1]
