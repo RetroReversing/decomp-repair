@@ -90,11 +90,14 @@ def measured_slot_orders(source, name, rows, header=''):
     return out
 
 
-_WORD_LOCAL = re.compile(rf'(?:(?:s32|u32|int|unsigned int)\s+|(?!return\b){IDENT}\s*\*+\s*)(?P<name>{IDENT})\s*;')
+_WORD_LOCAL = re.compile(rf'(?:(?:s32|u32|int|unsigned int|s16|u16|short|unsigned short)\s+|(?!return\b){IDENT}\s*\*+\s*)(?P<name>{IDENT})\s*;')
 
 
 def spill_local_orders(source, name, header='', limit=60):
-    """Swaps of two word-sized local declarations, for two stack slots the target holds the other way round.
+    """Swaps of two word- or halfword-sized local declarations, for two stack slots the target holds the other way round.
+
+    A spilled `s16` takes a slot too: on a 678-instruction N64 projectile update (SN GCC 2.8.1) two `s16` copies
+    declared after an `s32` angle left four `sp` rows, 4 -> 0 with the angle declared after one of them.
 
     reload gives spilled registers their slots in register-number order, which for locals is their declaration order,
     and the C does not name the slots. Locals set before the first loop (the invariants a loop spills) come first."""
