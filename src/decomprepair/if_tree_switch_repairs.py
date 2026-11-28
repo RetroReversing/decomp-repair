@@ -108,7 +108,12 @@ def _walk(items, value, var, out):
         test = TEST.match(item[1])
         if not test or test[1] != var:
             # an `if` on something else is part of a case's code, as it stands
-            if re.search(r'\b' + re.escape(var) + r'\b', item[4]) or re.search(r'\breturn\b', item[4]):
+            # reading the tested variable there is fine (m2c compares with it where it knows its value, `if (i == kind)`
+            # inside `case 1:`); changing it, taking its address or returning is not
+            name = re.escape(var)
+            changes = (r'\b' + name + r'\b\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|(?:\+\+|--)\s*' + name + r'\b|\b'
+                       + name + r'\s*(?:\+\+|--)|(?<![&\w])&\s*' + name + r'\b')
+            if re.search(changes, item[4]) or re.search(r'\breturn\b', item[4]):
                 raise Bail
             out.append(item[4])
             continue
