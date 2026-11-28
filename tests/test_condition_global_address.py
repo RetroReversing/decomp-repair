@@ -23,6 +23,7 @@ def test_rejects_unbraced_controls_shadow_address_and_writes():
         SOURCE.replace('    if ((flag', '    if (x)\n    if ((flag'),
         SOURCE.replace('    if ((flag', 'label:\n    if ((flag'),
         SOURCE.replace('int x)', 'int flag)'),
+        SOURCE.replace('    if ((flag', '    int y, flag;\n    if ((flag'),
         SOURCE.replace('flag == 1))', '(&flag != 0))'),
         SOURCE.replace('flag == 1))', '(flag = 1)))'),
         SOURCE.replace('extern u8 flag;', 'extern volatile u8 flag;'),

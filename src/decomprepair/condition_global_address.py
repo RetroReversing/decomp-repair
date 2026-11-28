@@ -59,7 +59,9 @@ def variants(source, name, header='', flags=None):
                 continue
             shadow = (rf'\b(?:(?:const|volatile|static|struct|unsigned|signed|long|short)\s+)*{IDENT}'
                       rf'\s*(?:\*\s*|\s+){re.escape(symbol)}\s*(?:[;=,\[)]|$)')
-            if re.search(shadow, clean[signature:part.end]):
+            multi_decl = (rf'(?m)^[ \t]*(?:(?:const|volatile|static|unsigned|signed|long|short)\s+)*{IDENT}'
+                          rf'\s+[^;{{}}()]*,\s*\**\s*{re.escape(symbol)}\s*(?:[;=,\[])')
+            if re.search(shadow, clean[signature:part.end]) or re.search(multi_decl, clean[part.opening:part.end]):
                 continue
             uses = list(re.finditer(rf'(?<![\w.>]){re.escape(symbol)}\b', condition))
             if len(uses) < 2:
