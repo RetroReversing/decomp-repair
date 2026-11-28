@@ -5,6 +5,11 @@ target branches on each test and loads `x` again for the second (`beqz $v0,L; lb
 had two arms, which jump.c merges only after the fold would have happened. Any `else` that followed stays on the second
 `if`, so both forms run the same statements. KMC GCC 2.7.2 -O1, a 119-instruction two-key lookup: 960 -> 0.
 
+A `guard && (a || b ...)` with no `else` is split inside the guard: `if (guard) { if (a) S else if (b) S }`. Where
+`S` ends in a `return`, loop.c moves each arm's copy out of the loop (a block with no label that ends in a jump out
+of it) and jump2 merges the copies afterwards; the `||` form has a label in front of its one body, which stays in the
+loop. SN GCC 2.8.1 `-O2`, a 435-instruction hit search: 1915 -> 470.
+
 or_arm_split
     Each `if (a || b ...) { S }` (S short) on its own, every one of them together, and each pair of them as one child:
     a function often has one `||` the target keeps folded among several it splits (a 146-instruction N64 drawing
@@ -54,13 +59,47 @@ def _sites(source, clean, lo, hi):
         tail = close(clean, opening)
         if tail < 0 or tail - opening > BODY or _KEPT.search(clean, opening, tail):
             continue
-        spans = _operands(clean[m.end():end])
-        if not spans:
-            continue
+        condition = clean[m.end():end]
+        spans = _operands(condition)
         body = source[opening:tail + 1]
-        arms = [f'if ({source[m.end() + a:m.end() + b].strip()}) {body}' for a, b in spans]
-        sites.append((m.start(), tail + 1, ' else '.join(arms)))
+        if spans:
+            arms = [f'if ({source[m.end() + a:m.end() + b].strip()}) {body}' for a, b in spans]
+            sites.append((m.start(), tail + 1, ' else '.join(arms)))
+            continue
+        group = _guarded_group(condition)
+        if not group or clean[tail + 1:hi].lstrip().startswith('else'):
+            continue  # an `else` runs when the guard fails too, which the nested form would lose
+        guard, base, spans = group
+        arms = [f'if ({source[m.end() + base + a:m.end() + base + b].strip()}) {body}' for a, b in spans]
+        outer = source[m.end():m.end() + guard].strip()
+        sites.append((m.start(), tail + 1, f'if ({outer}) {{ {" else ".join(arms)} }}'))
     return sites
+
+
+def _guarded_group(condition):
+    """`guard && (a || b ...)`: (where the guard ends, where the group's inside starts, its operands), or None."""
+    stripped = condition.rstrip()
+    if not stripped.endswith(')'):
+        return None
+    depth, at, opened, guard = 0, 0, None, None
+    while at < len(stripped):
+        char = stripped[at]
+        if depth == 0 and (condition.startswith('||', at) or char in '?,'):
+            return None
+        if depth == 0 and condition.startswith('&&', at):
+            guard, opened = at, None
+            at += 2
+            continue
+        if char == '(' and depth == 0 and guard is not None and not stripped[guard + 2:at].strip():
+            opened = at
+        depth += (char in '([') - (char in ')]')
+        if depth == 0 and char == ')' and opened is not None and at != len(stripped) - 1:
+            opened = None
+        at += 1
+    if guard is None or opened is None:
+        return None
+    spans = _operands(stripped[opened + 1:-1])
+    return (guard, opened + 1, spans) if spans else None
 
 
 def _apply(source, sites):

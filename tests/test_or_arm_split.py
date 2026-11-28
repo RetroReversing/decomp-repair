@@ -42,3 +42,13 @@ def test_pairs_of_conditions_are_split_together():
     children = [text for _, text in variants(source, 'f')]
     assert any('if (a == 1) { g(1); } else if (a == 2)' in text and 'if (b == 3) { g(2); } else if (b == 4)' in text
                and 'c == 5 || c == 6' in text for text in children)
+
+
+def test_an_or_group_behind_a_guard_is_split_inside_it():
+    children = [_squash(t) for _, t in variants('int f(void) { if (d && (a || b)) { return 1; } return 0; }', 'f')]
+    assert children == ['int f(void) { if (d) { if (a) { return 1; } else if (b) { return 1; } } return 0; }']
+
+
+def test_a_guarded_group_with_an_else_stays():
+    assert variants('void f(void) { if (d && (a || b)) { g(); } else { h(); } }', 'f') == []
+    assert variants('void f(void) { if (d && (a || b) == c) { g(); } }', 'f') == []
