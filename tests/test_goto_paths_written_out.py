@@ -43,8 +43,7 @@ block_11:
 
 
 def child(source=SOURCE):
-    (family, text), = paths.variants(source, 'check')
-    assert family == paths.FAMILY
+    text, = [text for family, text in paths.variants(source, 'check') if family == paths.FAMILY]
     return text
 
 
@@ -172,3 +171,61 @@ def test_a_value_assigned_in_an_arm_is_not_carried_past_it():
     lines = ['    v = 1;', '    if (c) {', '        v = 2;', '        a = v;', '    } else {', '        b = v;', '    }']
     assert _propagate(lines, 'v') == ['    if (c) {', '        a = 2;', '    } else {', '        b = 1;', '    }']
     assert _propagate([*lines, '    d = v;'], 'v') is None
+
+
+SHARED_STORE = """void tick(Obj *obj, s32 mode)
+{
+    if (mode == 1) {
+        if (gCount > 0) {
+            gCount--;
+            goto block_9;
+        }
+        gTurn++;
+        if (gTurn >= 2U) {
+            reset();
+            if (gSeat != 1) {
+                goto block_5;
+            }
+            goto block_4;
+        }
+        goto block_6;
+    }
+    if (mode == 2) {
+        gTurn++;
+        if (gTurn >= 3U) {
+            reset();
+            if (gOther == 1) {
+block_4:
+                gWinner = gSeat + 1;
+            } else {
+block_5:
+                gWinner = obj->seat;
+            }
+        }
+block_6:
+        release(obj);
+        return;
+    }
+    if (mode == 3) {
+        if (gCount > 0) {
+            gCount--;
+            goto block_9;
+        }
+        stop();
+        return;
+    }
+block_9:
+    obj->visible = 0;
+}
+"""
+
+
+def test_one_label_is_kept_while_the_others_are_written_out():
+    kept = [' '.join(text.split()) for family, text in paths.variants(SHARED_STORE, 'tick') if family == paths.KEPT]
+    shared = [text for text in kept if text.count('goto block_9;') == 2 and text.count('goto') == 2]
+    assert shared
+    text = shared[0]
+    assert 'block_9: obj->visible = 0;' in text
+    # the arms jumped into are written where the jumps were, and what both ways then run is written once
+    assert ' '.join("""if (gTurn >= 2U) { reset(); if (gSeat != 1) { gWinner = obj->seat; }
+                    else { gWinner = gSeat + 1; } } release(obj); return;""".split()) in text

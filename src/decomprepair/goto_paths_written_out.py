@@ -30,20 +30,29 @@ goto_paths_literals
     (`inverted_guard_ladder`), the combination: measured on a 259-instruction N64 object reset (SN, `-O2 -mips3`),
     where the paths written out alone scored worse (3840 -> 4575), with literals 3960, and with the chain 2090.
 
+goto_paths_kept_label
+    The same paths with the jumps to one label left as they are, one child per label (of up to LIMIT). Writing every
+    jump out also copies a shared tail the source did write once (one store that several early arms skip to), which the
+    compiler would have kept in one place itself. Matched on a 263-instruction N64 actor update (SN, `-O2 -mips3
+    -mfp64`): after its search loops were written back, writing every path out went 2980 -> 3480, and every path but
+    the shared store's, with the tail every arm then ends with written once, 2980 -> 1570.
+
 A hypothesis like every family's; the judge decides.
 """
 import re
 
 from . import inverted_guard_ladder
 from .csource import _blank, find
-from .goto_structure_repairs import LOOPS, parse, walk
+from .goto_structure_repairs import LOOPS, blocks, parse, walk
 from .pattern_repairs import close
 
 FAMILY = 'goto_paths_written_out'
 LITERALS = 'goto_paths_literals'
-FAMILIES = (FAMILY, LITERALS)
+KEPT = 'goto_paths_kept_label'
+FAMILIES = (FAMILY, LITERALS, KEPT)
 
 MAX_STATEMENTS = 400
+LIMIT = 6  # labels tried as the one kept
 _LITERAL = r'-?(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*'
 _DECLARATION = re.compile(r'\s*(?!return\b|goto\b|else\b)[A-Za-z_]\w*(?:\s+|\s*\*+\s*)[A-Za-z_]\w*\s*[;=,\[]')
 
@@ -271,25 +280,26 @@ def _literals(source, name):
     return head + body + tail if changed else None
 
 
-def variants(source, name):
+def _written(source, name):
+    """The function with every followed `goto` written as its path, or None when the paths cannot be written."""
     span = find(source, name)
     if not span:
-        return []
+        return None
     clean = _blank(source)
     opening = clean.find('{', span[0], span[1])
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
-        return []
+        return None
     body = clean[opening:end]
     if not re.search(r'\bgoto\b', body) or re.search(r'(?m)^\s*#|&&\s*[A-Za-z_]\w*\s*[;,)]\s*$|\b(?:asm|__asm__|setjmp)\b', body):
-        return []
+        return None
     try:
         function = parse(clean, opening + 1, end - 1)
     except ValueError:
-        return []
+        return None
     for s, in_loop in walk(function):
         if in_loop and s.kind in ('goto', 'label'):
-            return []
+            return None
     # The declarations stay where they are; the statements after them are rewritten.
     first = 0
     while first < len(function) and function[first].kind == 'simple' and _DECLARATION.match(
@@ -297,23 +307,106 @@ def variants(source, name):
         first += 1
     statements = function[first:]
     if not statements:
-        return []
+        return None
     try:
         writer = _Writer(source, clean, statements)
         lines = writer.render(statements, [], 1)
     except (_Decline, RecursionError):
-        return []
+        return None
     start = source.rfind('\n', 0, statements[0].start) + 1
     if source[start:statements[0].start].strip():
         start = statements[0].start
     out = source[:start] + '\n'.join(lines) + '\n' + source[end - 1:]
     if re.search(r'\bgoto\b', _blank(out)[opening:]):
-        return []
-    results = [(FAMILY, out)]
-    literal = _literals(out, name)
+        return None
+    return out
+
+
+def _shared_tail(source, s):
+    """The last statements both braced arms of the `if` run, as (then's, else's), leaving `then` something."""
+    then, other = s.parts.get('then'), s.parts.get('other')
+    if s.kind != 'if' or not other or not then['block'] or not other['block']:
+        return [], []
+    left, right = then['stmts'], other['stmts']
+    n = 0
+    while n < min(len(left) - 1, len(right)):
+        a, b = left[-1 - n], right[-1 - n]
+        text = source[a.start:a.end]
+        if (a.kind not in ('simple', 'jump') or b.kind != a.kind or text.startswith('__kept') or _DECLARATION.match(text)
+                or ' '.join(text.split()) != ' '.join(source[b.start:b.end].split())):
+            break
+        n += 1
+    return (left[len(left) - n:], right[len(right) - n:]) if n else ([], [])
+
+
+def _hoist_tails(source, name):
+    """Statements both arms of an `if` end with written once after it, innermost `if`s first.
+
+    A path written out ends every arm with the whole rest of the function; the source wrote that rest once after the
+    test (`release(p); return;` after two nested guards)."""
+    for _ in range(40):
+        span = find(source, name)
+        clean = _blank(source)
+        opening = clean.find('{', span[0], span[1])
+        end = close(clean, opening, '{', '}')
+        try:
+            function = parse(clean, opening + 1, end - 1)
+        except ValueError:
+            return source
+        for s in reversed([s for block in blocks(function) for s in block]):
+            ours, theirs = _shared_tail(source, s)
+            if ours:
+                break
+        else:
+            return source
+        indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, s.start) + 1:])[0]
+        moved = ''.join(f'\n{indent}{source[t.start:t.end]}' for t in ours)
+        text = source[:s.end] + moved + source[s.end:]
+        for t in sorted(ours + theirs, key=lambda t: t.start, reverse=True):
+            line = text.rfind('\n', 0, t.start)
+            start = line if not text[line + 1:t.start].strip() else t.start
+            text = text[:start] + text[t.end:]
+        source = re.sub(r'\}\s*else\s*\{\s*\}', '}', text)
+    return source
+
+
+def _keeping(source, name, label):
+    """The paths written out with the jumps to `label` left alone, or None.
+
+    The kept jump stands for the writer as a `return` (nothing runs after it where it stands) and the label as a plain
+    statement; both are put back afterwards. The label must come out exactly once: copied, or dropped with the code only
+    it reaches, the program would not be the one given."""
+    span = find(source, name)
+    clean = _blank(source)[span[0]:span[1]]
+    jumps = list(re.finditer(rf'\bgoto\s+{label}\s*;', clean))
+    places = list(re.finditer(rf'(?<![\w.>?:]){label}\s*:(?!:)', clean))
+    if not jumps or len(places) != 1 or '__kept' in source:
+        return None
+    edits = [(m.start(), m.end(), 'return __kept_jump;') for m in jumps]
+    edits.append((places[0].start(), places[0].end(), '__kept_label();'))
+    text = source
+    for start, stop, replacement in sorted(edits, reverse=True):
+        text = text[:span[0] + start] + replacement + text[span[0] + stop:]
+    out = _written(text, name)
+    if out is None or out.count('__kept_label();') != 1:
+        return None
+    out = _hoist_tails(out, name)
+    return out.replace('return __kept_jump;', f'goto {label};').replace('__kept_label();', f'{label}:')
+
+
+def variants(source, name):
+    out = _written(source, name)
+    results = [] if out is None else [(FAMILY, out)]
+    literal = _literals(out, name) if out is not None else None
     if literal:
         results += [(LITERALS, text) for _, text in inverted_guard_ladder.variants(literal, name)[:2]]
         results.append((LITERALS, literal))
+    span = find(source, name)
+    if span:
+        labels = list(dict.fromkeys(re.findall(r'\bgoto\s+([A-Za-z_]\w*)\s*;', _blank(source)[span[0]:span[1]])))
+        if len(labels) > 1:
+            kept = (_keeping(source, name, label) for label in labels[:LIMIT])
+            results += [(KEPT, text) for text in kept if text is not None and text != out]
     return results
 
 
