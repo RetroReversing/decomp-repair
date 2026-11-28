@@ -151,6 +151,7 @@ void f(int i) {
 """
     children = variants(source, 'f')
     assert any('do { base = table; } while (0);' in text for _, text in children)
+    assert any('do { do { base = table; } while (0); } while (0);' in text for _, text in children)
     assert not any('do { __typeof__' in text for _, text in children)
     for declaration in ('const __typeof__(table + 0) base;', '__typeof__(table + 0) base, other;'):
         changed = source.replace('__typeof__(table + 0) base;', declaration)
