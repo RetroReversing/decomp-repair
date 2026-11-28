@@ -69,3 +69,8 @@ def test_derives_missing_destination_prototype_from_checked_sdk_declaration():
     assert result and 'void n_alSynSetVol(void *, short, int);' in result[0][1]
     wrong = SOURCE.replace('void n_alSynSetVol(void *, short, int);', 'void n_alSynSetVol(void *, float);')
     assert not variants(wrong, 'f', '', 'jal n_alSynSetVol')
+
+
+def test_ignores_comment_mentions_and_interior_call_targets():
+    assert not variants(SOURCE, 'f', '', '# jal n_alSynSetVol')
+    assert not variants(SOURCE, 'f', '', 'jal n_alSynSetVol+4')

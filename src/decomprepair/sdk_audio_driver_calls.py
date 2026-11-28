@@ -36,6 +36,13 @@ def _prototype(text, symbol, driverless):
     return None
 
 
+def _target_calls(asm, symbol):
+    # Ignore comments and jumps into a routine: neither proves a call to the exported entry point.
+    pattern = (r'(?m)^(?!\s*(?:#|//))[^#\n]*?\b(?:jal|jalx|bal)\s+' + re.escape(symbol)
+               + r'\b(?!\s*[+-])')
+    return len(re.findall(pattern, asm))
+
+
 def _volatile_typedefs(text):
     """Simple volatile aliases and aliases of those aliases; unrelated SDK typedefs need not block a call."""
     declarations = re.findall(r'\btypedef\s+([^;{}]+);', text)
@@ -80,7 +87,7 @@ def variants(source, name, header='', asm=''):
                for token in (original, replacement, found['player'], 'drvr')):
             continue
         # A named target call, not a textual mention or an unverified SDK name, supplies the ABI evidence.
-        if not re.search(r'\b(?:jal|jalx|bal)\s+' + re.escape(replacement) + r'\b', asm):
+        if not _target_calls(asm, replacement):
             continue
         standard = _prototype(declarations, original, False)
         if not standard:
@@ -99,7 +106,7 @@ def variants(source, name, header='', asm=''):
     # One target call cannot justify replacing several unrelated donor calls.
     for original, changes in list(edits.items()):
         replacement = 'n_' + original
-        target_calls = len(re.findall(r'\b(?:jal|jalx|bal)\s+' + re.escape(replacement) + r'\b', asm))
+        target_calls = _target_calls(asm, replacement)
         existing = len(re.findall(r'\b' + re.escape(replacement) + r'\s*\(', body))
         if target_calls < len(changes) + existing:
             del edits[original]
