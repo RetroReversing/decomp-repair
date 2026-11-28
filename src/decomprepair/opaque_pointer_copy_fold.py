@@ -21,7 +21,7 @@ def _mentions(text, name, start, end):
 
 
 def variants(source, name, header='', flags=None):
-    if any(flag.startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor')) for flag in flags or ()):
+    if any(flag.startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor', '@')) for flag in flags or ()):
         return []  # command-line macros and forced includes are not present in source or header
     part = view(source, name)
     if not part:
@@ -38,7 +38,7 @@ def variants(source, name, header='', flags=None):
     decls = {d['name']: d for d in declarations if counts[d['name']] == 1
              and not any(part.opening < opening < d.start() < closing for opening, closing in braces.items())}
     macros = '\n'.join(re.findall(r'(?m)^\s*#.*(?:\\\n.*)*', source + '\n' + header))
-    if re.search(r'(?m)^\s*#\s*include\b', macros):
+    if re.search(r'(?m)^\s*#\s*(?:include(?:_next)?|import)\b', macros):
         return []  # an unread header can define a macro that captures a local
     macro_names = set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})\b', macros))
     used_macros = macro_names.intersection(re.findall(IDENT, clean[part.opening + 1:part.end]))

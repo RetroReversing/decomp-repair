@@ -74,11 +74,14 @@ def test_macro_cannot_retain_source_address_before_the_copy():
 
 def test_unknown_includes_are_not_assumed_to_be_macro_free():
     assert not variants(SOURCE, 'f', '#include "unknown.h"\n')
+    assert not variants(SOURCE, 'f', '#include_next "unknown.h"\n')
+    assert not variants(SOURCE, 'f', '#import "unknown.h"\n')
 
 
 def test_command_line_macros_are_not_assumed_to_be_safe():
     assert not variants(SOURCE, 'f', flags=['-O2', '-DCHANGE(x)=((x)=0)'])
     assert not variants(SOURCE, 'f', flags=['-O2', '-D', 'CHANGE(x)=((x)=0)'])
+    assert not variants(SOURCE, 'f', flags=['@flags.rsp'])
     assert variants(SOURCE, 'f', flags=['-O2', '-G0'])
     for option in ('-include', '-imacros=other.h', '-Wp,-DCHANGE(x)=0', '-Xpreprocessor'):
         assert not variants(SOURCE, 'f', flags=['-O2', option])
