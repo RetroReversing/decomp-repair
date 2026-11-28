@@ -21,6 +21,7 @@ statement rewritten with the scratch copy one and two scopes deep, and the same 
 once. The judge decides; no child is a verdict."""
 import re
 
+from .csource import _blank
 from .integer_repair_support import edit, view
 from .local_weight_ladder import _declaration, units
 
@@ -46,7 +47,15 @@ def _pointers(source, name):
 def _fenced(text, local, declared, depth):
     """The statement with its one read of `local` taken through a fenced scratch copy, or None."""
     scratch = f'__fence_{local}'
-    read = re.compile(rf'(?<![\w.>]){re.escape(local)}\b(?!\s*(?:[-+*/%&|^]|<<|>>)?=(?!=))')
+    clean = _blank(text)
+    name = re.escape(local)
+    # A pointer value is not a read when the statement can change the pointer itself. In particular,
+    # passing &p to a callback must let that callback update p, not the scratch copy.
+    wrapped = rf'(?:\(\s*)*{name}\b(?:\s*\))*'
+    if re.search(rf'&\s*(?:\(\s*)*{name}\b|(?:\+\+|--)\s*{wrapped}|'
+                 rf'(?<![\w.>]){wrapped}\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))', clean):
+        return None
+    read = re.compile(rf'(?<![\w.>]){name}\b(?!\s*(?:[-+*/%&|^]|<<|>>)?=(?!=))')
     if len(read.findall(text)) != 1:
         return None
     body = read.sub(scratch, text.strip(), count=1)
@@ -59,6 +68,7 @@ def variants(source, name):
     if not pointers:
         return []
     found, _ = units(source, name)
+    part = view(source, name)
     result, seen = [], set()
 
     def add(text):
@@ -67,6 +77,12 @@ def variants(source, name):
             result.append((FAMILY, text))
 
     for local, declared in sorted(pointers.items()):
+        # Reusing a scratch name can shadow an earlier fence or a source variable.
+        if re.search(rf'\b__fence_{re.escape(local)}\b', _blank(source)):
+            continue
+        # A prior address escape lets another call update this local while the statement runs.
+        if re.search(rf'&\s*(?:\(\s*)*{re.escape(local)}\b', part.body):
+            continue
         reads = [(start, end, text) for start, end, text, counts in found if counts.get(local) == 1]
         for depth in DEPTHS:
             edits = []
