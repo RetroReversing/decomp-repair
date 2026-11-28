@@ -47,5 +47,6 @@ def test_declines_unsafe_or_incomplete_context():
     assert not variants(SOURCE.replace('    s32 value;', '    volatile s32 value;'), 'f')
     assert not variants(SOURCE.replace('    if (choice) {', '    { int value; use(value); }\n    if (choice) {'), 'f')
     assert not variants(SOURCE.replace('    if (choice) {', '    { __typeof__(value) p; use(p); }\n    if (choice) {'), 'f')
+    assert not variants(SOURCE.replace('    if (choice) {', '    { int other, value; use(value); }\n    if (choice) {'), 'f')
     assert not variants(SOURCE, 'f', flags=['-Dvalue=other'])
     assert not variants(SOURCE, 'f', header='#include "unknown.h"')

@@ -53,7 +53,8 @@ def variants(source, name, header='', flags=None):
                     or re.search(rf'(?<!&)\&(?!&)\s*\(*\s*{re.escape(var)}\b', body)):
                 valid_locals = False
                 break
-        if not valid_locals:
+        multi = rf'\b{IDENT}\s+[^;{{}}()]*,\s*\**\s*(?:{re.escape(ptr)}|{re.escape(value)})\s*(?:[;=,\[])'
+        if not valid_locals or re.search(multi, body):
             continue
         # Offer the combined form only when two distinct increment arms jump
         # to this store, not arbitrary gotos whose branch context may differ.
