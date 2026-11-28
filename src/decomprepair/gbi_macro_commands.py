@@ -66,6 +66,7 @@ DECLARATION = re.compile(rf'(?:{IDENT}\s+)+\**\s*{IDENT}\s*;\Z')
 DERIVED = re.compile(rf'(?P<y>{IDENT})\s*=\s*(?P<x>{IDENT})\s*\+\s*(?P<k>{NUMBER})\s*;\Z')
 CALL = re.compile(rf'\b(?!(?:if|while|for|switch|return|sizeof|M2C_FIELD)\b)(?!__repair)(?P<f>{IDENT})\s*\(')
 CONTROL = re.compile(r'\b(?:goto|return|case|default|break|continue)\b|^\s*\w+\s*:(?!:)', re.M)
+LEAVES = re.compile(r'\b(?:goto|return|case|default|break|continue)\b')
 CAST = re.compile(r'^\(\s*(?:(?:unsigned|signed)\s+)?(?:s32|u32|int|long|unsigned|s16|u16|short)\s*\)\s*')
 
 
@@ -559,6 +560,8 @@ def _plan(clean, spans, cursor, size, records, start):
 
     for index, (a, b) in enumerate(spans):
         text = clean[a:b]
+        if LEAVES.search(text):
+            last = None  # a `break`, `return` or `case` ends the path: the next arm's read starts a run of its own
         if hit := read.match(text):
             run, old = owner(hit['x'])
             if run is not None:
