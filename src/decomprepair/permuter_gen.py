@@ -119,6 +119,30 @@ def protect_narrow_cast(original, failure):
     return call
 
 
+def protect_return_value(original, failure):
+    """Reject a return type turned into `void` while the body still returns a value."""
+    @wraps(original)
+    def call(fn, ast, indices, region, random):
+        result = original(fn, ast, indices, region, random)
+        # The native pass swaps a copied definition into `ast`, so `fn` still shows the old type.
+        for node in ast.ext:
+            if type(node).__name__ != 'FuncDef' or node.decl.name != fn.decl.name:
+                continue
+            returned = node.decl.type.type
+            names = getattr(getattr(returned, 'type', None), 'names', None)
+            if type(returned).__name__ == 'TypeDecl' and names == ['void'] and _returns_value(node.body):
+                # GCC only warns and drops the value, so the byte score can improve on a function that returns nothing.
+                raise failure()
+        return result
+    return call
+
+
+def _returns_value(node):
+    if type(node).__name__ == 'Return':
+        return node.expr is not None
+    return any(_returns_value(child) for _, child in node.children())
+
+
 def supported_methods(methods):
     """Do not manufacture self reads or arithmetic cancellations to shape allocation."""
     # Native perm_add_self_assignment also inserts x++; x--;. Signed overflow,
@@ -715,6 +739,8 @@ def main() -> int:
                         node for node in candidate.ast.ext if isinstance(node, c_ast.Typedef)])
                 if method.__name__ == "perm_cast_simple":
                     return protect_narrow_cast(method, RejectedRewrite)
+                if method.__name__ == "perm_randomize_function_type":
+                    return protect_return_value(method, RejectedRewrite)
                 if method.__name__ == "perm_inline":
                     return private_inline(method)
                 return method
