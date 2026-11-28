@@ -42,3 +42,61 @@ def test_the_assignment_of_the_local_and_non_pointer_locals_are_left_alone():
 
 def test_nothing_is_offered_without_a_pointer_local():
     assert variants('s32 f(s32 a) { s32 b; b = a; g(b); return b; }', 'f') == []
+
+
+def test_pointer_address_and_increment_are_not_replaced_by_a_scratch():
+    source = """void f(void) {
+    void *p;
+    use(p);
+    callback(&p);
+    callback(&(p));
+    callback(& /* address */ ((p)));
+    consume(p++);
+    consume(++p);
+    consume(p--);
+    consume(--p);
+}
+"""
+    out = [text for _, text in variants(source, 'f')]
+    assert not any('__fence_p' in text for text in out)
+    for text in out:
+        for original in ('callback(&p)', 'callback(&(p))', 'callback(& /* address */ ((p)))',
+                         'consume(p++)', 'consume(++p)', 'consume(p--)', 'consume(--p)'):
+            assert original in text
+
+
+def test_existing_scratch_name_and_repeated_fence_are_not_shadowed():
+    source = """void f(void) {
+    void *p;
+    void *__fence_p;
+    use(p);
+}
+"""
+    assert not any('__fence_p = p' in text for _, text in variants(source, 'f'))
+    fenced = next(text for _, text in variants(SOURCE, 'build') if '__fence_data' in text)
+    assert not any(text.count('u8 *__fence_data;') > fenced.count('u8 *__fence_data;')
+                   for _, text in variants(fenced, 'build'))
+
+
+def test_parenthesized_pointer_updates_do_not_become_scratch_updates():
+    source = """void f(void) {
+    void *p;
+    use(p);
+    consume((p)++);
+    consume(++((p)));
+    (p) = next();
+}
+"""
+    out = [text for _, text in variants(source, 'f')]
+    assert out and any('use(__fence_p)' in text for text in out)
+    assert all('consume((p)++)' in text and 'consume(++((p)))' in text and '(p) = next()' in text for text in out)
+
+
+def test_prior_address_escape_prevents_staging_before_a_call():
+    source = """void f(void) {
+    void *p;
+    remember(& /* address */ (p));
+    use(mutate(), p);
+}
+"""
+    assert variants(source, 'f') == []
