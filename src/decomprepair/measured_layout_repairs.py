@@ -12,7 +12,7 @@ HIGH = re.compile(rf'lui\s+({REG}),\s*%hi\(({NAME})\)')
 BASE = re.compile(rf'addiu\s+({REG}),\s*\1,\s*%lo\(({NAME})\)')
 LOAD = re.compile(rf'lw\s+({REG}),\s*%lo\(({NAME})\)\(({REG})\)')
 STORE = re.compile(rf'sw\s+({REG}),\s*(0x[0-9a-fA-F]+|\d+)?\(({REG})\)')
-DECL = re.compile(r'\b(?:char|s8|u8|unsigned\s+char)\s+(?P<name>(?:frame|padding?|pad)\w*)\s*'
+DECL = re.compile(r'\b(?:char|s8|u8|unsigned\s+char)\s+(?P<name>(?:frame|padding?|pad|unused)\w*)\s*'
                   r'\[\s*(?P<count>0x[0-9a-fA-F]+|\d+)\s*\]\s*;')
 
 
