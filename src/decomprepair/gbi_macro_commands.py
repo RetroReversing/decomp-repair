@@ -835,12 +835,17 @@ def _arm_stores(source, name, records):
     return edit(source, edits) if edits else source
 
 
+# the labels in front of a statement (`case 1:`, `default:`, a goto label): `_statements` keeps them with it
+LABELS = re.compile(rf'(?:(?:case\b(?:\((?:[^()]|\([^()]*\))*\)|[^:;?()])*|{IDENT}\s*):(?!:)\s*)+')
+
+
 def _explicit_reads(source, name, cursor, kind='void'):
     """Each place m2c used the cursor global itself as a run's base (`M2C_FIELD(gCursor, s32 *, 8) = ...`,
     `temp_v1 = gCursor + 8;`) read into a local first (`_cur1 = gCursor;`), as m2c writes it elsewhere: the run
     finder starts a run at a read of the cursor into a local. A read stays valid until the cursor is written or a
-    brace (a branch) or a call comes between; the next use reads it again. The local has the global's own type and the
-    global is read at the same place, so the program is the same."""
+    brace (a branch), a label or a call comes between; the next use reads it again. A read goes after the labels of its
+    statement, since above them a jump to the label would pass it by. The local has the global's own type and the global
+    is read at the same place, so the program is the same."""
     part = view(source, name)
     if not part:
         return source
@@ -854,6 +859,11 @@ def _explicit_reads(source, name, cursor, kind='void'):
         if previous is not None and re.search(r'[{}]', clean[previous:a]):
             current = None
         previous = b
+        if labels := LABELS.match(text):
+            current = None  # a jump to the label has not passed the earlier read
+            a, text = a + labels.end(), text[labels.end():]
+        elif re.match(r'case\b', text):
+            return source  # a label this cannot find the end of: nowhere safe to put a read
         if write.match(text):
             if mention.search(text[text.index('=') + 1:]):
                 return source  # `cursor = cursor + 8`: m2c's own advance, not this shape
@@ -871,7 +881,12 @@ def _explicit_reads(source, name, cursor, kind='void'):
             current = next(n for n in (f'_cur{k}' for k in range(1, 1000)) if n not in clean and n not in decls)
             decls.append(current)
             line = clean.rfind('\n', 0, a) + 1
-            edits.append((a, a, f'{current} = {cursor};\n{re.match(r"[ \t]*", clean[line:a])[0]}'))
+            indent = re.match(r"[ \t]*", clean[line:a])[0]
+            if labels:  # `;` ends the label's statement, so the run finder sees the read as one of its own
+                indent += '    '
+                edits.append((a - len(labels[0]) + len(labels[0].rstrip()), a, f';\n{indent}{current} = {cursor};\n{indent}'))
+            else:
+                edits.append((a, a, f'{current} = {cursor};\n{indent}'))
         edits += [(a + m.start(), a + m.end(), current) for m in mention.finditer(text)]
     if not decls:
         return source
