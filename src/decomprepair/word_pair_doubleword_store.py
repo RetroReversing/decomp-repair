@@ -18,7 +18,18 @@ same plain base (a name or a member chain) at K and K + 4, K a multiple of 8, as
 `*(T *)b` or `((T *)b)[i]` (i even), `T` a 32-bit integer type: one `s64` store of the combined value (the constant in
 both halves; big-endian words, the same either way for equal halves). When the target's assembly is given it must
 store two different registers other than `$zero` to offsets 4 apart off one base, the doubleword's split halves (a
-target that keeps `sw $zero` twice was not written this way). Only MIPS. Proposals only; the judge decides."""
+target that keeps `sw $zero` twice was not written this way). Only MIPS. Proposals only; the judge decides.
+
+**Two address-named globals** (observed: one 16-instruction N64 initializer that clears three doublewords, 390 -> 0
+with SN GCC 2.7.2 `-G0 -mips2 -O2`, 390 -> 160 under its former KMC `-O1`). m2c names each half of a 64-bit global by
+its own address,
+
+    D_80100000 = 0;  D_80100004 = 0;               ->  *(s64 *) &D_80100000 = 0;
+
+and the target stores two registers in turn (`sw $v0, %lo(D_80100000)($at)`, `sw $v1, %lo(D_80100004)($at)`). Offered
+only with the target's assembly, for back-to-back statements storing one such constant to `D_<address>` symbols 4 apart
+(the first on a multiple of 8) whose two `sw` there use different registers other than `$zero`: that also shows both
+are word stores."""
 import re
 
 FAMILIES = ('word_pair_doubleword_store',)
@@ -34,6 +45,10 @@ _ATOMS = (
     ('deref', re.compile(r'\*\s*\(\s*' + _WORD + r'\s*\*\s*\)\s*(?P<b>' + _BASE + r')\s*=\s*(?P<c>' + _CONST + r')\s*;')),
     ('index', re.compile(r'\(\s*\(\s*' + _WORD + r'\s*\*\s*\)\s*(?P<b>' + _BASE + r')\s*\)\s*\[\s*(?P<i>' + _NUM + r')\s*\]\s*=\s*(?P<c>' + _CONST + r')\s*;')),
 )
+# `D_<address> = K;` as a whole statement: after `;`, `{`, `}` or at the text's start, so a declaration's initializer
+# or an unbraced `if` body is left alone.
+_SYMBOL = re.compile(r'(?:\A|(?<=[;{}]))\s*(?P<s>D_[0-9A-F]{8})\s*=\s*(?P<c>' + _CONST + r')\s*;')
+_LOW_STORE = re.compile(r'\bsw\s+\$(\w+)\s*,\s*%lo\(\s*(D_[0-9A-F]{8})\s*\)')
 _STORE = re.compile(r'\bsw\s+\$(\w+)\s*,\s*(-?(?:0x[0-9a-fA-F]+|\d+))?\(\s*\$(\w+)\s*\)')
 
 
@@ -72,18 +87,32 @@ def _split_pair(asm):
     return False
 
 
+def _symbol_atoms(text):
+    """[(start, end, kind, symbol, address, constant)] of every literal stored to an address-named global."""
+    return [(m.start('s'), m.end(), 'symbol', m['s'], int(m['s'][2:], 16), int(m['c'], 0)) for m in _SYMBOL.finditer(text)]
+
+
+def _split_symbols(asm, first, second):
+    """True when the target stores `first` and `second` (symbol names) from two different registers, neither `$zero`."""
+    registers = {}
+    for register, symbol in _LOW_STORE.findall(asm):
+        registers.setdefault(symbol, set()).add(register)
+    low, high = registers.get(first, set()), registers.get(second, set())
+    return bool(low and high and not (low | high) & {'zero', '0'} and not low & high)
+
+
 def _store(base, offset, constant):
     value = '0' if constant == 0 else f'0x{constant:08X}{constant:08X}'
+    if base.startswith('&'):
+        return f'*(s64 *) {base} = {value};'
     if offset:
         return f'M2C_FIELD({base}, s64 *, {offset}) = {value};'
     return f'*(s64 *){base} = {value};'
 
 
 def variants(source, name=None, asm=None):
-    if asm and not _split_pair(asm):
-        return []
     text = _mask(source)
-    atoms = _atoms(text)
+    atoms = _atoms(text) if not asm or _split_pair(asm) else []
     sites = []
     for first in atoms:
         start, end, kind, base, offset, constant = first
@@ -94,6 +123,12 @@ def variants(source, name=None, asm=None):
                     or second[5] != constant or text[end:second[0]].strip()):
                 continue
             sites.append((start, second[1], _store(base, offset, constant)))
+    symbols = _symbol_atoms(text) if asm else []
+    for (start, end, _, low, address, constant), (after, stop, _, high, next_address, other) in zip(symbols, symbols[1:]):
+        if (address % 8 or next_address != address + 4 or constant != other or not 0 <= constant <= 0x7FFFFFFF
+                or text[end:after].strip() or not _split_symbols(asm, low, high)):
+            continue
+        sites.append((start, stop, _store('&' + low, 0, constant)))
     if not sites:
         return []
 
@@ -104,7 +139,7 @@ def variants(source, name=None, asm=None):
         return out
     kids = [apply([s]) for s in sites]
     if len(sites) > 1:
-        kids.append(apply(sites))
+        kids.insert(0, apply(sites))   # first, so the limit never drops it
     return [(FAMILY, k) for k in dict.fromkeys(kids) if k != source][:LIMIT]
 
 
