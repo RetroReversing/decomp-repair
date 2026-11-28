@@ -43,3 +43,13 @@ def test_preprocessor_inputs_are_conservative():
         assert variants(SOURCE, 'f', header=directive) == []
     for flag in ('-DFOO=1', '-include', '-imacros', '-Wp,foo', '-Xpreprocessor', '@flags'):
         assert variants(SOURCE, 'f', flags=[flag]) == []
+
+
+def test_stages_row_plus_column_when_first_row_already_exists():
+    source = SOURCE.replace('void f(int col)', 'void f(void)').replace('    u8 *base;', '    s32 col;\n    u8 *base;\n    u8 *__repair_row_address;')
+    source = source.replace('inner(col + (offset + base))', 'inner(col + (__repair_row_address))')
+    children = variants(source, 'f')
+    assert len(children) == 1
+    assert '__repair_row_address2 = __repair_row_address + col;' in children[0][1]
+    assert 'inner(__repair_row_address2)' in children[0][1]
+    assert variants(source.replace('u8 *__repair_row_address;', 'int *__repair_row_address;'), 'f') == []

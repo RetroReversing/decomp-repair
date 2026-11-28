@@ -2,7 +2,8 @@
 
 A KMC O1 state handler computes a table row inside a nested call. Naming the
 real row address immediately before the call improved a linked diagnostic
-from 3480 to 3260. Only pure call arguments qualify; the judge decides.
+from 3480 to 3260. A following row-plus-column stage improved a later
+diagnostic from 1400 to 1160. Only pure call arguments qualify; the judge decides.
 """
 import re
 
@@ -30,9 +31,11 @@ def variants(source, name, header='', flags=None):
         return []
     directives = '\n'.join(re.findall(r'(?m)^\s*#.*(?:\\\n.*)*', context))
     macros = set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})\b', directives))
-    if macros.intersection(re.findall(IDENT, body)) or {'u8', name, '__repair_row_address'} & macros:
+    if macros.intersection(re.findall(IDENT, body)) or {'u8', name} & macros:
         return []
-    if re.search(r'\b__repair_row_address\b', clean):
+    row = next((candidate for candidate in ('__repair_row_address', '__repair_row_address2')
+                if candidate not in macros and not re.search(rf'\b{candidate}\b', clean)), None)
+    if not row:
         return []
     pairs = brace_pairs(clean, part.opening, part.end)
     signatures = list(re.finditer(rf'\b{re.escape(name)}\s*\(', clean[:part.opening]))
@@ -40,6 +43,7 @@ def variants(source, name, header='', flags=None):
         return []
     signature = signatures[-1].start()
     row_pattern = re.compile(rf'(?P<column>{IDENT})\s*\+\s*\(\s*(?P<offset>{IDENT})\s*\+\s*(?P<base>{IDENT})\s*\)')
+    column_pattern = re.compile(rf'(?P<offset>{IDENT})\s*\+\s*\(\s*(?P<base>{IDENT})\s*\)')
     line_pattern = re.compile(rf'(?m)^[ \t]*(?P<statement>{IDENT}\s*=(?!=)[^;{{}}\n]*;)')
     result = []
     for line in line_pattern.finditer(clean, part.opening + 1, part.end):
@@ -58,7 +62,9 @@ def variants(source, name, header='', flags=None):
         inner = close(statement, calls[1].end() - 1)
         if not outer or not inner or not calls[0].end() <= calls[1].start() < inner <= outer:
             continue
-        for match in row_pattern.finditer(statement, calls[1].end(), inner):
+        matches = [(m, False) for m in row_pattern.finditer(statement, calls[1].end(), inner)]
+        matches += [(m, True) for m in column_pattern.finditer(statement, calls[1].end(), inner)]
+        for match, whole in matches:
             base, offset = match['base'], match['offset']
             # Its exact byte pointer type matters when the row is added to a column.
             pointer = list(re.finditer(rf'(?m)^[ \t]*u8\s*\*\s*(?P<name>{re.escape(base)})\s*;', body))
@@ -81,9 +87,8 @@ def variants(source, name, header='', flags=None):
             if not decl_at:
                 continue
             indent = re.match(r'[ \t]*', source[line.start():start])[0]
-            row = '__repair_row_address'
-            expression_start = start + match.start('offset')
-            expression_end = start + match.end('base')
+            expression_start = start + (match.start() if whole else match.start('offset'))
+            expression_end = start + (match.end() if whole else match.end('base'))
             result.append((FAMILY, edit(source, [(decl_at, decl_at, f'    u8 *{row};\n'),
                                                 (start, start, f'{row} = {base} + {offset};\n{indent}'),
                                                 (expression_start, expression_end, row)])))
