@@ -115,6 +115,43 @@ def variants(source, name, header='', flags=None):
                 result.append((FAMILY, edit(source, [(at, at, f'    s32 *{local};\n'),
                                                     (part.opening + 1 + decls[0].end(), part.opening + 1 + decls[0].end(), f'\n    s32 {value_local};'),
                                                     (hit.start('stmt'), hit.end('stmt'), staged)])))
+                # Keep both genuine increment paths separate while giving the
+                # compiler distinct pointer and value lifetimes. The second
+                # form is deliberately narrow: its base is a local created
+                # and consumed within this one statement block.
+                base_local = '__repair_increment_base'
+                second_ptr = '__repair_second_ptr'
+                second_value = '__repair_second_value'
+                names = (base_local, second_ptr, second_value)
+                second = re.compile(
+                    rf'\{{\s*__typeof__\(\s*(?P<table>{IDENT})\s*\+\s*0\s*\)\s+(?P<base>{IDENT})\s*;'
+                    rf'\s*(?P=base)\s*=\s*(?P=table)\s*;\s*{re.escape(ptr)}\s*=\s*(?P=base)'
+                    rf'\s*\+\s*\(\s*(?P<index>{IDENT})\s*\*\s*4\s*\)\s*;\s*\}}'
+                    rf'\s*{re.escape(temp)}\s*=\s*\*\s*{re.escape(ptr)}\s*\+\s*1\s*;'
+                    rf'\s*goto\s+{re.escape(label)}\s*;')
+                matches = list(second.finditer(clean, part.opening + 1, part.end))
+                if (len(matches) == 1 and clean[part.opening + 1:matches[0].start()].rstrip()[-1:] in ('', ';', '{', '}')
+                        and len({matches[0]['table'], matches[0]['base'], matches[0]['index'], ptr, temp}) == 5
+                        and not any(re.search(rf'\b{n}\b', clean) or n in macros for n in names)
+                        and re.search(rf'\bextern\s+char\s+{re.escape(matches[0]["table"])}\s*\[\s*\]\s*;', _blank(context))):
+                    other = matches[0]
+                    second_indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, other.start()) + 1:other.start()])[0]
+                    combined_first = (f'{base_local} = {table};\n{indent}'
+                                      f'{local} = ({hit["index"]} * 4) + {base_local};\n{indent}'
+                                      f'{ptr} = {local};\n{indent}{value_local} = *{ptr} + 1;\n{indent}'
+                                      f'{temp} = {value_local};\n{indent}goto {label};')
+                    combined_other = (f'{{ __typeof__({other["table"]} + 0) {other["base"]}; '
+                                      f'{other["base"]} = {other["table"]}; {second_ptr} = {other["base"]} + '
+                                      f'({other["index"]} * 4); }}\n{second_indent}'
+                                      f'{second_value} = *{second_ptr} + 1;\n{second_indent}'
+                                      f'{ptr} = {second_ptr};\n{second_indent}{temp} = {second_value};\n{second_indent}'
+                                      f'goto {label};')
+                    declarations = f'    s32 *{local};\n    char *{base_local};\n    s32 *{second_ptr};\n'
+                    values = f'\n    s32 {value_local};\n    s32 {second_value};'
+                    result.append((FAMILY, edit(source, [(at, at, declarations),
+                                                        (part.opening + 1 + decls[0].end(), part.opening + 1 + decls[0].end(), values),
+                                                        (hit.start('stmt'), hit.end('stmt'), combined_first),
+                                                        (other.start(), other.end(), combined_other)])))
                 if len(result) >= LIMIT:
                     return result
     return result
