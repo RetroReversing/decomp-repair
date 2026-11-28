@@ -91,16 +91,21 @@ def variants(source, name, header='', flags=None):
                 continue
             # A declaration that would shadow an accessed name at either site
             # makes the same spelling refer to a different object after moving.
-            shadow = re.compile(rf'\b(?:(?:const|volatile|static|struct|unsigned|signed|long|short)\s+)*{IDENT}'
+            shadow = re.compile(rf'\b(?:(?:const|volatile|static|struct|unsigned|signed|long|short)\s+)*(?P<type>{IDENT})'
                                 rf'\s*(?:\*\s*|\s+)(?P<name>{IDENT})\s*(?:[;=,\[)]|$)')
             unsafe = False
             for decl in shadow.finditer(clean, part.opening + 1, part.end):
+                if decl['type'] in {'if', 'else', 'return', 'goto', 'break', 'continue', 'case'}:
+                    continue
+                nested = any(part.opening < a < decl.start() < b for a, b in braces.items())
+                # A new label must not jump into a later VLA's scope, even if
+                # the outlined arm never mentions that declaration.
+                if decl.start() > head and not nested:
+                    unsafe = True
+                    break
                 if decl['name'] not in ids:
                     continue
                 if any(part.opening < a < decl.start() < b and a < start < b for a, b in braces.items()):
-                    unsafe = True
-                    break
-                if decl.start() > head and not any(part.opening < a < decl.start() < b for a, b in braces.items()):
                     unsafe = True
                     break
             if unsafe:

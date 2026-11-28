@@ -40,6 +40,7 @@ def test_case_is_outlined_inside_function_and_fallthrough_returns():
     (lambda s: s.replace('int value;', 'int value; struct { int n; } item;'), '', []),
     (lambda s: s.replace('int value;', 'int (*callback)(void); int value;'), '', []),
     (lambda s: s.replace('total = 3;', 'int total; total = 3;'), '', []),
+    (lambda s: s.replace('total = 3;', 'int later[state]; total = 3;'), '', []),
     (lambda s: s.replace('if (value) { total = value; }', 'CHANGE(value);'), '#define CHANGE(x) return', []),
     (lambda s: s, '#include_next "unknown.h"', []),
     (lambda s: s, '', ['@flags.rsp']),
