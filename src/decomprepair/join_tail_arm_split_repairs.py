@@ -704,7 +704,7 @@ _RUN_BOUND = re.compile(r'\b(?:break|continue|case|default)\b')
 _DECLARATION = re.compile(rf'(?!(?:return|goto|else|do)\b)(?:const\s+|volatile\s+|unsigned\s+|signed\s+)*{IDENT}\b(?:\s+{IDENT}\b)?\s*\**\s*\b{IDENT}\b\s*(?:=|;|\[)')
 
 
-def web_split(source, name):
+def web_split(source, name, *, extra=(), only=None):
     """Each local the arms assign separately, read by code several arms share, split into one local per web.
 
     A web is a set of plain assignments (`v = E;`, E not reading v) that reach a common read; two webs are unrelated
@@ -713,7 +713,9 @@ def web_split(source, name):
     part, end, clean = _body(source, name)
     if not part:
         return None
-    declarations = _declarations(part)
+    declarations = _declarations(part) + list(extra)
+    if only is not None:
+        declarations = [decl for decl in declarations if decl["name"] == only]
     flow = local_flow.analyze(source, name, declarations=declarations)
     if flow is None:
         return None
