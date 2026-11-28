@@ -1,4 +1,6 @@
 """A loop whose exit is the `else` of its test, so the compiler leaves the test at the top."""
+import re
+
 from decomprepair import loop_else_break as m
 from decomprepair import registry
 
@@ -118,11 +120,55 @@ loop_1:
 
 
 def test_declines_what_would_change_meaning():
-    stepped = 'void f(s32 n) {\n    s32 i;\n    for (i = 0; i < n; i++) {\n        if (a()) continue;\n        g();\n    }\n}\n'
-    assert m.variants(stepped, 'f') == []
     goto = ('void f(void) {\n    s32 i;\n    switch (k) {\n    case 0:\nl:\n        if (c()) {\n            if (d()) break;\n'
             '            goto l;\n        }\n    }\n}\n')
     assert m.variants(goto, 'f') == []
+
+
+def test_for_with_a_continue_keeps_its_step():
+    src = '''void f(s32 n) {
+    s32 i;
+    s32 j;
+
+    for (i = 0; i < n; i++) {
+        if (skip(i)) {
+            continue;
+        }
+        for (j = 0; j < n; j++) {
+            if (j == i) continue;
+            use(i, j);
+        }
+    }
+}
+'''
+    every = dict(m.variants(src, 'f'))['loop_else_break_all']
+    one = [text for family, text in m.variants(src, 'f') if family == 'loop_else_break'][0]
+    # the outer loop's `continue` goes to a label ahead of the outer step; the inner loop keeps its own
+    assert 'continue;' not in one.split('for (j = 0')[0]
+    assert re.search(r'goto (repair_step_\d+);\n(.|\n)*\1:;\n\s*i\+\+;', one)
+    assert 'if (j == i) continue;' in one
+    assert every.count('i++;') == 1 and 'while (1) {' in every
+    assert every.count('{') == every.count('}')
+
+
+def test_a_goto_to_the_statement_after_the_loop_is_its_break():
+    src = '''void f(s32 n) {
+    s32 i;
+
+    i = 0;
+    for (;;) {
+        if (i >= n) goto done;
+        g(i);
+        i += 1;
+    }
+done:
+    h();
+}
+'''
+    out = m.variants(src, 'f')[0][1]
+    assert 'while (1) {\n        if (i < n) {' in out and 'goto done' not in out
+    elsewhere = src.replace('done:\n    h();', 'h();\ndone:\n    k();')
+    assert m.variants(elsewhere, 'f') == []
 
 
 def test_registered():

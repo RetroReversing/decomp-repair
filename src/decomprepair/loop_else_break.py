@@ -10,7 +10,8 @@ with `for (;;) { if (i >= count) break; ... }` and 0 with this spelling.
 
 `loop_else_break` rewrites one loop at a time, from `for`, `while`, `for (;;) { if (c) break; ... }`, m2c's
 `for (;;) { ...; if (c) { ...; continue; } break; }` and a `label: PRE; if (c) { ...; goto label; }` (PRE goes to the head of the loop body).
-`loop_else_break_all` rewrites every such loop at once: copies of one loop in two arms only pay off together.
+`loop_else_break_all` rewrites every such loop at once, nested ones included: copies of one loop in two arms, or
+the levels of one nest, only pay off together.
 `loop_else_break_arms` also moves a constant set just before an `if`/`else` to the head of both arms, where the loop
 that uses it can hoist around it (the same function's counter).
 
@@ -22,8 +23,12 @@ with a `break`) scored worse than where it started; a 31-instruction N64 name-pr
 (`local_load_widths`' `symbol_base_inline`): on that function the loop alone tied the seed's score (500) and the two
 together were exact.
 
-Meaning is kept: a `for` with a `continue` of its own is declined (the step would be skipped), as is a `goto` loop
-with a free `break` or `continue` (they would bind to the new loop)."""
+A `for` with a `continue` of its own keeps its step: each such `continue` becomes a `goto` to a label ahead of it. An
+exit written `if (c) goto done;` with `done:` right after the loop is read as the `break` it is. A 209-instruction
+triangle emitter with five nested counted loops (SN GCC 2.8.1 `-G0 -mips3 -O2`) went from the `for` spelling to the
+target's head tests and `j` back edges only with both.
+
+Meaning is kept: a `goto` loop with a free `break` or `continue` is declined (they would bind to the new loop)."""
 import re
 
 from . import local_load_widths
@@ -145,14 +150,21 @@ def _loop(source, clean, function, loop):
     else:
         init, condition, step = '', '' if head in ('1', '(1)') else head, ''
     if condition:
+        inner = _between(source, body)
         if step and _free(stmts, 'continue'):
-            return None
-        text = _build(indent, '', condition, _between(source, body), step)
+            inner = _to_step(source, clean, body, loop.start)
+            if inner is None:
+                return None
+        text = _build(indent, '', condition, inner, step)
     else:
         if init or step or not body['block'] or not stmts:
             return None
         first = stmts[0]
-        if first.kind == 'if' and first.parts.get('other') is None and _is_break(first.parts['then']):
+        exit_label = _exit_goto(clean, loop, first)
+        if first.kind == 'if' and first.parts.get('other') is None \
+                and (_is_break(first.parts['then']) or exit_label):
+            if exit_label and _free(stmts[1:], 'break'):
+                return None
             rest = source[first.end:body['close'] - 1]
             if not rest.strip():
                 return None
@@ -180,6 +192,50 @@ def _loop(source, clean, function, loop):
         if not before.endswith(('{', '}', ';', ':')):  # the unbraced body of an `if` or `else`
             text = f'{{\n{indent}{text}\n{indent}}}'
     return loop.start, loop.end, text
+
+
+def _exit_goto(clean, loop, first):
+    """The label of `if (c) goto L;` when `L:` directly follows the loop: the same exit a `break` takes."""
+    if first.kind != 'if' or first.parts.get('other') is not None:
+        return None
+    then = first.parts['then']
+    if len(then['stmts']) != 1 or then['stmts'][0].kind != 'goto':
+        return None
+    target = then['stmts'][0].parts['target']
+    return target if re.match(rf'\s*{target}\s*:(?!:)', clean[loop.end:]) else None
+
+
+def _to_step(source, clean, body, at):
+    """The body of a `for` with each `continue` of its own written as a `goto` to a label ahead of the step, or None
+    when a `continue` cannot be told from an inner loop's."""
+    if not body['block']:
+        return None
+    spots = []
+
+    def collect(stmts):
+        for s in stmts:
+            if s.kind == 'jump' and s.parts.get('word') == 'continue':
+                spots.append((s.start, s.end))
+            if s.kind in ('do', 'while', 'for'):
+                continue
+            for key in ('then', 'other', 'body'):
+                if s.parts.get(key):
+                    collect(s.parts[key]['stmts'])
+
+    collect(body['stmts'])
+    label, number = 'repair_step', 1
+    while re.search(rf'\b{label}\b', clean):
+        number += 1
+        label = f'repair_step{number}'
+    label = f'{label}_{at}'
+    low, high = body['open'] + 1, body['close'] - 1
+    text = source[low:high]
+    for start, end in sorted(spots, reverse=True):
+        word = source[start:end]
+        lead = len(word) - len(word.lstrip())
+        text = text[:start - low] + word[:lead] + f'goto {label};' + text[end - low:]
+    indent = _indent(source, body['stmts'][-1].start)
+    return f'{text.rstrip()}\n{indent}{label}:;'
 
 
 def _goto_loops(source, clean, function):
@@ -300,6 +356,16 @@ def _unbased(source, name):
     return source
 
 
+def _every(source, name):
+    """Every loop rewritten, the ones nested in a rewritten loop too: one round per depth."""
+    for _ in range(LIMIT):
+        parsed = _edits(source, name)
+        if not parsed or not parsed[0]:
+            break
+        source = _apply(source, _disjoint(parsed[0]))
+    return source
+
+
 def variants(source, name):
     parsed = _edits(source, name)
     if not parsed:
@@ -308,9 +374,9 @@ def variants(source, name):
     if not found:
         return []
     out = []
-    every = _apply(source, found)
+    every = _every(source, name)
     moved = _into_arms(every, name)
-    if len(found) > 1:
+    if len(found) > 1 or every != _apply(source, found):
         out.append((ALL, every))
     unbased = _unbased(every, name)
     if unbased != every:
