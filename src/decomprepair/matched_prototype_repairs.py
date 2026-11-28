@@ -22,6 +22,7 @@ SPELLINGS = {
 }
 TYPE = '|'.join(re.escape(s).replace(r'\ ', r'\s+') for s in sorted(SPELLINGS, key=len, reverse=True))
 SCALAR = re.compile(rf'\s*(?P<type>{TYPE})(?:\s+(?P<name>{IDENT}))?\s*')
+POINTER = re.compile(rf'\s*(?P<type>void\s*\*)\s*(?P<name>{IDENT})?\s*')
 PROTO = re.compile(rf'(?:^|(?<=[;}}]))\s*(?:extern\s+)?(?P<result>{TYPE}|void)\s+'
                    rf'(?P<callee>{IDENT})\s*\((?P<params>[^();{{}}]*)\)\s*;', re.M)
 
@@ -85,8 +86,16 @@ def variants(source, name, header='', callees=''):
             continue
         old = [scalar(p, context) for p in declared]
         new = [scalar(p, context, named=True) for p in actual]
+        # Identical explicit void pointers do not need a type rewrite.  Allow them
+        # beside scalar parameters so a callee's verified integer result can
+        # inform callers of an SDK helper taking opaque object pointers.
+        for i, (before, after) in enumerate(zip(declared, actual)):
+            if old[i] is None and new[i] is None:
+                a, b = POINTER.fullmatch(before), POINTER.fullmatch(after)
+                if a and b and b['name']:
+                    old[i], new[i] = (a, 'void *'), (b, 'void *')
         if not all(old) or not all(new):
-            continue  # pointers, callbacks, floats, qualifiers and unknown typedefs stay review items
+            continue  # other pointers, callbacks, floats and unknown types stay review items
         if any(p[0]['name'] == callee for p in old):
             continue
         if proto['result'] == 'void' or definition['result'] == 'void':
