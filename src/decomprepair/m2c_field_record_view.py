@@ -23,6 +23,11 @@ record too (not just cast to it), and an element read through the same symbol, `
 with the stride the size of the type, becomes the array member `D_x.m10[i]`. Only when every use of the symbol is one of
 these two. An 18-instruction N64 stack pop of such a record (SN GCC 2.8.1 profile) went from 2030 to 310 with this
 child and matched after two more steps (`narrow_widening`, `guard_temp_sink`).
+
+The element's byte offset may be held in a local first, `i = X * 4; ... M2C_FIELD((i + D_x), s32 *, 0x10)`. When the
+local is a plain 32-bit integer set once, as a product by the element's size, and read only as such a base, it holds the
+index instead: `i = X;` and `D_x.m10[i]`. An 11-instruction N64 stack push (SN 2.8.1 profile) stood at 1110 as its draft;
+this child scores 100 and `mask_local_retype` on it is exact.
 """
 import re
 
@@ -94,10 +99,43 @@ def _element(base, symbol):
     return _unwrap(index), int(scaled['stride'], 0)
 
 
+def _held_offset(base, symbol):
+    """The name when `base` is `name + symbol`, either way round, else None."""
+    text, word = _unwrap(base), re.escape(symbol)
+    found = re.fullmatch(r'([A-Za-z_]\w*)\s*\+\s*' + word, text) or re.fullmatch(word + r'\s*\+\s*([A-Za-z_]\w*)', text)
+    return found[1] if found else None
+
+
+def _scaled_local(body, local, size, uses):
+    """The spans to delete so that `local = index * size;` holds the index itself (the scale and the parentheses around
+    the whole index), when `local` is a 32-bit integer declared here, set only by that statement and otherwise read only
+    in its `uses` element bases."""
+    word = r'\b' + re.escape(local) + r'\b'
+    declared = re.findall(r'^[ \t]*(?:s32|u32|int)[ \t]+' + re.escape(local) + r'[ \t]*;', body, re.M)
+    sets = list(re.finditer(r'^[ \t]*' + re.escape(local) + r'[ \t]*=(?!=)[ \t]*([^;\n]+);', body, re.M))
+    if len(declared) != 1 or len(sets) != 1 or len(re.findall(word, body)) != uses + 2:
+        return None
+    value = sets[0][1].rstrip()
+    product = re.fullmatch(r'(.+?)(\s*(\*|<<)\s*(0x[0-9A-Fa-f]+|\d+))', value)
+    if not product:
+        return None
+    index, by = product[1].strip(), int(product[4], 0)
+    scale = by if product[3] == '*' else 1 << min(by, 8)
+    whole = re.fullmatch(r'[A-Za-z_]\w*', index) or (index.startswith('(') and close(index, 0) == len(index))
+    if not whole or scale != size or re.search(word, index):
+        return None
+    start = sets[0].start(1)
+    end = start + len(value)
+    scale_at = end - len(product[2])
+    if not index.startswith('('):
+        return [(scale_at, end)]
+    return [(start, start + 1), (start + len(index) - 1, end)]
+
+
 def _byte_accesses(body, symbol):
-    """[(start, end, offset, member type, size, index or None)] when every use of the byte array `symbol` in `body` is
-    the base of an `M2C_FIELD`, alone or stepped by an index, else None."""
-    out, at = [], 0
+    """([(start, end, offset, member type, size, index or None)], [spans to delete from held offsets]) when every use
+    of the byte array `symbol` in `body` is the base of an `M2C_FIELD`, alone or stepped by an index, else None."""
+    out, at, held = [], 0, {}
     word = re.compile(r'\b' + re.escape(symbol) + r'\b')
     for macro in re.finditer(r'\bM2C_FIELD\(', body):
         if macro.start() < at:
@@ -118,13 +156,22 @@ def _byte_accesses(body, symbol):
         index = None
         if _unwrap(base) != symbol:
             element = _element(base, symbol)
-            if not element or element[1] != size or word.search(element[0]) or 'M2C_FIELD' in element[0]:
+            local = None if element else _held_offset(base, symbol)
+            if local:
+                held.setdefault(local, []).append(size)
+                index = local
+            elif not element or element[1] != size or word.search(element[0]) or 'M2C_FIELD' in element[0]:
                 return None
-            index = element[0]
+            else:
+                index = element[0]
         out.append((macro.start(), end, offset, member, size, index))
         at = end
     covered = sum(len(word.findall(body[a:b])) for a, b, *_ in out)
-    return out if out and covered == len(word.findall(body)) else None
+    if not out or covered != len(word.findall(body)):
+        return None
+    scales = [_scaled_local(body, local, sizes[0], len(sizes)) if len(set(sizes)) == 1 else None
+              for local, sizes in held.items()]
+    return (out, [span for spans in scales for span in spans]) if all(scales) else None
 
 
 def _byte_record(source, name, start, symbol, header):
@@ -134,9 +181,10 @@ def _byte_record(source, name, start, symbol, header):
     if (len(_byte_array(symbol).findall(head)) != 1 or len(re.findall(word, head)) != 1
             or re.search(word, header) or re.search(r'\b' + re.escape(tag) + r'\b', source)):
         return None
-    accesses = _byte_accesses(body, symbol)
-    if not accesses:
+    found = _byte_accesses(body, symbol)
+    if not found:
         return None
+    accesses, scales = found
     members, arrays = {}, set()
     for _, _, offset, member, size, index in accesses:
         if members.setdefault(offset, (member, size)) != (member, size):
@@ -157,9 +205,12 @@ def _byte_record(source, name, start, symbol, header):
             count = (later - offset) // size
         lines.append(f'    {member}{space}m{offset:X}{f"[{count}]" if count else ""};')
         at = offset + size * max(count, 1)
-    for a, b, offset, _, _, index in reversed(accesses):
+    edits = [(a, b, '') for a, b in scales]
+    for a, b, offset, _, _, index in accesses:
         element = f'[{index}]' if index is not None else '[0]' if offset in arrays else ''
-        body = body[:a] + f'{symbol}.m{offset:X}{element}' + body[b:]
+        edits.append((a, b, f'{symbol}.m{offset:X}{element}'))
+    for a, b, text in sorted(edits, reverse=True):
+        body = body[:a] + text + body[b:]
     record = 'typedef struct {\n' + '\n'.join(lines) + f'\n}} {tag};\nextern {tag} {symbol};\n'
     return _byte_array(symbol).sub('', head) + record + '\n' + body
 
