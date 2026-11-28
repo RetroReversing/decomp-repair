@@ -16,6 +16,7 @@ LIMIT = 6
 
 
 def variants(source, name, header='', flags=None):
+    flags = flags.split() if isinstance(flags, str) else list(flags or ())
     if any(f.startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor', '@')) for f in flags or ()):
         return []
     context = _blank(source + '\n' + header)
@@ -46,9 +47,11 @@ def variants(source, name, header='', flags=None):
         if (len(re.findall(rf'\b{re.escape(row)}\s*\)\s*\[', body)) != 1
                 or re.search(shadow, body) or re.search(typeof_shadow, body) or re.search(multi, body)):
             continue
-        pattern = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<guard>if\s*\(\s*(?P<access>{re.escape(row)}\s*\[\s*(?P<index>{IDENT})\s*\]\s*\[\s*{IDENT}\s*\])\s*(?:==|!=)\s*(?:0[xX][0-9a-fA-F]+|[0-9]+)\s*\))')
+        pattern = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?P<guard>if\s*\(\s*(?P<access>{re.escape(row)}\s*\[\s*(?P<index>{IDENT})\s*\]\s*\[\s*(?P<column>{IDENT})\s*\])\s*(?:==|!=)\s*(?:0[xX][0-9a-fA-F]+|[0-9]+)\s*\))')
         for hit in pattern.finditer(body):
-            if hit['index'] in macros or body[:hit.start('guard')].rstrip()[-1:] not in ('', ';', '{', '}'):
+            volatile_index = rf'\b(?:volatile|_Atomic)\b[^;\n]*\b(?:{re.escape(hit["index"])}|{re.escape(hit["column"])})\b'
+            if ({hit['index'], hit['column']} & macros or re.search(volatile_index, context)
+                    or body[:hit.start('guard')].rstrip()[-1:] not in ('', ';', '{', '}')):
                 continue
             at = part.opening + 1
             start = at + hit.start('guard')
