@@ -14,6 +14,10 @@ A pointer local holding the array and indexed for every use gave that exactly (1
 
 Offered for a one-dimension `extern T NAME[]` the function uses only as `NAME[...]`, at least twice from the first loop
 that indexes it with something other than a literal: one child per array, then one with every such array.
+
+An array the loop reads once, and the code before the loop also reads, gets the same local (offered last): the set
+outside the loop takes the address's two halves out of the values loop.c moves, which leaves the threshold higher for
+the loop's later addresses. SN64 GCC 2.8.1, a 435-instruction hit search: 470 -> 385, and the match needed it.
 """
 import re
 
@@ -44,7 +48,7 @@ def variants(source, name, header=''):
     declared = [m[1] for text in (clean[:span[0]], _blank(header or '')) for m in _ARRAY.finditer(text)]
     loops = sorted(_loops(clean, opening, end))
     used = set(re.findall(_IDENT, clean + '\n' + (header or '')))
-    found = []
+    found, single = [], []
     for array in dict.fromkeys(declared):
         uses = [opening + m.start() for m in re.finditer(rf'(?<![\w.>]){array}\b', body)]
         if len(uses) < 2:
@@ -64,9 +68,7 @@ def variants(source, name, header=''):
         if loop is None or not clean[:loop].rstrip().endswith((';', '{', '}')):
             continue
         replaced = [at for at in uses if at >= loop]
-        if len(replaced) < 2:
-            continue
-        found.append((array, loop, replaced))
+        (found if len(replaced) > 1 else single).append((array, loop, replaced))
 
     def apply(chosen):
         names, changes, declarations, settings = set(used), [], [], {}
@@ -88,7 +90,7 @@ def variants(source, name, header=''):
     results = [apply([item]) for item in found[:LIMIT - 1]]
     if len(found) > 1:
         results.append(apply(found))
-    return results
+    return results + [apply([item]) for item in single[:LIMIT - len(results)]]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header')}

@@ -38,3 +38,19 @@ def test_a_header_declaration_counts():
     header = 'extern u8 *Lines[];\n'
     [(_, text)] = lt.variants(SOURCE.replace(header, ''), 'draw', header)
     assert 'table = Lines;' in text
+
+
+def test_a_single_read_in_the_loop_with_another_before_it_gets_a_local_too():
+    source = '''extern int Sizes[];
+void f(int n)
+{
+    int i;
+    g(Sizes[n]);
+    for (i = 0; i < n; i++) {
+        h(Sizes[i]);
+    }
+}
+'''
+    [(_, text)] = lt.variants(source, 'f')
+    assert 'table = Sizes;\n    for' in text
+    assert 'g(Sizes[n]);' in text and 'h(table[i]);' in text
