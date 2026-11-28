@@ -35,6 +35,7 @@ def test_rejects_unbraced_controls_shadow_address_and_writes():
 
 
 def test_preprocessor_inputs_are_conservative():
+    assert variants(SOURCE + '\nint line = __LINE__;\n', 'f') == []
     for directive in ('#include "x.h"', '#include_next <x.h>', '#import "x.h"', '#define flag other'):
         assert variants(SOURCE, 'f', header=directive) == []
     for flag in ('-DFOO=1', '-include', '-imacros', '-Wp,foo', '-Xpreprocessor', '@flags'):
