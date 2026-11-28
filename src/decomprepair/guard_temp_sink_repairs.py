@@ -6,6 +6,9 @@ across the test and gives `t` a register of its own, where the target's subtract
 register is `x`'s. Measured on a 719-instruction N64 function (`gcc-2.7.2-kmc -G0 -mips3 -mgp32 -mfp32 -O2`):
 1750 -> 1735. Only for an assignment whose value calls nothing, an `if` whose test mentions neither `t` nor a call, and
 a `t` read nowhere but inside that `if`'s body. A candidate rewrite; the exact judge decides.
+
+The assignment may stand alone in a one-shot loop, `do { t = e; } while (0);`, as a search leaves it; it is moved without
+the loop. An 18-instruction N64 stack pop (SN GCC 2.8.1 profile) kept the loop around such a line: 15 -> 0.
 """
 import re
 
@@ -15,6 +18,7 @@ from .line_scan import apply, block_end, lines, mentions
 FAMILY = 'guard_temp_sink'
 FAMILIES = (FAMILY,)
 _SET = re.compile(r'(?P<t>[A-Za-z_]\w*) = (?P<e>[^;]*);')
+_FENCED = re.compile(r'do \{ (?P<set>[A-Za-z_]\w* = [^;{}]*;) \} while \(0\);')
 _CALL = re.compile(r'\b(?!if\b|while\b|sizeof\b)[A-Za-z_]\w*\s*\(')
 
 
@@ -25,7 +29,9 @@ def variants(source, name):
     body = lines(part, source)
     out = []
     for i, line in enumerate(body):
-        hit = _SET.fullmatch(line.stripped)
+        fenced = _FENCED.fullmatch(line.stripped)
+        statement = fenced['set'] if fenced else line.stripped
+        hit = _SET.fullmatch(statement)
         if not hit or _CALL.search(hit['e']):
             continue
         j = i + 1
@@ -59,5 +65,5 @@ def variants(source, name):
             continue
         inner = body[insert].indent if insert < closing else body[opening].indent + '    '
         point = body[insert].start if insert < closing else body[opening].end
-        out.append((FAMILY, apply(source, [(line.start, line.end, ''), (point, point, inner + line.stripped + '\n')])))
+        out.append((FAMILY, apply(source, [(line.start, line.end, ''), (point, point, inner + statement + '\n')])))
     return out
