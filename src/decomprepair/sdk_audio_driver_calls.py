@@ -17,9 +17,9 @@ CALL = re.compile(r'\b(?P<name>' + '|'.join(NAMES) + r')\s*\(\s*(?P<player>' + I
 
 def _prototype(text, symbol, driverless):
     """A complete declaration with the argument widths the selected SDK ABI consumes."""
-    decl = re.compile(r'\b(?:void|s32|u32|int)\s+' + re.escape(symbol) + r'\s*\(([^()]*)\)\s*;')
+    decl = re.compile(r'\b(?P<result>void|s32|u32|int)\s+' + re.escape(symbol) + r'\s*\((?P<args>[^()]*)\)\s*;')
     for found in decl.finditer(text):
-        args = [arg.strip() for arg in found[1].split(',')]
+        args = [arg.strip() for arg in found['args'].split(',')]
         if not driverless:
             if not args or '*' not in args[0]:
                 continue
@@ -27,13 +27,20 @@ def _prototype(text, symbol, driverless):
         if symbol.endswith('SetVol'):
             if (len(args) == 3 and '*' in args[0] and re.search(r'\b(?:s16|short)\b', args[1])
                     and re.search(r'\b(?:s32|int|ALMicroTime)\b', args[2])):
-                return True
+                return found['result'], args
         elif symbol.endswith('SetPitch'):
             if len(args) == 2 and '*' in args[0] and re.search(r'\b(?:f32|float)\b', args[1]):
-                return True
+                return found['result'], args
         elif len(args) == 2 and '*' in args[0] and re.search(r'\b(?:u8|s32|int|ALPan)\b', args[1]):
-            return True
-    return False
+            return found['result'], args
+    return None
+
+
+def _target_calls(asm, symbol):
+    # Ignore comments and jumps into a routine: neither proves a call to the exported entry point.
+    pattern = (r'(?m)^(?!\s*(?:#|//))[^#\n]*?\b(?:jal|jalx|bal)\s+' + re.escape(symbol)
+               + r'\b(?![ \t]*[+-])')
+    return len(re.findall(pattern, asm))
 
 
 def _volatile_typedefs(text):
@@ -64,6 +71,7 @@ def variants(source, name, header='', asm=''):
         return []
     volatile_types = _volatile_typedefs(declarations)
     edits = {}
+    prototypes = {}
     for found in CALL.finditer(clean, span[0], span[1]):
         original = found['name']
         if clean[span[0]:found.start()].rstrip().endswith(('.', '->')):
@@ -79,10 +87,18 @@ def variants(source, name, header='', asm=''):
                for token in (original, replacement, found['player'], 'drvr')):
             continue
         # A named target call, not a textual mention or an unverified SDK name, supplies the ABI evidence.
-        if not re.search(r'\b(?:jal|jalx|bal)\s+' + re.escape(replacement) + r'\b', asm):
+        if not _target_calls(asm, replacement):
             continue
-        if not _prototype(declarations, original, False) or not _prototype(declarations, replacement, True):
+        standard = _prototype(declarations, original, False)
+        if not standard:
             continue
+        if not _prototype(declarations, replacement, True):
+            # A conflicting declaration cannot safely be replaced. For the ordinary void SDK API, derive the
+            # missing declaration from its checked standard prototype so float arguments retain their ABI.
+            if (standard[0] != 'void' or re.search(r'\b(?:void|s32|u32|int)\s+'
+                                                   + re.escape(replacement) + r'\s*\(', declarations)):
+                continue
+            prototypes[original] = 'void ' + replacement + '(' + ', '.join(standard[1]) + ');\n'
         # A volatile driver read is observable even though the driverless call does not consume it.
         if re.search(r'\bvolatile\b[^;{}]*\bdrvr\b|\bdrvr\b[^;{}]*\bvolatile\b', declarations):
             continue
@@ -90,22 +106,25 @@ def variants(source, name, header='', asm=''):
     # One target call cannot justify replacing several unrelated donor calls.
     for original, changes in list(edits.items()):
         replacement = 'n_' + original
-        target_calls = len(re.findall(r'\b(?:jal|jalx|bal)\s+' + re.escape(replacement) + r'\b', asm))
+        target_calls = _target_calls(asm, replacement)
         existing = len(re.findall(r'\b' + re.escape(replacement) + r'\s*\(', body))
         if target_calls < len(changes) + existing:
             del edits[original]
     if not edits:
         return []
 
-    def apply(changes):
+    def apply(changes, names):
         text = source
         for start, end, replacement in sorted(changes, reverse=True):
             text = text[:start] + replacement + text[end:]
+        added = ''.join(prototypes.get(key, '') for key in names)
+        if added:
+            text = text[:span[0]] + added + text[span[0]:]
         return FAMILY, text
 
-    out = [apply(changes) for changes in edits.values()]
+    out = [apply(changes, (key,)) for key, changes in edits.items()]
     all_changes = [change for changes in edits.values() for change in changes]
-    combined = apply(all_changes)
+    combined = apply(all_changes, edits)
     if combined not in out:
         out.append(combined)
     return out
