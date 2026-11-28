@@ -54,3 +54,22 @@ def test_preprocessor_inputs_are_conservative():
         assert variants(SOURCE, 'f', header=directive) == []
     for flag in ('-DFOO=1', '-include', '-imacros', '-Wp,foo', '-Xpreprocessor', '@flags'):
         assert variants(SOURCE, 'f', flags=[flag]) == []
+
+
+def test_stages_both_real_increment_paths_together():
+    source = SOURCE.replace('extern char table[];', 'extern char table[];\nextern char other[];')
+    source = source.replace('    value = 0;', """    { __typeof__(other + 0) base; base = other; ptr = base + (i * 4); }
+    value = *ptr + 1;
+    goto store;
+    value = 0;""")
+    children = variants(source, 'f')
+    assert len(children) == 3
+    text = children[2][1]
+    assert '__repair_increment_base = table;' in text
+    assert '__repair_second_ptr = base + (i * 4);' in text
+    assert '__repair_second_value = *__repair_second_ptr + 1;' in text
+    assert 'ptr = __repair_second_ptr;' in text
+    assert 'value = __repair_second_value;' in text
+    # Delaying a pointer write must not change the index it reads.
+    assert len(variants(source.replace('(i * 4); }', '(ptr * 4); }'), 'f')) == 2
+    assert len(variants(source.replace('{ __typeof__(other', 'if (i) { __typeof__(other'), 'f')) == 2
