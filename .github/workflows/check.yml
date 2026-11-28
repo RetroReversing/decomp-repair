@@ -15,3 +15,4 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check src tests
       - run: uv run pytest -q
+      - run: uv run --python 3.12 --with cython==3.3.2 --with setuptools pytest -q tests/test_typed_run_slide.py -k native
