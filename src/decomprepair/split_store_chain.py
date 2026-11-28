@@ -34,6 +34,9 @@ A chain moves stores earlier, so everything they pass must be a plain assignment
 are all members of the same base at constant offsets that overlap none of the moved ones; anything else declines.
 Offered per family (all sites together) and all together, with and without the re-read, with the one-shot fences
 opened and kept: the saved best's steps were no better alone. That the chain is what the game wrote is a hypothesis; the judge decides.
+The all-together children are also made with every one-statement block on its own line written as the statement: the
+block an opened fence leaves (`{ A = t; }`) ended the straight run, so a 26-instruction N64 fade update (SN GCC 2.8.1,
+`-G0 -mips3 -O2`) got neither the compound nor the chain from its saved best, 220; with them it was exact.
 """
 import re
 
@@ -49,7 +52,7 @@ REREAD = 'member_reread_local'
 TOGETHER = 'split_store_chain'
 DEAD = 'dead_value_store_chain'
 FAMILIES = (SCATTERED, EXPRESSION, COMPOUND, REREAD, TOGETHER, DEAD)
-LIMIT = 9
+LIMIT = 11
 
 IDENT = r'[A-Za-z_]\w*'
 NUMBER = r'(?:0[xX][0-9a-fA-F]+|\d+)'
@@ -62,6 +65,8 @@ OTHER_MEMORY = re.compile(r'->|\[|\.\s*[A-Za-z_]|\*\s*\(|(?:^|[=(,+\-*/&|^~!<>?:
 CALL = re.compile(rf'\b(?!M2C_FIELD\b|sizeof\b){IDENT}\s*\(')
 LINE = re.compile(r'[ \t]*(?P<lhs>[^;{}=]+?)\s*(?P<op>(?:[-+*/%&|^]|<<|>>)?=)(?!=)\s*(?P<rhs>[^;{}]+);[ \t]*')
 CONTROL = re.compile(r'\b(?:if|else|for|while|switch|return|goto|break|continue|case|default|do|asm|__asm__)\b')
+# a statement alone in braces on its line, as an opened fence leaves it: `{ A = t; }`
+BLOCK = re.compile(r'(?m)^(?P<indent>[ \t]*)\{[ \t]*(?P<statement>[^{};\n]+;)[ \t]*\}[ \t]*$')
 
 
 def _unwrap(text):
@@ -390,6 +395,26 @@ def _in_loop(clean, opening, position):
     return any(stack)
 
 
+def _bare_blocks(source, name):
+    """The function with each one-statement block on its own line written as the statement (`{ x = 1; }` -> `x = 1;`).
+    The lines are read one at a time, so a block left by an opened fence ends every straight run: a stored sum's later
+    reads were cut off there and neither the compound nor the chain was offered. A declaration keeps its block."""
+    span = find(source, name)
+    if not span:
+        return source
+    clean = _blank(source)
+    edits = []
+    for match in BLOCK.finditer(clean, span[0], span[1]):
+        statement = match['statement']
+        before = clean[span[0]:match.start()].rstrip()
+        # the body of `if (c)` or `else` on the line above is that statement's, and a declaration has its own scope
+        if not before.endswith((';', '{', '}')) or CONTROL.search(statement) or re.match(
+                r'\s*[A-Za-z_]\w*[\s*]+[A-Za-z_]\w*\s*(?:\[|=(?!=)|;)', statement):
+            continue
+        edits.append((match.start(), match.end(), match['indent'] + source[match.start('statement'):match.end('statement')]))
+    return _apply(source, edits)
+
+
 def variants(source, name):
     """[(family, source)]: each rewrite alone, the three together, and the three with the fences opened."""
     result, seen = [], {source}
@@ -406,8 +431,9 @@ def variants(source, name):
         return _reread(text, name) if reread else text
 
     opened = scaffold_strip.unfence(source, name)
+    plain = _bare_blocks(opened or source, name)
     for reread in (True, False):  # (the reread pays off only with the local widened: offered with and without it)
-        for text in (opened, source):
+        for text in (plain, opened, source):
             if text and every(text, reread) != text:
                 offer(TOGETHER, every(text, reread))
     offer(SCATTERED, _scattered(source, name, inline=True))
