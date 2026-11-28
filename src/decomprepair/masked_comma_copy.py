@@ -45,7 +45,7 @@ def variants(source, name, header='', flags=None):
     for kind, param in params:
         if integer_abi.scalar(kind, _blank(context), 'mips') != (32, True):
             continue
-        if re.search(rf'(?<![\w.>]){re.escape(param)}\s*\)*\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))|(?:\+\+|--)\s*\(*\s*\b{re.escape(param)}\b|&\s*\(*\s*{re.escape(param)}\b', body):
+        if re.search(rf'(?<![\w.>]){re.escape(param)}\s*\)*\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))|(?:\+\+|--)\s*\(*\s*\b{re.escape(param)}\b|(?<!&)\&(?!&)\s*\(*\s*{re.escape(param)}\b', body):
             continue
         decls = re.compile(rf'(?m)^[ \t]*(?P<type>s32|int)\s+(?P<local>{IDENT})\s*;[ \t]*$')
         for decl in decls.finditer(clean, part.opening + 1, part.end):
@@ -59,7 +59,7 @@ def variants(source, name, header='', flags=None):
             shadows = list(re.finditer(shadow, clean[signature_at:part.end]))
             if len(shadows) != 2 or not any(signature_at + m.start('name') == decl.start('local') for m in shadows):
                 continue
-            if re.search(rf'&\s*\(*\s*{re.escape(local)}\b', body):
+            if re.search(rf'(?<!&)\&(?!&)\s*\(*\s*{re.escape(local)}\b', body):
                 continue
             assignment = re.compile(rf'(?<![\w.>]){re.escape(local)}\s*=\s*{re.escape(param)}\s*&\s*(?P<mask>0[xX](?:[fF]{{2}}|[fF]{{4}})|255|65535)(?=\s*[,;)])')
             assigned = list(assignment.finditer(body))
