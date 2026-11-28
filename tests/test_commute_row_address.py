@@ -56,8 +56,11 @@ void f(int position) {
 
 def test_commutes_a_scoped_table_base_with_a_proven_byte_index():
     children = variants(SLOT_SOURCE, 'f', HEADER, FLAGS)
-    assert len(children) == 1
+    assert len(children) == 2
     assert children[0][0] == 'commute_scoped_slot_address'
+    assert children[1][0] == 'commute_weighted_slot_address'
+    assert 'do { do { base = table; } while (0); } while (0);' in children[1][1]
+    assert 'row = (s32 *)((index * 4) + (u32)base);' in children[1][1]
     assert 'row = (s32 *)((index * 4) + (u32)base);' in children[0][1]
 
 
@@ -72,3 +75,8 @@ def test_scoped_slot_rejects_unbounded_or_ambiguous_types():
     assert variants(SLOT_SOURCE.replace('    index = *(input + position);', '    __typeof__(row) table;\n    index = *(input + position);'), 'f', HEADER, FLAGS) == []
     assert variants(SLOT_SOURCE.replace('void f(int position)', 'void f(int u32, int position)'), 'f', HEADER, FLAGS) == []
     assert variants(SLOT_SOURCE, 'f', HEADER, FLAGS + ['-mabi=64']) == []
+
+
+def test_unrelated_header_volatile_does_not_hide_the_repair():
+    assert len(variants(SLOT_SOURCE, 'f', HEADER + '\nextern volatile int status;', FLAGS)) == 2
+    assert not variants(SLOT_SOURCE.replace('    s32 *row;', '    volatile s32 *row;'), 'f', HEADER, FLAGS)

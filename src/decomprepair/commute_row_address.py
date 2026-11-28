@@ -15,6 +15,7 @@ from .integer_repair_support import IDENT, edit, view
 
 FAMILY = 'commute_row_address'
 SLOT_FAMILY = 'commute_scoped_slot_address'
+PAIRED_FAMILY = 'commute_weighted_slot_address'
 LIMIT = 6
 
 
@@ -24,7 +25,7 @@ def variants(source, name, header='', flags=None):
                                     or (f.startswith('-mabi') and f not in ('-mabi=32', '-mabi=o32')) for f in flags)):
         return []
     context = _blank(source + '\n' + header)
-    if re.search(r'(?m)^\s*#\s*(?:include(?:_next)?|import)\b|\b(?:volatile|_Atomic|asm|__asm__|setjmp|longjmp|__LINE__|__COUNTER__|__builtin_\w*|class|namespace|template|operator)\b|::', context):
+    if re.search(r'(?m)^\s*#\s*(?:include(?:_next)?|import)\b|\b(?:asm|__asm__|setjmp|longjmp|__LINE__|__COUNTER__|__builtin_\w*|class|namespace|template|operator)\b|::', context):
         return []
     if any(integer_abi.scalar(t, context, 'mips') != expected for t, expected in
            (('u8', (8, False)), ('u32', (32, False)), ('s32', (32, True)))):
@@ -33,6 +34,8 @@ def variants(source, name, header='', flags=None):
     if not part:
         return []
     clean, body = part.clean, part.body
+    if re.search(r'\b(?:volatile|_Atomic)\b', body):
+        return []
     signatures = list(re.finditer(rf'\b{re.escape(name)}\s*\(', clean[:part.opening]))
     if not signatures:
         return []
@@ -154,11 +157,21 @@ def _scoped_slots(source, part, pairs):
                     break
                 replacement = f'{row} = (s32 *)(({index} * 4) + (u32){base});'
                 out.append((SLOT_FAMILY, edit(source, [(hit.start(), hit.end(), replacement)])))
+                # The address change and an extra scope can be profitable only
+                # together: each alone regressed in a linked KMC O1 case.
+                scope = re.compile(rf'do\s*\{{\s*{re.escape(base)}\s*=\s*{re.escape(array)}\s*;\s*\}}\s*while\s*\(\s*0\s*\)\s*;')
+                scopes = list(scope.finditer(block))
+                if len(scopes) == 1 and len(out) < LIMIT:
+                    start = a + 1 + scopes[0].start()
+                    end = a + 1 + scopes[0].end()
+                    weighted = f'do {{ do {{ {base} = {array}; }} while (0); }} while (0);'
+                    out.append((PAIRED_FAMILY, edit(source, [(start, end, weighted),
+                                                            (hit.start(), hit.end(), replacement)])))
                 if len(out) >= LIMIT:
                     return out
                 break
     return out
 
 
-REPAIR = {'families': (FAMILY, SLOT_FAMILY), 'variants': variants, 'needs': ('source', 'name', 'header', 'flags'),
+REPAIR = {'families': (FAMILY, SLOT_FAMILY, PAIRED_FAMILY), 'variants': variants, 'needs': ('source', 'name', 'header', 'flags'),
           'archs': ('mips',)}
