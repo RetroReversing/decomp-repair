@@ -26,7 +26,7 @@ def variants(source, name):
         word = r'\b' + re.escape(var) + r'\b'
         # No shadowing, address escape, type-sensitive expression, or second write.
         if (len(re.findall(r'\b(?:s8|u8|s16|u16|s32|u32|int|char|short|long)\s+' + word, body)) != 1
-                or re.search(r'&\s*\(?\s*' + word + r'|\b(?:sizeof|typeof|__typeof__)\s*\(?\s*' + word, body)
+                or re.search(r'&\s*\(*\s*' + word + r'|\b(?:sizeof|typeof|__typeof__)\s*\(*\s*' + word, body)
                 or re.search(r'(?:\+\+|--)\s*' + word + '|' + word + r'\s*(?:\+\+|--|(?:<<|>>|[+*/%&|^<>-])=)', body)):
             continue
         assignments = list(re.finditer(word + r'\s*=(?!=)\s*(' + IDENT + r'\s*\([^;{}]*\))\s*;', body))
