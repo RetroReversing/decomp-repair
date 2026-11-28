@@ -112,8 +112,16 @@ def _plain(expression):
     return re.sub(r'[\s()&]', '', expression)
 
 
+def _word_cursors(text, names):
+    """Whether every one of `names` is declared a pointer to a four-byte type, so `+= 4` steps sixteen bytes."""
+    return all(re.search(rf'\b(?:M2C_UNK|M2C_UNK32|s32|u32|int)\s*\*\s*{re.escape(n)}\s*[;,]', text) for n in names)
+
+
 def _bounded(text, pos, inits):
-    """One `do { stores; steps } while (src != SRC + N);` at `pos`: (dst, src, step, N, end) or None."""
+    """One `do { stores; steps } while (src != SRC + N);` at `pos`: (dst, src, step, N, end) or None.
+
+    A cursor m2c declared `M2C_UNK *` steps by elements (`var_v0 += 4` after four words) while the bound it writes
+    stays in bytes (`&D + 0x510`): the step is then read in bytes."""
     opened = _DO.match(text, pos)
     first = opened and (_STORE.match(text, opened.end()) or _ZERO.match(text, opened.end()))
     if not first:
@@ -128,6 +136,8 @@ def _bounded(text, pos, inits):
         pos = step.end()
     if set(steps) != {dst, src} or len(set(steps.values())) != 1:
         return None
+    if len(words) == steps[src] and steps[src] > 1 and _word_cursors(text, (dst, src)):
+        steps = {name: 4 * value for name, value in steps.items()}
     if [offset for offset, _w in words] != list(range(0, steps[src], 4)) or any(width != 4 for _o, width in words):
         return None
     test = re.compile(
@@ -202,7 +212,25 @@ def _drop_locals(text, names, start, stop):
     return text
 
 
-def variants(source, name):
+def _retype_local(text, init, record, start, stop):
+    """`&sp10` copied into while `sp10` is one scalar word: declare `sp10` as the copied record, which sizes the frame.
+
+    Left alone (None) when the local is not a scalar declared there; declined (False) when the function reads it by
+    value, which a record cannot be."""
+    local = re.fullmatch(rf'\(?\s*&\s*({_ID})\s*\)?', init)
+    if not local:
+        return None
+    decl = re.compile(rf'(?m)^([ \t]*)(?:M2C_UNK|M2C_UNK32|s32|u32|int)[ \t]+{local[1]}[ \t]*;')
+    found = decl.search(text, start, stop)
+    if not found:
+        return None
+    body = text[found.end():stop]
+    if re.search(rf'(?<![&\w.]){local[1]}\b', body):
+        return False
+    return text[:found.start()] + f'{found[1]}{record} {local[1]};' + text[found.end():]
+
+
+def _single(source, name):
     span = find(source, name)
     if not span:
         return []
@@ -237,13 +265,41 @@ def variants(source, name):
             text = source[:start] + line_text + source[stop:]
             body_end = end + len(line_text) - (stop - start)
             text = _drop_locals(text, names, span[0], body_end)
+            body_end -= len(source[:start] + line_text + source[stop:]) - len(text)
+            # only the element-stepped form (`+= 4` after four words): a byte-stepped draft's stack scalars are
+            # `slot_scalar_records`' to gather
+            stepped = re.search(rf'(?<![\w.>]){re.escape(names[0])}\s*\+=\s*4\s*;', clean[start:stop])
+            retyped = _retype_local(text, dinit, record, span[0], body_end) if stepped else None
+            if retyped is False:
+                continue
+            if retyped:
+                text = retyped
             at = source.rfind('\n', 0, span[0]) + 1
-            text = text[:at] + typedef + text[at:]
+            if typedef not in source:
+                text = text[:at] + typedef + text[at:]
             if text not in seen:
                 seen.add(text)
                 result.append((FAMILY, text))
         pos = stop
     return result[:6]
+
+
+def variants(source, name):
+    """Each block move written as its assignment, then, with two or more, all of them in one child."""
+    return _single(source, name) + _every_copy(source, name)
+
+
+def _every_copy(source, name):
+    """A function with two or more block moves gets them all at once too: each alone leaves the other's cursors
+    holding registers (word records first)."""
+    texts, text = [], source
+    for _ in range(4):
+        children = [child for _family, child in _single(text, name)]
+        if not children:
+            break
+        text = children[0]
+        texts.append(text)
+    return [(FAMILY, texts[-1])] if len(texts) > 1 else []
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'archs': ('mips',)}

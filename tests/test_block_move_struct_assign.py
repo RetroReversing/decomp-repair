@@ -112,3 +112,53 @@ def test_other_code_is_left_alone():
     source = ALIGNED.replace('var_a3 += 0x10;', 'var_a3 += 0x8;')
     assert variants(source, 'copy') == []
     assert variants('void f(void) {\n    g = 1;\n}\n', 'f') == []
+
+
+STEPPED = """extern M2C_UNK D_FIRST;
+extern M2C_UNK D_SECOND;
+
+void load(void) {
+    M2C_UNK sp10;
+    M2C_UNK sp528;
+    M2C_UNK *var_v0;
+    M2C_UNK *var_v0_2;
+    M2C_UNK *var_v1;
+    M2C_UNK *var_v1_2;
+
+    var_v1 = &sp10;
+    var_v0 = &D_FIRST;
+    do {
+        M2C_FIELD(var_v1, s32 *, 0) = (s32) M2C_FIELD(var_v0, s32 *, 0);
+        M2C_FIELD(var_v1, s32 *, 4) = (s32) M2C_FIELD(var_v0, s32 *, 4);
+        M2C_FIELD(var_v1, s32 *, 8) = (s32) M2C_FIELD(var_v0, s32 *, 8);
+        M2C_FIELD(var_v1, s32 *, 0xC) = (s32) M2C_FIELD(var_v0, s32 *, 0xC);
+        var_v0 += 4;
+        var_v1 += 4;
+    } while (var_v0 != (&D_FIRST + 0x510));
+    M2C_FIELD(var_v1, s32 *, 0) = (s32) M2C_FIELD(var_v0, s32 *, 0);
+    M2C_FIELD(var_v1, s32 *, 4) = (s32) M2C_FIELD(var_v0, s32 *, 4);
+    var_v1_2 = &sp528;
+    var_v0_2 = &D_SECOND;
+    do {
+        M2C_FIELD(var_v1_2, s32 *, 0) = (s32) M2C_FIELD(var_v0_2, s32 *, 0);
+        M2C_FIELD(var_v1_2, s32 *, 4) = (s32) M2C_FIELD(var_v0_2, s32 *, 4);
+        M2C_FIELD(var_v1_2, s32 *, 8) = (s32) M2C_FIELD(var_v0_2, s32 *, 8);
+        M2C_FIELD(var_v1_2, s32 *, 0xC) = (s32) M2C_FIELD(var_v0_2, s32 *, 0xC);
+        var_v0_2 += 4;
+        var_v1_2 += 4;
+    } while (var_v0_2 != (&D_SECOND + 0x510));
+    M2C_FIELD(var_v1_2, s32 *, 0) = (s32) M2C_FIELD(var_v0_2, s32 *, 0);
+    M2C_FIELD(var_v1_2, s32 *, 4) = (s32) M2C_FIELD(var_v0_2, s32 *, 4);
+    use(&sp10, &sp528);
+}
+"""
+
+
+def test_element_stepped_cursors_into_scalar_stack_words():
+    """Two copies at once: `M2C_UNK *` cursors step by elements, and the scalar destination takes the record's type."""
+    text = variants(STEPPED, 'load')[-1][1]
+    assert '*(__repair_block518w *)(&sp10) = *(__repair_block518w *)(&D_FIRST);' in text
+    assert '*(__repair_block518w *)(&sp528) = *(__repair_block518w *)(&D_SECOND);' in text
+    assert '__repair_block518w sp10;' in text and '__repair_block518w sp528;' in text
+    assert text.count('typedef struct { s32 data[0x146]; } __repair_block518w;') == 1
+    assert 'var_v0' not in text

@@ -57,12 +57,15 @@ def _scan(source, name):
         regions = []
         for hit in re.finditer(rf'(?<![\w.>]){re.escape(var)}\s*=(?!=)\s*{NUMBER}\s*;', clean[opening:end]):
             at = opening + hit.end()
-            later = [loop for loop in loops if loop[0] >= at and loop[0] - at <= GAP]
+            later = [loop for loop in loops if loop[0] >= at]
             if not later:
                 continue
             loop = min(later)
             between = clean[at:loop[0]]
-            if (re.search(rf'(?<![\w.>]){re.escape(var)}\b', between) or between.count(';') > AT_MOST
+            # A run of plain statements may be any length (m2c leaves `i = 0;` above a hundred calls where the game's
+            # loop header was scheduled to); with a block in it the set has to stay close to its loop.
+            far = loop[0] - at > GAP or between.count(';') > AT_MOST
+            if (re.search(rf'(?<![\w.>]){re.escape(var)}\b', between) or far and re.search(r'[{}]', between)
                     or re.search(r'\b(?:goto|return|break|continue|else|switch|case|default|do|for|while)\b|^[ \t]*[A-Za-z_]\w*[ \t]*:(?!:)',
                                  between, re.M)
                     or not _stepped(clean, var, loop)):
