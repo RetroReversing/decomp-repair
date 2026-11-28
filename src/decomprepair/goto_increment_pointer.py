@@ -2,8 +2,9 @@
 
 A KMC O1 state handler directly increments one slot then jumps past a shared
 store. Holding the real slot pointer, computing its increment, and jumping
-to that store improved a linked diagnostic from 510 to 445. The exact judge
-decides each candidate.
+to that store improved a linked diagnostic from 510 to 445. Staging the
+computed value before copying the pointer further reduced it to 250. The
+exact judge decides each candidate.
 """
 import re
 
@@ -33,7 +34,8 @@ def variants(source, name, header='', flags=None):
     directives = '\n'.join(re.findall(r'(?m)^\s*#.*(?:\\\n.*)*', context))
     macros = set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})\b', directives))
     local = '__repair_increment_ptr'
-    if macros.intersection(re.findall(IDENT, body)) or {'s32', name, local} & macros or re.search(rf'\b{local}\b', clean):
+    value_local = '__repair_increment_value'
+    if macros.intersection(re.findall(IDENT, body)) or {'s32', name, local, value_local} & macros or re.search(rf'\b(?:{local}|{value_local})\b', clean):
         return []
     if re.search(rf'\b(?!(?:return|else|case|goto)\b){IDENT}(?:\s+|\s*\*+\s*){IDENT}\s*\([^;{{}}]*\)\s*\{{', body):
         return []
@@ -107,6 +109,12 @@ def variants(source, name, header='', flags=None):
                                f'{temp} = *{local} + 1;\n{indent}{ptr} = {local};\n{indent}goto {label};')
                 result.append((FAMILY, edit(source, [(at, at, f'    s32 *{local};\n'),
                                                     (hit.start('stmt'), hit.end('stmt'), replacement)])))
+                staged = (f'{local} = ({hit["index"]} * 4) + {table};\n{indent}'
+                          f'{value_local} = *{local} + 1;\n{indent}{ptr} = {local};\n{indent}'
+                          f'{temp} = {value_local};\n{indent}goto {label};')
+                result.append((FAMILY, edit(source, [(at, at, f'    s32 *{local};\n'),
+                                                    (part.opening + 1 + decls[0].end(), part.opening + 1 + decls[0].end(), f'\n    s32 {value_local};'),
+                                                    (hit.start('stmt'), hit.end('stmt'), staged)])))
                 if len(result) >= LIMIT:
                     return result
     return result
