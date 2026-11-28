@@ -7,7 +7,14 @@ reset (`gcc-2.7.2-kmc -O1`) scored 200 with `u16` fields and 0 with `s16` ones, 
 
 When the target has `addiu $rt, $zero, -K` and the source assigns that negative literal to unsigned narrow members
 (declared in a struct of this source) or through `*(u16 *)` / `*(u8 *)` casts, they are all made signed in one child,
-then each alone. A multi-name declaration (`u16 a, b, c;`) is written one member a line, in the same order, so only the
+then each alone.
+
+The other way round too: a target that builds `0xFF` or `0xFFFF` (`addiu $rt, $zero, 0xFF`, `ori $rt, $zero, 0xFFFF`)
+where the source stores that positive literal into a *signed* narrow member compiles to `li -1`, so those members are
+made unsigned. m2c types a member it only sees stored with `sb`/`sh` as signed. An SN GCC 2.8.1 N64 label update wrote
+`0xFF` into three `s8` members and `0xFFFF` into an `s16` one (one function, a controlled result).
+
+A multi-name declaration (`u16 a, b, c;`) is written one member a line, in the same order, so only the
 assigned members change type.
 """
 import re
@@ -21,6 +28,10 @@ LIMIT = 6
 SIGNED = {'u8': 's8', 'u16': 's16', 'unsigned char': 'signed char', 'unsigned short': 'short'}
 TYPE = r'(?:u8|u16|unsigned\s+char|unsigned\s+short)'
 IDENT = r'[A-Za-z_]\w*'
+UNSIGNED = {'s8': 'u8', 's16': 'u16', 'signed char': 'unsigned char', 'short': 'unsigned short'}
+SIGNED_TYPE = r'(?:s8|s16|signed\s+char|short)'
+POSITIVE = re.compile(r'\b(?:addiu|li|ori)\s+\$\w+\s*,\s*(?:\$(?:zero|0)\s*,\s*)?(0x[0-9a-fA-F]+|\d+)\b')
+WIDTHS = {'u8': 8, 's8': 8, 'unsigned char': 8, 'signed char': 8, 'u16': 16, 's16': 16, 'unsigned short': 16, 'short': 16}
 NEGATIVE = re.compile(r'\b(?:addiu|li)\s+\$\w+\s*,\s*(?:\$(?:zero|0)\s*,\s*)?-(0x[0-9a-fA-F]+|\d+)\b')
 DECLARATION = re.compile(r'(?<![\w])(?P<type>' + TYPE + r')[ \t]+(?P<names>' + IDENT + r'(?:\[\w+\])?(?:\s*,\s*'
                          + IDENT + r'(?:\[\w+\])?)*)\s*;')
@@ -37,7 +48,50 @@ def _struct_bodies(clean):
             yield m.end(), at - 1
 
 
+def _unsigned(source, name, asm):
+    """Signed narrow members that a positive literal with its top bit set is stored into, made unsigned."""
+    span = find(source, name)
+    built = {int(value, 0) for value in POSITIVE.findall(asm)}
+    built = {value for value in built if value in range(0x80, 0x100) or value in range(0x8000, 0x10000)}
+    if not built:
+        return []
+    clean = _blank(source)
+    body = clean[span[0]:span[1]]
+    assigned = {}
+    for m in re.finditer(r'(?:->|\.)\s*(' + IDENT + r')(?:\s*\[[^\][]*\])?[\s)]*=\s*(0x[0-9a-fA-F]+|\d+)\s*;', body):
+        value = int(m[2], 0)
+        if value in built:
+            assigned[m[1]] = value
+    edits = {}
+    pattern = re.compile(r'(?<![\w])(?P<type>' + SIGNED_TYPE + r')[ \t]+(?P<name>' + IDENT + r')(?:\[\w+\])?\s*;')
+    for start, end in _struct_bodies(clean):
+        for m in pattern.finditer(clean, start, end):
+            kind = ' '.join(m['type'].split())
+            value = assigned.get(m['name'])
+            if value is not None and value >> (WIDTHS[kind] - 1) == 1:
+                edits.setdefault(m['name'], []).append((m.start('type'), m.end('type'), UNSIGNED[kind]))
+
+    def apply(members):
+        text = source
+        for start, end, new in sorted((e for member in members for e in edits[member]), reverse=True):
+            text = text[:start] + new + text[end:]
+        return text
+
+    if not edits:
+        return []
+    texts = [apply(list(edits))]
+    if len(edits) > 1:
+        texts += [apply([member]) for member in list(edits)[:LIMIT - 1]]
+    return [(FAMILY, text) for text in dict.fromkeys(texts)]
+
+
 def variants(source, name, asm):
+    if not find(source, name) or not asm:
+        return []
+    return _signed(source, name, asm) + _unsigned(source, name, asm)
+
+
+def _signed(source, name, asm):
     span = find(source, name)
     if not span or not asm:
         return []
@@ -47,7 +101,7 @@ def variants(source, name, asm):
     clean = _blank(source)
     body = clean[span[0]:span[1]]
     assigned = set()
-    for m in re.finditer(r'(?:->|\.)\s*(' + IDENT + r')(?:\s*\[[^\][]*\])?\s*=\s*-\s*(0x[0-9a-fA-F]+|\d+)\s*;', body):
+    for m in re.finditer(r'(?:->|\.)\s*(' + IDENT + r')(?:\s*\[[^\][]*\])?[\s)]*=\s*-\s*(0x[0-9a-fA-F]+|\d+)\s*;', body):
         if int(m[2], 0) in wanted:
             assigned.add(m[1])
 

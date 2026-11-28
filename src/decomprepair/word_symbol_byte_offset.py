@@ -19,6 +19,8 @@ from .pattern_repairs import close
 FAMILY = 'word_symbol_byte_offset'
 FAMILIES = (FAMILY,)
 LIMIT = 6
+# `(s32) *(..)`: m2c casts a read, and the `*` after the cast is a read too (a product's `(a) *` names a variable)
+_AFTER_CAST = r'\(\s*(?:s8|u8|s16|u16|s32|u32|s64|u64|f32|f64|int|char|short|long|M2C_UNK)\s*\**\s*\)'
 _DECLARATION = re.compile(r'(?m)^[ \t]*extern\s+(?P<type>s32|u32|int|M2C_UNK)\s+(?P<name>[A-Za-z_]\w*)\s*;')
 
 
@@ -51,7 +53,7 @@ def _sum_site(clean, start, stop, low):
         return -1
     if clean[at] != '(' or not close(clean, at):
         return -1
-    star = re.search(r'(?:^|[=(,;{}+\-/&|^<>!?:]|\breturn)\s*(\*)\s*$', clean[low:at])
+    star = re.search(r'(?:^|[=(,;{}+\-/&|^<>!?:]|\breturn|' + _AFTER_CAST + r')\s*(\*)\s*$', clean[low:at])
     return low + star.start(1) if star else -1
 
 

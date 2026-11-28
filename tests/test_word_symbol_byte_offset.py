@@ -30,3 +30,9 @@ def test_leaves_arrays_casts_and_arguments():
     assert not sources(SOURCE.replace('extern s32 D_A;', 'extern s32 D_A[];').replace('i + (&D_B)', 'i'))
     assert not sources('extern s32 D_A;\nvoid f(s32 i)\n{\n    g((u8 *)&D_A + i, &D_A);\n}\n')
     assert not sources(sources(SOURCE)[0])
+
+
+def test_a_read_after_a_cast_gets_the_words_type():
+    source = ('extern M2C_UNK D_80100000;\nvoid f(s32 *p, s32 i) {\n    *p = (s32) *((i * 4) + &D_80100000);\n}\n')
+    from decomprepair.word_symbol_byte_offset import variants as repair
+    assert '(s32) *(s32 *)((i * 4) + (u8 *)&D_80100000)' in repair(source, 'f')[0][1]
