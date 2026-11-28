@@ -46,14 +46,24 @@ are read as `M2C_FIELD`s too, and the child is kept only when no new `M2C_FIELD`
 defined there). A 48-instruction N64 fill-rectangle display list (SN GCC 2.8.1 `-O2 -mfp64`) went from 4465 (that
 draft) to 265 with this, and `or_chain_order` took it to 0.
 
-Children (`returned_gfx_cursor`): one.
+A routine may instead hand the advanced cursor to a call that goes on with the list (`f(p + 8 * N, ..)`, often
+through a local that holds `p + 8`): that argument becomes `p`, in the same child.
+
+A macro that writes two commands expands to one block with one `_g` set twice (libultra's `gSPLoadUcodeEx(gfx++, ..)`
+evaluates `pkt` again for its second command), and the compiler then keeps one register for both copies. A 17-instruction
+N64 microcode load (SN GCC 2.8.1 `-O2 -mfp64`) went from 1260 (the draft) to 0 with the shared pointer; a block per
+command scored 920.
+
+Children: `returned_gfx_cursor` (a block per command) and, with two or more commands, `shared_gfx_cursor` (one block
+and one `_g` for all of them).
 """
 import re
 
 from .csource import _blank, find
 
 FAMILY = 'returned_gfx_cursor'
-FAMILIES = (FAMILY,)
+SHARED = 'shared_gfx_cursor'
+FAMILIES = (FAMILY, SHARED)
 IDENT = r'[A-Za-z_]\w*'
 WORDS = 'typedef struct { unsigned int w0; unsigned int w1; } RepairGfxWords;\n'
 PARAMETER = re.compile(rf'(?:void|u8|s8|char)[ \t]*\*[ \t]*(?P<name>{IDENT})[ \t]*(?=[,)])')
@@ -213,6 +223,12 @@ def _flatten(source, span, cursor):
             uses[found['base']] += 1
             edits.append((found.start(), found.end(),
                           f'return {cursor} + {offsets[found["base"]] + int(found["add"], 0)};'))
+    for found in re.finditer(rf'(?<=[(,])(?P<space>\s*)(?P<base>{names})[ \t]*\+[ \t]*(?P<add>{NUMBER})(?=\s*[,)])', body):
+        # the advanced cursor handed to a call
+        if found['base'] != cursor:
+            uses[found['base']] += 1
+            edits.append((found.start('base'), found.end(),
+                          f'{cursor} + {offsets[found["base"]] + int(found["add"], 0)}'))
     for name, count in uses.items():
         if len(re.findall(rf'\b{name}\b', body)) != count:
             return None
@@ -248,7 +264,14 @@ def _in_address_order(text, cursor):
     return '\n'.join(lines[:at[0]] + [whole for _, whole in ordered] + kept + lines[at[-1] + 1:])
 
 
-def _rewrite(source, clean, span, cursor):
+def _handoffs(body, cursor, size):
+    """The `cursor + size` call arguments: where a routine passes the rest of the list on."""
+    found = re.finditer(rf'(?<=[(,])\s*(?P<argument>{cursor}[ \t]*\+[ \t]*(?P<add>{NUMBER}))(?=\s*[,)])', body)
+    return [match for match in found if int(match['add'], 0) == size and re.search(
+        rf'\b(?!if\b|while\b|switch\b|for\b|sizeof\b|M2C_FIELD\b){IDENT}\s*\([^;{{}}]*$', body[:match.start()])]
+
+
+def _rewrite(source, clean, span, cursor, shared=False):
     opening = clean.find('{', span[0], span[1])
     body, text = clean[opening:span[1]], source[opening:span[1]]
     stores = _stores(body, cursor)
@@ -261,16 +284,23 @@ def _rewrite(source, clean, span, cursor):
     if any(first[1] > second[0] for first, second in zip(order, order[1:])):
         return None
     returns = list(re.finditer(rf'\breturn[ \t]+{cursor}[ \t]*\+[ \t]*(?P<size>{NUMBER})[ \t]*;', body))
-    if len(returns) != len(re.findall(r'\breturn\b', body)) or not returns or any(
-            int(found['size'], 0) != 8 * count or found.start() < order[-1][1] for found in returns):
+    handoffs = [] if returns else _handoffs(body, cursor, 8 * count)
+    if returns:
+        if len(returns) != len(re.findall(r'\breturn\b', body)) or any(
+                int(found['size'], 0) != 8 * count or found.start() < order[-1][1] for found in returns):
+            return None
+    elif len(handoffs) != 1 or handoffs[0].start() < order[-1][1] or not _top(body, handoffs[0].start()):
+        return None
+    if shared and (count < 2 or re.search(r'\b_g\b', body)):
         return None
     stray = list(re.finditer(rf',[ \t]*{cursor}(?=\)[ \t]*;)', body))
     if any(found.start() < order[0][1] for found in stray):
         return None
     used = len(re.findall(rf'\b{cursor}\b', body))
-    if used != 2 * count + len(returns) + len(stray):
+    if used != 2 * count + len(returns) + len(handoffs) + len(stray):
         return None
     edits = [(found.start(), found.end(), f'return {cursor};') for found in returns]
+    edits += [(*found.span('argument'), cursor) for found in handoffs]
     dropped = {}
     for found in stray:
         depth, commas, at = 0, 1, found.start() - 1
@@ -283,19 +313,33 @@ def _rewrite(source, clean, span, cursor):
             return None
         dropped[callee[1]] = commas + 1
         edits.append((found.start(), found.end(), ''))
+    commands = []
     for k in range(count):
         first, second = order[2 * k], order[2 * k + 1]
         between = body[first[1]:second[0]]
-        if not _pure(between, cursor):
+        if not _pure(between, cursor) or (shared and k and not _pure(body[order[2 * k - 1][1]:first[0]], cursor)):
             return None
         indent = re.match(r'[ \t]*', text[first[0]:])[0]
         inner = indent + '    '
         middle = ''.join(f'\n{inner}{line.strip()}' for line in text[first[1]:second[0]].split('\n') if line.strip())
-        block = (f'{indent}{{\n{inner}RepairGfxWords *_g = (RepairGfxWords *){cursor};\n'
-                 f'{inner}{cursor} = (void *)((char *){cursor} + 8);\n'
-                 f'{inner}_g->w0 = {text[first[2]:first[3]]};{middle}\n'
-                 f'{inner}_g->w1 = (unsigned int)({text[second[2]:second[3]]});\n{indent}}}')
-        edits.append((first[0], second[1], block))
+        take = '_g = ' if shared else 'RepairGfxWords *_g = '
+        commands.append((first[0], second[1], indent,
+                         f'{inner}{take}(RepairGfxWords *){cursor};\n'
+                         f'{inner}{cursor} = (void *)((char *){cursor} + 8);\n'
+                         f'{inner}_g->w0 = {text[first[2]:first[3]]};{middle}\n'
+                         f'{inner}_g->w1 = (unsigned int)({text[second[2]:second[3]]});\n'))
+    if shared:
+        # one block around every command, with the statements between two commands kept where they were
+        indent = commands[0][2]
+        parts = [f'{indent}{{\n{indent}    RepairGfxWords *_g;\n']
+        for k, (start, _, _, lines) in enumerate(commands):
+            if k:
+                parts.extend(f'{indent}    {line.strip()}\n'
+                             for line in text[commands[k - 1][1]:start].split('\n') if line.strip())
+            parts.append(lines)
+        edits.append((commands[0][0], commands[-1][1], ''.join(parts) + f'{indent}}}'))
+    else:
+        edits += [(start, end, f'{indent}{{\n{lines}{indent}}}') for start, end, indent, lines in commands]
     for start, end, new in sorted(edits, reverse=True):
         text = text[:start] + new + text[end:]
     prefix = source[:opening]
@@ -328,13 +372,15 @@ def _children(source, name):
     head = clean[clean.rfind(name, 0, opening):opening]
     result = []
     for parameter in PARAMETER.finditer(head):
-        rewritten = _rewrite(source, clean, span, parameter['name'])
-        if not rewritten:
-            flat = _flatten(source, span, parameter['name'])
-            if flat:
-                rewritten = _rewrite(flat, _blank(flat), find(flat, name), parameter['name'])
-        if rewritten:
-            result.append((FAMILY, rewritten))
+        for family in FAMILIES:
+            shared = family == SHARED
+            rewritten = _rewrite(source, clean, span, parameter['name'], shared)
+            if not rewritten:
+                flat = _flatten(source, span, parameter['name'])
+                if flat:
+                    rewritten = _rewrite(flat, _blank(flat), find(flat, name), parameter['name'], shared)
+            if rewritten:
+                result.append((family, rewritten))
     return result
 
 

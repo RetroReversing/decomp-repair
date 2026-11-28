@@ -94,7 +94,7 @@ s32 f(void *arg0, s32 arg1) {
 
 def test_derived_command_pointers_become_offsets_in_address_order():
     children = returned_gfx_cursor.variants(CHAINED, 'f')
-    assert len(children) == 1
+    assert [family for family, _ in children] == ['returned_gfx_cursor', 'shared_gfx_cursor']
     text = children[0][1]
     assert 'temp_s0' not in text
     assert text.count('RepairGfxWords *_g') == 3
@@ -135,7 +135,7 @@ s32 f(void *arg0) {
 }
 '''
     children = returned_gfx_cursor.variants(source, 'f')
-    assert len(children) == 1
+    assert [family for family, _ in children] == ['returned_gfx_cursor', 'shared_gfx_cursor']
     text = children[0][1]
     assert '_g->w0 = 0xDC080008;\n        _g->w1 = (unsigned int)(&D_80070000);' in text
     assert '_g->w0 = 0xDB060000;\n        _g->w1 = (unsigned int)(h(D_80070000));' in text
@@ -166,7 +166,7 @@ s32 f(void *arg0) {
 
 def test_expanded_byte_offset_stores_are_read_as_the_same_cursor():
     children = returned_gfx_cursor.variants(EXPANDED, 'f')
-    assert [family for family, _ in children] == ['returned_gfx_cursor']
+    assert [family for family, _ in children] == ['returned_gfx_cursor', 'shared_gfx_cursor']
     child = children[0][1]
     assert 'M2C_FIELD' not in child and 'register' not in child
     assert child.count('RepairGfxWords *_g = (RepairGfxWords *)arg0;') == 3
