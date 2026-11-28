@@ -32,7 +32,10 @@ _CAST = re.compile(r'\(\s*(?P<type>u32|s32|unsigned\s+int|unsigned|int)\s*\)\s*(
 _SHIFT = re.compile(r'\s*>>\s*(?P<amount>0[xX][0-9a-fA-F]+|[0-9]+)\s*(?=\))')
 _STATEMENT = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<text>[^;{}\s][^;{}]*;)')
 _DECLARED = re.compile(rf'\b(?P<type>{_TYPE})\s+(?P<name>[A-Za-z_]\w*)\s*(?=[;=,)])')
-_ARITHMETIC = re.compile(r'(?:[A-Za-z_]\w*|0[xX][0-9a-fA-F]+|[0-9]+|<<|>>|[-+*&|^()~\s])+')
+# one character per word character: repeating whole identifiers inside the group let a name be cut into pieces every
+# possible way, so an expression it refuses (a `/`, a `->`) with long names ran for minutes (the app cut the family off
+# at 120 s on a 170-instruction N64 draft)
+_ARITHMETIC = re.compile(r'(?:\w|<<|>>|[-+*&|^()~\s])+')
 
 
 def _integers(part):
