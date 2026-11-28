@@ -43,6 +43,30 @@ def test_a_source_pointer_with_an_offset():
     assert '    sp18 = *(__repair_bytes8 *) ((char *) ptr + 0x8);\n' in child
 
 
+TWO_ARMS = SOURCE.replace('s32 check(void)', 's32 check(s32 which)').replace('''    clear(&sp28);
+''', '''    if (which == 0) {
+        sp18 = M2C_UNALIGNED32(M2C_FIELD(&D_80002000, M2C_UNK *, 0));
+        sp1C = M2C_UNALIGNED32(M2C_FIELD(&D_80002000, M2C_UNK *, 4));
+        sp20 = M2C_UNALIGNED32(M2C_FIELD(&D_80002000, M2C_UNK *, 8));
+        sp24 = M2C_UNALIGNED32(M2C_FIELD(&D_80002000, M2C_UNK *, 0xC));
+    }
+    clear(&sp28);
+''')
+
+
+def test_arms_copying_into_the_same_words_share_the_record():
+    child, = children(TWO_ARMS)
+    assert '    sp18 = *(__repair_bytes16 *) &D_80001000;\n' in child
+    assert '        sp18 = *(__repair_bytes16 *) &D_80002000;\n' in child
+    assert child.count('__repair_bytes16 sp18;') == 1
+    assert 'M2C_UNALIGNED32' not in child and 'sp1C' not in child and 'sp24' not in child
+
+
+def test_runs_of_different_sizes_into_the_same_words_decline():
+    source = TWO_ARMS.replace('        sp24 = M2C_UNALIGNED32(M2C_FIELD(&D_80002000, M2C_UNK *, 0xC));\n', '')
+    assert children(source) == []
+
+
 def test_a_later_word_read_elsewhere_declines():
     assert children(SOURCE.replace('clear(&sp28);', 'clear(sp1C);')) == []
 
