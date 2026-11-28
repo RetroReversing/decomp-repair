@@ -82,3 +82,29 @@ def test_two_buffers_each_become_an_array():
 
 def test_one_buffer_read_elsewhere_stops_both():
     assert variants(TWO_TABLES.replace('walk(&sp10, &sp18);', 'walk(&sp10, &sp18, sp1C);'), 'load') == []
+
+
+TAIL = '''extern M2C_UNK D_80001000;
+
+void banner(void) {
+    s32 unksp2E;                                    /* compiler-managed */
+    s32 sp20[4];
+
+    sp20[0] = M2C_FIELD(&D_80001000, s32 *, 0);
+    sp20[1] = M2C_FIELD(&D_80001000, s32 *, 4);
+    sp20[2] = M2C_FIELD(&D_80001000, s32 *, 8);
+    sp20[3] = M2C_FIELD(&D_80001000, s16 *, 0xC);
+    unksp2E = M2C_FIELD(&D_80001000, s8 *, 0xE);
+    draw(sp20);
+}
+'''
+
+
+def test_the_tail_stored_to_an_unk_slot_belongs_to_the_copy():
+    [(_, child)] = variants(TAIL, 'banner')
+    assert '__builtin_memcpy(sp20, &D_80001000, 15);' in child
+    assert 'unksp2E' not in child
+
+
+def test_an_unk_slot_that_is_read_stops_the_rewrite():
+    assert variants(TAIL.replace('draw(sp20);', 'draw(sp20, unksp2E);'), 'banner') == []

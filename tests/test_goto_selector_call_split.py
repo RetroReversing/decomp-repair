@@ -72,3 +72,40 @@ def test_work_after_a_guard_goes_in_its_else_and_work_after_the_arm_declines():
 def test_declines_a_jump_outside_the_chain():
     source = SOURCE.replace('    h(arg0);', '    if (D_e) {\n        var_a2 = 1;\n        goto block_22;\n    }\n    h(arg0);')
     assert repair.variants(source, 'f') == []
+
+
+TAIL = '''void banner(s32 arg0) {
+    s32 var_a1;
+
+    if (two == 0) {
+        format(arg0);
+        var_a1 = 0x7D;
+        goto block_9;
+    }
+    if (won != 0) {
+        draw(arg0, 0x50, 1);
+        return;
+    }
+    if (many != 0) {
+        format(1);
+        var_a1 = 0x5F;
+block_9:
+        draw(arg0, var_a1, 1);
+    }
+}
+'''
+
+
+def test_a_call_that_ends_a_void_function_is_made_on_each_path():
+    [(_, child)] = repair.variants(TAIL, 'banner')
+    assert '        format(arg0);\n        draw(arg0, 0x7D, 1);\n        return;\n    }' in child
+    assert '        format(1);\n        draw(arg0, 0x5F, 1);\n    }' in child
+    assert 'var_a1' not in child and 'goto' not in child and 'block_9' not in child
+
+
+def test_a_selector_read_elsewhere_keeps_the_shared_call():
+    assert repair.variants(TAIL.replace('draw(arg0, 0x50, 1);', 'draw(arg0, var_a1, 1);'), 'banner') == []
+
+
+def test_a_call_with_code_after_it_keeps_the_shared_call():
+    assert repair.variants(TAIL.replace('draw(arg0, var_a1, 1);\n    }', 'draw(arg0, var_a1, 1);\n    }\n    done();'), 'banner') == []
