@@ -292,3 +292,77 @@ def test_multiplied_mask_is_a_shifted_field_and_a_high_shift_falls_in_the_top_fi
     assert _fields('((a & 0xF) * 0x10) | ((b & 3) << 0x12)', TILE_W1, never)['masks'] == 'a'
     top = _fields('t << 0x15', [('s', 16, 16), ('t', 0, 16)], never)
     assert top['s'] == 't << 5'
+
+
+def _arm(label):
+    """A homemade display-list write through the cursor global itself, in an arm of a switch."""
+    return f'''extern s32 *sCursor;
+void s(s32 k)
+{{
+    s32 *next;
+    switch (k) {{
+    case 0:
+        break;
+    {label}
+        M2C_FIELD(sCursor, s32 *, 0) = 0xE7000000;
+        M2C_FIELD(sCursor, s32 *, 4) = 0;
+        next = sCursor + 8;
+        sCursor = next;
+        break;
+    }}
+}}
+'''
+
+
+@pytest.mark.parametrize('label', ['case 1:', "case 'a':", 'case (1 ? 2 : 3):', 'default:', 'again:',
+                                   'case 1: case 2:'])
+def test_the_cursor_is_read_below_a_label_not_above_it(label):
+    """Above the label the read never runs when the label is jumped to, and the arm writes through garbage."""
+    read = g._explicit_reads(_arm(label), 's', 'sCursor', 's32')
+    assert read.count('_cur1 = sCursor;') == 1
+    assert read.index(label) < read.index('_cur1 = sCursor;') < read.index('M2C_FIELD(_cur1')
+    out = _by_family(_arm(label), 's')['gbi_macro_commands']
+    body = out[out.index('void s('):]
+    assert body.index(label) < body.index('gDPPipeSync(sCursor++);')
+    assert '_cur1 = sCursor' not in body
+
+
+def test_a_read_does_not_stay_valid_across_a_label():
+    # the arm falls through into the next label, which a jump reaches without passing the first read
+    source = _arm('case 1:').replace('        next = sCursor + 8;', '    case 2:\n        next = sCursor + 8;')
+    read = g._explicit_reads(source, 's', 'sCursor', 's32')
+    assert read.count(' = sCursor;') == 2
+    assert read.index('case 2:') < read.index('_cur2 = sCursor;') < read.index('next = _cur2 + 8;')
+
+
+def test_a_cursor_write_right_after_a_label_still_writes_the_global():
+    source = _arm('case 1:').replace('        break;\n    }', '        break;\n    case 3:\n        sCursor = next;\n    }')
+    assert 'case 3:\n        sCursor = next;' in g._explicit_reads(source, 's', 'sCursor', 's32')
+
+
+def test_a_case_label_that_cannot_be_read_leaves_the_source_alone():
+    source = _arm('case 1 ? 2 : 3:')
+    assert g._explicit_reads(source, 's', 'sCursor', 's32') == source
+
+
+@pytest.mark.skipif(not shutil.which('cc'), reason='no host C compiler')
+@pytest.mark.parametrize('label', ['case 1:', 'default:'])
+def test_the_arm_of_a_switch_writes_the_same_display_list_as_the_draft(tmp_path, label):
+    def run(text, name):
+        text = text.replace('extern char *sCursor;', '').replace('extern Gfx', 'Gfx')
+        prefix = HOST.replace('s32 *sCursor;', '' if 'Gfx' in text else 'char *sCursor;')
+        macro = '#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((char *)(expr) + (offset)))\n'
+        main = ('int main(void) { sCursor = (void *) buffer; s(1);\n'
+                'printf("%08x %08x %ld\\n", buffer[0], buffer[1], (long) ((char *) sCursor - (char *) buffer)); return 0; }\n')
+        path = tmp_path / f'{name}.c'
+        path.write_text(prefix + macro + text + main)
+        subprocess.run(['cc', '-w', '-Wno-error', '-Wno-incompatible-pointer-types', '-Wno-int-conversion',
+                        '-o', str(tmp_path / name), str(path)], check=True)
+        return subprocess.run([str(tmp_path / name)], check=True, capture_output=True, text=True).stdout
+    # m2c's offsets are bytes, so the host's cursor is a byte pointer
+    source = _arm(label).replace('s32 *', 'char *').replace('(sCursor, char *,', '(sCursor, s32 *,')
+    expected = run(source, 'draft')
+    variants = g.variants(source, 's')
+    assert variants
+    for k, (family, text) in enumerate(variants):
+        assert run(text, f'variant{k}') == expected, family
