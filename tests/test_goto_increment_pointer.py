@@ -22,12 +22,15 @@ done:
 
 def test_stages_real_pointer_before_shared_store():
     children = variants(SOURCE, 'f')
-    assert len(children) == 1
+    assert len(children) == 2
     text = children[0][1]
     assert '__repair_increment_ptr = (i * 4) + table;' in text
     assert 'value = *__repair_increment_ptr + 1;' in text
     assert 'ptr = __repair_increment_ptr;' in text
     assert 'goto store;' in text
+    staged = children[1][1]
+    assert '__repair_increment_value = *__repair_increment_ptr + 1;' in staged
+    assert 'ptr = __repair_increment_ptr;\n        value = __repair_increment_value;' in staged
 
 
 def test_rejects_later_read_backedge_escape_shadow_and_unbraced_control():
