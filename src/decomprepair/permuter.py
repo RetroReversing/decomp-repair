@@ -33,10 +33,28 @@ def _body_bounds(lines: list[str]) -> tuple[int, int]:
     return start + 1, end
 
 
+_SET = re.compile(r"^\s+(\w+)\s*=(?!=)")
+
+
+def _unsets(lines, lo, i):
+    """Swapping lines[i] and lines[i + 1] would read a local before anything has assigned it.
+
+    A saved best stored through a pointer one line above `p = &D;`: it scored closer, so it was kept."""
+    first = _SET.match(lines[i])
+    if not first:
+        return False
+    name = first[1]
+    declared = any((d := _DECL.match(line)) and d[5] == name and "=" not in d[6] for line in lines[lo:i])
+    if not declared or any(re.search(rf"(?<![\w.>]){name}\s*=(?!=)|&\s*{name}\b", line) for line in lines[lo:i]):
+        return False
+    after = _SET.sub("", lines[i + 1]) if (second := _SET.match(lines[i + 1])) and second[1] == name else lines[i + 1]
+    return bool(re.search(rf"(?<![\w.>]){name}\b", after))
+
+
 def _swap_statements(lines, rng, known=None):
     lo, hi = _body_bounds(lines)
     pairs = [i for i in range(lo, hi - 1) if _STMT.match(lines[i]) and _STMT.match(lines[i + 1])
-             and not _CONTROL.search(lines[i] + lines[i + 1]) and not _DECL.match(lines[i])
+             and not _CONTROL.search(lines[i] + lines[i + 1]) and not _DECL.match(lines[i]) and not _unsets(lines, lo, i)
              and lines[i][:len(lines[i]) - len(lines[i].lstrip())] == lines[i + 1][:len(lines[i + 1]) - len(lines[i + 1].lstrip())]]
     if not pairs:
         return None
