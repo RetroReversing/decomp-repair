@@ -27,10 +27,11 @@ def variants(source, name):
         # No shadowing, address escape, type-sensitive expression, or second write.
         if (len(re.findall(r'\b(?:s8|u8|s16|u16|s32|u32|int|char|short|long)\s+' + word, body)) != 1
                 or re.search(r'&\s*\(*\s*' + word + r'|\b(?:sizeof|typeof|__typeof__)\s*\(*\s*' + word, body)
-                or re.search(r'(?:\+\+|--)\s*' + word + '|' + word + r'\s*(?:\+\+|--|(?:<<|>>|[+*/%&|^<>-])=)', body)):
+                or re.search(r'(?:\+\+|--)\s*\(*\s*' + word, body)):
             continue
         assignments = list(re.finditer(word + r'\s*=(?!=)\s*(' + IDENT + r'\s*\([^;{}]*\))\s*;', body))
-        if len(assignments) != 1 or len(re.findall(word + r'\s*=(?!=)', body)) != 1:
+        writes = re.findall(word + r'\s*\)*\s*(?:\+\+|--|(?:<<|>>|[+*/%&|^<>-])=|=(?!=))', body)
+        if len(assignments) != 1 or len(writes) != 1:
             continue
         assign = assignments[0]
         if len(re.findall(word, body)) < 3:
