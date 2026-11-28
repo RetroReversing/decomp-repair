@@ -17,8 +17,16 @@ address once and stores the offset 0 member through the symbol, which no spellin
 N64 initialiser of such a record stood at 985 as its draft and was exact with this edit alone. Only a symbol the source
 itself declares as a plain scalar `extern` (not one the project header names) whose every other use is understood: a
 bare `D_x` is the member at offset 0, of the declared type, and `&D_x` may not be stepped without a cast.
+
+A global m2c declares as a byte array, `extern u8 D_x[];`, and reads as `M2C_FIELD(D_x, T *, K)` is declared as the
+record too (not just cast to it), and an element read through the same symbol, `M2C_FIELD(((i) * 4) + D_x, s32 *, 0x10)`
+with the stride the size of the type, becomes the array member `D_x.m10[i]`. Only when every use of the symbol is one of
+these two. An 18-instruction N64 stack pop of such a record (SN GCC 2.8.1 profile) went from 2030 to 310 with this
+child and matched after two more steps (`narrow_widening`, `guard_temp_sink`).
 """
 import re
+
+from .pattern_repairs import close
 
 FAMILY = 'm2c_field_record_view'
 FAMILIES = (FAMILY,)
@@ -56,6 +64,104 @@ def _layouts(body, extra=()):
         if base not in refused and all(at + size <= later for (at, (_, size)), (later, _) in zip(ordered, ordered[1:])):
             out[base] = dict(ordered)
     return out
+
+
+def _byte_array(symbol):
+    return re.compile(r'^[ \t]*extern[ \t]+(?:u8|s8)[ \t]+' + re.escape(symbol) + r'\[\][ \t]*;[ \t]*\n', re.M)
+
+
+def _unwrap(text):
+    """`text` without parentheses around the whole of it."""
+    text = text.strip()
+    while text.startswith('(') and close(text, 0) == len(text):
+        text = text[1:-1].strip()
+    return text
+
+
+def _element(base, symbol):
+    """(index, stride) when `base` is `((index) * stride) + symbol`, either way round, else None."""
+    text, word = _unwrap(base), re.escape(symbol)
+    found = re.fullmatch(r'(?P<product>\(.*\))\s*\+\s*' + word, text) or re.fullmatch(word + r'\s*\+\s*(?P<product>\(.*\))', text)
+    if not found:
+        return None
+    product = _unwrap(found['product'])
+    scaled = re.fullmatch(r'(?P<index>.+?)\s*\*\s*(?P<stride>0x[0-9A-Fa-f]+|\d+)', product)
+    if not scaled:
+        return None
+    index = scaled['index'].strip()
+    if not (re.fullmatch(r'[A-Za-z_]\w*', index) or (index.startswith('(') and close(index, 0) == len(index))):
+        return None
+    return _unwrap(index), int(scaled['stride'], 0)
+
+
+def _byte_accesses(body, symbol):
+    """[(start, end, offset, member type, size, index or None)] when every use of the byte array `symbol` in `body` is
+    the base of an `M2C_FIELD`, alone or stepped by an index, else None."""
+    out, at = [], 0
+    word = re.compile(r'\b' + re.escape(symbol) + r'\b')
+    for macro in re.finditer(r'\bM2C_FIELD\(', body):
+        if macro.start() < at:
+            continue
+        end = close(body, macro.end() - 1)
+        if end is None:
+            return None
+        inner = body[macro.end():end - 1]
+        if not word.search(inner):
+            continue
+        parts = re.fullmatch(r'(?s)(.*),\s*([A-Za-z_]\w*)\s*(\*+)\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*', inner)
+        if not parts:
+            return None
+        base, typ, stars, offset = parts[1], parts[2], parts[3], int(parts[4], 0)
+        member, size = ('void *', POINTER) if len(stars) > 1 else (typ, SIZES.get(typ))
+        if size is None or offset % size:
+            return None
+        index = None
+        if _unwrap(base) != symbol:
+            element = _element(base, symbol)
+            if not element or element[1] != size or word.search(element[0]) or 'M2C_FIELD' in element[0]:
+                return None
+            index = element[0]
+        out.append((macro.start(), end, offset, member, size, index))
+        at = end
+    covered = sum(len(word.findall(body[a:b])) for a, b, *_ in out)
+    return out if out and covered == len(word.findall(body)) else None
+
+
+def _byte_record(source, name, start, symbol, header):
+    """The child that declares the byte array `symbol` as a record, or None."""
+    head, body = source[:start], source[start:]
+    word, tag = r'\b' + re.escape(symbol) + r'\b', f'Rec_{name}_{symbol}'
+    if (len(_byte_array(symbol).findall(head)) != 1 or len(re.findall(word, head)) != 1
+            or re.search(word, header) or re.search(r'\b' + re.escape(tag) + r'\b', source)):
+        return None
+    accesses = _byte_accesses(body, symbol)
+    if not accesses:
+        return None
+    members, arrays = {}, set()
+    for _, _, offset, member, size, index in accesses:
+        if members.setdefault(offset, (member, size)) != (member, size):
+            return None
+        if index is not None:
+            arrays.add(offset)
+    ordered = sorted(members.items())
+    if any(at + size > later for (at, (_, size)), (later, _) in zip(ordered, ordered[1:])):
+        return None
+    lines, at = [], 0
+    for position, (offset, (member, size)) in enumerate(ordered):
+        if offset > at:
+            lines.append(f'    char pad{at:X}[0x{offset - at:X}];')
+        space = '' if member.endswith('*') else ' '
+        count = 0
+        if offset in arrays:
+            later = ordered[position + 1][0] if position + 1 < len(ordered) else offset + size
+            count = (later - offset) // size
+        lines.append(f'    {member}{space}m{offset:X}{f"[{count}]" if count else ""};')
+        at = offset + size * max(count, 1)
+    for a, b, offset, _, _, index in reversed(accesses):
+        element = f'[{index}]' if index is not None else '[0]' if offset in arrays else ''
+        body = body[:a] + f'{symbol}.m{offset:X}{element}' + body[b:]
+    record = 'typedef struct {\n' + '\n'.join(lines) + f'\n}} {tag};\nextern {tag} {symbol};\n'
+    return _byte_array(symbol).sub('', head) + record + '\n' + body
 
 
 def _declaration(symbol):
@@ -131,6 +237,8 @@ def variants(source, name, header=''):
     if start is None or 'M2C_FIELD(' not in source[start:]:
         return []
     body = source[start:]
+    arrays = list(dict.fromkeys(re.findall(r'^[ \t]*extern[ \t]+(?:u8|s8)[ \t]+([A-Za-z_]\w*)\[\]', source[:start], re.M)))[:MAX_BASES]
+    records = [child for child in (_byte_record(source, name, start, symbol, header) for symbol in arrays) if child]
     globals_, extra, bare = {}, [], {}
     for base in dict.fromkeys(_key(m[1]) for m in FIELD.finditer(body)):
         if not base.startswith('&'):
@@ -143,12 +251,12 @@ def variants(source, name, header=''):
     layouts = {base: fields for base, fields in _layouts(body, extra).items()
                if not base.startswith('&') or globals_[base]}
     if not layouts:
-        return []
+        return [(FAMILY, child) for child in records]
     choices = [layouts]
     if len(layouts) > 1:
         choices += [{base: fields} for base, fields in list(layouts.items())[:MAX_BASES]]
     children = (_child(source, name, start, bases, bare) for bases in choices)
-    return [(FAMILY, child) for child in children if child and child != source]
+    return [(FAMILY, child) for child in [*records, *children] if child and child != source]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header')}  # the registry: no caller wiring

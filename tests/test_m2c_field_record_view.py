@@ -83,3 +83,32 @@ def test_a_global_whose_uses_are_not_understood_is_refused():
     assert s.variants(named, 'f', header='extern s32 D_80001000;\n') == []
     narrow = 'extern s16 D_80001000;\nvoid f(void) {\n' + access + '    D_80001000 = 1;\n'
     assert s.variants(narrow + '    M2C_FIELD(&D_80001000, s32 *, 0) = 2;\n}\n', 'f') == []
+
+
+BYTES = '''extern u8 D_80001000[];
+
+void pop(void) {
+    u8 count;
+
+    count = M2C_FIELD(D_80001000, u8 *, 0xD) - 1;
+    M2C_FIELD(D_80001000, u8 *, 0xD) = count;
+    M2C_FIELD(D_80001000, s32 *, 0) = M2C_FIELD((((count & 0xFF) * 4) + D_80001000), s32 *, 0x10);
+}
+'''
+
+
+def test_a_byte_array_global_with_an_indexed_read_is_declared_as_a_record():
+    child = s.variants(BYTES, 'pop')[0][1]
+    assert 'extern u8 D_80001000[];' not in child and 'M2C_FIELD(' not in child
+    assert 'extern Rec_pop_D_80001000 D_80001000;' in child
+    assert 's32 m10[1];' in child and 'char padE[0x2];' in child
+    assert 'D_80001000.m0 = D_80001000.m10[count & 0xFF];' in child
+    assert 'D_80001000.mD = count;' in child
+
+
+def test_a_byte_array_used_any_other_way_is_not_redeclared():
+    for use in ('    g(D_80001000);\n', '    M2C_FIELD(((count * 8) + D_80001000), s32 *, 0) = 0;\n'):
+        source = BYTES.replace('    u8 count;\n\n', '    u8 count;\n\n' + use)
+        assert not any('extern Rec_pop_D_80001000 D_80001000;' in child for _, child in s.variants(source, 'pop'))
+    named = s.variants(BYTES, 'pop', header='extern u8 D_80001000[];\n')
+    assert not any('extern Rec_pop_D_80001000 D_80001000;' in child for _, child in named)
