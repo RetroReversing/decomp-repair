@@ -142,3 +142,38 @@ s32 f(void *arg0) {
     assert 'M2C_FIELD' not in text and 'return arg0;' in text
     # a record whose member names are not its offsets is somebody's own struct, left alone
     assert returned_gfx_cursor.variants(source.replace('s32 m8;', 's32 m10;'), 'f') == []
+
+
+EXPANDED = '''typedef struct { int field_0; int field_4; int field_8; } __repair_record_arg0;
+extern s16 D_80090000;
+
+s32 f(void *arg0) {
+    void *temp_a0;
+    register void *temp_a0_2;
+
+    temp_a0_2 = arg0 + 8;
+    *((int *)((char *)arg0 + 0)) = 0xE7000000;
+    ((__repair_record_arg0*)arg0)->field_4 = 0;
+    (*(s32 *)((char *)(temp_a0_2) + 4)) = 0x300000;
+    ((__repair_record_arg0*)arg0)->field_8 = 0xE3000A01;
+    temp_a0 = temp_a0_2 + 8;
+    (*(s32 *)((char *)(temp_a0_2) + 8)) = (s32) (D_80090000 | 0xF6000000);
+    (*(s32 *)((char *)(temp_a0) + 4)) = 0;
+    return temp_a0 + 8;
+}
+'''
+
+
+def test_expanded_byte_offset_stores_are_read_as_the_same_cursor():
+    children = returned_gfx_cursor.variants(EXPANDED, 'f')
+    assert [family for family, _ in children] == ['returned_gfx_cursor']
+    child = children[0][1]
+    assert 'M2C_FIELD' not in child and 'register' not in child
+    assert child.count('RepairGfxWords *_g = (RepairGfxWords *)arg0;') == 3
+    assert '_g->w0 = 0xE3000A01;' in child and '_g->w1 = (unsigned int)(0x300000);' in child
+    assert 'return arg0;' in child
+
+
+def test_expanded_access_that_is_not_the_cursor_writes_nothing():
+    other = EXPANDED.replace('    return temp_a0 + 8;', '    (*(s32 *)((char *)(D_80090000) + 4)) = 0;\n    return temp_a0 + 8;')
+    assert returned_gfx_cursor.variants(other, 'f') == []
