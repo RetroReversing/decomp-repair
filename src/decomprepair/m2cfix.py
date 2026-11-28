@@ -337,6 +337,9 @@ def refine_draft(draft: str, name: str, asm: str) -> str | None:
             body = body.replace(decl.group(0), "\0DECL\0", 1)
             body = re.sub(r"\*%s\b(?!\s*[+-]=)" % re.escape(var), "*(%s *)%s" % (ctype, var), body)
             body = body.replace("\0DECL\0", decl.group(0).replace(ctype + " *", "char *"), 1)
+    from .byte_cursor_retype import variants as byte_cursors
+    for _, child in byte_cursors(body, name):  # a pointer over byte tables, read with byte offsets
+        body = child
     # (whole names only: a plain replace made `M2C_UNK32` into `s3232`, a type no compiler knows)
     body = re.sub(r"\bM2C_UNK(8|16|32)?\b", lambda m: {"8": "s8", "16": "s16"}.get(m.group(1), "s32"), body)
     written = argument_registers_written(asm)
