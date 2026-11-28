@@ -42,6 +42,7 @@ def test_rejects_mutation_escape_control_or_overflow():
 
 
 def test_preprocessor_inputs_are_conservative():
+    assert variants(SOURCE + '\nint line = __LINE__;\n', 'f') == []
     for directive in ('#include "x.h"', '#include_next <x.h>', '#import "x.h"', '#define n other', '#define __repair_product x'):
         assert variants(SOURCE, 'f', header=directive) == []
     for flag in ('-DFOO=1', '-include', '-imacros', '-Wp,foo', '-Xpreprocessor', '@flags'):
