@@ -159,7 +159,9 @@ def _goto_arm_chain(body):
     blocks = _blocks(clean)
     results = []
     for end, (start, condition, inner, inner_end) in blocks.items():
-        labelled = re.search(r'(?<![\w?])([A-Za-z_]\w*)\s*:(?!:)\s*((?:[^;{}:?]*;\s*)+)$', clean[inner:inner_end])
+        # each statement starts at a non-space, so the repeat has one way to split the text (the open form took minutes)
+        labelled = re.search(r'(?<![\w?])([A-Za-z_]\w*)\s*:(?!:)\s*((?:(?:[^;{}:?\s][^;{}:?]*)?;\s*)+)$',
+                             clean[inner:inner_end])
         if not labelled or labelled[1] in ('case', 'default'):
             continue
         label = labelled[1]

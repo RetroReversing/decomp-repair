@@ -152,3 +152,10 @@ def test_a_parameter_with_another_use_stays():
               .replace('saved_reg_s2 & 0xFF', 'arg1 & 0xFF').replace('var_s2', 'var_a1')
               .replace('obj->alt = 1;', 'obj->alt = arg1;'))
     assert children(source.replace('obj->alt = arg1;', 'send(arg1);'), ARGUMENT) == []
+
+
+def test_a_label_before_many_statements_does_not_backtrack():
+    from decomprepair.m2c_join_ladder import _goto_arm_chain
+
+    arm = '    if (a) {\nL:\n' + '        x->field = 1;\n' * 60 + '        if (b) {\n        }\n    }\n'
+    assert _goto_arm_chain('{\n' + arm + '}\n') == []
