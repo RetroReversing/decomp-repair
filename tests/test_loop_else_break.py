@@ -67,6 +67,56 @@ def test_for_and_leading_break():
     assert every.count('{') == every.count('}')
 
 
+def test_goto_loop_with_statements_before_its_test():
+    src = '''void f(s32 count) {
+    s32 i;
+    u32 low;
+
+    i = 0;
+loop_1:
+    low = i & 0xFFFF;
+    if (low < (u32) count) {
+        show(name, low);
+        i += 1;
+        goto loop_1;
+    }
+    done();
+}
+'''
+    out = dict(m.variants(src, 'f'))['loop_else_break']
+    assert 'while (1) {\n        low = i & 0xFFFF;\n        if (low < (u32) count) {' in out
+    assert 'i += 1;\n        } else {\n            break;\n        }\n    }\n    done();' in out
+    assert 'goto' not in out and 'loop_1' not in out
+    # a statement that is not plain (a test of its own, a label, a `break` that would bind to the new loop) keeps the goto
+    for extra in ('if (a()) return;', 'break;', 'continue;', 'other:'):
+        assert m.variants(src.replace('    low = i & 0xFFFF;', '    ' + extra + '\n    low = i & 0xFFFF;'), 'f') == []
+
+
+def test_the_loop_and_its_symbol_base_together():
+    src = '''void f(s32 count) {
+    s32 i;
+    u32 low;
+    s32 *__base_D_80001000;
+
+    i = 0;
+    __base_D_80001000 = D_80001000;
+loop_1:
+    low = i & 0xFFFF;
+    if (low < (u32) count) {
+        show(__base_D_80001000, low);
+        i += 1;
+        goto loop_1;
+    }
+}
+'''
+    out = dict(m.variants(src, 'f'))
+    both = out['loop_else_break_base']
+    assert 'show(D_80001000, low);' in both and '__base' not in both
+    assert 'while (1) {' in both and 'goto' not in both
+    assert '__base_D_80001000' in out['loop_else_break']
+    assert 'loop_else_break_base' not in dict(m.variants(DRAFT, 'f'))
+
+
 def test_declines_what_would_change_meaning():
     stepped = 'void f(s32 n) {\n    s32 i;\n    for (i = 0; i < n; i++) {\n        if (a()) continue;\n        g();\n    }\n}\n'
     assert m.variants(stepped, 'f') == []

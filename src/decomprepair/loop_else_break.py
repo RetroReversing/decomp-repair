@@ -9,15 +9,24 @@ measurement is not: an 84-instruction N64 function with two such loops (SN GCC 2
 with `for (;;) { if (i >= count) break; ... }` and 0 with this spelling.
 
 `loop_else_break` rewrites one loop at a time, from `for`, `while`, `for (;;) { if (c) break; ... }`, m2c's
-`for (;;) { ...; if (c) { ...; continue; } break; }` and a `label: if (c) { ...; goto label; }`.
+`for (;;) { ...; if (c) { ...; continue; } break; }` and a `label: PRE; if (c) { ...; goto label; }` (PRE goes to the head of the loop body).
 `loop_else_break_all` rewrites every such loop at once: copies of one loop in two arms only pay off together.
 `loop_else_break_arms` also moves a constant set just before an `if`/`else` to the head of both arms, where the loop
 that uses it can hoist around it (the same function's counter).
+
+A goto loop with statements between the label and its test needed two families in turn, whose first step (a `for (;;)`
+with a `break`) scored worse than where it started; a 31-instruction N64 name-printing loop (SN GCC 2.8.1 `-G0 -mips3
+-O2`) reached 0 from this one child and a base pointer inlined (`symbol_base_inline`).
+
+`loop_else_break_base` is every loop rewritten with each `__base_SYM = SYM;` local written out
+(`local_load_widths`' `symbol_base_inline`): on that function the loop alone tied the seed's score (500) and the two
+together were exact.
 
 Meaning is kept: a `for` with a `continue` of its own is declined (the step would be skipped), as is a `goto` loop
 with a free `break` or `continue` (they would bind to the new loop)."""
 import re
 
+from . import local_load_widths
 from .csource import _blank, find
 from .goto_structure_repairs import IDENT, _gotos, parse, walk
 from .pattern_repairs import close, negate
@@ -25,7 +34,8 @@ from .pattern_repairs import close, negate
 ONE = 'loop_else_break'
 ALL = 'loop_else_break_all'
 ARMS = 'loop_else_break_arms'
-FAMILIES = (ONE, ALL, ARMS)
+BASE = 'loop_else_break_base'
+FAMILIES = (ONE, ALL, ARMS, BASE)
 LIMIT = 6
 
 
@@ -173,11 +183,20 @@ def _loop(source, clean, function, loop):
 
 
 def _goto_loops(source, clean, function):
-    """(start, end, replacement) for each `label: if (c) { ...; goto label; }`."""
+    """(start, end, replacement) for each `label: PRE; if (c) { ...; goto label; }`; PRE, which the loop repeats,
+    may be empty and holds only plain statements (m2c's `temp = i & 0xFFFF;` before the test)."""
     out = []
     for block in _blocks(function):
-        for label, test in zip(block, block[1:]):
-            if label.kind != 'label' or test.kind != 'if' or test.parts.get('other') is not None:
+        for at, label in enumerate(block):
+            if label.kind != 'label':
+                continue
+            found = next((i for i in range(at + 1, len(block)) if block[i].kind == 'if'), None)
+            if found is None:
+                continue
+            test, prelude = block[found], _prelude(source, block[at + 1:found])
+            between = block[at + 1:found]
+            if prelude is None or test.parts.get('other') is not None or _free(between, 'break') \
+                    or _free(between, 'continue'):
                 continue
             name, then = label.parts['name'], test.parts['then']
             if not then['block'] or len(then['stmts']) < 2:
@@ -190,7 +209,7 @@ def _goto_loops(source, clean, function):
                 continue
             body = source[then['open'] + 1:last.start]
             indent = _indent(source, test.start)
-            text = _build(indent, '', _text(source, test.parts['cond']), body)
+            text = _build(indent, prelude, _text(source, test.parts['cond']), body)
             line = source.rfind('\n', 0, label.start) + 1
             if not source[line:label.start].strip():
                 out.append((line, test.end, indent + text))
@@ -270,6 +289,17 @@ def _into_arms(source, name):
     return None
 
 
+def _unbased(source, name):
+    """Every search symbol base (`__base_SYM = SYM;`) written out."""
+    for _ in range(LIMIT):
+        child = next((text for family, text in local_load_widths.variants(source, name)
+                      if family == local_load_widths.FAMILY_BASE), None)
+        if child is None:
+            break
+        source = child
+    return source
+
+
 def variants(source, name):
     parsed = _edits(source, name)
     if not parsed:
@@ -282,6 +312,9 @@ def variants(source, name):
     moved = _into_arms(every, name)
     if len(found) > 1:
         out.append((ALL, every))
+    unbased = _unbased(every, name)
+    if unbased != every:
+        out.append((BASE, unbased))
     if moved:
         out.append((ARMS, moved))
     out += [(ONE, _apply(source, [edit])) for edit in found]
