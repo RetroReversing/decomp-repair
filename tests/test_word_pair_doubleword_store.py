@@ -54,6 +54,53 @@ def test_shapes_it_must_leave_alone(text):
     assert _kids(text) == []
 
 
+GLOBALS = '''extern s32 D_80100000;
+extern s32 D_80100004;
+extern s32 D_80100008;
+extern s32 D_8010000C;
+void f(void) {
+    D_80100000 = 0;
+    D_80100004 = 0;
+    D_80100008 = 0;
+    D_8010000C = 0;
+}
+'''
+
+
+def _stores(*pairs):
+    return ''.join(f'lui $at, %hi({symbol})\nsw ${register}, %lo({symbol})($at)\n' for register, symbol in pairs)
+
+
+GLOBAL_SPLIT = _stores(('v0', 'D_80100000'), ('v1', 'D_80100004'), ('v0', 'D_80100008'), ('v1', 'D_8010000C'))
+
+
+def test_address_named_globals_become_doublewords():
+    head = GLOBALS.split('void f')[0]
+    both = head + 'void f(void) {\n    *(s64 *) &D_80100000 = 0;\n    *(s64 *) &D_80100008 = 0;\n}\n'
+    kids = _kids(GLOBALS, GLOBAL_SPLIT)
+    assert kids[0] == both
+    assert len(kids) == 3
+
+
+@pytest.mark.parametrize('asm', [
+    None,                                                                         # no evidence
+    _stores(('zero', 'D_80100000'), ('zero', 'D_80100004')),                      # plain word stores
+    _stores(('v0', 'D_80100000'), ('v0', 'D_80100004')),                          # one register
+])
+def test_globals_need_the_targets_split_registers(asm):
+    assert _kids(GLOBALS, asm) == []
+
+
+@pytest.mark.parametrize('body', [
+    'D_80100004 = 0; D_80100008 = 0;',              # the first not on a multiple of 8
+    'D_80100000 = 0; g(); D_80100004 = 0;',         # not adjacent
+    'D_80100000 = 0; D_80100004 = 1;',              # different constants
+    'if (x) D_80100000 = 0; D_80100004 = 0;',       # the first is only conditional
+])
+def test_global_shapes_it_must_leave_alone(body):
+    assert _kids('void f(s32 x) { ' + body + ' }\n', GLOBAL_SPLIT + _stores(('v0', 'D_80100004'))) == []
+
+
 def test_it_is_declared_for_the_registry():
     ours = [r for r in registry.declared() if FAMILY in r.families]
     assert len(ours) == 1 and registry.problems(ours[0]) == []
