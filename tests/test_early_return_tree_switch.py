@@ -54,8 +54,11 @@ def test_unsafe_or_different_shapes_are_ignored(change):
 
 def test_unknown_preprocessor_input_is_not_assumed_safe():
     assert not variants(SOURCE, 'process', '#include "unknown.h"')
+    assert not variants(SOURCE, 'process', '#include_next "unknown.h"')
+    assert not variants(SOURCE, 'process', '#import "unknown.h"')
     assert not variants(SOURCE, 'process', flags=['-DCASE=1'])
     assert not variants(SOURCE, 'process', flags=['-include', 'x.h'])
+    assert not variants(SOURCE, 'process', flags=['@flags.rsp'])
 
 
 def test_integer_alias_is_verified_before_rewriting_casts():

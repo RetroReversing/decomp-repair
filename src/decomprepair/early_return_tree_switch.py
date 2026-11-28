@@ -51,7 +51,7 @@ def _body(source, clean, start, end):
 
 
 def variants(source, name, header='', flags=None):
-    if any(flag.startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor')) for flag in flags or ()):
+    if any(flag.startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor', '@')) for flag in flags or ()):
         return []
     span = find(source, name)
     if not span:
@@ -63,7 +63,7 @@ def variants(source, name, header='', flags=None):
     if re.search(rf'\b(?!(?:return|else|case|goto)\b){IDENT}(?:\s+|\s*\*+\s*){IDENT}\s*\([^;{{}}]*\)\s*\{{',
                  clean[opening + 1:span[1]]):
         return []  # a nested function can mutate the discriminant
-    if (re.search(r'(?m)^\s*#\s*include\b', source + '\n' + header)
+    if (re.search(r'(?m)^\s*#\s*(?:include(?:_next)?|import)\b', source + '\n' + header)
             or re.search(r'(?m)^\s*#\s*(?:if|ifdef|ifndef|elif|else|endif)\b', clean[opening:span[1]])):
         return []
     macros = '\n'.join(re.findall(r'(?m)^\s*#\s*define\b[^\n]*(?:\\\n[^\n]*)*', source + '\n' + header))
