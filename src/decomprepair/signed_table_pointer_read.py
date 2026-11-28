@@ -38,7 +38,7 @@ def variants(source, name, asm='', header='', flags=None):
     if braces is None:
         return []
     if (re.search(r'(?m)^\s*#\s*(?:if|ifdef|ifndef|elif|else|endif)\b', body)
-            or re.search(r'\b(?:asm|__asm__|volatile|_Atomic)\b', body)):
+            or re.search(r'\b(?:asm|__asm__|volatile|_Atomic|typeof|__typeof__|__alignof__|_Generic)\b', body)):
         return []
     direct = {}
     for op, symbol in re.findall(r'\b(lbu|lb|lhu|lh|lw)\s+\$\w+\s*,\s*%lo\(\s*('+IDENT+r')\s*\)', asm or ''):
@@ -87,7 +87,8 @@ def variants(source, name, asm='', header='', flags=None):
                     continue
                 before = clean[part.opening + 1:hit.start()].rstrip()
                 after = clean[hit.end():]
-                if (before.endswith(('++', '--', ')', ']')) or re.search(r'&\s*\(*\s*$', before)
+                if (before.endswith((')', ']')) or re.search(r'(?:\+\+|--)\s*\(*\s*$', before)
+                        or re.search(r'&\s*\(*\s*$', before)
                         or re.search(r'\bsizeof\s*\(*\s*$', before)
                         or (re.search(r'\w$', before) and not re.search(r'\breturn$', before))
                         or re.match(r'\s*\)*\s*(?:\+\+|--|(?:<<|>>|[+\-*/%&|^])?=(?!=))', after)):

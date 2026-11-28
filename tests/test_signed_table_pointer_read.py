@@ -44,8 +44,11 @@ def test_uncertain_identity_or_pointer_flow_is_rejected(source, asm, header, fla
     '*(p + i) = 2;',
     '(*(p + i)) = 2;',
     '(*(p + i))++;',
+    '++(*(p + i));',
+    '--((*(p + i)));',
     'escape(&(*(p + i)));',
     'return sizeof (*(p + i));',
+    'return sizeof(typeof(*(p + i)));',
     'return i * (p + i);',
 ])
 def test_only_unary_value_reads_are_retyped(statement):
