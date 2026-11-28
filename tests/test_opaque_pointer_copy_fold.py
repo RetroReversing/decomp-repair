@@ -54,6 +54,36 @@ def test_nested_function_cannot_hide_a_later_source_mutation():
     assert not variants(source.replace('use(first);', 'change(); use(first);', 1), 'f')
 
 
+def test_macro_argument_cannot_mutate_a_folded_copy_or_source():
+    header = '#define CHANGE(x) ((x) = 0)\n'
+    for name in ('first', 'root'):
+        source = SOURCE.replace('use(first);', f'CHANGE({name}); use(first);', 1)
+        for _, child in variants(source, 'f', header):
+            assert 'void *first;' in child and 'use(first)' in child
+
+
+def test_unused_macro_does_not_block_the_fold():
+    assert variants(SOURCE, 'f', '#define UNRELATED(x) ((x) + 1)\n')
+
+
+def test_macro_cannot_retain_source_address_before_the_copy():
+    source = SOURCE.replace('first = root;', 'SAVE(root); first = root;')
+    header = '#define SAVE(x) remember(&(x))\n'
+    assert not variants(source, 'f', header)
+
+
+def test_unknown_includes_are_not_assumed_to_be_macro_free():
+    assert not variants(SOURCE, 'f', '#include "unknown.h"\n')
+
+
+def test_command_line_macros_are_not_assumed_to_be_safe():
+    assert not variants(SOURCE, 'f', flags=['-O2', '-DCHANGE(x)=((x)=0)'])
+    assert not variants(SOURCE, 'f', flags=['-O2', '-D', 'CHANGE(x)=((x)=0)'])
+    assert variants(SOURCE, 'f', flags=['-O2', '-G0'])
+    for option in ('-include', '-imacros=other.h', '-Wp,-DCHANGE(x)=0', '-Xpreprocessor'):
+        assert not variants(SOURCE, 'f', flags=['-O2', option])
+
+
 def test_member_name_equal_to_origin_is_not_a_local_reassignment():
     source = SOURCE.replace('emit(second);', 'obj.root = second; emit(second);')
     assert 'first' not in variants(source, 'f')[0][1]
