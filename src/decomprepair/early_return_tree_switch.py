@@ -76,11 +76,17 @@ def variants(source, name, header='', flags=None):
         if middle < 1 or middle >= 0x7fffffff or re.search(rf'\b{re.escape(variable)}\b', macros):
             continue
         # A local non-volatile signed int gives all three tests the same value.
-        declarations = re.findall(rf'\b((?:(?:volatile|static|register|const)\s+)*(?:s32|int|signed\s+int))\s+{re.escape(variable)}\b', clean[span[0]:span[1]])
-        if len(declarations) != 1 or re.search(r'\b(?:volatile|static)\b', declarations[0]):
+        function_text = clean[span[0]:span[1]]
+        declarations = list(re.finditer(rf'\b(?P<type>(?:(?:volatile|static|register|const)\s+)*(?:s32|int|signed\s+int))\s+(?P<name>{re.escape(variable)})\b', function_text))
+        if len(declarations) != 1 or re.search(r'\b(?:volatile|static)\b', declarations[0]['type']):
+            continue
+        # A different-typed nested declaration can shadow the chosen local.
+        shadow = (rf'\b(?:(?:const|volatile|static|struct|unsigned|signed|long|short)\s+)*{IDENT}'
+                  rf'\s*(?:\*\s*|\s+)(?P<name>{re.escape(variable)})\s*(?:[;=,\[)]|$)')
+        if any(match.start('name') != declarations[0].start('name') for match in re.finditer(shadow, function_text)):
             continue
         # The alias is not assumed to have its conventional width or signedness.
-        if re.search(r'\bs32\b', declarations[0] + clean[at:outer[3]]):
+        if re.search(r'\bs32\b', declarations[0]['type'] + clean[at:outer[3]]):
             aliases = re.findall(r'\btypedef\s+([^;{}]+)\s+s32\s*;', _blank(source + '\n' + header))
             if not aliases or any(' '.join(alias.split()) not in ('int', 'signed', 'signed int') for alias in aliases):
                 continue

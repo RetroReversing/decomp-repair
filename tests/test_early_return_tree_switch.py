@@ -35,6 +35,7 @@ def test_generate_three_cases_and_leave_continuation_after_switch():
 
 @pytest.mark.parametrize('change', [
     lambda s: s.replace('int state;', 'volatile int state;'),
+    lambda s: s.replace('state = input;', 'state = input; { double state; state = 1; }'),
     lambda s: s.replace('state = input;', 'escape(&state); state = input;'),
     lambda s: s.replace('state != 2', 'state != 3'),
     lambda s: s.replace('state >= 2', 'state > 2'),
