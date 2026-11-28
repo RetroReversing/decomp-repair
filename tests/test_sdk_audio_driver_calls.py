@@ -28,3 +28,14 @@ def test_requires_prototype_and_does_not_remove_volatile_read():
 def test_rejects_more_donor_calls_than_target_calls():
     source = SOURCE.replace('    alSynSetPan', '    alSynSetVol(p->drvr, v, 13, 100);\n    alSynSetPan')
     assert not variants(source, 'f', '', 'jal n_alSynSetVol')
+
+
+def test_rejects_incompatible_driverless_prototypes():
+    wrong = SOURCE.replace('void n_alSynSetVol(void *, short, int);', 'void n_alSynSetVol(void *, float);')
+    assert not variants(wrong, 'f', '', 'jal n_alSynSetVol')
+
+
+def test_does_not_replace_macros_or_opaque_volatile_typedefs():
+    assert not variants(SOURCE, 'f', '#define alSynSetVol(...) side_effect()', 'jal n_alSynSetVol')
+    assert not variants(SOURCE, 'f', 'typedef void *volatile Driver;', ASM)
+    assert not variants(SOURCE, 'f', 'class Player;', ASM)

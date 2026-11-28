@@ -15,6 +15,23 @@ IDENT = r'[A-Za-z_]\w*'
 CALL = re.compile(r'\b(?P<name>' + '|'.join(NAMES) + r')\s*\(\s*(?P<player>' + IDENT + r')\s*->\s*drvr\s*,\s*')
 
 
+def _prototype(text, symbol):
+    """A complete declaration with the argument widths the driverless SDK ABI consumes."""
+    decl = re.compile(r'\b(?:void|s32|u32|int)\s+' + re.escape(symbol) + r'\s*\(([^()]*)\)\s*;')
+    for found in decl.finditer(text):
+        args = [arg.strip() for arg in found[1].split(',')]
+        if symbol == 'n_alSynSetVol':
+            if (len(args) == 3 and '*' in args[0] and re.search(r'\b(?:s16|short)\b', args[1])
+                    and re.search(r'\b(?:s32|int|ALMicroTime)\b', args[2])):
+                return True
+        elif symbol == 'n_alSynSetPitch':
+            if len(args) == 2 and '*' in args[0] and re.search(r'\b(?:f32|float)\b', args[1]):
+                return True
+        elif len(args) == 2 and '*' in args[0] and re.search(r'\b(?:u8|s32|int|ALPan)\b', args[1]):
+            return True
+    return False
+
+
 def variants(source, name, header='', asm=''):
     span = find(source, name)
     if not span or not asm:
@@ -24,14 +41,18 @@ def variants(source, name, header='', asm=''):
     if re.search(r'\bvolatile\b|\b(?:asm|__asm__)\b|^\s*#', body, re.M):
         return []
     declarations = _blank(header + '\n' + source)
+    if re.search(r'\btypedef\b[^;]*\bvolatile\b|\b(?:class|template|operator)\b|::', declarations):
+        return []
     edits = {}
     for found in CALL.finditer(clean, span[0], span[1]):
         original = found['name']
         replacement = 'n_' + original
+        if re.search(r'^\s*#\s*define\s+' + re.escape(original) + r'\b', declarations, re.M):
+            continue
         # A named target call, not a textual mention or an unverified SDK name, supplies the ABI evidence.
         if not re.search(r'\b(?:jal|jalx|bal)\s+' + re.escape(replacement) + r'\b', asm):
             continue
-        if not re.search(r'\b(?:void|s32|u32|int)\s+' + re.escape(replacement) + r'\s*\(', declarations):
+        if not _prototype(declarations, replacement):
             continue
         # A volatile driver read is observable even though the driverless call does not consume it.
         if re.search(r'\bvolatile\b[^;{}]*\bdrvr\b|\bdrvr\b[^;{}]*\bvolatile\b', declarations):
