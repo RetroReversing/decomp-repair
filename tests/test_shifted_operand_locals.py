@@ -1,4 +1,6 @@
 """Two shifted operands of one statement, named and shifted in place before it."""
+import time
+
 from decomprepair.shifted_operand_locals import FAMILY, variants
 
 # A fixed-point vector length (SN64 GCC 2.8.1, N64): both squares are shifted as unnamed temporaries.
@@ -54,3 +56,12 @@ def test_globals_calls_and_single_operands_are_left_alone():
 
 def test_a_statement_that_steps_a_name_is_left_alone():
     assert not _children('void f(s32 a, s32 *p) {\n    p[a++] = ((u32)(a * a) >> 4) + ((u32)(a + 1) >> 4);\n}\n')
+
+
+def test_a_refused_expression_with_long_names_is_refused_at_once():
+    src = ('void f(s32 a_very_long_integer_local_name, s32 another_long_integer_local_name) {\n'
+           '    G(((a_very_long_integer_local_name * another_long_integer_local_name / 3) >> 12) + (a_very_long_integer_local_name >> 2));\n'
+           '}\n')
+    started = time.process_time()
+    variants(src, 'f')
+    assert time.process_time() - started < 5
