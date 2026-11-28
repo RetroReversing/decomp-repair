@@ -13,7 +13,13 @@ That the machine mode is what moves it is a hypothesis; the judge decides each c
 address never taken) whose reads are all `(T) v` for one narrow `T` and whose writes are whole statements (`=`, `+=`,
 `-=`, `&=`, `|=`, `^=`, `++`, `--`: each keeps its low bits whether the local is a word or narrow), the local declared
 `T` with the casts dropped, one child with all of them first when there are several. `variants` returns
-[(family, source)]."""
+[(family, source)].
+
+A read that is a whole argument at a position the callee's prototype declares `T` converts the same way without a
+written cast (`angle = next(); sine(angle);` with `s16 sine(s16);`), and a literal initialiser that fits `T` keeps
+its value, so both are taken too. On a 204-instruction N64 collision handler (SN GCC 2.8.1 `-G0 -mips3 -O2`) an
+`s32 angle = 0;` carried round a loop and only passed to two `s16` parameters, declared `s16`, took 940 -> 865: it
+changed which of two saved registers the angle and the loop counter got."""
 import re
 
 from .csource import _blank, find
@@ -23,11 +29,31 @@ FAMILY = 'cast_reads_narrow'
 FAMILIES = (FAMILY,)
 LIMIT = 6
 _DECL = re.compile(r'(?<=[;{}])(?P<space>\s*)(?P<type>s32|u32|int|signed\s+int|unsigned\s+int|unsigned)\s+'
-                   r'(?P<name>[A-Za-z_]\w*)\s*;')
+                   r'(?P<name>[A-Za-z_]\w*)\s*(?:=\s*(?P<init>-?(?:0[xX][0-9a-fA-F]+|[0-9]+))\s*)?;')
 _CAST = r'\(\s*(?P<cast>s16|u16|s8|u8)\s*\)\s*'
+_RANGE = {'s8': (-128, 127), 'u8': (0, 255), 's16': (-32768, 32767), 'u16': (0, 65535)}
+_ARGUMENT = re.compile(r'(?<![\w.>])([A-Za-z_]\w*)\s*\(([^(){};]*)\)')
 
 
-def _uses(clean, var, start, end, decl):
+def _parameter_reads(clean, context, var, start, end):
+    """(type, start, end) of each bare `var` that is a whole argument at a narrow parameter of a prototype."""
+    found = []
+    for call in _ARGUMENT.finditer(clean, start, end):
+        at = call.start(2)
+        for position, argument in enumerate(call[2].split(',')):
+            if argument.strip() == var:
+                prototype = re.search(rf'\b{call[1]}\s*\(([^(){{}};]*)\)\s*;', context)
+                parameters = prototype[1].split(',') if prototype else []
+                kind = re.match(r'\s*(s16|u16|s8|u8)(?:\s+[A-Za-z_]\w*)?\s*$', parameters[position]) \
+                    if position < len(parameters) else None
+                if kind:
+                    begin = at + len(argument) - len(argument.lstrip())
+                    found.append((kind[1], begin, begin + len(var)))
+            at += len(argument) + 1
+    return found
+
+
+def _uses(clean, context, var, start, end, decl):
     """(kind, [(start, end) of each cast read]) when every use of `var` allows the narrow type, else None."""
     kinds, reads, writes, taken = set(), [], 0, []
     for hit in re.finditer(rf'{_CAST}{var}\b(?!\s*(?:\[|\.|->|\+\+|--|\(|(?:<<|>>|[-+*/%&|^])?=(?!=)))', clean[:end]):
@@ -35,6 +61,10 @@ def _uses(clean, var, start, end, decl):
             kinds.add(hit['cast'])
             reads.append((hit.start(), hit.end()))
             taken.append((hit.start(), hit.end()))
+    for kind, a, b in _parameter_reads(clean, context, var, start, end):
+        if not any(x <= a < y for x, y in taken):
+            kinds.add(kind)
+            taken.append((a, b))
     if len(kinds) != 1:
         return None
     for hit in re.finditer(rf'(?<![\w.>]){var}\b', clean[:end]):
@@ -50,10 +80,14 @@ def _uses(clean, var, start, end, decl):
         if not written or not (before.endswith((';', '{', '}', ')', ':')) or re.search(r'\belse$', before)):
             return None
         writes += 1
-    return (kinds.pop(), reads) if writes else None
+    kind = kinds.pop()
+    low, high = _RANGE[kind]
+    if decl['init'] is not None and not low <= int(decl['init'], 0) <= high:
+        return None
+    return (kind, reads) if writes else None
 
 
-def variants(source, name):
+def variants(source, name, header=''):
     span = find(source, name)
     if not span:
         return []
@@ -62,6 +96,7 @@ def variants(source, name):
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end or re.search(r'#|\b(?:asm|__asm__)\b', clean[opening:end]):
         return []
+    context = _blank(header or '') + '\n' + clean
     plans, seen = [], set()
     for decl in _DECL.finditer(clean, opening, end):
         var = decl['name']
@@ -70,7 +105,7 @@ def variants(source, name):
         if var in seen or len(declarations) != 1 or re.search(rf'(?<![&\w\])])&\s*{var}\b', clean[opening:end]):
             continue
         seen.add(var)
-        found = _uses(clean, var, opening + 1, end, decl)
+        found = _uses(clean, context, var, opening + 1, end, decl)
         if found:
             kind, reads = found
             plans.append([(decl.start('type'), decl.end('type'), kind)] + [(a, b, var) for a, b in reads])
@@ -88,4 +123,4 @@ def variants(source, name):
     return [(FAMILY, text) for text in dict.fromkeys(out) if text != source][:LIMIT]
 
 
-REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 95}  # registry.py
+REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name', 'header'), 'order': 95}  # registry.py
