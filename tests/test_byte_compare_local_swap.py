@@ -33,3 +33,7 @@ def test_preprocessor_inputs_are_conservative():
         assert variants(SOURCE, 'f', header=directive) == []
     for flag in ('-DFOO=1', '-include', '-imacros', '-Wp,foo', '-Xpreprocessor', '@flags'):
         assert variants(SOURCE, 'f', flags=[flag]) == []
+
+
+def test_rejects_cpp_overload_context():
+    assert variants(SOURCE + '\nclass C {};\n', 'f') == []
