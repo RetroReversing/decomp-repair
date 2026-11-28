@@ -22,9 +22,13 @@ Matched on an SN GCC 2.8.1 (`-G0 -mips3 -O2`) N64 save-file check (74 instructio
 unaligned_stack_struct_copy
     Two or more consecutive statements that copy words at consecutive offsets of one source into `sp` locals at
     consecutive stack offsets become one assignment to the first of them, retyped as a byte record of the copied
-    size; the other locals' declarations go. Every such run is rewritten in one child. Declined for a run whose later
-    words the function names anywhere else, or whose first word it uses other than by address: those reads would be
-    lost.
+    size; the other locals' declarations go. Every such run is rewritten in one child. Arms that copy one name each
+    into the same words (`sp218 = ...` of one constant in one branch, of another in the other) share the one record.
+    Declined for a run whose later words the function names anywhere but in those copies, or whose first word it uses
+    other than by address (those reads would be lost), and for runs into the same words of different sizes.
+
+The two-arm case was found on an SN GCC 2.8.1 (`-G0 -mips3 -O2 -mfp64`) N64 save-space check (141 instructions)
+whose arms each start the name from their own constant: the family declined the draft's two runs.
 
 A hypothesis like every family's; the judge decides.
 """
@@ -61,8 +65,9 @@ def _runs(body_start, end, clean):
         k += len(run)
 
 
-def _declarations(clean, opening, end, run):
-    """The declaration of each destination, or None when the run's locals are used in a way a record would break."""
+def _declarations(clean, opening, end, run, same=()):
+    """The declaration of each destination, or None when the run's locals are used in a way a record would break.
+    `same`: the other runs that copy into these words (another arm's name), whose statements are no reads of them."""
     found = []
     for position, copy in enumerate(run):
         dest = copy['dest']
@@ -72,7 +77,8 @@ def _declarations(clean, opening, end, run):
             return None
         for use in re.finditer(rf'\b{dest}\b', clean[opening:end]):
             at = opening + use.start()
-            if declared[0].start() <= at < declared[0].end() or copy.start() <= at < copy.end():
+            if (declared[0].start() <= at < declared[0].end()
+                    or any(other[position].start() <= at < other[position].end() for other in (run, *same))):
                 continue
             if position or not re.search(r'(?<!&)&\s*$', clean[opening:at]):
                 return None
@@ -90,21 +96,32 @@ def variants(source, name):
     if not end:
         return []
     edits, sizes = [], set()
+    groups = {}
     for run in _runs(opening, end, clean):
-        declared = _declarations(clean, opening, end, run)
+        groups.setdefault(run[0]['dest'], []).append(run)
+    claimed = set()
+    for dest, runs in groups.items():
+        # Runs into the same words must copy the same size, or one record would not hold them.
+        words = [copy['dest'] for copy in runs[0]]
+        if any([copy['dest'] for copy in run] != words for run in runs[1:]) or claimed.intersection(words):
+            continue
+        declared = _declarations(clean, opening, end, runs[0], runs[1:])
         if declared is None:
             continue
-        first, size = run[0], 4 * len(run)
+        claimed.update(words)
+        size = 4 * len(words)
         sizes.add(size)
         record = f'__repair_bytes{size}'
-        base, offset = first['base'], int(first['off'], 0)
-        pointer = f'((char *) {base} + 0x{offset:X})' if offset else base
-        line = f'{first["indent"]}{first["dest"]} = *({record} *) {pointer};\n'
-        edits.append((first.start(), run[-1].end(), line))
+        for run in runs:
+            first = run[0]
+            base, offset = first['base'], int(first['off'], 0)
+            pointer = f'((char *) {base} + 0x{offset:X})' if offset else base
+            line = f'{first["indent"]}{dest} = *({record} *) {pointer};\n'
+            edits.append((first.start(), run[-1].end(), line))
         head = declared[0]
         indent = source[head.start():head.end()]
         indent = indent[:len(indent) - len(indent.lstrip(' \t'))]
-        edits.append((head.start(), head.end(), f'{indent}{record} {first["dest"]};\n'))
+        edits.append((head.start(), head.end(), f'{indent}{record} {dest};\n'))
         edits.extend((m.start(), m.end(), '') for m in declared[1:])
     if not edits:
         return []
