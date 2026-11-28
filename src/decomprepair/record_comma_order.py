@@ -28,7 +28,8 @@ def variants(source, name):
         obj = match['obj']
         declaration = re.compile(r'\bstruct\s*\{(?P<fields>[^{}]*)\}\s+' + re.escape(obj) + r'\s*;')
         records = list(declaration.finditer(body[:match.start()]))
-        if (len(records) != 1 or match['first'] == match['field']
+        if (len(records) != 1 or body[:records[0].start()].rstrip()[-1:] not in ('{', '}', ';')
+                or match['first'] == match['field']
                 or re.search(r'\b(?:volatile|union)\b|:', records[0]['fields'])
                 or re.search(r'&\s*\(*\s*' + re.escape(obj) + r'\b', body[:match.start()])
                 or re.search(r'\bunion\s*\{[^{}]*\}\s+' + re.escape(obj) + r'\s*;', body)

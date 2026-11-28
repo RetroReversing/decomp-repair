@@ -17,6 +17,8 @@ def test_swaps_unescaped_record_fields():
 def test_rejects_possible_aliases_and_overlapping_storage():
     for changed in (SOURCE.replace('    if (', '    use(&cfg);\n    if ('),
                     SOURCE.replace('s16 a;', 'volatile s16 a;'),
+                    SOURCE.replace('struct {', 'static struct {'),
+                    SOURCE.replace('struct {', 'volatile struct {'),
                     SOURCE.replace('s16 a;', 's16 a:4;'),
                     SOURCE.replace('struct {', 'union {'),
                     SOURCE.replace('    if (', '    union { s16 a; u8 b; } cfg;\n    if ('),
