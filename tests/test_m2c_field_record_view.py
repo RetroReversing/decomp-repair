@@ -112,3 +112,39 @@ def test_a_byte_array_used_any_other_way_is_not_redeclared():
         assert not any('extern Rec_pop_D_80001000 D_80001000;' in child for _, child in s.variants(source, 'pop'))
     named = s.variants(BYTES, 'pop', header='extern u8 D_80001000[];\n')
     assert not any('extern Rec_pop_D_80001000 D_80001000;' in child for _, child in named)
+
+
+PUSH = '''extern u8 D_80001000[];
+
+void push(void) {
+    s32 offset;
+
+    offset = (M2C_FIELD(D_80001000, u8 *, 0xD) & 0xFF) * 4;
+    M2C_FIELD(D_80001000, u8 *, 0xD) = (u8) (M2C_FIELD(D_80001000, u8 *, 0xD) + 1);
+    M2C_FIELD((offset + D_80001000), s32 *, 0x10) = (s32) M2C_FIELD(D_80001000, s32 *, 0);
+}
+'''
+
+
+def test_a_local_holding_the_element_offset_holds_the_index_instead():
+    for spelled in ('* 4', '<< 2'):
+        child = s.variants(PUSH.replace('* 4', spelled), 'push')[0][1]
+        assert 'extern Rec_push_D_80001000 D_80001000;' in child and 'M2C_FIELD(' not in child
+        assert 'offset = D_80001000.mD & 0xFF;' in child
+        assert 'D_80001000.m10[offset] = (s32) D_80001000.m0;' in child
+
+
+def test_a_held_offset_with_another_use_or_scale_is_refused():
+    for old, new in (('* 4', '* 8'), ('s32 offset;', 's16 offset;'), ('s32) M2C', 's32) offset + M2C'),
+                     ('    M2C_FIELD((offset', '    offset += 4;\n    M2C_FIELD((offset'),
+                     ('(M2C_FIELD(D_80001000, u8 *, 0xD) & 0xFF) * 4', 'a + b * 4')):
+        source = PUSH.replace(old, new)
+        assert source != PUSH
+        assert not any('extern Rec_push_D_80001000 D_80001000;' in child for _, child in s.variants(source, 'push'))
+
+
+def test_the_held_index_child_takes_the_mask_retype():
+    from decomprepair import mask_local_retype
+    child = s.variants(PUSH, 'push')[0][1]
+    assert any('u8 offset;' in grand and 'offset = D_80001000.mD;' in grand
+               for _, grand in mask_local_retype.variants(child, 'push'))
