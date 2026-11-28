@@ -79,6 +79,11 @@ def variants(source, name, header='', flags=None):
         declarations = re.findall(rf'\b((?:(?:volatile|static|register|const)\s+)*(?:s32|int|signed\s+int))\s+{re.escape(variable)}\b', clean[span[0]:span[1]])
         if len(declarations) != 1 or re.search(r'\b(?:volatile|static)\b', declarations[0]):
             continue
+        # The alias is not assumed to have its conventional width or signedness.
+        if re.search(r'\bs32\b', declarations[0] + clean[at:outer[3]]):
+            aliases = re.findall(r'\btypedef\s+([^;{}]+)\s+s32\s*;', _blank(source + '\n' + header))
+            if not aliases or any(' '.join(alias.split()) not in ('int', 'signed', 'signed int') for alias in aliases):
+                continue
         if re.search(rf'&\s*{re.escape(variable)}\b', clean[span[0]:span[1]]):
             continue
         high_at = outer[1][0] + len(clean[outer[1][0]:outer[1][1]]) - len(clean[outer[1][0]:outer[1][1]].lstrip())

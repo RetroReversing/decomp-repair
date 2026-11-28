@@ -53,6 +53,13 @@ def test_unknown_preprocessor_input_is_not_assumed_safe():
     assert not variants(SOURCE, 'process', flags=['-include', 'x.h'])
 
 
+def test_integer_alias_is_verified_before_rewriting_casts():
+    source = SOURCE.replace('int state;', 's32 state;').replace('(int) state', '(s32) state')
+    assert not variants(source, 'process')
+    assert not variants(source, 'process', 'typedef short s32;')
+    assert variants(source, 'process', 'typedef signed int s32;')
+
+
 def test_original_and_child_agree_on_negative_adjacent_and_large_values(tmp_path):
     cc = shutil.which('cc')
     if cc is None:
