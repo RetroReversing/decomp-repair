@@ -21,6 +21,8 @@ The macro's post-increment matters: GCC keeps the old value as a copy (`addu $v0
 `p = gfx; gfx = p + 8` does not give. A single command (`t = gfx; gfx += 8; ...`) is the same rewrite. One child with
 every run: they share the cursor's declaration. On a 461-instruction N64 menu screen (SN64 GCC 2.8.1) leaving these
 runs as m2c wrote them scored 8330 against 6395.
+`asm_cursor_commands` reads the commands from the target instead; on that function it found none of the batched run
+(only the single pipe sync), so this reads the draft.
 """
 import re
 
