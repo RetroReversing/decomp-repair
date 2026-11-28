@@ -1,6 +1,6 @@
 import re
 
-from decomprepair.address_alias_spelling import FAMILY, REPAIR, variants
+from decomprepair.address_alias_spelling import FAMILY, REPAIR, SECOND, variants
 
 HEADER = """extern s32 D_800D2858;
 extern s32 D_800D2864;
@@ -71,3 +71,48 @@ def test_only_whole_call_arguments_are_rewritten():
 
 def test_it_declares_itself_with_the_assembly_and_header():
     assert REPAIR['variants'] is variants and REPAIR['needs'] == ('source', 'name', 'header', 'asm')
+
+
+BLOB = """extern u8 D_80054900[];
+extern u8 D_800549D0[];
+extern s32 D_80010000;
+
+void task(Task *t, s32 other)
+{
+    t->boot = D_80054900;
+    t->boot_size = D_800549D0 - D_80054900;
+    if (other) {
+        t->code = D_800549D0;
+    }
+}
+"""
+BLOB_ASM = ('lui $v1, %hi(D_800549D0)\n addiu $v1, $v1, %lo(D_800549D0)\n'
+            ' lui $v0, %hi(D_800549D0)\n addiu $v0, $v0, %lo(D_800549D0)\n'
+            ' lui $a0, %hi(D_80054900)\n addiu $a0, $a0, %lo(D_80054900)\n')
+
+
+def _second(source=BLOB, asm=''):
+    return [text for family, text in variants(source, 'task', '', asm) if family == SECOND]
+
+
+def test_a_later_use_of_an_address_gets_a_second_automatic_name():
+    found = _second(asm=BLOB_ASM)
+    want = BLOB.replace('t->code = D_800549D0;', 't->code = data_800549D0;') \
+               .replace('extern u8 D_800549D0[];\n', 'extern u8 data_800549D0[];\nextern u8 D_800549D0[];\n')
+    assert want in found, found
+    # the target builds D_80054900 only once, so it keeps its one name
+    assert not any('data_80054900' in text for text in found)
+    # never every use: that would be the same program under another name
+    assert all('= D_800549D0 - ' in text or 't->code = D_800549D0;' in text for text in found)
+
+
+def test_without_assembly_every_repeated_address_is_tried_and_an_existing_second_name_is_left_alone():
+    assert any('data_80054900' in text for text in _second())
+    assert _second(_second(asm=BLOB_ASM)[0], BLOB_ASM) == []
+
+
+def test_elements_and_scalar_values_are_not_address_uses():
+    elements = BLOB.replace('t->code = D_800549D0;', 't->code = D_800549D0[0];')
+    assert _second(elements, BLOB_ASM) == []
+    scalar = BLOB.replace('t->boot = D_80054900;', 't->boot = &D_80010000; t->size = D_80010000;')
+    assert not any('data_80010000' in text for text in _second(scalar))
