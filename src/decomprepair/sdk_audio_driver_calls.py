@@ -111,4 +111,4 @@ def variants(source, name, header='', asm=''):
     return out
 
 
-REPAIR = {'families': (FAMILY,), 'variants': variants, 'needs': ('source', 'name', 'header', 'asm'), 'archs': ('mips',)}
+REPAIR = {'families': (FAMILY,), 'variants': variants, 'needs': ('source', 'name', 'header', 'asm'), 'archs': ('mips',), 'sdk': True}
