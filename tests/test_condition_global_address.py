@@ -27,6 +27,7 @@ def test_rejects_unbraced_controls_shadow_address_and_writes():
         SOURCE.replace('flag == 1))', '(&flag != 0))'),
         SOURCE.replace('flag == 1))', '(flag = 1)))'),
         SOURCE.replace('extern u8 flag;', 'extern volatile u8 flag;'),
+        SOURCE.replace('use();', 'use(__LINE__);'),
     )
     for source in cases:
         assert variants(source, 'f') == []
