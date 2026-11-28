@@ -76,6 +76,12 @@ def test_unknown_includes_are_not_assumed_to_be_macro_free():
     assert not variants(SOURCE, 'f', '#include "unknown.h"\n')
 
 
+def test_command_line_macros_are_not_assumed_to_be_safe():
+    assert not variants(SOURCE, 'f', flags=['-O2', '-DCHANGE(x)=((x)=0)'])
+    assert not variants(SOURCE, 'f', flags=['-O2', '-D', 'CHANGE(x)=((x)=0)'])
+    assert variants(SOURCE, 'f', flags=['-O2', '-G0'])
+
+
 def test_member_name_equal_to_origin_is_not_a_local_reassignment():
     source = SOURCE.replace('emit(second);', 'obj.root = second; emit(second);')
     assert 'first' not in variants(source, 'f')[0][1]

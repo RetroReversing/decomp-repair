@@ -20,7 +20,9 @@ def _mentions(text, name, start, end):
     return list(re.finditer(rf'(?<![\w.>]){re.escape(name)}\b', text[start:end]))
 
 
-def variants(source, name, header=''):
+def variants(source, name, header='', flags=None):
+    if any(flag.startswith('-D') for flag in flags or ()):
+        return []  # command-line macros are not present in source or header
     part = view(source, name)
     if not part:
         return []
@@ -110,4 +112,4 @@ def variants(source, name, header=''):
     return [(FAMILY, child) for child in dict.fromkeys(children)]
 
 
-REPAIR = {'families': (FAMILY,), 'variants': variants, 'needs': ('source', 'name', 'header'), 'archs': ('mips',)}
+REPAIR = {'families': (FAMILY,), 'variants': variants, 'needs': ('source', 'name', 'header', 'flags'), 'archs': ('mips',)}
