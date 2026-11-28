@@ -73,6 +73,36 @@ def test_a_call_with_no_known_return_type_or_in_a_short_circuit_is_left_in_the_t
 
 def test_goto_and_volatile_leave_a_function_alone():
     assert not kids(SINK.replace('notify(o);', 'goto out;'), None, 'clear')
+    assert not kids(SINK.replace('void clear(Obj *o) {', 'void clear(Obj *o) {\n    volatile int v;'), None, 'clear')
+
+
+GOTO = """s32 unpack(Obj *o) {
+    s32 n;
+loop:
+    tick(o);
+    n = 3;
+    if (more(o) != 0) {
+        n = 8;
+    }
+    if (n != 0) {
+        goto loop;
+    }
+    return n;
+}
+"""
+
+
+def test_a_goto_function_gets_only_the_condition_call():
+    source = GOTO
+    out = variants(source, 'unpack', 's32 more(Obj *);\n')
+    assert [family for family, _ in out] == [FAMILY_CONDITION]
+    child = out[0][1]
+    assert child.index('= more(o);') < child.index('n = 3;') < child.index('if (call_')
+
+
+def test_a_labelled_assignment_keeps_the_call_in_the_test():
+    source = GOTO.replace('loop:\n    tick(o);\n    n = 3;', 'loop:\n    n = 3;')
+    assert not variants(source, 'unpack', 's32 more(Obj *);\n')
 
 
 def test_it_is_registered_and_bounded():

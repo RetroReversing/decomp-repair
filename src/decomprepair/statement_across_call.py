@@ -16,7 +16,10 @@ Children (`LIMIT` in all, the condition's first, then in the source's order):
 - `condition_call_before_store`: a simple assignment directly above an `if (...)` whose test holds exactly one call with a
   known non-void return type (from the header) and no `&&`, `||` or `?`: the call's result in a new local above the
   assignment, and the test reading the local.
-A function with `volatile`, `asm`, `goto` or a preprocessor line is left alone. Proposals only; the byte judge decides."""
+A function with `volatile`, `asm` or a preprocessor line is left alone, and one with `goto` gets only
+`condition_call_before_store`: an N64 LZ unpacker written as a goto loop (SN GCC 2.8.1, `-G0 -mips3 -O2`) needed
+`len = 3; if (readBits(..) != 0)` as `v = readBits(..); len = 3; if (v != 0)`, which puts `len = 3` in the branch's
+delay slot. Proposals only; the byte judge decides."""
 import re
 
 from .integer_repair_support import IDENT, edit, view
@@ -172,6 +175,8 @@ def _condition_children(source, name, part, header):
         for (start, end, kind), (nstart, nend, nkind) in zip(items, items[1:]):
             if kind != 'simple' or nkind != 'compound' or not _simple(clean, start, end) or _has_call(clean, start, end):
                 continue
+            if re.match(rf'(?:case\b|default\b|{IDENT}\s*:(?!:))', clean[start:end].lstrip()):
+                continue  # a labelled assignment: the call would move above the label
             head = re.match(r'if\s*\(', clean[nstart:nend])
             if not head:
                 continue
@@ -209,9 +214,13 @@ def variants(source, name, header=''):
     if not part:
         return []
     body = part.clean[part.opening:part.end]
-    if re.search(r'\b(?:volatile|asm|__asm__|goto)\b|^\s*#', body, re.M):
+    if re.search(r'\b(?:volatile|asm|__asm__)\b|^\s*#', body, re.M):
         return []
-    out = _condition_children(source, name, part, header) + _move_children(source, name, part)
+    # a `goto` function keeps only the condition children: the call goes just above the assignment that sits directly
+    # on its `if`, so no label can lie between the places it moves from and to
+    out = _condition_children(source, name, part, header)
+    if not re.search(r'\bgoto\b', body):
+        out += _move_children(source, name, part)
     return list(dict.fromkeys(item for item in out if item[1] != source))[:LIMIT]
 
 
