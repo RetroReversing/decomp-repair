@@ -9,7 +9,11 @@ assembly alone: from the outgoing-argument area (`0x10`) up to the lowest callee
 
 One child per sizing: the room less the other `volatile`/scalar stack locals' words (the buffer and the scalars together
 fill it), and the whole room (the scalars sit in the buffer's padding). A buffer already that size, no call that takes
-it, a frame without saved registers, or two arrays passed to calls: no child. Hypothesis from reading gcc's frame
+it, a frame without saved registers, or two arrays passed to calls: no child. Stores at or above the lowest address-taken stack object are writes into it, not outgoing arguments: a text banner
+(SN GCC 2.8.1) whose `strcpy` block moves store bytes into the buffer had its argument area read as 0x38 instead of
+0x20, and was offered 232 bytes instead of the 256 that fill the frame.
+
+Hypothesis from reading gcc's frame
 layout (locals in declaration order from the argument area up); it was not measured on a matched function, so the
 exact judge decides and the family's order is late.
 """
@@ -23,6 +27,7 @@ FAMILIES = (FAMILY,)
 
 ARRAY = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<type>(?:unsigned\s+)?(?:char|u8|s8|s16|u16|s32|u32|f32|int))\s+(?P<name>sp[0-9A-Fa-f]+)\[(?P<n>0x[0-9A-Fa-f]+|\d+)\]\s*;')
 SCALAR = re.compile(r'(?m)^[ \t]*(?:volatile\s+)?(?P<type>s32|u32|int|f32|s16|u16|s8|u8|char)\s+sp[0-9A-Fa-f]+\s*;')
+_TAKEN = re.compile(r'\baddiu\s+\$(?!sp\b)\w+\s*,\s*\$sp\s*,\s*(0x[0-9a-fA-F]+|\d+)')
 SIZES = {'char': 1, 'u8': 1, 's8': 1, 'unsigned char': 1, 's16': 2, 'u16': 2}
 
 
@@ -32,7 +37,9 @@ def room(asm):
     if not saves:
         return None
     low = min(saves)
-    return low, argument_area(asm, low)
+    # a stack object whose address is taken starts above the outgoing arguments: stores into it are not arguments
+    objects = [at for at in (int(m, 0) for m in _TAKEN.findall(asm)) if 16 <= at < low]
+    return low, argument_area(asm, min(objects, default=low))
 
 
 def variants(source, name, asm):

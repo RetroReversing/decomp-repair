@@ -45,3 +45,22 @@ def test_no_saved_registers_no_child():
 
 def test_two_arrays_are_ambiguous():
     assert _texts(SOURCE.replace('volatile int sp24;', 'char sp30[8];')) == []
+
+
+BLOCK_MOVE = '''glabel f
+addiu      $sp, $sp, -0x128
+sw         $s0, 0x120($sp)
+sw         $ra, 0x124($sp)
+addiu      $a0, $sp, 0x20
+sw         $t0, 0x28($sp)
+sb         $t1, 0x32($sp)
+sw         $zero, 0x18($sp)
+jal        g
+nop
+'''
+
+
+def test_stores_into_an_address_taken_object_are_not_arguments():
+    assert s.room(BLOCK_MOVE) == (0x120, 0x20)
+    [text] = _texts('void f(void) {\n    s32 sp20[5];\n\n    g(sp20, 0, 0, 0, 0, 0, 0);\n}\n', BLOCK_MOVE)
+    assert 's32 sp20[64];' in text

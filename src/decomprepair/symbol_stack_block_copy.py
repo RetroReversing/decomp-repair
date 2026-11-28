@@ -24,6 +24,10 @@ draft saw). The symbol is read as m2c read it, so no data is needed. One result 
 symbol_stack_block_copy
     One child with every run of the function rewritten (the runs share the array, so they go together).
 
+m2c spells a slot it saw only written, inside a wider access, `unkspNN` (`unksp2E` for the last byte of a 15-byte
+string copy); those are the same copy's tail. An SN-N64 GCC 2.8.1 text banner of 242 instructions copies four strings,
+two of them with such a tail: without it their `lb`/`sb` stayed out of the block move.
+
 A function that copies two constant tables into two buffers of their own (an N64 sound loader, SN GCC 2.8.1: two
 tables of four address and size pairs, each eight words read back through a pointer) has two bases; each becomes its
 own array.
@@ -40,11 +44,11 @@ _NUMBER = r'(?:0[xX][0-9A-Fa-f]+|\d+)'
 _SIZES = {'s8': 1, 'u8': 1, 's16': 2, 'u16': 2, 's32': 4, 'u32': 4, 'f32': 4, 'M2C_UNK': 4, 'M2C_UNK8': 1,
           'M2C_UNK16': 2, 'M2C_UNK32': 4, 'char': 1, 'short': 2, 'int': 4}
 _TYPE = '|'.join(sorted(_SIZES, key=len, reverse=True))
-_COPY = re.compile(rf'(?m)^(?P<indent>[ \t]*)sp(?P<slot>[0-9A-F]+)(?:\[(?P<index>\d+)\])?\s*=\s*(?:\([^()\n]*\)\s*)?'
+_COPY = re.compile(rf'(?m)^(?P<indent>[ \t]*)(?:unk)?sp(?P<slot>[0-9A-F]+)(?:\[(?P<index>\d+)\])?\s*=\s*(?:\([^()\n]*\)\s*)?'
                    rf'M2C_FIELD\(&(?P<symbol>{_IDENT}),\s*(?P<type>{_TYPE})\s*\*,\s*(?P<off>{_NUMBER})\);[ \t]*\n')
-_DECL = re.compile(rf'(?m)^[ \t]*(?P<type>{_TYPE})[ \t]+sp(?P<slot>[0-9A-F]+)(?:\[(?P<count>{_NUMBER})\])?;'
+_DECL = re.compile(rf'(?m)^[ \t]*(?P<type>{_TYPE})[ \t]+(?P<name>(?:unk)?sp)(?P<slot>[0-9A-F]+)(?:\[(?P<count>{_NUMBER})\])?;'
                    r'(?:[ \t]*/\*[^\n]*\*/)?[ \t]*\n')
-_ANY_SLOT = re.compile(r'(?m)^[ \t]*(?:struct[ \t]+)?\w+[ \t*]+sp([0-9A-F]+)\b[^;\n(]*;')
+_ANY_SLOT = re.compile(r'(?m)^[ \t]*(?:struct[ \t]+)?\w+[ \t*]+(?:unk)?sp([0-9A-F]+)\b[^;\n(]*;')
 
 
 def _runs(copies, declared):
@@ -77,14 +81,14 @@ def _runs(copies, declared):
 
 def _buffer(source, clean, low, high, declared, base, longest, runs):
     """The edits that make the stack buffer at `base` one array filled by block copies, or None."""
-    if base not in declared or base % 4:
+    if base not in declared or base % 4 or declared[base]['name'] != 'sp':
         return None
     inside = sorted(slot for slot in declared if base <= slot < base + longest)
     copies = [copy for _, _, run in runs for copy in run]
     # every one of those locals is only copied to by these runs; the first may also be passed on as the buffer
     uses = []
     for slot in inside:
-        local = f'sp{slot:X}'
+        local = declared[slot]['name'] + declared[slot]['slot']
         for use in re.finditer(rf'(?<![\w.>])(?P<amp>&\s*)?{local}\b', clean[low:high]):
             at = low + use.start()
             if declared[slot].start() <= at < declared[slot].end() or any(c.start() <= at < c.end() for c in copies):

@@ -17,7 +17,11 @@ cross-jumping leaves when the source made the call on every path:
 (a 117-instruction N64 entity update, sn-n64-281 -O2: 1015 -> 25 with this one edit, the store run after its first
 `if`/`else` then copied into both arms for 0). The compiler reading is a hypothesis from jump.c; the judge decides.
 
-The rewrite keeps the program: the call must be the last statement of the `else` of a braced `if`/`else` chain, every
+Where the labelled call ends a `void` function, its paths need no `else` chain: each `v = K; goto shared;` becomes the
+call on K and a `return;` (a 242-instruction N64 text banner, sn-n64-281 -O2, printed at one of two columns this way:
+the last edit of a draft's chain to 0).
+
+For the `else` chain, the rewrite keeps the program: the call must be the last statement of the `else` of a braced `if`/`else` chain, every
 `goto` must sit in an earlier arm of that chain where nothing but the jump's own path is left to run (a guard whose
 body ends in the jump takes the statements after it as its `else`), and the local must be read by that call alone.
 """
@@ -185,8 +189,49 @@ def _children(source, name):
         yield child
 
 
+def _returns(source, name):
+    """The labelled call that ends a `void` function, made with each path's own value and a `return;`."""
+    part = view(source, name)
+    if not part or 'goto' not in part.body:
+        return
+    clean = part.clean
+    if not re.search(rf'\bvoid\s+{name}\s*\(', clean):
+        return
+    for hit in LABELLED.finditer(clean, part.opening, part.end):
+        var, label = hit['var'], hit['label']
+        paren = close(clean, hit.end() - 1, '(', ')')
+        stop = paren and re.compile(r'\s*;').match(clean, paren)
+        if not stop or clean[stop.end():part.end].strip(' \t\n}'):
+            continue
+        uses = list(re.finditer(rf'(?<![\w.>]){var}\b', clean[hit.end():paren - 1]))
+        if len(uses) != 1 or not re.search(rf'(?:\A|,)\s*{var}\s*(?:,|\Z)', clean[hit.end():paren - 1]):
+            continue
+        at = hit.end() + uses[0].start()
+        head, tail = source[hit.start('callee'):at], source[at + len(var):stop.end()]
+        jumps = list(re.finditer(rf'\bgoto\s+{label}\s*;', clean[:part.end]))
+        paths = list(re.finditer(rf'(?<=[;{{}}:])(?P<lead>\s*)(?<![\w.>]){var}\s*=\s*(?P<value>{VALUE})\s*;\s*'
+                                 rf'goto\s+{label}\s*;', clean[:part.end]))
+        if not jumps or len(jumps) != len(paths):
+            continue
+        declared = re.compile(rf'(?m)^[ \t]*{IDENT}(?:\s+{IDENT})*\s+{var}\s*;[ \t]*\n').search(clean, part.opening)
+        mentions = list(re.finditer(rf'(?<![\w.>]){var}\b', clean[part.opening:part.end]))
+        if not declared or len(mentions) != len(paths) + 3:
+            continue
+        edits = [(declared.start(), declared.end(), ''), (hit.start(), stop.end(), head + hit['value'] + tail)]
+        for path in paths:
+            start = path.end('lead')
+            indent = source[line_start(source, start):start]
+            indent = indent if indent.isspace() else ''
+            edits.append((start, path.end(), f'{head}{path["value"]}{tail}\n{indent}return;'))
+        child = source
+        for start, end, text in sorted(edits, reverse=True):
+            child = child[:start] + text + child[end:]
+        yield child
+
+
 def variants(source, name):
-    return [(FAMILY, child) for child in dict.fromkeys(_children(source, name)) if child != source]
+    children = [*_children(source, name), *_returns(source, name)]
+    return [(FAMILY, child) for child in dict.fromkeys(children) if child != source]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'order': 97}
