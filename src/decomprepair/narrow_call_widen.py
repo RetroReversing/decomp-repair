@@ -18,7 +18,7 @@ def variants(source, name):
         return []
     clean = _blank(source)
     body = clean[span[0]:span[1]]
-    if re.search(r'\b_Generic\s*\(', body) or '#' in body:
+    if re.search(r'\b(?:_Generic|asm|__asm__)\s*\(', body) or '#' in body:
         return []
     out = []
     for decl in DECL.finditer(body):

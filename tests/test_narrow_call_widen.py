@@ -18,7 +18,7 @@ def test_explicitly_narrows_the_call_before_widening():
 
 
 def test_avoids_address_type_checks_and_later_writes():
-    for extra in ('use(&x);', 'use(sizeof(x));', 'use(sizeof((x)));', 'x += 1;', 'x <<= 1;', '(x) = other();', '(x)++;', '++(x);', 'x = other();', 'x++;', 'use(&(x));', 'use(&((x)));'):
+    for extra in ('use(&x);', 'use(sizeof(x));', 'use(sizeof((x)));', 'x += 1;', 'x <<= 1;', '(x) = other();', '(x)++;', '++(x);', 'x = other();', 'x++;', 'use(&(x));', 'use(&((x)));', '__asm__("" : "+r"(x));'):
         assert variants(SOURCE.replace('    return x;', '    ' + extra + '\n    return x;'), 'f') == []
 
 
