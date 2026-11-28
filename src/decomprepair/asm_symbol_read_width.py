@@ -37,7 +37,9 @@ asm_table_index_read
     (`lui; addiu %lo(TABLE)`), adds the index and loads `lbu 0($v0)`. The index is often another global, so the sum
     names two symbols and `asm_address_read_width` can't tell which is the table; the one whose address the target
     takes is. The table is declared at the loaded width and read as `TABLE[INDEX]`, which also puts the table's
-    `lui` first. An N64 flag test went 235 -> 0 in this one step.
+    `lui` first. An N64 flag test went 235 -> 0 in this one step. A table m2c declared as one unknown word, `extern M2C_UNK
+    TABLE; ... *(s32 *)(INDEX + &TABLE)`, is read the same way when those reads are its only uses (an N64 menu's item
+    count per page, SN GCC 2.8.1: read as a word, it loaded the byte at offset 3 through a scaled address).
 
 asm_byte_table_deref_width
     A byte table read through a plain dereference of the byte pointer sum, with no cast to say the width:
@@ -281,18 +283,35 @@ def _index_edits(source, name, widths):
     read = re.compile(rf'\*\s*\(\s*(?:{_INTEGER}|M2C_UNK8?)\s*\*\s*\)\s*(?=\()')
     for sym, kind in widths.items():
         declared = re.search(rf'\bextern\s+(?P<t>char|s8|u8)\s+{re.escape(sym)}\s*\[\s*\]\s*;', clean)
-        if not declared:
+        # (a table m2c could not type at all: one word, its address in the sum as `&SYM` or `(u8 *)&SYM`)
+        unknown = None if declared else re.search(
+            rf'\bextern\s+(?P<t>M2C_UNK8?|M2C_UNK32|s32)\s+(?P<name>{re.escape(sym)})\s*;', clean)
+        if not declared and not unknown:
             continue
+        address = rf'(?:\(\s*(?:u8|s8|char)\s*\*\s*\)\s*)?&\s*{re.escape(sym)}\b'
         edits = []
         for hit in read.finditer(clean, span[0], span[1]):
             end = _closing(clean, hit.end())
             if end is None:
                 continue
-            at = _index_of(clean[hit.end() + 1:end - 1], sym)
+            body = clean[hit.end() + 1:end - 1]
+            plain, offset = body, source[hit.end() + 1:end - 1]
+            if unknown:
+                taken = re.search(address, body)
+                if not taken:
+                    continue
+                # (the address blanked to the bare name, padded so the index keeps its place)
+                plain = body[:taken.start()] + sym.rjust(taken.end() - taken.start()) + body[taken.end():]
+            at = _index_of(plain, sym)
             if at:
-                index = source[hit.end() + 1 + at[0]:hit.end() + 1 + at[1]]
-                edits.append((hit.start(), end, f'{sym}[{index}]'))
-        if edits:
+                edits.append((hit.start(), end, f'{sym}[{offset[at[0]:at[1]]}]'))
+        if edits and unknown:
+            used = [use.start() for use in re.finditer(rf'(?<![\w.>]){re.escape(sym)}(?!\w)', clean[span[0]:span[1]])]
+            if all(any(a <= span[0] + use < b for a, b, _ in edits) for use in used
+                   if span[0] + use != unknown.start('name')):
+                edits.append((unknown.start('t'), unknown.end(), f'{kind} {sym}[];'))
+                found[sym] = edits
+        elif edits:
             if declared['t'] != kind:
                 edits.append((*declared.span('t'), kind))
             found[sym] = edits

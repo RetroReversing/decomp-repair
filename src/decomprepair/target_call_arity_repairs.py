@@ -307,6 +307,9 @@ def _variants(source, name, asm, clean, opening, end, jals):
             text = _prototype(text, callee, name, change, edits, clean, parens)
             if text and text != source and text not in [t for _, t in result]:
                 result.append((FAMILY, text))
+                declared = _declared_arguments(text, name, clean, edits, asm) if change == 'add' else None
+                if declared and declared not in [t for _, t in result]:
+                    result.append((FAMILY, declared))
                 # (an added global the target reads through a register holding its address: alone it scored worse
                 # than the draft, 471 against 461, and only with the symbol held in a local too was it exact; offer
                 # both steps at once, since a pass keeps only steps that improve)
@@ -319,6 +322,26 @@ def _variants(source, name, asm, clean, opening, end, jals):
                             result.append((FAMILY, both))
     return result
 
+
+
+def _declared_arguments(text, name, clean, edits, asm):
+    """`text` with an `extern` for each added global the draft never names (an N64 menu passed a score word to a callee
+    it took for `void`: without the declaration the child did not compile), its width the target's load. A header may
+    already declare it, so this is a second child beside the plain one. None when nothing needs declaring."""
+    lines = []
+    for _, added in edits:
+        for symbol in re.findall(r'(?<![\w.])[A-Za-z_]\w*', added):
+            load = re.search(rf'\b(lb|lbu|lh|lhu|lw)\s+\$\w+\s*,\s*%lo\(\s*{symbol}\s*\)', asm)
+            if load and not re.search(rf'(?<![\w.>]){symbol}(?!\w)', clean):
+                kind = {'lb': 's8', 'lbu': 'u8', 'lh': 's16', 'lhu': 'u16', 'lw': 's32'}[load[1]]
+                line = f'extern {kind} {symbol};\n'
+                if line not in lines:
+                    lines.append(line)
+    span = find(text, name)
+    if not lines or not span:
+        return None
+    at = text.rfind('\n', 0, span[0]) + 1
+    return text[:at] + ''.join(lines) + text[at:]
 
 
 def _tail_merged(source, name, clean, callee, parens, wanted):
