@@ -36,6 +36,10 @@ def variants(source, name, header=''):
     decls = {d['name']: d for d in declarations if counts[d['name']] == 1
              and not any(part.opening < opening < d.start() < closing for opening, closing in braces.items())}
     macros = '\n'.join(re.findall(r'(?m)^\s*#.*(?:\\\n.*)*', source + '\n' + header))
+    if re.search(r'(?m)^\s*#\s*include\b', macros):
+        return []  # an unread header can define a macro that captures a local
+    macro_names = set(re.findall(rf'(?m)^\s*#\s*define\s+({IDENT})\b', macros))
+    used_macros = macro_names.intersection(re.findall(IDENT, clean[part.opening + 1:part.end]))
     groups = []
     for alias, declaration in decls.items():
         hits = _mentions(clean, alias, declaration.end(), part.end)
@@ -55,6 +59,11 @@ def variants(source, name, header=''):
                for m in re.finditer(shadow, clean[part.opening + 1:part.end])):
             continue
         if re.search(rf'\b(?:{re.escape(alias)}|{re.escape(origin)})\b', macros):
+            continue
+        # An earlier macro invocation can also have retained a local's address,
+        # even when the macro definition uses only its parameter's name.
+        if any(re.search(rf'\b{re.escape(macro)}\s*\([^;{{}}]*\b(?:{re.escape(alias)}|{re.escape(origin)})\b',
+                         clean[part.opening + 1:part.end]) for macro in used_macros):
             continue
         start, end = first, first + copy.end()
         # Remove a whole one-shot wrapper only when it contains this copy alone.
