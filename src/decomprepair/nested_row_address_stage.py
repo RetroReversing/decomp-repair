@@ -48,7 +48,7 @@ def variants(source, name, header='', flags=None):
         if clean[part.opening + 1:start].rstrip()[-1:] not in ('', ';', '{', '}'):
             continue
         if (re.search(r'\+\+|--|\?|&&|\|\||(?<![=!<>])=(?!=)', statement[statement.index('=') + 1:])
-                or re.search(r'\(\s*\*[^()]*\)\s*\(|\]\s*\(', statement)):
+                or re.search(r'\(\s*\*[^()]*\)\s*\(|\]\s*\(|(?:\(\s*\*\s*){2,}\(*\s*'+IDENT+r'\s*\)+\s*\(', statement)):
             continue
         calls = list(re.finditer(rf'\b{IDENT}\s*\(', statement))
         if len(calls) != 2:

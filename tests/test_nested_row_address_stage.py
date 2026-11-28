@@ -25,6 +25,7 @@ def test_rejects_effects_control_and_shadow():
         SOURCE.replace('inner(col +', 'inner(col++ +'),
         SOURCE.replace('inner(col + (offset + base))', 'inner(col + (offset + base), other())'),
         SOURCE.replace('inner(col + (offset + base))', 'inner(col + (offset + base), (*fp)())'),
+        SOURCE.replace('inner(col + (offset + base))', 'inner(col + (offset + base), (*(*fp))())'),
         SOURCE.replace('    result = outer', '    if (col)\n    result = outer'),
         SOURCE.replace('    result = outer', 'label:\n    result = outer'),
         SOURCE.replace('    int result;', '    int result;\n    { int offset; use(offset); }'),
