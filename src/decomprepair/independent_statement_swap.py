@@ -16,7 +16,10 @@ m2c's own drafts were never read: they open with `#ifndef M2C_DEFINES` (a direct
 it) and spell every field `M2C_FIELD(base, type *, offset)`, which looked like a call. Directives now refuse only inside
 the function, and the field macro is a cell: it trades places unless the other statement touches overlapping bytes of the
 same base. A 52-instruction N64 pickup initialiser (SN GCC 2.8.1 `-G0 -mips3 -O2`) wanted `G = 1; T[M2C_FIELD(..)] = 1;`
-written the other way round (1060 -> 820 on the m2c draft; 0 with the table retyped by `scaled_byte_table_element`)."""
+written the other way round (1060 -> 820 on the m2c draft; 0 with the table retyped by `scaled_byte_table_element`).
+
+A lone `X++;` or `X--;` is read as `X += 1;`: it has no `=`, so `p->frames++; p->x += 40;` was never offered the other
+way round. On an SN GCC 2.8.1 N64 object-update routine (263 instructions) that swap alone took 60 -> 0."""
 import re
 
 from .integer_repair_support import IDENT, edit, view
@@ -26,6 +29,8 @@ FAMILY = 'independent_statement_swap'
 FAMILIES = (FAMILY,)
 LIMIT = 80
 _NAME = re.compile(IDENT)
+# `p->count++;` on a line of its own is the assignment `p->count += 1;`
+_STEP = re.compile(r'^(?P<x>[^=;+\-]*(?:->[^=;+\-]*)*?)\s*(?P<op>[+-])(?P=op)\s*;$')
 _CALL = re.compile(rf'(?<![\w.>])(?!(?:if|while|for|switch|return|sizeof)\b){IDENT}\s*\(')
 _NEUTRAL = re.compile(r'\b(?:inline_fn\d*|__repair_\w+|M2C_FIELD)\b')
 _FIELD = re.compile(r'\bM2C_FIELD\(\s*([^,]+?)\s*,\s*([^,()]+?)\s*,\s*(-?(?:0[xX][0-9a-fA-F]+|\d+))\s*\)')
@@ -69,7 +74,7 @@ def _field_clash(first, second):
 
 def independent(first, second):
     """Whether two simple statements may trade places: a hypothesis about the program, which the judge then tests."""
-    first, second = first.strip(), second.strip()
+    first, second = (_STEP.sub(r'\g<x> \g<op>= 1;', text.strip()) for text in (first, second))
     for text in (first, second):
         if _CALL.search(_NEUTRAL.sub('', text)) or not text.endswith(';') or '=' not in text:
             return False
