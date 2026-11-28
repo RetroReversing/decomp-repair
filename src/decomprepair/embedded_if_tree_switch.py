@@ -35,10 +35,11 @@ from .pattern_repairs import close
 
 FAMILY = 'embedded_if_tree_switch'
 FAMILIES = (FAMILY,)
-LIMIT = 4
+LIMIT = 12
 MAX_CASE_VALUES = 8
 
 IDENT = r'[A-Za-z_]\w*'
+NARROW = re.compile(r'\b(?:u8|s8|u16|s16|s32)[ \t]+(' + IDENT + r')\b')
 GUARD = re.compile(r'\bif\s*\(\s*(?:\(s32\)\s*)?(?P<var>' + IDENT + r')\s*!=\s*(?P<value>-?(?:0[xX][0-9a-fA-F]+|\d+))[uUlL]*\s*\)'
                    r'\s*\{\s*return\s*;\s*\}')
 
@@ -133,12 +134,27 @@ def _boundaries(items, var, found, tests):
         _boundaries(item[3] or [], var, found, tests)
 
 
+def _uncast(items, narrow):
+    """`items` with `(s32) v < K` read as `v < K` for a `v` of `narrow` (types an `int` holds as they are)."""
+    result = []
+    for item in items:
+        if item[0] != 'if':
+            result.append(item)
+            continue
+        cast = re.match(r'\s*\(\s*s32\s*\)\s*(' + IDENT + r')\s*(?=[=!<>])', item[1])
+        condition = item[1][cast.start(1):] if cast and cast[1] in narrow else item[1]
+        other = None if item[3] is None else _uncast(item[3], narrow)
+        result.append(('if', condition, _uncast(item[2], narrow), other, item[4]))
+    return result
+
+
 def _tree_switch(source, clean, start):
     """(end of the tree statement, the variable, [(first value, last value, statements)], default statements)."""
     try:
         item, end = _if(source, clean, start, len(clean))
     except Bail:
         return None
+    item = _uncast([item], set(NARROW.findall(clean)))[0]
     test = TEST.match(item[1])
     if not test:
         return None
@@ -251,7 +267,7 @@ def _variants(source, name):
     end = close(clean, opening, '{', '}') if opening >= 0 else None
     if not end:
         return []
-    result = []
+    forward, backward = [], []
     covered = 0
     for hit in re.finditer(r'\bif\s*\(', clean[opening:end]):
         start = opening + hit.start()
@@ -268,7 +284,7 @@ def _variants(source, name):
         indent = re.match(r'[ \t]*', source[source.rfind('\n', 0, start) + 1:start])[0]
         inner = indent + '    '
 
-        for order in (intervals, list(reversed(intervals))):
+        for result, order in ((forward, intervals), (backward, list(reversed(intervals)))):
             groups = []
             for first, last, path in order:
                 for group in groups:
@@ -287,11 +303,12 @@ def _variants(source, name):
                 text += inner + 'default:\n' + _arm(default, inner)
             text += indent + '}'
             out = source[:start] + text + source[stop:]
-            if all(out != other for _, other in result):
+            if all(out != other for _, other in forward + backward):
                 result.append((FAMILY, out))
-        if len(result) >= LIMIT:
+        if len(forward) >= LIMIT:
             break
-    return result[:LIMIT]
+    # every tree's own order before any reversed one: a function with several trees reached only the first two of them
+    return (forward + backward)[:LIMIT]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name')}
