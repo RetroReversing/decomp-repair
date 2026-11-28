@@ -133,3 +133,29 @@ def test_a_jump_from_elsewhere_keeps_the_label():
     source = ARM_CHAIN.replace('    if (mode == 0) {', '    if (mode > 9) {\n        goto block_14;\n    }\n'
                                '    work();\n    if (mode == 0) {', 1)
     assert not chain_children(source)
+
+
+def test_argument_register_read_as_the_default_is_the_local():
+    from decomprepair.m2c_join_ladder import ARGUMENT
+
+    source = (SOURCE.replace('void update(Obj *obj)', 'void update(Obj *obj, s32 arg1)')
+              .replace('saved_reg_s2 & 0xFF', 'arg1 & 0xFF').replace('var_s2', 'var_a1'))
+    text, = children(source, ARGUMENT)
+    assert 'void update(Obj *obj)' in text and 'arg1' not in text
+    assert 'goto' not in text and 'var_v1 = var_a1 & 0xFF;' in text
+
+
+def test_a_parameter_with_another_use_stays():
+    from decomprepair.m2c_join_ladder import ARGUMENT
+
+    source = (SOURCE.replace('void update(Obj *obj)', 'void update(Obj *obj, s32 arg1)')
+              .replace('saved_reg_s2 & 0xFF', 'arg1 & 0xFF').replace('var_s2', 'var_a1')
+              .replace('obj->alt = 1;', 'obj->alt = arg1;'))
+    assert children(source.replace('obj->alt = arg1;', 'send(arg1);'), ARGUMENT) == []
+
+
+def test_a_label_before_many_statements_does_not_backtrack():
+    from decomprepair.m2c_join_ladder import _goto_arm_chain
+
+    arm = '    if (a) {\nL:\n' + '        x->field = 1;\n' * 60 + '        if (b) {\n        }\n    }\n'
+    assert _goto_arm_chain('{\n' + arm + '}\n') == []

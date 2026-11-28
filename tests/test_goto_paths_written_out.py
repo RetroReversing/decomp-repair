@@ -115,3 +115,60 @@ out:
 
 def test_the_family_is_registered():
     assert any(paths.FAMILY in repair.families for repair in registry.declared())
+
+
+LITERAL_CARRIERS = """void place(Obj *obj, s32 mode)
+{
+    s16 var_v0;
+    s16 var_v0_2;
+
+    if (mode != 0) {
+        if (mode != 1) {
+            if (mode == 2) {
+                if (flag == 0) {
+                    var_v0_2 = -0x2710;
+                    goto block_34;
+                }
+                obj->x = 0;
+                var_v0 = 0xDAC;
+                goto block_35;
+            }
+            if (mode == 3) {
+                var_v0_2 = 0x2710;
+block_34:
+                obj->x = var_v0_2;
+                var_v0 = 0xDAC;
+                goto block_35;
+            }
+        } else {
+            obj->x = 0x2710;
+            var_v0 = -0xDAC;
+            goto block_35;
+        }
+    } else {
+        obj->x = -0x2710;
+        var_v0 = -0xDAC;
+block_35:
+        obj->y = var_v0;
+    }
+}
+"""
+
+
+def test_literals_replace_the_locals_that_carried_them_to_a_shared_store():
+    from decomprepair.goto_paths_written_out import LITERALS, variants
+
+    found = [' '.join(text.split()) for family, text in variants(LITERAL_CARRIERS, 'place') if family == LITERALS]
+    assert found
+    for text in found:
+        assert 'var_v0' not in text and 'goto' not in text
+        assert 'obj->y = 0xDAC;' in text and 'obj->y = -0xDAC;' in text and 'obj->x = -0x2710;' in text
+    assert any('if (mode == 0) {' in text and '} else if (mode == 1) {' in text for text in found)
+
+
+def test_a_value_assigned_in_an_arm_is_not_carried_past_it():
+    from decomprepair.goto_paths_written_out import _propagate
+
+    lines = ['    v = 1;', '    if (c) {', '        v = 2;', '        a = v;', '    } else {', '        b = v;', '    }']
+    assert _propagate(lines, 'v') == ['    if (c) {', '        a = 2;', '    } else {', '        b = 1;', '    }']
+    assert _propagate([*lines, '    d = v;'], 'v') is None

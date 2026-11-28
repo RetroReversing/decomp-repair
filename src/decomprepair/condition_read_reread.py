@@ -21,7 +21,13 @@ instructions, not from the compiler's source; the judge decides each child. `*(T
 `variants` takes each statement `local = <read>;` where the local is a `u8`, `u16`, `s8` or `s16` and the read is a
 dereference with no call and no assignment in it, and whose reads (two or more, up to the next set of the local) are
 all inside `if` conditions with no call and no store to anything but a plain local on the way from the set. All such
-sets at once first, then each alone. Returns [(family, source)]."""
+sets at once first, then each alone. Returns [(family, source)].
+
+m2c's field macro is such a read too (`M2C_FIELD(obj, u8 *, 0x6E)`), and a store through the macro to other bytes of
+the same pointer does not change it: `kind = M2C_FIELD(obj, u8 *, 0x6E); M2C_FIELD(obj, u16 *, 0x6A) = v; if (kind ==
+0) .. else if (kind == 1) ..`. On a 259-instruction N64 object reset (SN, `-O2 -mips3`) an `else if` ladder of calls
+tested through such a local kept an extra `andi $v1, $v1, 0xff`; reading the field at each test was 220 -> 60, and the
+last step to 0 followed from there."""
 import re
 
 from .integer_repair_support import IDENT, edit, locals_for, refs, view
@@ -36,6 +42,28 @@ _CALL = re.compile(rf'(?<![\w.>])(?!(?:if|while|for|switch|return|sizeof)\b){IDE
 _ASSIGN = re.compile(r'(?<![=!<>])(?:[-+*/%&|^]|<<|>>)?=(?!=)|\+\+|--')
 _PLAIN_SET = re.compile(rf'(?:^|[;{{}}:)]|\belse\b)\s*(?:(?:{IDENT})\s+)?({IDENT})\s*$')
 _IF = re.compile(r'\bif\s*\(')
+_SIZE = {'u8': 1, 's8': 1, 'char': 1, 'u16': 2, 's16': 2, 'short': 2, 'u32': 4, 's32': 4, 'int': 4, 'f32': 4}
+_FIELD = re.compile(rf'\bM2C_FIELD\(\s*(?P<base>{IDENT})\s*,\s*(?P<type>[A-Za-z_]\w*)\s*(?P<stars>\*+)\s*,\s*'
+                    rf'(?P<offset>0[xX][0-9a-fA-F]+|\d+)\s*\)')
+
+
+def _bytes(field):
+    """(base, first byte, end byte) an M2C_FIELD match covers, or None for a type of unknown size."""
+    size = 4 if len(field['stars']) > 1 else _SIZE.get(field['type'])
+    first = int(field['offset'], 0)
+    return None if size is None else (field['base'], first, first + size)
+
+
+def _elsewhere(before, read):
+    """Whether the assignment target ending `before` is a field of the read's own pointer that shares no byte with it."""
+    read_field = _FIELD.fullmatch(read)
+    stores = list(_FIELD.finditer(before))
+    if not read_field or not stores or before[stores[-1].end():].strip():
+        return False
+    if before[:stores[-1].start()].rstrip()[-1:] not in ('', ';', '{', '}'):
+        return False
+    here, there = _bytes(read_field), _bytes(stores[-1])
+    return bool(here and there) and here[0] == there[0] and (there[2] <= here[1] or here[2] <= there[1])
 
 
 def _conditions(clean, start, end):
@@ -76,13 +104,15 @@ def _path(clean, start, use):
     return ''.join(pieces)
 
 
-def _quiet(path, names, reads):
-    """No call, and nothing assigned but plain locals the read does not use."""
-    if _CALL.search(path):
+def _quiet(path, names, reads, read=''):
+    """No call, and nothing assigned but plain locals the read does not use (or other bytes of its pointer)."""
+    if _CALL.search(_FIELD.sub('field', path)):
         return False
     for hit in _ASSIGN.finditer(path):
         if hit[0] in ('++', '--'):
             return False
+        if hit[0] == '=' and _elsewhere(path[:hit.start()].rstrip(), read):
+            continue
         target = _PLAIN_SET.search(path[:hit.start()])
         if not target or target[1] not in names or target[1] in reads:
             return False
@@ -106,7 +136,8 @@ def _webs(part):
         for index, hit in enumerate(sets):
             read = source[hit.start('read'):hit.end('read')].strip()
             masked = clean[hit.start('read'):hit.end('read')].strip()
-            if (not (masked.startswith('*') or masked.startswith('(*') or '->' in masked) or _CALL.search(masked)
+            if (not (masked.startswith('*') or masked.startswith('(*') or '->' in masked or _FIELD.fullmatch(masked))
+                    or _CALL.search(_FIELD.sub('field', masked))
                     or _ASSIGN.search(masked) or re.search(rf'\b{name}\b', masked)):
                 continue
             stop = _block_end(clean, hit.end(), part.end)
@@ -117,7 +148,7 @@ def _webs(part):
             if len(uses) < 2 or not all(any(a <= use.start() < b for a, b in conditions) for use in uses):
                 continue
             reads = set(re.findall(IDENT, masked))
-            if not all(_quiet(_path(clean, hit.end(), use.start()), names, reads) for use in uses):
+            if not all(_quiet(_path(clean, hit.end(), use.start()), names, reads, masked) for use in uses):
                 continue
             found.append((decl, (hit.start(), hit.end()), read, [(use.start(), use.end()) for use in uses]))
     return found

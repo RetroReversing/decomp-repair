@@ -64,3 +64,28 @@ def test_every_web_at_once_then_each_alone():
     assert len(children) == 3
     assert 'buttons' not in children[0]
     assert all('u16 buttons;' in child for child in children[1:])
+
+
+FIELD_LADDER = """void pick(void *arg0)
+{
+    u8 kind;
+
+    kind = M2C_FIELD(arg0, u8 *, 0x6E);
+    M2C_FIELD(arg0, s8 *, 0x74) = 0;
+    if (kind == 0) {
+        first();
+    } else if (kind == 1) {
+        second();
+    }
+}
+"""
+
+
+def test_a_field_macro_read_is_reread_past_stores_to_other_bytes():
+    from decomprepair.condition_read_reread import variants
+
+    (_, text), = variants(FIELD_LADDER, 'pick')
+    assert 'kind' not in text
+    assert text.count('(M2C_FIELD(arg0, u8 *, 0x6E)) ==') == 2
+    assert variants(FIELD_LADDER.replace('s8 *, 0x74', 's16 *, 0x6D'), 'pick') == []
+    assert variants(FIELD_LADDER.replace('M2C_FIELD(arg0, s8 *, 0x74)', 'M2C_FIELD(arg1, s8 *, 0x74)'), 'pick') == []
