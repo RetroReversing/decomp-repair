@@ -40,3 +40,28 @@ def test_declined_when_the_word_is_needed():
 
 def test_the_module_declares_itself():
     assert any(repair.module == 'cast_reads_narrow' for repair in registry.declared())
+
+
+PARAMETER = '''s16 sine(s16 arg0);
+void spawn(s32 *out)
+{
+    s32 angle = 0;
+
+    if (out[0]) {
+        angle = out[3] = rand() + 0x800;
+    }
+    out[1] = sine(angle);
+}
+'''
+
+
+def test_reads_at_a_narrow_parameter_and_a_literal_start():
+    [(_, child)] = p.variants(PARAMETER, 'spawn')
+    assert 's16 angle = 0;' in child and 'sine(angle)' in child
+    # the prototype may be the header's
+    assert p.variants(PARAMETER.replace('s16 sine(s16 arg0);\n', ''), 'spawn', 's16 sine(s16);\n')
+
+
+def test_a_wide_parameter_or_start_value_declines():
+    assert p.variants(PARAMETER.replace('sine(s16 arg0)', 'sine(s32 arg0)'), 'spawn') == []
+    assert p.variants(PARAMETER.replace('angle = 0;', 'angle = 0x12345;'), 'spawn') == []
