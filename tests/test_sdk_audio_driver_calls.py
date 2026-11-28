@@ -1,6 +1,8 @@
 from decomprepair.sdk_audio_driver_calls import variants
 
 SOURCE = '''
+void alSynSetVol(void *, void *, short, int);
+void alSynSetPan(void *, void *, int);
 void n_alSynSetVol(void *, short, int);
 void n_alSynSetPan(void *, int);
 void f(Player *p, Voice *v) {
@@ -39,3 +41,17 @@ def test_does_not_replace_macros_or_opaque_volatile_typedefs():
     assert not variants(SOURCE, 'f', '#define alSynSetVol(...) side_effect()', 'jal n_alSynSetVol')
     assert not variants(SOURCE, 'f', 'typedef void *volatile Driver;', ASM)
     assert not variants(SOURCE, 'f', 'class Player;', ASM)
+
+
+def test_requires_the_standard_driver_prototype_and_unshadowed_player():
+    assert not variants(SOURCE.replace('void alSynSetVol(void *, void *, short, int);', ''),
+                        'f', '', 'jal n_alSynSetVol')
+    assert not variants(SOURCE, 'f', '#define drvr side_effect()', ASM)
+    assert not variants(SOURCE, 'f', '#define p get_player()', ASM)
+
+
+def test_does_not_rewrite_member_calls_or_local_function_pointers():
+    member = SOURCE.replace('alSynSetVol(p->drvr', 'object.alSynSetVol(p->drvr')
+    assert not variants(member, 'f', '', 'jal n_alSynSetVol')
+    local = SOURCE.replace('    alSynSetVol(', '    Callback alSynSetVol;\n    alSynSetVol(')
+    assert not variants(local, 'f', '', 'jal n_alSynSetVol')
