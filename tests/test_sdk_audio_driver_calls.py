@@ -1,0 +1,30 @@
+from decomprepair.sdk_audio_driver_calls import variants
+
+SOURCE = '''
+void n_alSynSetVol(void *, short, int);
+void n_alSynSetPan(void *, int);
+void f(Player *p, Voice *v) {
+    alSynSetVol(p->drvr, v, 12, 100);
+    alSynSetPan(p->drvr, v, 64);
+}
+'''
+ASM = 'jal n_alSynSetVol\njal n_alSynSetPan\n'
+
+
+def test_adapts_only_the_driverless_calls_proven_by_target_assembly():
+    children = [text for _, text in variants(SOURCE, 'f', '', ASM)]
+    assert any('n_alSynSetVol(v, 12, 100)' in text and 'n_alSynSetPan(v, 64)' in text for text in children)
+    vol_only = [text for _, text in variants(SOURCE, 'f', '', 'jal n_alSynSetVol')]
+    assert vol_only and all('alSynSetPan(p->drvr' in text for text in vol_only)
+
+
+def test_requires_prototype_and_does_not_remove_volatile_read():
+    assert not variants(SOURCE.replace('void n_alSynSetVol(void *, short, int);', ''), 'f', '', 'jal n_alSynSetVol')
+    assert not variants(SOURCE.replace('Player *p', 'volatile Player *p'), 'f', '', ASM)
+    assert not variants(SOURCE, 'f', 'volatile void *drvr;', ASM)
+    assert not variants(SOURCE, 'f', '', 'not_a_call n_alSynSetVol')
+
+
+def test_rejects_more_donor_calls_than_target_calls():
+    source = SOURCE.replace('    alSynSetPan', '    alSynSetVol(p->drvr, v, 13, 100);\n    alSynSetPan')
+    assert not variants(source, 'f', '', 'jal n_alSynSetVol')
