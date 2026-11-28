@@ -26,6 +26,7 @@ def test_rejects_side_effects_unbraced_controls_and_volatile():
         SOURCE.replace('    if ((u8)', 'label:\n    if ((u8)'),
         SOURCE.replace('extern char table_a[];', 'extern volatile char table_a[];'),
         SOURCE.replace('use();', 'use(__LINE__);'),
+        SOURCE + '\nint line = __LINE__;\n',
     )
     for source in cases:
         assert variants(source, 'f') == []

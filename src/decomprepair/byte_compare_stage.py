@@ -18,7 +18,7 @@ def variants(source, name, header='', flags=None):
     if any(f.startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor', '@')) for f in flags or ()):
         return []
     context = source + '\n' + header
-    if re.search(r'(?m)^\s*#\s*(?:include(?:_next)?|import)\b|\bvolatile\b', context):
+    if re.search(r'(?m)^\s*#\s*(?:include(?:_next)?|import)\b|\b(?:volatile|__LINE__)\b', context):
         return []
     part = view(source, name)
     if not part:
