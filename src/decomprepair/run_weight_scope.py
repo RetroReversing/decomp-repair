@@ -224,9 +224,23 @@ def units(source, name):
 
 def variants(source, name):
     result = []
-    for start, end, text, _, _ in units(source, name)[:LIMIT]:
+    part = view(source, name)
+    if not part:
+        return result
+    # A second level can improve allocation even when the first is a tie.
+    # Limit this paired candidate to the plain table-base assignments made by
+    # the scoped-base repair; both wrappers enclose a real statement.
+    typeof_names = {m['name'] for m in re.finditer(
+        rf'\b__typeof__\s*\(\s*{IDENT}\s*\+\s*0\s*\)\s*\**\s*(?P<name>{IDENT})\s*;',
+        part.clean[part.opening + 1:part.end - 1])}
+    for start, end, text, _, kind in units(source, name):
         wrapped = 'do { ' + text.strip() + ' } while (0);'
         result.append((FAMILY, edit(source, [(start, end, wrapped)])))
+        assignment = re.fullmatch(rf'\s*(?P<name>{IDENT})\s*=\s*{IDENT}\s*;\s*', text)
+        if kind == 2 and assignment and assignment['name'] in typeof_names and len(result) < LIMIT:
+            result.append((FAMILY, edit(source, [(start, end, 'do { ' + wrapped + ' } while (0);')])))
+        if len(result) >= LIMIT:
+            break
     return result
 
 
