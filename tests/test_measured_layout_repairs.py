@@ -92,3 +92,14 @@ def test_unused_volatile_doubleword_explains_an_excess_frame():
     assert not unused_frame_array(source.replace('do_work()', 'do_work(&scratch)'), 'f', rows, report)
     assert not unused_frame_array(source.replace('scratch;', 'scratch = 0;'), 'f', rows, report)
     assert not unused_frame_array(source, 'f', rows, dict(report, local_deltas=[-8]))
+
+
+def test_grows_explicitly_unused_array_from_frame_delta():
+    source = "void f(void) { u8 unused[0x18]; use(); }"
+    rows = [('s', 'addiu $sp, $sp, -168', 'addiu $sp, $sp, -160'),
+            ('s', 'sw $ra, 160($sp)', 'sw $ra, 152($sp)'),
+            ('r', 'move $a0, $s0', 'move $a1, $s0')]
+    report = {'frame_delta': 8, 'saved_deltas': [8], 'local_deltas': []}
+    assert unused_frame_array(source, 'f', rows, report) == [
+        ('measured_grow_unused_frame_array', source.replace('0x18', '32'))]
+    assert not unused_frame_array(source.replace('use();', 'use(unused);'), 'f', rows, report)
