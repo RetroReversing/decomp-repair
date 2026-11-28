@@ -137,6 +137,7 @@ _KEYWORDS = {'if', 'else', 'while', 'for', 'do', 'switch', 'return', 'goto', 'br
              'typedef', 'sizeof'}
 _DECLARATION = re.compile(rf'^(?:(?:{IDENT})\s+)+\**\s*{IDENT}(?:\s*\[[^\]]*\])*(?:\s*,\s*\**\s*{IDENT}(?:\s*\[[^\]]*\])*)*'
                           rf'(?:\s*=[^;{{}}]*)?\s*;$')
+_TYPEOF_DECLARATION = re.compile(rf'^__typeof__\s*\([^;{{}}]*\)\s*\**\s*(?P<name>{IDENT})\s*;$')
 
 
 def _declared(part):
@@ -157,6 +158,9 @@ def _declared(part):
                 break
             elif re.match(r'(?:struct|union)\s*(?:\w+\s*)?{$', text):
                 depth += 1
+                continue
+            elif typeof_decl := _TYPEOF_DECLARATION.match(text):
+                names.add(typeof_decl['name'])
                 continue
             elif not _DECLARATION.match(text):
                 break

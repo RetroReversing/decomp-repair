@@ -156,3 +156,21 @@ void f(int i) {
     for declaration in ('const __typeof__(table + 0) base;', '__typeof__(table + 0) base, other;'):
         changed = source.replace('__typeof__(table + 0) base;', declaration)
         assert not any('do { ' + declaration in text for _, text in variants(changed, 'f'))
+
+
+def test_leading_typeof_declaration_does_not_hide_following_locals():
+    source = """
+extern unsigned char slots[];
+void f(int i) {
+    int first;
+    __typeof__(*slots + 0) promoted;
+    int *row;
+    first = i;
+    promoted = slots[i];
+    row = (int *)(slots + promoted * 4);
+    use(first, row);
+}
+"""
+    children = variants(source, 'f')
+    assert any('do { row = (int *)(slots + promoted * 4); } while (0);' in text for _, text in children)
+    assert not any('do { __typeof__' in text for _, text in children)
