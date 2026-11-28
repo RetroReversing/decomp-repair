@@ -58,6 +58,11 @@ def test_switch_scope_shadow_is_not_moved():
     assert not variants(source, 'f')
 
 
+def test_later_comma_declarator_cannot_hide_a_shadow():
+    source = SOURCE.replace('switch (state) {', '{ int other, value; switch (state) {').replace('    total = 3;', '    }\n    total = 3;')
+    assert not variants(source, 'f')
+
+
 def test_original_and_outlined_case_agree(tmp_path):
     cc = shutil.which('cc')
     if cc is None:

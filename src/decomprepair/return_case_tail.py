@@ -35,6 +35,12 @@ def variants(source, name, header='', flags=None):
             or re.search(r'\b(?:typedef|struct|union|enum|__attribute__|asm|__asm__)\b', clean[part.opening:part.end])
             or re.search(r'\(\s*\*+\s*'+IDENT+r'\s*\)', clean[part.opening:part.end])):
         return []
+    # Multiple declarators can introduce a shadow after the first name, which
+    # the deliberately small declaration reader below cannot prove in scope.
+    if re.search(r'(?:^|[;{}])\s*(?:(?:const|volatile|static|unsigned|signed|long|short)\s+)*'+IDENT
+                 + r'\s*(?:\*\s*|\s+)'+IDENT+r'\s*(?:\[[^\]]*\])?[^;{}]*,[^;{}]*;',
+                 clean[part.opening + 1:part.end]):
+        return []
     if re.search(rf'\b(?!(?:return|else|case|goto)\b){IDENT}(?:\s+|\s*\*+\s*){IDENT}\s*\([^;{{}}]*\)\s*\{{',
                  clean[part.opening + 1:part.end]):
         return []
