@@ -21,8 +21,8 @@ def _mentions(text, name, start, end):
 
 
 def variants(source, name, header='', flags=None):
-    if any(flag.startswith('-D') for flag in flags or ()):
-        return []  # command-line macros are not present in source or header
+    if any(flag.startswith(('-D', '-include', '-imacros', '-Wp,', '-Xpreprocessor')) for flag in flags or ()):
+        return []  # command-line macros and forced includes are not present in source or header
     part = view(source, name)
     if not part:
         return []
