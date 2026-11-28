@@ -28,6 +28,7 @@ def test_declines_effectful_or_conditional_guards():
     assert not variants(SOURCE.replace('    if (row[c][i]', '    if (c)\n    if (row[c][i]'), 'f')
     assert not variants(SOURCE.replace('u16 (*row)[8];', 'volatile u16 (*row)[8];'), 'f')
     assert not variants(SOURCE.replace('    if (row[c][i]', '    { unsigned char row[4][8]; use(row); }\n    if (row[c][i]'), 'f')
+    assert not variants(SOURCE.replace('    if (row[c][i]', '    { typedef char u16; }\n    if (row[c][i]'), 'f')
     assert variants(SOURCE, 'f', header='extern volatile int status;')
     assert not variants(SOURCE, 'f', flags=['-Drow=other'])
     assert not variants(SOURCE, 'f', header='#include "unknown.h"')

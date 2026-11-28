@@ -25,7 +25,7 @@ def variants(source, name, header='', flags=None):
     if not part:
         return []
     clean, body = part.clean, part.body
-    if re.search(rf'\b{LOCAL}\b', context) or re.search(r'\b(?:volatile|_Atomic)\b|\bgoto\s*\*', body):
+    if re.search(rf'\b{LOCAL}\b', context) or re.search(r'\b(?:volatile|_Atomic|typedef)\b|\bgoto\s*\*', body):
         return []
     pairs = brace_pairs(clean, part.opening, part.end)
     if pairs is None:
@@ -36,7 +36,9 @@ def variants(source, name, header='', flags=None):
     for decl in declarations.finditer(body):
         element, row = decl['type'], decl['row']
         pos = part.opening + 1 + decl.start('row')
-        if any(part.opening < a < pos < b for a, b in pairs.items()) or {element, row, LOCAL} & macros:
+        type_shadow = rf'\b{IDENT}(?:\s+\**\s*|\s*\*+\s*){re.escape(element)}\s*(?=[;=,\[])'
+        if (any(part.opening < a < pos < b for a, b in pairs.items())
+                or {element, row, LOCAL} & macros or re.search(type_shadow, body)):
             continue
         shadow = rf'\b{IDENT}(?:\s+\**\s*|\s*\*+\s*){re.escape(row)}\s*(?=[;=,\[])'
         typeof_shadow = rf'\b(?:__typeof__|typeof)\s*\([^;{{}}]*\)\s*\**\s*{re.escape(row)}\s*(?=[;=,\[])'
