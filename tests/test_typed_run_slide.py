@@ -64,3 +64,35 @@ def test_a_counter_whose_address_is_taken_stays():
 
 def test_it_is_registered():
     assert FAMILY in {family for repair in registry.declared() for family in repair.families}
+
+
+def test_native_variants_match_interpreted_output(tmp_path):
+    import importlib.util
+    import json
+    import os
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import pytest
+
+    import decomprepair
+
+    if any(importlib.util.find_spec(name) is None for name in ('Cython', 'setuptools')):
+        pytest.skip('Building the native repair needs Cython and setuptools')
+    package = tmp_path / 'decomprepair'
+    shutil.copytree(Path(decomprepair.__file__).parent, package,
+                    ignore=shutil.ignore_patterns('__pycache__', '_compiled*', '_objects*', '*.so', '*.pyd'))
+    subprocess.run([sys.executable, str(package / 'native_build.py'), '--only', 'typed_run_slide'],
+                   check=True, capture_output=True, timeout=120)
+    run = subprocess.run(
+        [sys.executable, '-X', 'faulthandler', '-c',
+         'import json,sys; from decomprepair.typed_run_slide import variants; '
+         'assert type(variants).__name__ == "cython_function_or_method"; '
+         'print(json.dumps(variants(sys.stdin.read(), "f")))'],
+        env=dict(os.environ, PYTHONPATH=str(tmp_path)), input=SOURCE,
+        text=True, capture_output=True, timeout=15, cwd=tmp_path,
+    )
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == [[family, text] for family, text in variants(SOURCE, 'f')]

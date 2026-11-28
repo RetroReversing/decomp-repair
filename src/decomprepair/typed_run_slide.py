@@ -117,8 +117,15 @@ def variants(source, name, header=''):
         typed = [_typed(_record_cells(text, types), pointers) for text in texts]
         effects = [_read(text, tables) for text in typed]
         # what only this family reads: a typed member, a step, a chain
-        new = [typed[k] != _record_cells(text, types) or bool(_STEP.fullmatch(text))
-               or len(_ASSIGN.findall(text.rstrip(';'))) > 1 for k, text in enumerate(texts)]
+        # Cython can emit an integer-to-PyObject* cast for the boolean expression
+        # inside a list comprehension. Keep the checks in control flow.
+        new = []
+        for k, text in enumerate(texts):
+            if (typed[k] != _record_cells(text, types) or _STEP.fullmatch(text)
+                    or len(_ASSIGN.findall(text.rstrip(';'))) > 1):
+                new.append(True)
+            else:
+                new.append(False)
         for index in range(len(texts)):
             for step in range(1, REACH + 1):
                 for sign in (1, -1):
