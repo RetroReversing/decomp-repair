@@ -21,6 +21,9 @@ draft saw). The symbol is read as m2c read it, so no data is needed. One result 
 (GCC 2.8.1, `-O2`) asset loader of 212 instructions that picks one of four names; why the original is a string copy
 (rather than a record) is not decided by the bytes.
 
+Three bytes are a block too: an N64 menu's `u8 colour[3]` initialiser is three `lb` and three `sb` off one base. Into a
+three-byte array they are assigned as a struct of bytes (a `memcpy` from a word-typed label would load a halfword).
+
 symbol_stack_block_copy
     One child with every run of the function rewritten (the runs share the array, so they go together).
 
@@ -34,6 +37,7 @@ own array.
 """
 import re
 
+from .csource import find
 from .integer_repair_support import edit, view
 
 FAMILY = 'symbol_stack_block_copy'
@@ -71,7 +75,7 @@ def _runs(copies, declared):
                 break
             run.append(copy)
             size += width
-        if len(run) > 1 and size > 4:
+        if len(run) > 1 and (size > 4 or size == 3 and len(run) == 3):
             runs.append((base, size, run))
             k += len(run)
         else:
@@ -113,6 +117,20 @@ def _buffer(source, clean, low, high, declared, base, longest, runs):
     return edits + uses
 
 
+def _triple(source, head, runs):
+    """Three bytes into a three-byte array: a struct of bytes assigned, which GCC moves a byte at a time."""
+    if not head or head['count'] is None or int(head['count'], 0) != 3 or _SIZES[head['type']] != 1:
+        return None
+    local = f'sp{head["slot"]}'
+    record = '__repair_bytes3'
+    edits = []
+    for _, _, run in runs:
+        first = run[0]
+        edits.append((first.start(), run[-1].end(),
+                      f'{first["indent"]}*({record} *) {local} = *({record} *) &{first["symbol"]};\n'))
+    return edits
+
+
 def variants(source, name):
     part = view(source, name)
     if not part or 'M2C_FIELD(&' not in source:
@@ -132,11 +150,19 @@ def variants(source, name):
         longest = max(size for _, size, _ in own)
         if number + 1 < len(bases) and base + longest > bases[number + 1]:
             return []
-        found = _buffer(source, clean, low, high, declared, base, longest, own)
+        if longest == 3:
+            found = _triple(source, declared.get(base), own)
+        else:
+            found = _buffer(source, clean, low, high, declared, base, longest, own)
         if found is None:
             return []
         edits += found
-    return [(FAMILY, edit(source, edits))]
+    child = edit(source, edits)
+    typedef = 'typedef struct { signed char b[3]; } __repair_bytes3;\n'
+    if '__repair_bytes3 *)' in child and typedef not in child:
+        at = child.rfind('\n', 0, find(child, name)[0]) + 1
+        child = child[:at] + typedef + child[at:]
+    return [(FAMILY, child)]
 
 
 REPAIR = {'families': FAMILIES, 'variants': variants, 'needs': ('source', 'name'), 'archs': ('mips',)}

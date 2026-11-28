@@ -4,7 +4,8 @@ m2c sometimes keeps a pointer typed (`void **p`, `s32 *p`, `M2C_UNK *p`) but wri
 `p += 4;` advances 16 bytes, `p + 0x50` reaches 0x140. The target's own immediate says which it meant: two N64 loops
 stepped 4 bytes where the draft stepped 0x10 (exact as `p += 1;`), and a function passed `p + 0x50` bytes where the
 draft passed 0x140 (exact as `(s8 *) p + 0x50`). Offered only when the target has the byte value as an immediate and
-not the scaled one; and an index into a symbol of a 4-byte type, `*((i * 4) + &D)`, as `(&D)[i]`.
+not the scaled one; and an index into a symbol of a 4-byte type, `*((i * 4) + &D)`, as `(&D)[i]`. A local
+that points at pointers counts too: a menu list walked with `u8 **p; p += 4;` stepped one entry in the game.
 """
 import re
 
@@ -36,11 +37,16 @@ def edits(source, name, asm):
         return []
     body = clean[opening:end]
     found = immediates(asm)
+    # (the immediates added to a register in place: a step, whatever else the function adds that number to)
+    stepped = {int(m[2], 0) for m in re.finditer(
+        r'\b(?:addiu|daddiu|addi)\s+(\$\w+)\s*,\s*\1\s*,\s*(-?(?:0x[0-9a-fA-F]+|\d+))\s*$', asm, re.M)}
     pointers = {}
     for m in re.finditer(r'(?m)^[ \t]*(?:const\s+)?(?P<type>[A-Za-z_]\w*)\s*(?P<stars>\*+)\s*(?P<name>' + IDENT + r')\s*;', body):
         pointee = m['type'] + (' *' * (len(m['stars']) - 1))
         if pointee in SIZES:
             pointers[m['name']] = SIZES[pointee]
+        elif pointee.endswith('*'):  # (a pointer to pointers: `u8 **p; p += 4;` over a list of strings steps one)
+            pointers[m['name']] = 4
     # (a pointer parameter too: `func(arg1, arg0 + 4)` with `s32 *arg0` passed 0x10 bytes where the game passed 4,
     # exact as `(s8 *) arg0 + 4`)
     signature = re.search(r'\b' + re.escape(name) + r'\s*\(([^)]*)\)\s*{', clean[span[0]:span[1]])
@@ -61,7 +67,7 @@ def edits(source, name, asm):
     for local, size in pointers.items():
         for step in re.finditer(r'\b' + local + r'\s*(?P<op>[-+])=\s*(?P<n>0x[0-9a-fA-F]+|\d+)\s*;', body):
             n = int(step['n'], 0)
-            if n % size or n == 0 or n not in found or n * size in found:
+            if n % size or n == 0 or n not in found or n * size in stepped or n * size in found and n not in stepped:
                 continue
             result.append((opening + step.start('n'), opening + step.end('n'), str(n // size)))
         for use in re.finditer(r'(?<![\w.>)])\b' + local + r'\s*\+\s*(?P<n>0x[0-9a-fA-F]+|\d+)\b', body):
